@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from reviews.domain.models import ReviewRequest
 from reviews.idempotency import InMemoryIdempotencyStore, RedisIdempotencyStore
+from reviews.queue import InMemoryReviewQueue, RedisReviewQueue
 from reviews.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -22,14 +23,11 @@ def _settings() -> Settings:
 
 
 _fallback_store: InMemoryIdempotencyStore | None = None
+_fallback_queue: InMemoryReviewQueue | None = None
 
 
 def build_store(settings: Settings):
-    """Redis si esta disponible; si no, un almacen en memoria compartido.
-
-    El fallback debe ser un singleton: si se creara por peticion, la
-    idempotencia no funcionaria entre llamadas.
-    """
+    """Redis si esta disponible; si no, un almacen en memoria compartido."""
     global _fallback_store
     store = RedisIdempotencyStore(url=settings.redis_url)
     if store.available():
@@ -38,6 +36,18 @@ def build_store(settings: Settings):
         logger.warning("Redis no disponible; uso almacen de memoria para idempotencia")
         _fallback_store = InMemoryIdempotencyStore()
     return _fallback_store
+
+
+def build_queue(settings: Settings):
+    """Redis si esta disponible; si no, cola en memoria compartida (tests/local)."""
+    global _fallback_queue
+    queue = RedisReviewQueue(url=settings.redis_url)
+    if queue.available():
+        return queue
+    if _fallback_queue is None:
+        logger.warning("Redis no disponible; uso cola en memoria")
+        _fallback_queue = InMemoryReviewQueue()
+    return _fallback_queue
 
 
 @app.get("/healthz")
@@ -83,7 +93,8 @@ async def bitbucket_webhook(
     if not store.claim(review_request.idempotency_key):
         return JSONResponse({"status": "duplicado", "key": review_request.idempotency_key})
 
-    # Fase 0: se registra y se responde 202. La cola real llega con el worker.
+    queue = build_queue(settings)
+    queue.enqueue(review_request)
     logger.info("Review encolada: %s", review_request.idempotency_key)
     return JSONResponse(
         {"status": "aceptado", "key": review_request.idempotency_key},
@@ -94,8 +105,9 @@ async def bitbucket_webhook(
 @app.get("/profile/{repo_name}")
 def get_profile(repo_name: str) -> dict[str, object]:
     """Devuelve el perfil de repo cargado, para inspeccion y depuracion."""
+    del repo_name
     settings = _settings()
     path = Path(settings.repo_profile_config)
     if not path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe el perfil para {repo_name}")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No existe el perfil {path}")
     return {"path": str(path), "exists": True}

@@ -7,8 +7,15 @@ from fastapi.testclient import TestClient
 
 from reviews.api import main
 from reviews.api.main import app
+from reviews.idempotency import InMemoryIdempotencyStore
+from reviews.queue import InMemoryReviewQueue
 
 client = TestClient(app)
+
+
+def _reset_fallbacks() -> None:
+    main._fallback_store = InMemoryIdempotencyStore()
+    main._fallback_queue = InMemoryReviewQueue()
 
 
 def test_healthz() -> None:
@@ -17,7 +24,8 @@ def test_healthz() -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_webhook_acepta_y_es_idempotente() -> None:
+def test_webhook_acepta_encola_y_es_idempotente() -> None:
+    _reset_fallbacks()
     payload = {
         "pullrequest": {
             "id": 42,
@@ -28,10 +36,13 @@ def test_webhook_acepta_y_es_idempotente() -> None:
     first = client.post("/webhook/bitbucket", json=payload)
     assert first.status_code == 202
     assert first.json()["key"] == "cqm/emotivoo-v2:42:abc123"
+    assert main._fallback_queue is not None
+    assert len(main._fallback_queue) == 1
 
     second = client.post("/webhook/bitbucket", json=payload)
     assert second.status_code == 200
     assert second.json()["status"] == "duplicado"
+    assert len(main._fallback_queue) == 1
 
 
 def test_webhook_rechaza_sin_pr_id() -> None:
@@ -40,6 +51,7 @@ def test_webhook_rechaza_sin_pr_id() -> None:
 
 
 def test_firma_hmac_valida(monkeypatch) -> None:
+    _reset_fallbacks()
     secret = "secreto"
     monkeypatch.setattr(main._settings(), "bitbucket_webhook_secret", secret)
 

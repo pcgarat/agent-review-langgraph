@@ -1,7 +1,8 @@
 version: 1
 # Techo global de autonomia. Sube o baja sin tocar el grafo.
 # report | fix_with_approval | fix_auto
-max_autonomy: fix_with_approval
+# Fase 1 (report-only): todo se degrada a report, incluido escalate.
+max_autonomy: report
 
 default_action: report
 
@@ -44,6 +45,7 @@ rules:
 
 guards:
   max_files_per_pr: 10
+  max_inline_comments: 20
   never_auto_paths:
     - ".github/**"
     - "infra/**"

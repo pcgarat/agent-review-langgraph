@@ -128,7 +128,14 @@ class PolicyEngine:
         }
 
     def _cap(self, action: FindingAction) -> FindingAction:
-        """Aplica el techo global y el minimo: escalate nunca se rebaja."""
+        """Aplica el techo global.
+
+        Con `max_autonomy: report` (Fase 1) todo se degrada a report, tambien
+        escalate: se informa la razon pero el grafo no pausa ni arregla.
+        Con techos mayores, escalate nunca se rebaja (freno de seguridad).
+        """
+        if self._max_autonomy is FindingAction.REPORT:
+            return FindingAction.REPORT
         if action is FindingAction.ESCALATE:
             return action
         if self._RANK[action] <= self._RANK[self._max_autonomy]:
@@ -145,7 +152,7 @@ class PolicyEngine:
         # Los guardas preceden a las reglas: son el freno de seguridad.
         if self.is_never_auto(finding.file):
             return PolicyResult(
-                action=FindingAction.FIX_WITH_APPROVAL,
+                action=self._cap(FindingAction.FIX_WITH_APPROVAL),
                 reason=f"Ruta protegida ({finding.file}): requiere aprobacion",
                 matched_rule="guard:never_auto_paths",
                 policy_version=self._version,

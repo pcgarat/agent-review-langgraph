@@ -4,28 +4,28 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 
 ## Slice A — Foundation
 
-- [ ] **T1** Clamp report-only (`max_autonomy: report` + tests)
+- [x] **T1** Clamp report-only (`max_autonomy: report` + tests)
 - [ ] **T2** Contrato versionado en `contracts/` + validación
-- [ ] **T3** Cola Redis: API enqueue tras idempotencia
-- [ ] **T4** Worker consume cola e invoca el grafo
+- [x] **T3** Cola Redis: API enqueue tras idempotencia
+- [x] **T4** Worker consume cola e invoca el grafo
 
 ### Checkpoint A
 
-- [ ] `uv run pytest` verde
-- [ ] Webhook → cola → grafo → publish (VCS fake)
-- [ ] Ningún `Decision` con `fix_*`
+- [x] `uv run pytest` verde
+- [x] Webhook → cola → grafo → publish (VCS fake)
+- [x] Ningún `Decision` con `fix_*`
 
 ## Slice B — Review sin LLM + inline
 
-- [ ] **T5** `TwgVcsAdapter`: scope + `resolve_inline_anchor` + `post_inline_comment`
+- [x] **T5** `TwgVcsAdapter`: `resolve_inline_anchor` + `post_inline_comment` (+ tests goldens parciales)
 - [ ] **T6** Persona `tooling` / `standards` (parser + fixture)
-- [ ] **T7** Publish: **inline por hallazgo** + resumen PR + Teams (tope 20, P0→P3)
+- [x] **T7** Publish: **inline por hallazgo** + resumen PR + Teams (tope 20, P0→P3)
 
 ### Checkpoint B
 
-- [ ] Fixture → hallazgos → ≥1 inline (o fallback documentado al resumen)
-- [ ] Resumen general + Teams presentes
-- [ ] Cero push/commit en VCS
+- [x] Fixture → hallazgos → ≥1 inline (o fallback documentado al resumen)
+- [x] Resumen general + Teams presentes
+- [x] Cero push/commit en VCS
 - [ ] Formato inline revisado por humano
 
 ## Slice C — Señal + smoke

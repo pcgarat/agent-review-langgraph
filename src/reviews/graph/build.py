@@ -12,6 +12,7 @@ from reviews.domain.models import (
     Finding,
     ReviewOutcome,
     ReviewRequest,
+    Severity,
 )
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
@@ -20,6 +21,13 @@ from reviews.ports.sandbox import SandboxPort
 from reviews.ports.vcs import VcsPort
 
 logger = logging.getLogger(__name__)
+
+_SEVERITY_ORDER = {
+    Severity.P0: 0,
+    Severity.P1: 1,
+    Severity.P2: 2,
+    Severity.P3: 3,
+}
 
 
 class ReviewIntegrityError(RuntimeError):
@@ -52,6 +60,17 @@ def _merged(state: ReviewState) -> list[Finding]:
     return state.get("merged") or state.get("findings", [])
 
 
+def _quote_for_anchor(finding: Finding) -> str:
+    """Texto distintivo para diff-line: preferir evidence sin prefijo file:line."""
+    raw = finding.evidence[0] if finding.evidence else finding.title
+    if " " in raw and ":" in raw.split(" ", 1)[0]:
+        # p.ej. "src/foo.py:10 amor" -> "amor"
+        maybe_loc, rest = raw.split(" ", 1)
+        if ":" in maybe_loc:
+            return rest.strip() or raw
+    return raw.strip()
+
+
 def build_graph(
     *,
     vcs: VcsPort,
@@ -62,12 +81,12 @@ def build_graph(
 ):
     """Construye el grafo de review.
 
-    Fase 0 implementa: scope -> fan-out de personas -> merge -> policy -> publish.
-    Los nodos de HITL (interrupt) y de fix llegan en las fases 2 y 3.
+    Fase 1: scope -> fan-out -> merge -> policy -> publish (inline + resumen).
+    HITL y fix llegan en las fases 2 y 3.
     """
+    del sandbox  # reservado para Fase 3
 
     def scope(state: ReviewState) -> ReviewState:
-        # langgraph puede entregar el estado como dict plano; normalizamos.
         request = ReviewRequest.model_validate(state["request"])
         diff = vcs.get_diff(request.repo, request.pr_id)
         return {"request": request, "diff": diff, "findings": []}
@@ -95,10 +114,7 @@ def build_graph(
         return {"findings": found}
 
     def merge(state: ReviewState) -> ReviewState:
-        """Deduplica por (fichero, titulo) y conserva la evidencia mas rica.
-
-        Escribe en `merged` (sin reducer) para no reacumular lo ya acumulado.
-        """
+        """Deduplica por (fichero, titulo) y conserva la evidencia mas rica."""
         seen: dict[tuple[str, str], Finding] = {}
         for finding in state.get("findings", []):
             key = _merge_key(finding)
@@ -139,12 +155,60 @@ def build_graph(
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
 
-        body = _render_summary(findings, decisions)
-        vcs.post_comment(request.repo, request.pr_id, body)
+        by_id = {d.finding_id: d for d in decisions}
+        max_inline = int(policy.guards.get("max_inline_comments", 20))
+        ordered = sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
+
+        inlined: list[Finding] = []
+        summary_only: list[Finding] = []
+
+        for finding in ordered:
+            decision = by_id.get(_finding_id(finding))
+            if decision is None:
+                raise ReviewIntegrityError(
+                    f"Hallazgo sin decision de politica: {_finding_id(finding)}"
+                )
+            if len(inlined) >= max_inline:
+                summary_only.append(finding)
+                continue
+            quote = _quote_for_anchor(finding)
+            try:
+                anchor = vcs.resolve_inline_anchor(
+                    request.repo, request.pr_id, path=finding.file, text=quote
+                )
+            except Exception:
+                logger.exception(
+                    "Fallo al resolver ancla %s:%s", finding.file, finding.line
+                )
+                anchor = None
+            if anchor is None:
+                summary_only.append(finding)
+                continue
+            body = _render_inline(finding, decision)
+            try:
+                vcs.post_inline_comment(
+                    request.repo,
+                    request.pr_id,
+                    path=anchor.path,
+                    line=anchor.line,
+                    body=body,
+                    from_line=anchor.from_line,
+                )
+                inlined.append(finding)
+            except Exception:
+                logger.exception(
+                    "Fallo al publicar inline %s:%s", finding.file, finding.line
+                )
+                summary_only.append(finding)
+
+        summary = _render_summary(findings, decisions, summary_only=summary_only, inlined=inlined)
+        vcs.post_comment(request.repo, request.pr_id, summary)
         if chat is not None:
+            pr = vcs.get_pull_request(request.repo, request.pr_id)
             chat.notify(
                 title=f"Review de {request.repo}#{request.pr_id}",
-                body=_render_teams_body(findings, decisions),
+                body=_render_teams_body(findings, decisions, inlined_count=len(inlined)),
+                link=pr.url or None,
             )
         return {}
 
@@ -165,29 +229,65 @@ def build_graph(
     return graph
 
 
-def _render_summary(findings: list[Finding], decisions: list[Decision]) -> str:
+def _render_inline(finding: Finding, decision: Decision) -> str:
+    lines = [
+        f"**[{finding.severity.value}] {finding.title}**",
+        "",
+        finding.why_it_matters,
+        "",
+        f"_Accion: {decision.action.value}_ · confianza {finding.confidence}",
+    ]
+    if finding.suggested_fix:
+        lines.extend(["", f"**Sugerencia:** {finding.suggested_fix}"])
+    if decision.action.value == "report" and decision.reason:
+        lines.append(f"_Politica: {decision.reason}_")
+    return "\n".join(lines)
+
+
+def _render_summary(
+    findings: list[Finding],
+    decisions: list[Decision],
+    *,
+    summary_only: list[Finding] | None = None,
+    inlined: list[Finding] | None = None,
+) -> str:
     by_key = {d.finding_id: d for d in decisions}
-    lines = ["## Code review automatica", ""]
-    for finding in findings:
+    inlined = inlined or []
+    summary_only = summary_only or []
+    lines = [
+        "## Code review automatica",
+        "",
+        f"{len(findings)} hallazgos · {len(inlined)} inline · "
+        f"{len(summary_only)} solo en resumen",
+        "",
+    ]
+    for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
-            # Nunca inventar una accion: si falta la decision, se grita.
             raise ReviewIntegrityError(
                 f"Hallazgo sin decision de politica: {_finding_id(finding)}"
             )
+        marker = "inline" if finding in inlined else "resumen"
         lines.append(
             f"- **[{finding.severity.value}] {finding.title}** "
-            f"(`{finding.file}:{finding.line}`) · confianza {finding.confidence} · "
-            f"{decision.action.value}"
+            f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
         )
         lines.append(f"  {finding.why_it_matters}")
     return "\n".join(lines)
 
 
-def _render_teams_body(findings: list[Finding], decisions: list[Decision]) -> str:
+def _render_teams_body(
+    findings: list[Finding],
+    decisions: list[Decision],
+    *,
+    inlined_count: int = 0,
+) -> str:
     pending = [d for d in decisions if d.action.value in PENDING_ACTIONS]
-    lines = [f"{len(findings)} hallazgos, {len(pending)} requieren decision."]
-    for finding in findings[:5]:
+    lines = [
+        f"{len(findings)} hallazgos ({inlined_count} inline), "
+        f"{len(pending)} requieren decision."
+    ]
+    for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])[:5]:
         lines.append(f"{finding.severity.value} · {finding.title} ({finding.file})")
     return "\n".join(lines)
 

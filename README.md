@@ -28,8 +28,10 @@ docker compose up --build
 
 ## Estado actual
 
-Fase 0: esqueleto funcional. El grafo, la politica y los adaptadores existen; las personas
-de review son un puerto sustituible (`reviews.ports.reviewer`) con una implementacion nula.
+Fase 1 en curso: webhook encola en Redis, el worker ejecuta el grafo y publica
+**comentarios inline** (+ resumen en el PR + Teams). Politica en
+`max_autonomy: report`. La persona de review sigue siendo sustituible
+(`NullReviewer` por defecto; tooling/LLM pendientes).
 
 ## Desarrollo
 

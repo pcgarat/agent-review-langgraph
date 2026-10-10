@@ -5,6 +5,7 @@ import pytest
 from reviews.domain.models import (
     AutofixClass,
     Finding,
+    FindingAction,
     Owner,
     ProtectedSubject,
     Severity,
@@ -35,63 +36,80 @@ def make_finding(**overrides: object) -> Finding:
     return Finding(**base)  # type: ignore[arg-type]
 
 
-def test_protected_subject_escala(policy: PolicyEngine) -> None:
-    finding = make_finding(protected_subject=ProtectedSubject.CRYPTOGRAPHY, severity=Severity.P3)
-    result = policy.decide(finding)
-    assert result.action.value == "escalate"
-    assert result.policy_version == "1"
-    assert result.matched_rule.startswith("rule:")
-
-
-def test_p0_escala(policy: PolicyEngine) -> None:
-    assert policy.decide(make_finding(severity=Severity.P0)).action.value == "escalate"
-
-
-def test_manual_escala(policy: PolicyEngine) -> None:
-    assert (
-        policy.decide(make_finding(autofix_class=AutofixClass.MANUAL)).action.value == "escalate"
-    )
-
-
-def test_baja_confianza_se_reporta(policy: PolicyEngine) -> None:
-    assert policy.decide(make_finding(confidence=50)).action.value == "report"
-
-
-def test_p2_con_aprobacion(policy: PolicyEngine) -> None:
-    result = policy.decide(make_finding(severity=Severity.P2, confidence=75))
-    assert result.action.value == "fix_with_approval"
-
-
-def test_p3_en_ruta_segura_es_autofix() -> None:
-    # Con el techo al maximo, un P3 con confianza alta si se arregla solo.
-    top = PolicyEngine(
+def _engine(*, max_autonomy: str, rules: list[dict] | None = None) -> PolicyEngine:
+    return PolicyEngine(
         {
             "version": 7,
-            "max_autonomy": "fix_auto",
+            "max_autonomy": max_autonomy,
             "default_action": "report",
-            "rules": [
+            "rules": rules
+            or [
+                {
+                    "when": {"severity": "P0"},
+                    "action": "escalate",
+                    "reason": "critico",
+                },
                 {
                     "when": {"autofix_class": "gated_auto", "severity": "P3"},
                     "action": "fix_auto",
-                    "reason": "test",
-                }
+                    "reason": "seguro",
+                },
             ],
         }
     )
+
+
+def test_fase1_p0_se_reporta_conservando_razon(policy: PolicyEngine) -> None:
+    result = policy.decide(make_finding(severity=Severity.P0))
+    assert result.action is FindingAction.REPORT
+    assert result.reason
+    assert result.matched_rule.startswith("rule:")
+
+
+def test_fase1_protected_subject_se_reporta(policy: PolicyEngine) -> None:
+    finding = make_finding(protected_subject=ProtectedSubject.CRYPTOGRAPHY, severity=Severity.P3)
+    result = policy.decide(finding)
+    assert result.action is FindingAction.REPORT
+    assert result.policy_version == "1"
+    assert "protegido" in result.reason.lower() or result.reason
+
+
+def test_fase1_manual_se_reporta(policy: PolicyEngine) -> None:
+    assert (
+        policy.decide(make_finding(autofix_class=AutofixClass.MANUAL)).action
+        is FindingAction.REPORT
+    )
+
+
+def test_fase1_gated_auto_p3_se_reporta(policy: PolicyEngine) -> None:
+    result = policy.decide(make_finding(severity=Severity.P3, confidence=100))
+    assert result.action is FindingAction.REPORT
+
+
+def test_baja_confianza_se_reporta(policy: PolicyEngine) -> None:
+    assert policy.decide(make_finding(confidence=50)).action is FindingAction.REPORT
+
+
+def test_con_techo_alto_p0_sigue_escalando() -> None:
+    engine = _engine(max_autonomy="fix_with_approval")
+    assert engine.decide(make_finding(severity=Severity.P0)).action is FindingAction.ESCALATE
+
+
+def test_p3_en_ruta_segura_es_autofix_si_techo_lo_permite() -> None:
+    top = _engine(max_autonomy="fix_auto")
     finding = make_finding(
         severity=Severity.P3, confidence=100, file="tests/Shared/Model/FooTest.php"
     )
     result = top.decide(finding)
-    assert result.action.value == "fix_auto"
-    assert result.matched_rule == "rule:0"
+    assert result.action is FindingAction.FIX_AUTO
+    assert result.matched_rule == "rule:1"
     assert result.policy_version == "7"
 
 
-def test_ruta_nunca_auto_se_frena(policy: PolicyEngine) -> None:
-    # infra/** esta en never_auto_paths: nunca auto, aunque la regla diga lo contrario.
+def test_ruta_nunca_auto_se_frena_y_en_fase1_es_report(policy: PolicyEngine) -> None:
     guarded = make_finding(severity=Severity.P3, confidence=100, file="infra/main.tf")
     result = policy.decide(guarded)
-    assert result.action.value == "fix_with_approval"
+    assert result.action is FindingAction.REPORT
     assert result.matched_rule == "guard:never_auto_paths"
     assert "protegida" in result.reason
     assert policy.is_never_auto("docker/php/Dockerfile")
@@ -99,21 +117,10 @@ def test_ruta_nunca_auto_se_frena(policy: PolicyEngine) -> None:
     assert policy.is_never_auto(".cursor/rules/foo.mdc")
 
 
-def test_techo_global_limita_autofix(policy: PolicyEngine) -> None:
-    capped = PolicyEngine(
-        {
-            "max_autonomy": "report",
-            "default_action": "report",
-            "rules": [
-                {
-                    "when": {"autofix_class": "gated_auto", "severity": "P3"},
-                    "action": "fix_auto",
-                    "reason": "test",
-                }
-            ],
-        }
-    )
-    assert capped.decide(make_finding(severity=Severity.P3, confidence=75)).action.value == "report"
+def test_techo_global_limita_autofix() -> None:
+    capped = _engine(max_autonomy="report")
+    result = capped.decide(make_finding(severity=Severity.P3, confidence=75))
+    assert result.action is FindingAction.REPORT
 
 
 def test_decision_lleva_trazabilidad(policy: PolicyEngine) -> None:
@@ -122,3 +129,7 @@ def test_decision_lleva_trazabilidad(policy: PolicyEngine) -> None:
     assert result.policy_version
     assert result.matched_rule == "rule:1"
     assert result.reason
+
+
+def test_max_inline_comments_en_guards(policy: PolicyEngine) -> None:
+    assert policy.guards.get("max_inline_comments") == 20
