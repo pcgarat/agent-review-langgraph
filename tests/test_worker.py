@@ -13,12 +13,13 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
+from reviews.domain.pending import InMemoryPendingStore
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 from reviews.queue import InMemoryReviewQueue
 from reviews.settings import Settings
-from reviews.worker.main import build_reviewers, process_request
+from reviews.worker.main import build_reviewers, process_request, sweep_pending
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -254,3 +255,22 @@ def test_worker_head_sha_vacio_no_publica_en_silencio(tmp_path: Path) -> None:
 
     assert vcs.inlines == []
     assert vcs.comments == [], "ante sha vacio no se debe reportar 'sin hallazgos'"
+
+
+def test_sweep_pending_encola_solo_las_degradadas(tmp_path: Path) -> None:
+    # Una ingesta que nunca completa debe terminar ejecutandose (degradada), no
+    # quedarse en PENDING para siempre.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
+    )
+    settings = Settings(repo_profile_config=str(profile))
+    pending = InMemoryPendingStore(expected_tools=["phpstan", "php-cs-fixer"])
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc", pipeline_id="7")
+    pending.observe(request, "phpstan", "{}", ttl_ready_s=0)
+
+    enqueued = sweep_pending(settings, queue, pending=pending)
+
+    assert [r.pipeline_id for r in enqueued] == ["7"]
+    assert len(queue) == 1

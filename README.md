@@ -14,23 +14,30 @@ cp ~/.local/bin/twg bin/twg   # el contenedor lo usa como adaptador de Bitbucket
 docker compose up --build
 ```
 
-- `api`  — FastAPI, expone `POST /webhook/bitbucket` y `GET /healthz`
+- `api`  — FastAPI, expone `POST /webhook/tooling`, `GET /healthz`, `/pending` y `/profile/{repo}`
 - `worker` — ejecuta el grafo LangGraph
 - `postgres` — checkpointer y auditoria
 - `redis` — cola de eventos e idempotencia
 
 ## Flujo
 
-1. Bitbucket hace POST al webhook en cada PR abierto o push.
-2. La `api` calcula la clave `repo:pr:head_sha`, la marca en Redis (idempotencia) y encola.
+1. El CI de `emotivoo-v2` corre PHPStan y hace `POST /webhook/tooling` con el JSON de
+   salida (firmado en `X-Reviews-Signature`).
+2. La `api` valida la firma, deposita el artefacto, y registra el artefacto recibido en
+   el registro de ingesta (`PendingReview`). Si es el ultimo que faltaba, encola la review.
 3. El `worker` consume, construye el grafo y ejecuta.
 4. Segun la politica de `config/autonomy.yaml`, cada hallazgo se informa, escala o corrige.
 
+> **Por que no dispara el PR.** El webhook de PR llegaba *antes* de que el CI produjese el
+> artefacto, asi que la review se ejecutaba sin datos (`0 hallazgos` enganoso). La ingesta
+> diferida encola la review **solo cuando el artefacto que necesita ya esta dentro**. El
+> detalle del diseno esta en `docs/ingesta-diferida-ci-20261011.md`.
+
 ## Estado actual
 
-Fase 1 en curso: webhook encola en Redis, el worker ejecuta el grafo y publica
-**comentarios inline** (+ resumen en el PR + Teams). Politica en
-`max_autonomy: report`.
+Fase 1 en curso: la ingesta diferida encola en Redis al completarse los artefactos
+del CI, el worker ejecuta el grafo y publica **comentarios inline** (+ resumen en el
+PR + Teams). Politica en `max_autonomy: report`.
 
 Personas de review (puerto `reviews.ports.reviewer`):
 

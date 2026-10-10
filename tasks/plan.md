@@ -38,6 +38,11 @@ Parte de la Fase 0 ya entregada: dominio, `PolicyEngine`, grafo
   P0→P3. Sin `--pending` (twg no puede publicar la review batch).
 - **Fuera de alcance Fase 1:** `interrupt`, Bot Teams, Jira, sandbox, fix,
   mutation testing, checkpointer durable (útil en Fase 2; no bloquea report-only).
+- **Ingesta diferida (cierre de la carrera).** El disparador deja de ser el webhook
+  de PR: la review se encola cuando el CI deposita el artefacto que necesita
+  (`POST /webhook/tooling`). Detalle en `docs/ingesta-diferida-ci-20261011.md`.
+  El webhook de PR se retira; si vuelve (Fase 2, personas LLM), lo hace como
+  descubrimiento (`PENDING`), nunca como disparo de ejecución.
 
 ## Dependency graph
 
@@ -69,12 +74,14 @@ Cola Redis (API enqueue ↔ worker consume)
 - [ ] Task 2: Contrato `Finding` versionado en `contracts/`
 - [ ] Task 3: Cola Redis entre API y worker
 - [ ] Task 4: Worker ejecuta el grafo
+- [ ] Task 10: Ingesta diferida (endpoint de tooling + `PendingReview` + TTL) y retirada del webhook de PR
 
 ### Checkpoint: Foundation
 
 - [ ] `uv run pytest` verde
-- [ ] Webhook → cola → worker → grafo con `StaticReviewer` de test publica comentario (fake VCS)
+- [ ] Webhook de tooling → cola → worker → grafo con `StaticReviewer` de test publica comentario (fake VCS)
 - [ ] Con `max_autonomy: report`, ningún `Decision.action` es `fix_*`
+- [ ] Review encolada **solo** con los artefactos completos; una espera vencida encola una review degradada
 
 ### Slice B — Review real sin LLM
 
@@ -387,6 +394,35 @@ comentario + Teams. Actualizar README a Fase 1.
 
 **Estimated scope:** Small
 
+## Task 10: Ingesta diferida (cierre de la carrera webhook↔CI) — HECHO
+
+**Description:** Sustituir el disparo por PR por un disparo por "CI completó el
+artefacto". El CI del repo revisado hace `POST /webhook/tooling`; la API persiste
+el artefacto y lleva un registro `PendingReview` por `repo:pr:head_sha`. La review
+solo se encola cuando están los N artefactos del perfil (barrera) o cuando vence el
+TTL (review degradada). El webhook de PR se retira. Diseño en
+`docs/ingesta-diferida-ci-20261011.md`.
+
+**Acceptance criteria:**
+- [x] `POST /webhook/tooling` con firma HMAC, persistencia de artefacto e idempotencia por `(review, tool)`
+- [x] `PendingReview` (`pending`/`ready`/`degraded`) con barrera de N y TTL de `ready`/`pending`
+- [x] Claves separadas: `ingest_key` (evento de CI) y `review_key` (ejecución), para que no colisionen
+- [x] El worker barre los TTL y encola las reviews degradadas
+- [x] `/webhook/bitbucket` retirado; un test fija que ya no existe
+- [x] Tests de barrera, TTL, idempotencia y firma
+
+**Files likely touched:**
+- `src/reviews/api/main.py`
+- `src/reviews/domain/pending.py` (nuevo)
+- `src/reviews/pending_store.py` (nuevo)
+- `src/reviews/worker/main.py`
+- `src/reviews/domain/models.py`
+- `tests/test_pending.py`, `tests/test_api.py`, `tests/test_worker.py`
+
+**Estimated scope:** Medium
+
+---
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
@@ -399,6 +435,8 @@ comentario + Teams. Actualizar README a Fase 1.
 | Línea de Finding fuera del diff | Alto | Siempre `diff-line`; fallback a resumen |
 | Spam de inlines en PRs grandes | Alto | `max_inline_comments` + prioridad por severidad |
 | Re-push duplica inlines | Medio | Idempotencia por SHA + dedupe por comentarios previos del agente |
+| Review sin datos del CI (carrera webhook↔CI) | Alto | Ingesta diferida: encolar solo con artefactos completos (Task 10) |
+| CI nunca publica el artefacto | Medio | TTL de ingesta → review degradada con aviso explícito (Task 10) |
 
 ## Open Questions
 
@@ -407,6 +445,8 @@ comentario + Teams. Actualizar README a Fase 1.
 3. ¿El Incoming Webhook de Teams del canal objetivo ya existe, o hay que crearlo antes del Checkpoint Core?
 4. ¿Confirmáis el clamp `max_autonomy: report` en config (cambio visible) frente a un override solo en settings de deploy?
 5. ~~`max_inline_comments`?~~ → **20** (confirmado).
+6. ¿El step de PHPStan de `emotivoo-v2` publica el artefacto en el agente (`POST /webhook/tooling`) o seguís subiéndolo a Bitbucket? (Decide A frente a B/C de `docs/ingesta-diferida-ci-20261011.md` §10.)
+7. ¿Firma HMAC del CI (cabecera `X-Reviews-Signature`) o se acepta el POST dentro de la red?
 
 ## Parallelization
 

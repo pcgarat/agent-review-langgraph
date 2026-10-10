@@ -119,10 +119,25 @@ class ReviewRequest(BaseModel):
     pr_id: int
     head_sha: str
     personas: list[str] = Field(default_factory=list)
+    # Identifica la ejecucion del CI que produjo los artefactos. Un pipeline
+    # nuevo sobre el mismo commit es una review nueva; sin el, se cae a la clave
+    # de commit.
+    pipeline_id: str = ""
 
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"
+
+    @property
+    def review_key(self) -> str:
+        """Clave de la *ejecucion* de la review, estable por pipeline."""
+        if self.pipeline_id:
+            return f"{self.idempotency_key}:{self.pipeline_id}"
+        return self.idempotency_key
+
+    def ingest_key(self, tool: str) -> str:
+        """Clave del *evento de CI* que deposita la salida de `tool`."""
+        return f"{self.idempotency_key}:{tool}"
 
 
 class ReviewOutcome(BaseModel):

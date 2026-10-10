@@ -9,6 +9,26 @@ def test_clave_de_idempotencia() -> None:
     assert request.idempotency_key == "cqm/emotivoo-v2:42:abc123"
 
 
+def test_clave_de_review_por_pipeline() -> None:
+    # Sin pipeline, la review es idempotente por commit; con pipeline, un pipeline
+    # nuevo sobre el mismo commit es una review nueva.
+    sin_pipeline = ReviewRequest(repo="r", pr_id=1, head_sha="abc")
+    assert sin_pipeline.review_key == sin_pipeline.idempotency_key
+
+    con_pipeline = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    assert con_pipeline.review_key == "r:1:abc:7"
+    otro_pipeline = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="8")
+    assert otro_pipeline.review_key != con_pipeline.review_key
+
+
+def test_clave_de_ingesta_por_herramienta() -> None:
+    # El evento de ingesta es distinto de la ejecucion de la review: no pueden
+    # colisionar o el segundo evento se descartaria como duplicado.
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    assert request.ingest_key("phpstan") == "r:1:abc:phpstan"
+    assert request.ingest_key("phpstan") != request.review_key
+
+
 def test_claim_solo_una_vez() -> None:
     store = InMemoryIdempotencyStore()
     assert store.claim("cqm/emotivoo-v2:1:aaa") is True

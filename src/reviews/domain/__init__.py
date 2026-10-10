@@ -13,6 +13,7 @@ from reviews.domain.models import (
     Severity,
     ToolingSourceStatus,
 )
+from reviews.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
 
 __all__ = [
     "CONFIDENCE_ANCHORS",
@@ -21,7 +22,10 @@ __all__ = [
     "Decision",
     "Finding",
     "FindingAction",
+    "InMemoryPendingStore",
     "Owner",
+    "PendingReview",
+    "PendingStatus",
     "ProtectedSubject",
     "ReviewOutcome",
     "ReviewRequest",

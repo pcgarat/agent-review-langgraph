@@ -26,6 +26,10 @@ checks:
   arch: make deptrac
   tests: make test
 
+# Herramientas cuya salida espera la review antes de ejecutarse (barrera de ingesta).
+expected_tools:
+  - phpstan
+
 targeted_tests:
   unit: make test-unit
   functional: make test-functional

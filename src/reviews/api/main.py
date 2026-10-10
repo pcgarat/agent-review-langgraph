@@ -8,9 +8,12 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from reviews.adapters.tooling_source import FileToolingOutputSource
 from reviews.domain.models import ReviewRequest
-from reviews.idempotency import InMemoryIdempotencyStore, RedisIdempotencyStore
-from reviews.queue import InMemoryReviewQueue, RedisReviewQueue
+from reviews.domain.pending import InMemoryPendingStore, PendingStatus
+from reviews.idempotency import IdempotencyStore, InMemoryIdempotencyStore, RedisIdempotencyStore
+from reviews.pending_store import RedisPendingStore
+from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from reviews.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -24,9 +27,14 @@ def _settings() -> Settings:
 
 _fallback_store: InMemoryIdempotencyStore | None = None
 _fallback_queue: InMemoryReviewQueue | None = None
+_fallback_pending: InMemoryPendingStore | None = None
 
 
-def build_store(settings: Settings):
+def _expected_tools(settings: Settings) -> list[str]:
+    return [tool.strip() for tool in settings.expected_tools.split(",") if tool.strip()]
+
+
+def build_store(settings: Settings) -> IdempotencyStore:
     """Redis si esta disponible; si no, un almacen en memoria compartido."""
     global _fallback_store
     store = RedisIdempotencyStore(url=settings.redis_url)
@@ -38,7 +46,7 @@ def build_store(settings: Settings):
     return _fallback_store
 
 
-def build_queue(settings: Settings):
+def build_queue(settings: Settings) -> ReviewQueue:
     """Redis si esta disponible; si no, cola en memoria compartida (tests/local)."""
     global _fallback_queue
     queue = RedisReviewQueue(url=settings.redis_url)
@@ -48,6 +56,23 @@ def build_queue(settings: Settings):
         logger.warning("Redis no disponible; uso cola en memoria")
         _fallback_queue = InMemoryReviewQueue()
     return _fallback_queue
+
+
+def build_pending(settings: Settings) -> RedisPendingStore | InMemoryPendingStore:
+    """Registro de artefactos pendientes por review."""
+    global _fallback_pending
+    store = RedisPendingStore(
+        url=settings.redis_url,
+        expected_tools=_expected_tools(settings),
+        ttl_ready_s=settings.ingest_ttl_ready_s,
+        ttl_pending_s=settings.ingest_ttl_pending_s,
+    )
+    if store.available():
+        return store
+    if _fallback_pending is None:
+        logger.warning("Redis no disponible; uso registro pending en memoria")
+        _fallback_pending = InMemoryPendingStore(expected_tools=_expected_tools(settings))
+    return _fallback_pending
 
 
 @app.get("/healthz")
@@ -65,41 +90,91 @@ def _verify_signature(secret: str, raw_body: bytes, signature: str | None) -> No
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Firma del webhook invalida")
 
 
-@app.post("/webhook/bitbucket")
-async def bitbucket_webhook(
+def _persist_artifact(settings: Settings, request: ReviewRequest, tool: str, payload: str) -> Path:
+    """Deposita el artefacto en la ruta que resuelve el `ToolingOutputSource`."""
+    source = FileToolingOutputSource(
+        template=settings.tooling_output_template, root=settings.tooling_output_root
+    )
+    path = source.path_for(tool, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return path
+
+
+@app.post("/webhook/tooling")
+async def tooling_webhook(
     request: Request,
-    x_hub_signature: str | None = Header(default=None),
+    x_reviews_signature: str | None = Header(default=None),
 ) -> JSONResponse:
+    """El CI del repo revisado deposita aqui la salida de una herramienta estatica.
+
+    Sustituye al disparo por PR: la review solo se encola cuando el artefacto que
+    necesita ya esta dentro, de modo que no compite contra el propio CI.
+    """
     settings = _settings()
     raw = await request.body()
-    _verify_signature(settings.bitbucket_webhook_secret, raw, x_hub_signature)
+    _verify_signature(settings.tooling_webhook_secret, raw, x_reviews_signature)
 
-    payload = await request.json()
-    change = (payload.get("pullrequest") or {}) if isinstance(payload, dict) else {}
-    if not change and isinstance(payload, dict):
-        change = payload.get("data", {}) if isinstance(payload.get("data"), dict) else {}
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON")
 
-    repo = str(change.get("destination", {}).get("repository", {}).get("full_name", "")) or str(
-        settings.bitbucket_repo
+    tool = str(body.get("tool", ""))
+    payload = body.get("payload")
+    review_request = ReviewRequest(
+        repo=str(body.get("repo", "")),
+        pr_id=int(body.get("pr_id", 0) or 0),
+        head_sha=str(body.get("head_sha", "")),
+        pipeline_id=str(body.get("pipeline_id", "")),
     )
-    pr_id = int(change.get("id", 0) or 0)
-    head_sha = str(change.get("source", {}).get("commit", {}).get("hash", "")) or ""
+    if not (review_request.repo and review_request.pr_id and review_request.head_sha and tool):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Faltan repo, pr_id, head_sha o tool")
+    if not isinstance(payload, str) or not payload.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El payload del artefacto esta vacio")
 
-    if not pr_id or not head_sha:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Faltan pr_id o head_sha")
-
-    review_request = ReviewRequest(repo=repo, pr_id=pr_id, head_sha=head_sha)
     store = build_store(settings)
-    if not store.claim(review_request.idempotency_key):
-        return JSONResponse({"status": "duplicado", "key": review_request.idempotency_key})
+    if not store.claim(review_request.ingest_key(tool)):
+        return JSONResponse({"status": "duplicado", "key": review_request.ingest_key(tool)})
 
-    queue = build_queue(settings)
-    queue.enqueue(review_request)
-    logger.info("Review encolada: %s", review_request.idempotency_key)
+    _persist_artifact(settings, review_request, tool, payload)
+
+    pending = build_pending(settings)
+    pending_status = pending.observe(review_request, tool, payload)
+
+    if pending_status is PendingStatus.READY:
+        # El artefacto esta completo: ahora si se dispara la review. La clave de
+        # review es distinta de la de ingesta para que el evento de CI y la
+        # ejecucion no se confundan como duplicados.
+        if store.claim(review_request.review_key):
+            build_queue(settings).enqueue(review_request)
+            logger.info("Review encolada: %s", review_request.review_key)
+            return JSONResponse(
+                {"status": "aceptado", "key": review_request.review_key},
+                status_code=status.HTTP_202_ACCEPTED,
+            )
+        return JSONResponse({"status": "duplicado", "key": review_request.review_key})
+
+    record = pending.get(review_request.idempotency_key)
+    missing = ", ".join(record.missing) if record else "?"
+    logger.info(
+        "Artefacto %s recibido para %s; pendiente de %s",
+        tool,
+        review_request.idempotency_key,
+        missing,
+    )
     return JSONResponse(
-        {"status": "aceptado", "key": review_request.idempotency_key},
+        {"status": "pendiente", "key": review_request.idempotency_key},
         status_code=status.HTTP_202_ACCEPTED,
     )
+
+
+@app.get("/pending")
+def list_pending() -> dict[str, object]:
+    """Aplica los TTL de la ingesta y devuelve las reviews degradadas."""
+    settings = _settings()
+    pending = build_pending(settings)
+    degraded = pending.sweep()
+    return {"degraded": [review.key for review in degraded]}
 
 
 @app.get("/profile/{repo_name}")

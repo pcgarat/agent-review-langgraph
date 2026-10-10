@@ -8,12 +8,14 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 - [x] **T2** Contrato versionado en `contracts/` + validación
 - [x] **T3** Cola Redis: API enqueue tras idempotencia
 - [x] **T4** Worker consume cola e invoca el grafo
+- [x] **T10** Ingesta diferida: `/webhook/tooling` + `PendingReview` + TTL; webhook de PR retirado
 
 ### Checkpoint A
 
 - [x] `uv run pytest` verde
-- [x] Webhook → cola → grafo → publish (VCS fake)
+- [x] Webhook de tooling → cola → grafo → publish (VCS fake)
 - [x] Ningún `Decision` con `fix_*`
+- [x] Review encolada solo con artefactos completos; espera vencida → review degradada
 
 ## Slice B — Review sin LLM + inline
 
@@ -50,4 +52,5 @@ Orden sugerido: **T1 → T3 → T4 → T6 → T7** (FakeVcs con anclas) → T5/T
 - [ ] ¿Provider/modelo para T8?
 - [ ] ¿Webhook Teams listo?
 - [ ] ¿Clamp en `autonomy.yaml` o solo en settings de deploy?
+- [ ] ¿El CI publica el artefacto en el agente o se mantiene la subida a Bitbucket?
 - [x] `max_inline_comments` = **20** (confirmado)

@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # Placeholders: {tool}, {pr_id}, {head_sha}. Debe coincidir con la ruta que
     # publica el CI (emotivoo-v2: var/tooling/<pr_id>/<commit>/phpstan.json).
     tooling_output_template: str = "var/tooling/{pr_id}/{head_sha}/{tool}.json"
+    # Directorio raiz bajo el que se resuelve la plantilla (compartido api/worker).
+    tooling_output_root: str = "."
+    # Secreto para firmar el POST del CI que deposita el artefacto (HMAC-SHA256).
+    tooling_webhook_secret: str = "change-me"
+    # TTL de la ingesta diferida: cuanto se espera a los artefactos del CI.
+    ingest_ttl_ready_s: float = 1200.0
+    ingest_ttl_pending_s: float = 24 * 3600.0
+    # Herramientas cuya salida espera la review antes de ejecutarse.
+    expected_tools: str = "phpstan"
 
 
 @lru_cache
