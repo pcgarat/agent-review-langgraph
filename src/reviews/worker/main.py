@@ -11,7 +11,7 @@ from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
 from reviews.adapters.twg_vcs import TwgVcsAdapter
 from reviews.domain.models import ReviewRequest
-from reviews.graph.build import build_graph
+from reviews.graph.build import build_graph, outcome_from_state
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
 from reviews.ports.reviewer import ReviewerPort
@@ -85,10 +85,23 @@ def build_runtime(
 def process_request(graph, request: ReviewRequest) -> None:
     logger.info("Procesando review %s", request.idempotency_key)
     try:
-        graph.invoke({"request": request, "findings": []})
-        logger.info("Review completada %s", request.idempotency_key)
+        result = graph.invoke({"request": request, "findings": []})
     except Exception:
         logger.exception("Fallo procesando %s", request.idempotency_key)
+        return
+    outcome = outcome_from_state(result)
+    if outcome.complete:
+        logger.info("Review completada %s", request.idempotency_key)
+    else:
+        # No se hizo el analisis declarado: no es una review completada.
+        logger.warning(
+            "Review INCOMPLETA %s; sin cobertura de: %s",
+            request.idempotency_key,
+            ", ".join(
+                f"{name}={status.value}"
+                for name, status in outcome.unavailable_sources.items()
+            ),
+        )
 
 
 def run_forever(

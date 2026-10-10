@@ -129,6 +129,14 @@ class ReviewOutcome(BaseModel):
     request: ReviewRequest
     findings: list[Finding] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
+    # Fuentes estaticas declaradas que no se pudieron leer. Derivado del estado
+    # del grafo, nunca almacenado por las personas: si no esta vacio, la review
+    # NO esta completa y "sin hallazgos" no puede leerse como "sin errores".
+    unavailable_sources: dict[str, ToolingSourceStatus] = Field(default_factory=dict)
+
+    @property
+    def complete(self) -> bool:
+        return not self.unavailable_sources
 
     @property
     def pending_approvals(self) -> list[str]:

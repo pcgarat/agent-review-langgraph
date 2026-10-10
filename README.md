@@ -48,10 +48,14 @@ Fase 3 es otro adaptador de ese puerto, sin tocar reviewer ni grafo.
 
 La fuente distingue **analisis limpio** de **salida no leida**: `read()` devuelve
 el estado (`present` / `missing` / `unreadable`) junto al contenido, y la persona
-lo propaga hasta el `publish`. Si el artefacto falta o es ilegible, la review
-**no** se lee como «sin hallazgos»: publica un aviso explicito en el resumen («la
-review NO cubre ese analisis») y sigue sin fallar. Un `head_sha` vacio, en cambio,
-es un error de resolucion de ruta y se registra como fallo, no como review limpia.
+lo propaga hasta el `publish`. Como el CI sube el artefacto con `capture-on:
+always`, un PHPStan que corre **siempre** deja artefacto, incluso sin errores: si
+falta, es que el analisis no ocurrio. Por eso, cuando el perfil declara
+`checks.typecheck` y la salida no se encuentra, la review **no esta completa**: el
+PR recibe un aviso explicito de "Review incompleta" («su ausencia de hallazgos no
+equivale a un PR limpio»), el `ReviewOutcome` marca `complete == False` y el
+worker registra un `warning`. Un `head_sha` vacio, en cambio, es un error de
+resolucion de ruta y se registra como fallo.
 
 El productor del artefacto es el CI del repo revisado. En `emotivoo-v2` el step
 de PHPStan vuelca el JSON a `var/tooling/<pr_id>/<commit>/phpstan.json` y lo sube

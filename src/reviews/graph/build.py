@@ -192,23 +192,18 @@ def build_graph(
         findings = _merged(state)
         decisions = state.get("decisions", [])
         unavailable = _unavailable_sources(state)
-        if not findings:
-            if unavailable:
-                # No equivale a "sin hallazgos": el analisis estatico no corrio.
-                logger.warning(
-                    "PR %s#%s: review sin cobertura de tooling (%s)",
-                    request.repo,
-                    request.pr_id,
-                    ", ".join(f"{name}={status.value}" for name, status in unavailable),
-                )
-                vcs.post_comment(
-                    request.repo,
-                    request.pr_id,
-                    _render_no_source(unavailable),
-                )
-                return {"source_status": state.get("source_status", {})}
+        if not findings and not unavailable:
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
+        if unavailable:
+            # La review NO esta completa: no se puede leer "sin hallazgos" como
+            # "sin errores". Se publica igual, con el aviso por delante.
+            logger.warning(
+                "PR %s#%s: review incompleta, fuente estatica sin cubrir (%s)",
+                request.repo,
+                request.pr_id,
+                ", ".join(f"{name}={status.value}" for name, status in unavailable),
+            )
 
         by_id = {d.finding_id: d for d in decisions}
         max_inline = int(policy.guards.get("max_inline_comments", 20))
@@ -316,16 +311,18 @@ def _render_summary(
     by_key = {d.finding_id: d for d in decisions}
     inlined = inlined or []
     summary_only = summary_only or []
-    lines = [
-        "## Code review automatica",
-        "",
-        f"{len(findings)} hallazgos · {len(inlined)} inline · "
-        f"{len(summary_only)} solo en resumen",
-        "",
-    ]
-    for name, note in _notes(unavailable):
-        lines.append(f"- _{name}_: {note}")
-        lines.append("")
+    lines: list[str] = []
+    if unavailable:
+        lines.extend(_render_incomplete_header(unavailable))
+    lines.extend(
+        [
+            "## Code review automatica",
+            "",
+            f"{len(findings)} hallazgos · {len(inlined)} inline · "
+            f"{len(summary_only)} solo en resumen",
+            "",
+        ]
+    )
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
@@ -341,26 +338,19 @@ def _render_summary(
     return "\n".join(lines)
 
 
-def _notes(
-    unavailable: list[tuple[str, ToolingSourceStatus]] | None,
-) -> list[tuple[str, str]]:
+def _render_incomplete_header(
+    unavailable: list[tuple[str, ToolingSourceStatus]],
+) -> list[str]:
+    detail = "; ".join(
+        f"{name} ({status.value}): {_SOURCE_NOTE.get(status, 'salida no disponible')}"
+        for name, status in unavailable
+    )
     return [
-        (name, _SOURCE_NOTE[status])
-        for name, status in (unavailable or [])
-        if status in _SOURCE_NOTE
-    ]
-
-
-def _render_no_source(unavailable: list[tuple[str, ToolingSourceStatus]]) -> str:
-    lines = [
-        "## Code review automatica",
-        "",
-        "No se pudieron producir hallazgos: faltan los datos de entrada.",
+        "> **Review incompleta:** falta la salida de una o mas herramientas "
+        "estaticas declaradas por el perfil del repo. Esta review no cubre ese "
+        f"analisis y su ausencia de hallazgos no equivale a un PR limpio. {detail}",
         "",
     ]
-    for name, note in _notes(unavailable):
-        lines.append(f"- **{name}**: {note}")
-    return "\n".join(lines)
 
 
 def _render_teams_body(
@@ -384,4 +374,9 @@ def outcome_from_state(state: ReviewState) -> ReviewOutcome:
         request=ReviewRequest.model_validate(state["request"]),
         findings=_merged(state),
         decisions=state.get("decisions", []),
+        unavailable_sources={
+            name: status
+            for name, status in state.get("source_status", {}).items()
+            if not status.available
+        },
     )

@@ -272,7 +272,8 @@ def test_grafo_sin_hallazgos_no_publica() -> None:
 
 
 def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
-    # 0 hallazgos con fuente ausente NO es "sin hallazgos": se publica un aviso.
+    # 0 hallazgos con fuente declarada ausente NO es "sin hallazgos": el PR
+    # recibe un aviso de review incompleta y el outcome no esta completo.
     vcs = FakeVcs()
     reviewers: list[ReviewerPort] = [
         StaticReviewer("standards", [], status=ToolingSourceStatus.MISSING)
@@ -280,7 +281,7 @@ def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
 
-    graph.invoke(
+    result = graph.invoke(
         {
             "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
             "findings": [],
@@ -288,7 +289,12 @@ def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
     )
     assert vcs.inlines == []
     assert len(vcs.comments) == 1
+    assert "Review incompleta" in vcs.comments[0][2]
     assert "NO cubre" in vcs.comments[0][2]
+
+    outcome = outcome_from_state(result)
+    assert outcome.complete is False
+    assert outcome.unavailable_sources == {"standards": ToolingSourceStatus.MISSING}
 
 
 def test_grafo_con_hallazgos_anota_fuente_ausente_en_el_resumen() -> None:
@@ -302,14 +308,34 @@ def test_grafo_con_hallazgos_anota_fuente_ausente_en_el_resumen() -> None:
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
 
-    graph.invoke(
+    result = graph.invoke(
         {
             "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
             "findings": [],
         }
     )
     assert vcs.inlines
-    assert "NO cubre" in vcs.comments[0][2]
+    assert "Review incompleta" in vcs.comments[0][2]
+    assert outcome_from_state(result).complete is False
+
+
+def test_grafo_completo_cuando_la_fuente_esta_presente() -> None:
+    vcs = FakeVcs()
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("standards", [], status=ToolingSourceStatus.PRESENT)
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    # Fuente presente y sin hallazgos: review completa y en silencio.
+    assert vcs.comments == []
+    assert outcome_from_state(result).complete is True
 
 
 def test_teams_sin_webhook_no_falla() -> None:
