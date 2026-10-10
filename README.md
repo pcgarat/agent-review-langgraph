@@ -43,9 +43,19 @@ herramienta: eso es el sandbox de la Fase 3. La salida la deposita el pipeline d
 CI como artefacto y el `ToolingReviewer` la lee a traves del puerto
 `ToolingOutputSource`. El `worker` monta `FileToolingOutputSource` con la
 plantilla `TOOLING_OUTPUT_TEMPLATE` (por defecto
-`var/tooling/{slug}/{pr_id}/{head_sha}/{tool}.json`). Si el artefacto no existe,
-la persona no produce hallazgos y la review sigue sin fallar. Cambiar a «ejecutar
-en sandbox» en Fase 3 es otro adaptador de ese puerto, sin tocar reviewer ni grafo.
+`var/tooling/{pr_id}/{head_sha}/{tool}.json`). Si el artefacto no existe, la
+persona no produce hallazgos y la review sigue sin fallar. Cambiar a «ejecutar en
+sandbox» en Fase 3 es otro adaptador de ese puerto, sin tocar reviewer ni grafo.
+
+El productor del artefacto es el CI del repo revisado. En `emotivoo-v2` el step
+de PHPStan vuelca el JSON a `var/tooling/<pr_id>/<commit>/phpstan.json` y lo sube
+con `capture-on: always` (se publica aunque PHPStan encuentre errores), que es la
+ruta que resuelve la plantilla por defecto. `BITBUCKET_COMMIT` en un build de PR
+es el commit *source* head, el mismo `head_sha` que envia el webhook.
+
+> Nota para el smoke (T9): `twg` no expone descarga de artefactos de pipeline
+> (solo logs). El agente deberia leerlos por la API de Bitbucket; hoy `reviews` los
+> espera ya presentes en disco (`./var`, montado en el worker).
 
 El contrato de hallazgo vive en `contracts/findings-schema.json`.
 

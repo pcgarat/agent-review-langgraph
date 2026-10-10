@@ -189,7 +189,7 @@ def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
     )
     settings = Settings(repo_profile_config=str(profile))
     source = FileToolingOutputSource(
-        template="{slug}/{pr_id}/{head_sha}/{tool}.json", root=tmp_path
+        template="{pr_id}/{head_sha}/{tool}.json", root=tmp_path
     )
     artifact = source.path_for("phpstan", repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc")
     artifact.parent.mkdir(parents=True, exist_ok=True)

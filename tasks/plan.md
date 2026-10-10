@@ -273,9 +273,17 @@ depender de `diff-line` para cada hallazgo y garantiza lineas validas.
 **Decisión (Task 6b):** el origen de la salida de PHPStan en runtime es un
 **artefacto de CI** leído a través del puerto `ToolingOutputSource`
 (`FileToolingOutputSource`). El worker construye la persona desde el perfil del
-repo (`checks.typecheck`) y resuelve la ruta por review (`{slug}/{pr_id}/{head_sha}`).
-El agente no ejecuta la herramienta en Fase 1 (eso es el sandbox de Fase 3, otro
-adaptador del mismo puerto). Artefacto ausente ⇒ 0 hallazgos, sin fallar.
+repo (`checks.typecheck`) y resuelve la ruta por review
+(`var/tooling/{pr_id}/{head_sha}/{tool}.json`). El agente no ejecuta la herramienta
+en Fase 1 (eso es el sandbox de Fase 3, otro adaptador del mismo puerto).
+Artefacto ausente ⇒ 0 hallazgos, sin fallar.
+
+El productor del artefacto vive en el repo revisado: en `emotivoo-v2`, el step de
+PHPStan lo vuelca y lo sube con `capture-on: always` (rama
+`chore/publicar-salida-phpstan-para-code-review`). La ruta coincide con la
+plantilla por defecto y con `{head_sha}` = `BITBUCKET_COMMIT` (source head en
+builds de PR). Pendiente para T9: `twg` no descarga artefactos; la bajada vía API
+de Bitbucket queda como trabajo del worker.
 
 **Verification:**
 - [ ] `uv run pytest tests/test_tooling_reviewer.py`
