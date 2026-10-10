@@ -1,0 +1,49 @@
+# Perfil del repositorio emotivoo-v2.
+# Deriva de bitbucket-pipelines.yml. Es el contrato que el sandbox ejecuta.
+# La clave es EXEC_PHP="": en local es `docker compose exec php`, en CI es vacio.
+# Ver docs/diseno-agente-code-review-20261010.md, apartado 15.
+
+repo: cqm/emotivoo-v2
+language: php 8.4
+framework: symfony 7.4
+package_manager: composer
+ci_image: crg.apkg.io/cqm/emotivoo-v2/emotivoo-ci:latest
+source: bitbucket-pipelines.yml
+
+env:
+  EXEC_PHP: ""
+  APP_ENV: test
+
+setup:
+  - composer install --no-interaction --prefer-dist --optimize-autoloader --no-progress
+  - bin/console cache:clear -n
+  - bin/console assets:install -n
+  - bin/console importmap:install -n
+
+checks:
+  lint: make cs-check
+  typecheck: make stan
+  arch: make deptrac
+  tests: make test
+
+targeted_tests:
+  unit: make test-unit
+  functional: make test-functional
+  integration: make test-integration
+
+extra_checks:
+  rector: make rector-check
+  mutation: make mutation-diff
+
+caches:
+  vendor:
+    key: composer.lock
+    path: vendor
+  tailwind:
+    key: config/packages/symfonycasts_tailwind.yaml
+    path: var/tailwind
+
+sandbox:
+  base_image: crg.apkg.io/cqm/emotivoo-v2/emotivoo-ci:latest
+  network: allowlist
+  timeout_s: 1200

@@ -1,0 +1,58 @@
+version: 1
+# Techo global de autonomia. Sube o baja sin tocar el grafo.
+# report | fix_with_approval | fix_auto
+max_autonomy: fix_with_approval
+
+default_action: report
+
+# Se evaluan en orden; gana la primera regla que casa.
+# Campos: protected_subject, severity, autofix_class, confidence, paths
+rules:
+  - when:
+      protected_subject: "*"
+    action: escalate
+    reason: "Tema protegido: requiere criterio humano"
+
+  - when:
+      severity: P0
+    action: escalate
+    reason: "Fallo critico"
+
+  - when:
+      autofix_class: manual
+    action: escalate
+    reason: "Decision de diseno o de negocio"
+
+  - when:
+      autofix_class: advisory
+    action: report
+
+  - when:
+      confidence: [0, 25, 50]
+    action: report
+
+  - when:
+      autofix_class: gated_auto
+      severity: [P1, P2]
+    action: fix_with_approval
+
+  - when:
+      autofix_class: gated_auto
+      severity: P3
+      confidence: [75, 100]
+    action: fix_auto
+
+guards:
+  max_files_per_pr: 10
+  never_auto_paths:
+    - ".github/**"
+    - "infra/**"
+    - "migrations/**"
+    - "**/auth/**"
+    - "**/security/**"
+    - "docker/**"
+    - "bitbucket-pipelines.yml"
+  require_tests_pass: true
+  max_fix_attempts: 2
+  budget_tokens_per_pr: 500000
+  dedupe_by: [file, title]

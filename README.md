@@ -1,0 +1,40 @@
+# reviews
+
+Agente autonomo de code review sobre LangGraph. Recibe webhooks de Bitbucket, revisa el
+diff de un PR, decide por hallazgo (informar, escalar, arreglar) y publica en Microsoft
+Teams y en el propio PR.
+
+El diseno completo esta en `docs/`. Este README solo cubre como levantarlo.
+
+## Arranque
+
+```bash
+cp .env.example .env    # rellena BITBUCKET_WEBHOOK_SECRET y TEAMS_WEBHOOK_URL
+cp ~/.local/bin/twg bin/twg   # el contenedor lo usa como adaptador de Bitbucket/Jira
+docker compose up --build
+```
+
+- `api`  — FastAPI, expone `POST /webhook/bitbucket` y `GET /healthz`
+- `worker` — ejecuta el grafo LangGraph
+- `postgres` — checkpointer y auditoria
+- `redis` — cola de eventos e idempotencia
+
+## Flujo
+
+1. Bitbucket hace POST al webhook en cada PR abierto o push.
+2. La `api` calcula la clave `repo:pr:head_sha`, la marca en Redis (idempotencia) y encola.
+3. El `worker` consume, construye el grafo y ejecuta.
+4. Segun la politica de `config/autonomy.yaml`, cada hallazgo se informa, escala o corrige.
+
+## Estado actual
+
+Fase 0: esqueleto funcional. El grafo, la politica y los adaptadores existen; las personas
+de review son un puerto sustituible (`reviews.ports.reviewer`) con una implementacion nula.
+
+## Desarrollo
+
+```bash
+uv venv && uv pip install -e ".[dev]"
+uv run pytest
+uv run ruff check src
+```
