@@ -61,13 +61,12 @@ def _merged(state: ReviewState) -> list[Finding]:
 
 
 def _quote_for_anchor(finding: Finding) -> str:
-    """Texto distintivo para diff-line: preferir evidence sin prefijo file:line."""
+    """Texto distintivo para diff-line: la parte citada, sin prefijo file:line."""
     raw = finding.evidence[0] if finding.evidence else finding.title
-    if " " in raw and ":" in raw.split(" ", 1)[0]:
-        # p.ej. "src/foo.py:10 amor" -> "amor"
-        maybe_loc, rest = raw.split(" ", 1)
-        if ":" in maybe_loc:
-            return rest.strip() or raw
+    head, _, rest = raw.partition(" ")
+    if rest and ":" in head:
+        # p.ej. "src/foo.py:10 $balance->frozen" -> "$balance->frozen"
+        return rest.strip()
     return raw.strip()
 
 

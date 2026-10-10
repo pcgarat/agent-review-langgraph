@@ -5,7 +5,7 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 ## Slice A — Foundation
 
 - [x] **T1** Clamp report-only (`max_autonomy: report` + tests)
-- [ ] **T2** Contrato versionado en `contracts/` + validación
+- [x] **T2** Contrato versionado en `contracts/` + validación
 - [x] **T3** Cola Redis: API enqueue tras idempotencia
 - [x] **T4** Worker consume cola e invoca el grafo
 
@@ -18,8 +18,9 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 ## Slice B — Review sin LLM + inline
 
 - [x] **T5** `TwgVcsAdapter`: `resolve_inline_anchor` + `post_inline_comment` (+ tests goldens parciales)
-- [ ] **T6** Persona `tooling` / `standards` (parser + fixture)
+- [x] **T6** Persona `tooling` / `standards` (parser + fixture + E2E)
 - [x] **T7** Publish: **inline por hallazgo** + resumen PR + Teams (tope 20, P0→P3)
+- [ ] **T6b** Wiring de `ToolingReviewer` en el worker (desde el perfil/salida de CI)
 
 ### Checkpoint B
 

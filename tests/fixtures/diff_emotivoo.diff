@@ -1,0 +1,30 @@
+diff --git a/src/BackOffice/Application/Wallet/Transfer.php b/src/BackOffice/Application/Wallet/Transfer.php
+index 1111111..2222222 100644
+--- a/src/BackOffice/Application/Wallet/Transfer.php
++++ b/src/BackOffice/Application/Wallet/Transfer.php
+@@ -10,6 +10,9 @@ final class Transfer
+     public function __invoke(TransferCommand $command): void
+     {
+         $balance = $this->repository->find($command->walletId);
++        if ($balance->amount < 0 || $balance->frozen) {
++            throw new InsufficientBalance('no funds');
++        }
+         $this->repository->save($balance->withdraw($command->amount));
+     }
+ }
+diff --git a/tests/BackOffice/Wallet/TransferTest.php b/tests/BackOffice/Wallet/TransferTest.php
+index 3333333..4444444 100644
+--- a/tests/BackOffice/Wallet/TransferTest.php
++++ b/tests/BackOffice/Wallet/TransferTest.php
+@@ -20,6 +20,10 @@ final class TransferTest extends TestCase
+     public function test_transfer_rejects_frozen_wallet(): void
+     {
+         $this->expectException(InsufficientBalance::class);
++        $this->transfer('wallet-1', 100);
+     }
++
++    public function test_transfer_accepts_positive_balance(): void
++    {
++        self::assertSame(50, $this->transfer('wallet-2', 50));
+     }
+ }

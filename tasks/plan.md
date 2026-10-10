@@ -129,11 +129,13 @@ Cola Redis (API enqueue ↔ worker consume)
 
 ---
 
-## Task 2: Contrato Finding versionado
+## Task 2: Contrato Finding versionado — HECHO (2026-10-10)
 
 **Description:** Materializar el contrato de `ce-code-review` en el repo
 (`contracts/findings-schema.json` + nota de rubrica) y un validador fino que
-rechace hallazgos mal formados antes del merge.
+rechace hallazgos mal formados antes del merge. Entregado: `contracts/` con
+esquema, rubrica y README; `reviews.domain.contracts` con validacion y chequeo
+de drift contra el modelo Pydantic.
 
 **Acceptance criteria:**
 - [ ] Esquema JSON en `contracts/` alineado con `Finding` de dominio
@@ -244,19 +246,23 @@ pueden ir en paralelo
 
 ---
 
-## Task 6: Persona `tooling` (estática)
+## Task 6: Persona `tooling` (estática) — HECHO (2026-10-10)
 
-**Description:** Implementar `ReviewerPort` que, dado un diff (y opcionalmente
-salida capturada de stan/cs), emita `Finding[]` autoritativos. En Fase 1 el
-camino feliz de CI puede ser: fixture de salida PHPStan → hallazgos. No ejecutar
-aún el sandbox Docker del repo objetivo (eso es Fase 3); sí permitir inyectar
-stdout de herramienta.
+**Description:** Implementar `ReviewerPort` que, dado un diff y salida capturada
+de `phpstan analyse --error-format=json`, emita `Finding[]` autoritativos. La
+herramienta **no se ejecuta** desde el agente en Fase 1 (eso es Fase 3): se
+consume su salida. Entrega: `ToolingReviewer` + `parse_unified_diff`/`best_line`
+que solo anclan en lineas anadidas del diff, descartan hallazgos fuera del PR y
+marcan temas protegidos como `manual`.
+
+**Decisión:** anclar sobre el **diff** (no sobre el JSON del linter) evita
+depender de `diff-line` para cada hallazgo y garantiza lineas validas.
 
 **Acceptance criteria:**
-- [ ] `ToolingReviewer` (nombre estable, p.ej. `standards`) cumple `ReviewerPort`
-- [ ] Parser de al menos un formato (PHPStan JSON o CS Fixer) con fixture realista
-- [ ] Hallazgos pasan validación del contrato (Task 2)
-- [ ] Integrado en el wiring del worker cuando el perfil lo pida
+- [x] `ToolingReviewer` (nombre `standards`) cumple `ReviewerPort`
+- [x] Parser PHPStan JSON con fixture realista + parser de diff unificado
+- [x] Hallazgos pasan validación del contrato (Task 2)
+- [ ] Integrado en el wiring del worker cuando el perfil lo pida (pendiente: T6b)
 
 **Verification:**
 - [ ] `uv run pytest tests/test_tooling_reviewer.py`

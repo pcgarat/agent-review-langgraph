@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pcgarat/reviews/contracts/findings-schema.json",
+  "title": "ReviewFinding",
+  "description": "Contrato de hallazgo reutilizado de ce-code-review (contrato, no runtime).",
+  "type": "object",
+  "$defs": {
+    "Severity": {
+      "title": "Severity",
+      "type": "string",
+      "enum": ["P0", "P1", "P2", "P3"]
+    },
+    "AutofixClass": {
+      "title": "AutofixClass",
+      "type": "string",
+      "enum": ["gated_auto", "manual", "advisory"]
+    },
+    "Owner": {
+      "title": "Owner",
+      "type": "string",
+      "enum": ["downstream-resolver", "human", "release"]
+    },
+    "ProtectedSubject": {
+      "title": "ProtectedSubject",
+      "type": "string",
+      "enum": [
+        "memory-safety",
+        "concurrency",
+        "data-loss",
+        "authorization-authentication",
+        "injection",
+        "public-contract",
+        "secrets-exposure",
+        "cryptography"
+      ]
+    }
+  },
+  "properties": {
+    "id": { "title": "Id", "type": "string" },
+    "title": { "title": "Title", "type": "string", "maxLength": 100 },
+    "severity": { "$ref": "#/$defs/Severity" },
+    "file": { "title": "File", "type": "string" },
+    "line": { "title": "Line", "type": "integer", "minimum": 1 },
+    "why_it_matters": { "title": "Why It Matters", "type": "string" },
+    "autofix_class": { "$ref": "#/$defs/AutofixClass" },
+    "owner": { "$ref": "#/$defs/Owner" },
+    "requires_verification": { "title": "Requires Verification", "type": "boolean" },
+    "confidence": {
+      "title": "Confidence",
+      "type": "integer",
+      "enum": [0, 25, 50, 75, 100],
+      "description": "Anclado: 0/25/50/75/100"
+    },
+    "evidence": {
+      "title": "Evidence",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "pre_existing": { "title": "Pre Existing", "type": "boolean", "default": false },
+    "suggested_fix": {
+      "title": "Suggested Fix",
+      "anyOf": [{ "type": "string" }, { "type": "null" }],
+      "default": null
+    },
+    "protected_subject": {
+      "title": "Protected Subject",
+      "anyOf": [{ "$ref": "#/$defs/ProtectedSubject" }, { "type": "null" }],
+      "default": null
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "severity",
+    "file",
+    "line",
+    "why_it_matters",
+    "autofix_class",
+    "owner",
+    "requires_verification",
+    "confidence",
+    "evidence"
+  ]
+}

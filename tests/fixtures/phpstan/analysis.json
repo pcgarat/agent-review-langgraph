@@ -1,0 +1,39 @@
+{
+  "totals": {
+    "errors": 2,
+    "file_errors": 2
+  },
+  "files": {
+    "/app/src/BackOffice/Application/Wallet/Transfer.php": {
+      "errors": 1,
+      "messages": [
+        {
+          "message": "Cannot call method withdraw() on App\\BackOffice\\Domain\\Wallet\\Balance|null.",
+          "line": 16,
+          "ignorable": true
+        }
+      ]
+    },
+    "/app/tests/BackOffice/Wallet/TransferTest.php": {
+      "errors": 1,
+      "messages": [
+        {
+          "message": "Method app\\Tests\\BackOffice\\Wallet\\TransferTest::transfer() is unused.",
+          "line": 23,
+          "ignorable": true
+        }
+      ]
+    },
+    "/app/src/BackOffice/Application/Wallet/Legacy.php": {
+      "errors": 1,
+      "messages": [
+        {
+          "message": "Variable $legacy might not be defined.",
+          "line": 4,
+          "ignorable": true
+        }
+      ]
+    }
+  },
+  "errors": []
+}

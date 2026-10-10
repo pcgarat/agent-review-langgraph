@@ -49,9 +49,10 @@ class TeamsWebhookAdapter:
 
     def _post(self, payload: dict[str, object]) -> None:
         if not self._webhook_url:
-            # Sin webhook configurado no se falla: en Fase 0 se registra y sigue.
+            # Sin webhook configurado no se falla: se registra y se sigue.
             return
-        httpx.post(self._webhook_url, json=payload, timeout=10.0)
+        response = httpx.post(self._webhook_url, json=payload, timeout=10.0)
+        response.raise_for_status()
 
     def notify(self, *, title: str, body: str, link: str | None = None) -> None:
         self._post(TeamsAdaptiveCardPayload(title=title, body=body, link=link).as_dict())

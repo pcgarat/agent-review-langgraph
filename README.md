@@ -30,8 +30,15 @@ docker compose up --build
 
 Fase 1 en curso: webhook encola en Redis, el worker ejecuta el grafo y publica
 **comentarios inline** (+ resumen en el PR + Teams). Politica en
-`max_autonomy: report`. La persona de review sigue siendo sustituible
-(`NullReviewer` por defecto; tooling/LLM pendientes).
+`max_autonomy: report`.
+
+Personas de review (puerto `reviews.ports.reviewer`):
+
+- `ToolingReviewer` (`standards`): convierte la salida de PHPStan en hallazgos y
+  los ancla a lineas reales del diff. No ejecuta la herramienta (Fase 3).
+- `NullReviewer`: por defecto hasta cablear el perfil del repo.
+
+El contrato de hallazgo vive en `contracts/findings-schema.json`.
 
 ## Desarrollo
 
