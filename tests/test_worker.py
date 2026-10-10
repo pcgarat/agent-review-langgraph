@@ -181,15 +181,30 @@ def test_build_reviewers_cae_a_null_sin_perfil(tmp_path: Path) -> None:
     assert [r.name for r in reviewers] == ["null"]
 
 
+def test_build_reviewers_cae_a_null_con_perfil_invalido(tmp_path: Path) -> None:
+    malformed = tmp_path / "malformado.yaml"
+    malformed.write_text("repo: [sin cerrar\n", encoding="utf-8")
+    assert [r.name for r in build_reviewers(Settings(repo_profile_config=str(malformed)))] == [
+        "null"
+    ]
+
+    lista = tmp_path / "lista.yaml"
+    lista.write_text("- a\n- b\n", encoding="utf-8")
+    assert [r.name for r in build_reviewers(Settings(repo_profile_config=str(lista)))] == [
+        "null"
+    ]
+
+
 def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
-    # El artefacto lo deposita el "CI" en la ruta que resuelve el perfil.
+    # Se usa la plantilla de produccion (Settings) y el artefacto se deposita en
+    # la ruta que resuelve, para ejercitar la ruta por defecto de extremo a extremo.
     profile = tmp_path / "profile.yaml"
     profile.write_text(
         "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
     )
     settings = Settings(repo_profile_config=str(profile))
     source = FileToolingOutputSource(
-        template="{pr_id}/{head_sha}/{tool}.json", root=tmp_path
+        template=settings.tooling_output_template, root=tmp_path
     )
     artifact = source.path_for("phpstan", repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc")
     artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -208,3 +223,25 @@ def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
     )
 
     assert len(vcs.inlines) == 2, "los hallazgos del artefacto deben anclarse"
+
+
+def test_worker_head_sha_vacio_no_publica_en_silencio(tmp_path: Path) -> None:
+    # Un head_sha vacio no puede resolverse a un segmento `unknown` y salir verde:
+    # la persona falla ruidoso y process_request lo registra sin publicar nada.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
+    )
+    settings = Settings(repo_profile_config=str(profile))
+    source = FileToolingOutputSource(
+        template=settings.tooling_output_template, root=tmp_path
+    )
+    vcs = _DiffVcs(DIFF)
+    reviewers = build_reviewers(settings, tooling_source=source)
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    process_request(graph, ReviewRequest(repo="cqm/emotivoo-v2", pr_id=5, head_sha=""))
+
+    assert vcs.inlines == []
+    assert vcs.comments == [], "ante sha vacio no se debe reportar 'sin hallazgos'"

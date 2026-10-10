@@ -36,6 +36,36 @@ def test_file_source_rechaza_plantilla_con_placeholder_desconocido() -> None:
         FileToolingOutputSource(template="{tool}/{desconocido}.json")
 
 
+def test_file_source_rechaza_plantilla_absoluta() -> None:
+    with pytest.raises(ValueError):
+        FileToolingOutputSource(template="/etc/{tool}.json")
+
+
+def test_file_source_rechaza_plantilla_que_escapa_del_root(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        FileToolingOutputSource(template="../../{tool}.json", root=tmp_path)
+
+
+def test_file_source_rechaza_format_spec_incompatible() -> None:
+    # `pr_id` siempre llega como int: un spec de string debe fallar en construccion.
+    with pytest.raises(ValueError):
+        FileToolingOutputSource(template="{pr_id:s}/{tool}.json")
+
+
+def test_file_source_head_sha_vacio_falla_ruidoso(tmp_path: Path) -> None:
+    source = FileToolingOutputSource(template="{pr_id}/{head_sha}/{tool}.json", root=tmp_path)
+    with pytest.raises(ValueError):
+        source.path_for("phpstan", repo="r", pr_id=1, head_sha="")
+    with pytest.raises(ValueError):
+        source.read("phpstan", repo="r", pr_id=1, head_sha="")
+
+
+def test_file_source_contenido_no_utf8_devuelve_none(tmp_path: Path) -> None:
+    source = FileToolingOutputSource(template="{tool}.json", root=tmp_path)
+    (tmp_path / "phpstan.json").write_bytes(b"\xff\xfe\x00\x01 not utf8")
+    assert source.read("phpstan", repo="r", pr_id=1, head_sha="s") is None
+
+
 def test_slug_neutraliza_separadores_y_traversal() -> None:
     slug = safe_segment("../../etc/passwd")
     assert "/" not in slug

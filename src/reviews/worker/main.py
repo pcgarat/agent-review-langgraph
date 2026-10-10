@@ -46,6 +46,12 @@ def build_reviewers(
     except OSError:
         logger.warning("Sin perfil de repo en %s; se usa NullReviewer", path)
         return [NullReviewer("null")]
+    except yaml.YAMLError as exc:
+        logger.error("Perfil de repo invalido en %s (%s); se usa NullReviewer", path, exc)
+        return [NullReviewer("null")]
+    if not isinstance(profile, dict):
+        logger.warning("Perfil de repo en %s no es un mapa; se usa NullReviewer", path)
+        return [NullReviewer("null")]
 
     checks = profile.get("checks", {}) or {}
     if isinstance(checks, dict) and checks.get("typecheck"):

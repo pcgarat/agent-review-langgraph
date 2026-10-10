@@ -12,8 +12,20 @@ _PLACEHOLDERS = ("tool", "slug", "pr_id", "head_sha")
 
 def safe_segment(value: object, *, default: str = "unknown") -> str:
     """Convierte un valor en un segmento de ruta sin traversal ni separadores."""
-    cleaned = _UNSAFE.sub("_", str(value)).strip("._-")
+    cleaned = _clean(value)
     return cleaned or default
+
+
+def _clean(value: object) -> str:
+    return _UNSAFE.sub("_", str(value)).strip("._-")
+
+
+def _required_segment(name: str, value: object) -> str:
+    """Como `safe_segment`, pero falla ruidoso en vez de inventar `unknown`."""
+    cleaned = _clean(value)
+    if not cleaned:
+        raise ValueError(f"El placeholder {name!r} no puede estar vacio")
+    return cleaned
 
 
 class FileToolingOutputSource:
@@ -30,30 +42,60 @@ class FileToolingOutputSource:
         self._validate()
 
     def _validate(self) -> None:
+        if not self._template.strip():
+            raise ValueError("La plantilla del artefacto no puede estar vacia")
+        if Path(self._template).is_absolute():
+            raise ValueError(
+                f"La plantilla del artefacto no puede ser absoluta: {self._template!r}"
+            )
+        # Valores representativos de los tipos reales (`pr_id` es int, `head_sha`
+        # str), para que un format-spec incompatible falle aqui y no en runtime.
         try:
-            self._template.format(**{field: "x" for field in _PLACEHOLDERS})
+            rendered = self._template.format(
+                tool="x", slug="x", pr_id=0, head_sha="sha"
+            )
         except (KeyError, IndexError, ValueError) as exc:
             raise ValueError(
                 f"Plantilla de artefacto invalida {self._template!r}: {exc}. "
                 f"Placeholders admitidos: {_PLACEHOLDERS}"
             ) from exc
+        self._assert_contained(Path(rendered))
+
+    def _assert_contained(self, candidate: Path) -> None:
+        root = self._root.resolve()
+        resolved = (root / candidate).resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(
+                f"La plantilla escapa del root {self._root!r}: {self._template!r}"
+            )
 
     def path_for(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> Path:
-        relative = self._template.format(
-            tool=safe_segment(tool),
-            slug=safe_segment(repo),
-            pr_id=int(pr_id),
-            head_sha=safe_segment(head_sha),
-        )
-        path = Path(relative)
-        return path if path.is_absolute() else self._root / path
+        try:
+            relative = self._template.format(
+                tool=_required_segment("tool", tool),
+                slug=safe_segment(repo),
+                pr_id=int(pr_id),
+                head_sha=_required_segment("head_sha", head_sha),
+            )
+        except ValueError as exc:
+            raise ValueError(f"No se pudo resolver la ruta del artefacto: {exc}") from exc
+        return self._root / Path(relative)
 
     def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> str | None:
+        # `path_for` falla ruidoso ante segmentos invalidos (p.ej. head_sha vacio):
+        # un artefacto con ruta irresoluble no debe confundirse con "sin hallazgos".
         path = self.path_for(tool, repo=repo, pr_id=pr_id, head_sha=head_sha)
         try:
             return path.read_text(encoding="utf-8")
         except OSError:
-            logger.warning("Salida de %s no disponible en %s", tool, path)
+            logger.error(
+                "Salida de %s ausente en %s; la review sigue sin ella", tool, path
+            )
+            return None
+        except UnicodeDecodeError:
+            logger.error(
+                "Salida de %s ilegible (no UTF-8) en %s; se ignora", tool, path
+            )
             return None
 
 
