@@ -27,6 +27,8 @@ services:
       TWG_BIN: twg
     volumes:
       - ./config:/app/config:ro
+      # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
+      - ./var:/app/var:ro
     depends_on:
       postgres:
         condition: service_healthy

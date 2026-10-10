@@ -66,8 +66,10 @@ class StaticReviewer:
         self.name = name
         self._findings = findings
 
-    def review(self, *, repo: str, pr_id: int, diff: str) -> list[Finding]:
-        del repo, pr_id, diff
+    def review(
+        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
+    ) -> list[Finding]:
+        del repo, pr_id, diff, head_sha
         return list(self._findings)
 
 

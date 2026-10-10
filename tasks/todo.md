@@ -20,7 +20,7 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 - [x] **T5** `TwgVcsAdapter`: `resolve_inline_anchor` + `post_inline_comment` (+ tests goldens parciales)
 - [x] **T6** Persona `tooling` / `standards` (parser + fixture + E2E)
 - [x] **T7** Publish: **inline por hallazgo** + resumen PR + Teams (tope 20, P0→P3)
-- [ ] **T6b** Wiring de `ToolingReviewer` en el worker (desde el perfil/salida de CI)
+- [x] **T6b** Wiring de `ToolingReviewer` en el worker (`ToolingOutputSource` + perfil)
 
 ### Checkpoint B
 

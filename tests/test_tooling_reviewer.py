@@ -4,6 +4,7 @@ from pathlib import Path
 
 from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from reviews.adapters.tooling_reviewer import ToolingReviewer
+from reviews.adapters.tooling_source import StaticToolingOutputSource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -77,3 +78,25 @@ def test_persona_marca_tema_protegido() -> None:
 def test_persona_sin_salida_no_inventa_hallazgos() -> None:
     assert ToolingReviewer(phpstan_json="").review(repo="r", pr_id=1, diff=DIFF) == []
     assert ToolingReviewer(phpstan_json="{no json").review(repo="r", pr_id=1, diff=DIFF) == []
+
+
+class _ExplodingSource:
+    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> str | None:
+        del tool, repo, pr_id, head_sha
+        raise AssertionError("el reviewer no debe leer si la herramienta no esta permitida")
+
+
+def test_persona_con_source_externo_lee_la_salida() -> None:
+    reviewer = ToolingReviewer(source=StaticToolingOutputSource(PHPSTAN))
+    findings = reviewer.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF, head_sha="abc")
+    assert len(findings) == 2
+
+
+def test_persona_source_sin_salida_no_inventa() -> None:
+    reviewer = ToolingReviewer(source=StaticToolingOutputSource(""))
+    assert reviewer.review(repo="r", pr_id=1, diff=DIFF) == []
+
+
+def test_persona_no_lee_herramientas_no_permitidas() -> None:
+    reviewer = ToolingReviewer(source=_ExplodingSource(), allowed_tools=("php-cs-fixer",))
+    assert reviewer.review(repo="r", pr_id=1, diff=DIFF) == []

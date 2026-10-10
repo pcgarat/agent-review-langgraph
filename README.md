@@ -35,8 +35,17 @@ Fase 1 en curso: webhook encola en Redis, el worker ejecuta el grafo y publica
 Personas de review (puerto `reviews.ports.reviewer`):
 
 - `ToolingReviewer` (`standards`): convierte la salida de PHPStan en hallazgos y
-  los ancla a lineas reales del diff. No ejecuta la herramienta (Fase 3).
-- `NullReviewer`: por defecto hasta cablear el perfil del repo.
+  los ancla a lineas reales del diff. No ejecuta la herramienta.
+- `NullReviewer`: por defecto cuando el perfil no declara checks.
+
+**De donde sale la salida de PHPStan (Fase 1).** El agente **no** ejecuta la
+herramienta: eso es el sandbox de la Fase 3. La salida la deposita el pipeline de
+CI como artefacto y el `ToolingReviewer` la lee a traves del puerto
+`ToolingOutputSource`. El `worker` monta `FileToolingOutputSource` con la
+plantilla `TOOLING_OUTPUT_TEMPLATE` (por defecto
+`var/tooling/{slug}/{pr_id}/{head_sha}/{tool}.json`). Si el artefacto no existe,
+la persona no produce hallazgos y la review sigue sin fallar. Cambiar a «ejecutar
+en sandbox» en Fase 3 es otro adaptador de ese puerto, sin tocar reviewer ni grafo.
 
 El contrato de hallazgo vive en `contracts/findings-schema.json`.
 

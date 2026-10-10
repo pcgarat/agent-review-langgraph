@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
+from typing import Any
 
-from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
+from reviews.adapters.tooling_source import StaticToolingOutputSource
 from reviews.domain.contracts import validate_finding
 from reviews.domain.models import AutofixClass, Finding, Owner, ProtectedSubject, Severity
+from reviews.ports.tooling import ToolingOutputSource
+
+logger = logging.getLogger(__name__)
 
 _SEVERITY_MAP = {"error": Severity.P2, "warning": Severity.P3}
 
@@ -36,44 +42,55 @@ def _protected_subject(text: str) -> ProtectedSubject | None:
 class ToolingReviewer:
     """Persona estatica: convierte salida de herramientas del repo en hallazgos.
 
-    No ejecuta las herramientas (eso es el sandbox de Fase 3): consume su salida,
-    que en produccion vendra del pipeline y en tests de un fixture. Filtra a lo
-    que el PR realmente cambio y ancla a lineas del diff.
+    No ejecuta las herramientas: pide su salida al `ToolingOutputSource` inyectado
+    (artefacto de CI en Fase 1, sandbox en Fase 3). Filtra a lo que el PR cambio
+    y ancla a lineas del diff.
     """
-
-    name = "standards"
 
     def __init__(
         self,
         *,
+        source: ToolingOutputSource | None = None,
         phpstan_json: str | Sequence[str] = (),
         allowed_tools: Sequence[str] = ("phpstan", "php-cs-fixer"),
+        name: str = "standards",
     ) -> None:
-        raw = phpstan_json if isinstance(phpstan_json, str) else "".join(phpstan_json)
-        self._phpstan_raw = raw
+        self.name = name
+        if source is not None:
+            self._source: ToolingOutputSource | None = source
+        elif phpstan_json:
+            raw = phpstan_json if isinstance(phpstan_json, str) else "".join(phpstan_json)
+            self._source = StaticToolingOutputSource(raw)
+        else:
+            self._source = None
         self._allowed = set(allowed_tools)
 
-    def review(self, *, repo: str, pr_id: int, diff: str) -> list[Finding]:
-        del repo, pr_id
+    def review(
+        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
+    ) -> list[Finding]:
         files = parse_unified_diff(diff)
         findings: list[Finding] = []
-        for entry in self._entries():
+        for entry in self._entries(repo=repo, pr_id=pr_id, head_sha=head_sha):
             finding = self._to_finding(entry, files)
             if finding is not None:
                 findings.append(finding)
         return findings
 
-    def _entries(self) -> list[dict]:
-        if not self._phpstan_raw.strip() or "phpstan" not in self._allowed:
+    def _entries(self, *, repo: str, pr_id: int, head_sha: str) -> list[dict[str, Any]]:
+        if "phpstan" not in self._allowed or self._source is None:
+            return []
+        raw = self._source.read("phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha)
+        if not raw or not raw.strip():
             return []
         try:
-            data = json.loads(self._phpstan_raw)
+            data = json.loads(raw)
         except json.JSONDecodeError:
+            logger.warning("Salida de phpstan ilegible; se ignoran sus hallazgos")
             return []
         if not isinstance(data, dict):
             return []
         entries = data.get("files", {})
-        result: list[dict] = []
+        result: list[dict[str, Any]] = []
         if isinstance(entries, dict):
             for path, payload in entries.items():
                 messages = payload.get("messages", []) if isinstance(payload, dict) else []
@@ -81,7 +98,7 @@ class ToolingReviewer:
                     result.append({"path": path, **message})
         return result
 
-    def _to_finding(self, entry: dict, files: dict) -> Finding | None:
+    def _to_finding(self, entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | None:
         path = str(entry.get("path", ""))
         key = file_key(files, path)
         if key is None:

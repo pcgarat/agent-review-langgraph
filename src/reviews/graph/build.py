@@ -109,7 +109,12 @@ def build_graph(
         if reviewer is None:
             return {"findings": []}
         request = ReviewRequest.model_validate(state["request"])
-        found = reviewer.review(repo=request.repo, pr_id=request.pr_id, diff=state["diff"])
+        found = reviewer.review(
+            repo=request.repo,
+            pr_id=request.pr_id,
+            diff=state["diff"],
+            head_sha=request.head_sha,
+        )
         return {"findings": found}
 
     def merge(state: ReviewState) -> ReviewState:

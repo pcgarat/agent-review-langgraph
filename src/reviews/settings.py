@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     autonomy_config: str = "config/autonomy.yaml"
     repo_profile_config: str = "config/repo_profile.emotivoo-v2.yaml"
+    # Plantilla del artefacto con la salida de la herramienta estatica por review.
+    # Placeholders: {tool}, {slug} (repo con separadores), {pr_id}, {head_sha}.
+    tooling_output_template: str = "var/tooling/{slug}/{pr_id}/{head_sha}/{tool}.json"
 
 
 @lru_cache

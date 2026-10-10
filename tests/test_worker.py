@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from reviews.adapters.tooling_reviewer import ToolingReviewer
+from reviews.adapters.tooling_source import FileToolingOutputSource
 from reviews.domain.models import AutofixClass, Finding, Owner, ReviewRequest, Severity
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 from reviews.queue import InMemoryReviewQueue
-from reviews.worker.main import process_request
+from reviews.settings import Settings
+from reviews.worker.main import build_reviewers, process_request
+
+FIXTURES = Path(__file__).parent / "fixtures"
+DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
+PHPSTAN = (FIXTURES / "phpstan" / "analysis.json").read_text(encoding="utf-8")
 
 
 class FakeVcs:
@@ -63,8 +73,10 @@ class FakeVcs:
 class OneShotReviewer:
     name = "standards"
 
-    def review(self, *, repo: str, pr_id: int, diff: str) -> list[Finding]:
-        del repo, pr_id, diff
+    def review(
+        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
+    ) -> list[Finding]:
+        del repo, pr_id, diff, head_sha
         return [
             Finding(
                 id="w1",
@@ -97,3 +109,102 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
 
     assert len(vcs.inlines) == 1
     assert vcs.comments
+
+
+class _DiffVcs:
+    """VCS minimo que ancla como `twg prs diff-line` sobre el diff dado."""
+
+    def __init__(self, diff: str) -> None:
+        self._files = parse_unified_diff(diff)
+        self.inlines: list[str] = []
+        self.comments: list[str] = []
+
+    def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
+        return PullRequestInfo(
+            repo=repo,
+            pr_id=pr_id,
+            title="Transfer",
+            source_branch="f",
+            destination_branch="main",
+            author="a",
+            head_sha="h",
+            url="https://example.test/pr",
+        )
+
+    def get_diff(self, repo: str, pr_id: int) -> str:
+        del repo, pr_id
+        return DIFF
+
+    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
+        del repo, pr_id
+        return [(path, len(fd.added), 0) for path, fd in self._files.items()]
+
+    def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
+        del repo, pr_id
+        key = file_key(self._files, path)
+        if key is None:
+            return None
+        line = best_line(self._files[key].added, hint=None, needle=text)
+        return InlineAnchor(path=key, line=line) if line else None
+
+    def post_inline_comment(
+        self, repo: str, pr_id: int, *, path: str, line: int, body: str, from_line=None
+    ) -> None:
+        del repo, pr_id, from_line
+        self.inlines.append(f"{path}:{line}")
+
+    def post_comment(self, repo: str, pr_id: int, body: str) -> None:
+        del repo, pr_id
+        self.comments.append(body)
+
+    def post_task(self, repo: str, pr_id: int, body: str) -> None:
+        del repo, pr_id, body
+
+
+def _settings_for(tmp_path: Path) -> Settings:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
+    )
+    return Settings(repo_profile_config=str(profile))
+
+
+def test_build_reviewers_activa_tooling_desde_el_perfil(tmp_path: Path) -> None:
+    reviewers = build_reviewers(_settings_for(tmp_path))
+    assert len(reviewers) == 1
+    assert isinstance(reviewers[0], ToolingReviewer)
+
+
+def test_build_reviewers_cae_a_null_sin_perfil(tmp_path: Path) -> None:
+    settings = Settings(repo_profile_config=str(tmp_path / "no-existe.yaml"))
+    reviewers = build_reviewers(settings)
+    assert [r.name for r in reviewers] == ["null"]
+
+
+def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
+    # El artefacto lo deposita el "CI" en la ruta que resuelve el perfil.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
+    )
+    settings = Settings(repo_profile_config=str(profile))
+    source = FileToolingOutputSource(
+        template="{slug}/{pr_id}/{head_sha}/{tool}.json", root=tmp_path
+    )
+    artifact = source.path_for("phpstan", repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(PHPSTAN, encoding="utf-8")
+
+    vcs = _DiffVcs(DIFF)
+    reviewers = build_reviewers(settings, tooling_source=source)
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    graph.invoke(
+        {
+            "request": ReviewRequest(repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc"),
+            "findings": [],
+        }
+    )
+
+    assert len(vcs.inlines) == 2, "los hallazgos del artefacto deben anclarse"

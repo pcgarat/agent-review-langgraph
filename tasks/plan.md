@@ -268,7 +268,14 @@ depender de `diff-line` para cada hallazgo y garantiza lineas validas.
 - [x] `ToolingReviewer` (nombre `standards`) cumple `ReviewerPort`
 - [x] Parser PHPStan JSON con fixture realista + parser de diff unificado
 - [x] Hallazgos pasan validación del contrato (Task 2)
-- [ ] Integrado en el wiring del worker cuando el perfil lo pida (pendiente: T6b)
+- [x] Integrado en el wiring del worker vía `ToolingOutputSource` (Task 6b)
+
+**Decisión (Task 6b):** el origen de la salida de PHPStan en runtime es un
+**artefacto de CI** leído a través del puerto `ToolingOutputSource`
+(`FileToolingOutputSource`). El worker construye la persona desde el perfil del
+repo (`checks.typecheck`) y resuelve la ruta por review (`{slug}/{pr_id}/{head_sha}`).
+El agente no ejecuta la herramienta en Fase 1 (eso es el sandbox de Fase 3, otro
+adaptador del mismo puerto). Artefacto ausente ⇒ 0 hallazgos, sin fallar.
 
 **Verification:**
 - [ ] `uv run pytest tests/test_tooling_reviewer.py`
