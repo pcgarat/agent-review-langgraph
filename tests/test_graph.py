@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from reviews.adapters.teams_webhook import TeamsWebhookAdapter
-from reviews.domain.models import AutofixClass, Finding, Owner, Severity
+from reviews.domain.models import (
+    AutofixClass,
+    Finding,
+    Owner,
+    ReviewerResult,
+    Severity,
+    ToolingSourceStatus,
+)
 from reviews.graph.build import build_graph, outcome_from_state
 from reviews.idempotency import InMemoryIdempotencyStore
 from reviews.policy.engine import PolicyEngine
@@ -62,15 +69,22 @@ class FakeVcs:
 
 
 class StaticReviewer:
-    def __init__(self, name: str, findings: list[Finding]) -> None:
+    def __init__(
+        self,
+        name: str,
+        findings: list[Finding],
+        *,
+        status: ToolingSourceStatus | None = None,
+    ) -> None:
         self.name = name
         self._findings = findings
+        self._status = status
 
     def review(
         self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> list[Finding]:
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
-        return list(self._findings)
+        return ReviewerResult(findings=list(self._findings), tooling_status=self._status)
 
 
 def make_finding(
@@ -255,6 +269,47 @@ def test_grafo_sin_hallazgos_no_publica() -> None:
     )
     assert vcs.comments == []
     assert vcs.inlines == []
+
+
+def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
+    # 0 hallazgos con fuente ausente NO es "sin hallazgos": se publica un aviso.
+    vcs = FakeVcs()
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("standards", [], status=ToolingSourceStatus.MISSING)
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert vcs.inlines == []
+    assert len(vcs.comments) == 1
+    assert "NO cubre" in vcs.comments[0][2]
+
+
+def test_grafo_con_hallazgos_anota_fuente_ausente_en_el_resumen() -> None:
+    vcs = FakeVcs(
+        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
+    )
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", [make_finding()]),
+        StaticReviewer("standards", [], status=ToolingSourceStatus.UNREADABLE),
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert vcs.inlines
+    assert "NO cubre" in vcs.comments[0][2]
 
 
 def test_teams_sin_webhook_no_falla() -> None:

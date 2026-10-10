@@ -13,6 +13,7 @@ from reviews.domain.models import (
     ReviewOutcome,
     ReviewRequest,
     Severity,
+    ToolingSourceStatus,
 )
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
@@ -29,6 +30,19 @@ _SEVERITY_ORDER = {
     Severity.P3: 3,
 }
 
+# Texto de cabecera por estado de fuente estatica, para que "sin hallazgos" no
+# se lea como "sin errores" cuando el analisis no llego a ejecutarse.
+_SOURCE_NOTE = {
+    ToolingSourceStatus.MISSING: (
+        "Aviso: no se encontro la salida de la herramienta estatica; "
+        "la review NO cubre ese analisis."
+    ),
+    ToolingSourceStatus.UNREADABLE: (
+        "Aviso: la salida de la herramienta estatica no se pudo leer; "
+        "la review NO cubre ese analisis."
+    ),
+}
+
 
 class ReviewIntegrityError(RuntimeError):
     """El grafo produjo un estado incoherente (hallazgo sin decision)."""
@@ -39,11 +53,30 @@ class ReviewState(TypedDict, total=False):
     diff: str
     # Las personas escriben aqui en paralelo; el reducer acumula.
     findings: Annotated[list[Finding], operator.add]
+    # Estado de las fuentes estaticas por reviewer. Sin reducer: se sustituye, y
+    # cada rama solo escribe el suyo (el fan-out escribe dicts sobre claves
+    # distintas). Las claves ausentes se tratan como PRESENT.
+    source_status: Annotated[dict[str, ToolingSourceStatus], _merge_status]
     # Resultado del merge: sin reducer, se sustituye (no se acumula).
     merged: list[Finding]
     # Juicio de la politica sobre cada hallazgo mergeado. Sin reducer.
     # `pending_approvals` no vive aqui: es derivado de decisions.
     decisions: list[Decision]
+
+
+def _merge_status(
+    left: dict[str, ToolingSourceStatus] | None,
+    right: dict[str, ToolingSourceStatus] | None,
+) -> dict[str, ToolingSourceStatus]:
+    return {**(left or {}), **(right or {})}
+
+
+def _unavailable_sources(state: ReviewState) -> list[tuple[str, ToolingSourceStatus]]:
+    return [
+        (name, status)
+        for name, status in sorted(state.get("source_status", {}).items())
+        if not status.available
+    ]
 
 
 def _finding_id(finding: Finding) -> str:
@@ -88,7 +121,7 @@ def build_graph(
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
         diff = vcs.get_diff(request.repo, request.pr_id)
-        return {"request": request, "diff": diff, "findings": []}
+        return {"request": request, "diff": diff, "findings": [], "source_status": {}}
 
     def dispatch(state: ReviewState) -> list:
         """Fan-out: una rama por persona, sobre el mismo diff."""
@@ -109,13 +142,16 @@ def build_graph(
         if reviewer is None:
             return {"findings": []}
         request = ReviewRequest.model_validate(state["request"])
-        found = reviewer.review(
+        result = reviewer.review(
             repo=request.repo,
             pr_id=request.pr_id,
             diff=state["diff"],
             head_sha=request.head_sha,
         )
-        return {"findings": found}
+        update: ReviewState = {"findings": result.findings}
+        if result.tooling_status is not None:
+            update["source_status"] = {reviewer.name: result.tooling_status}
+        return update
 
     def merge(state: ReviewState) -> ReviewState:
         """Deduplica por (fichero, titulo) y conserva la evidencia mas rica."""
@@ -155,7 +191,22 @@ def build_graph(
         request = ReviewRequest.model_validate(state["request"])
         findings = _merged(state)
         decisions = state.get("decisions", [])
+        unavailable = _unavailable_sources(state)
         if not findings:
+            if unavailable:
+                # No equivale a "sin hallazgos": el analisis estatico no corrio.
+                logger.warning(
+                    "PR %s#%s: review sin cobertura de tooling (%s)",
+                    request.repo,
+                    request.pr_id,
+                    ", ".join(f"{name}={status.value}" for name, status in unavailable),
+                )
+                vcs.post_comment(
+                    request.repo,
+                    request.pr_id,
+                    _render_no_source(unavailable),
+                )
+                return {"source_status": state.get("source_status", {})}
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
 
@@ -205,7 +256,13 @@ def build_graph(
                 )
                 summary_only.append(finding)
 
-        summary = _render_summary(findings, decisions, summary_only=summary_only, inlined=inlined)
+        summary = _render_summary(
+            findings,
+            decisions,
+            summary_only=summary_only,
+            inlined=inlined,
+            unavailable=unavailable,
+        )
         vcs.post_comment(request.repo, request.pr_id, summary)
         if chat is not None:
             pr = vcs.get_pull_request(request.repo, request.pr_id)
@@ -254,6 +311,7 @@ def _render_summary(
     *,
     summary_only: list[Finding] | None = None,
     inlined: list[Finding] | None = None,
+    unavailable: list[tuple[str, ToolingSourceStatus]] | None = None,
 ) -> str:
     by_key = {d.finding_id: d for d in decisions}
     inlined = inlined or []
@@ -265,6 +323,9 @@ def _render_summary(
         f"{len(summary_only)} solo en resumen",
         "",
     ]
+    for name, note in _notes(unavailable):
+        lines.append(f"- _{name}_: {note}")
+        lines.append("")
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
@@ -277,6 +338,28 @@ def _render_summary(
             f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
         )
         lines.append(f"  {finding.why_it_matters}")
+    return "\n".join(lines)
+
+
+def _notes(
+    unavailable: list[tuple[str, ToolingSourceStatus]] | None,
+) -> list[tuple[str, str]]:
+    return [
+        (name, _SOURCE_NOTE[status])
+        for name, status in (unavailable or [])
+        if status in _SOURCE_NOTE
+    ]
+
+
+def _render_no_source(unavailable: list[tuple[str, ToolingSourceStatus]]) -> str:
+    lines = [
+        "## Code review automatica",
+        "",
+        "No se pudieron producir hallazgos: faltan los datos de entrada.",
+        "",
+    ]
+    for name, note in _notes(unavailable):
+        lines.append(f"- **{name}**: {note}")
     return "\n".join(lines)
 
 

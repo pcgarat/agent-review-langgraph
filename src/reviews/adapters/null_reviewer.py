@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import Finding
+from reviews.domain.models import ReviewerResult
 
 
 class NullReviewer:
@@ -11,6 +11,6 @@ class NullReviewer:
 
     def review(
         self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> list[Finding]:
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
-        return []
+        return ReviewerResult()

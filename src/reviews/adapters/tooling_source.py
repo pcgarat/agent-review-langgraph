@@ -4,6 +4,8 @@ import logging
 import re
 from pathlib import Path
 
+from reviews.domain.models import ToolingSourceStatus
+
 logger = logging.getLogger(__name__)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -81,30 +83,36 @@ class FileToolingOutputSource:
             raise ValueError(f"No se pudo resolver la ruta del artefacto: {exc}") from exc
         return self._root / Path(relative)
 
-    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> str | None:
-        # `path_for` falla ruidoso ante segmentos invalidos (p.ej. head_sha vacio):
-        # un artefacto con ruta irresoluble no debe confundirse con "sin hallazgos".
+    def read(
+        self, tool: str, *, repo: str, pr_id: int, head_sha: str
+    ) -> tuple[ToolingSourceStatus, str | None]:
+        # - `path_for` falla ruidoso ante segmentos invalidos: una ruta irresoluble
+        #   no debe confundirse con "sin hallazgos", asi que la elevamos. - un
+        #   artefacto ausente o ilegible si se reporta como estado, no como exito.
         path = self.path_for(tool, repo=repo, pr_id=pr_id, head_sha=head_sha)
         try:
-            return path.read_text(encoding="utf-8")
+            return ToolingSourceStatus.PRESENT, path.read_text(encoding="utf-8")
         except OSError:
-            logger.error(
-                "Salida de %s ausente en %s; la review sigue sin ella", tool, path
-            )
-            return None
+            logger.error("Salida de %s ausente en %s", tool, path)
+            return ToolingSourceStatus.MISSING, None
         except UnicodeDecodeError:
-            logger.error(
-                "Salida de %s ilegible (no UTF-8) en %s; se ignora", tool, path
-            )
-            return None
+            logger.error("Salida de %s ilegible (no UTF-8) en %s", tool, path)
+            return ToolingSourceStatus.UNREADABLE, None
 
 
 class StaticToolingOutputSource:
     """Salida fija en memoria, para tests e inyeccion manual."""
 
-    def __init__(self, payload: str) -> None:
+    def __init__(
+        self, payload: str, *, status: ToolingSourceStatus = ToolingSourceStatus.PRESENT
+    ) -> None:
         self._payload = payload
+        self._status = status
 
-    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> str | None:
+    def read(
+        self, tool: str, *, repo: str, pr_id: int, head_sha: str
+    ) -> tuple[ToolingSourceStatus, str | None]:
         del tool, repo, pr_id, head_sha
-        return self._payload
+        if self._status is not ToolingSourceStatus.PRESENT:
+            return self._status, None
+        return ToolingSourceStatus.PRESENT, self._payload

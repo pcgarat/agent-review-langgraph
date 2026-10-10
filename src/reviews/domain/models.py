@@ -38,6 +38,22 @@ class ProtectedSubject(StrEnum):
     CRYPTOGRAPHY = "cryptography"
 
 
+class ToolingSourceStatus(StrEnum):
+    """Estado de la fuente de tooling de una persona estatica.
+
+    Distingue "analisis presente" de "no se pudo leer la salida": sin esto, un
+    artefacto ausente y un analisis limpio producen los mismos 0 hallazgos.
+    """
+
+    PRESENT = "present"
+    MISSING = "missing"
+    UNREADABLE = "unreadable"
+
+    @property
+    def available(self) -> bool:
+        return self is ToolingSourceStatus.PRESENT
+
+
 class FindingAction(StrEnum):
     REPORT = "report"
     ESCALATE = "escalate"
@@ -72,6 +88,19 @@ class Finding(BaseModel):
         if value not in CONFIDENCE_ANCHORS:
             raise ValueError(f"confidence debe ser uno de {CONFIDENCE_ANCHORS}")
         return value
+
+
+class ReviewerResult(BaseModel):
+    """Hallazgos de una persona mas el estado de su fuente de datos.
+
+    `tooling_status` solo lo pueblan las personas estaticas; una persona sin
+    fuente externa (LLM, nula) devuelve `None` y no aporta avisos ni degrada la
+    review. Cuando una persona estatica no puede leer su salida, el estado
+    viaja hasta el publish para que "sin hallazgos" no se lea como "sin errores".
+    """
+
+    findings: list[Finding] = Field(default_factory=list)
+    tooling_status: ToolingSourceStatus | None = None
 
 
 class Decision(BaseModel):

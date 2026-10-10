@@ -5,7 +5,14 @@ from pathlib import Path
 from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
-from reviews.domain.models import AutofixClass, Finding, Owner, ReviewRequest, Severity
+from reviews.domain.models import (
+    AutofixClass,
+    Finding,
+    Owner,
+    ReviewerResult,
+    ReviewRequest,
+    Severity,
+)
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
@@ -75,23 +82,25 @@ class OneShotReviewer:
 
     def review(
         self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> list[Finding]:
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
-        return [
-            Finding(
-                id="w1",
-                title="Naming",
-                severity=Severity.P3,
-                file="a.php",
-                line=1,
-                why_it_matters="Claridad",
-                autofix_class=AutofixClass.ADVISORY,
-                owner=Owner.HUMAN,
-                requires_verification=False,
-                confidence=75,
-                evidence=["a.php:1 $x"],
-            )
-        ]
+        return ReviewerResult(
+            findings=[
+                Finding(
+                    id="w1",
+                    title="Naming",
+                    severity=Severity.P3,
+                    file="a.php",
+                    line=1,
+                    why_it_matters="Claridad",
+                    autofix_class=AutofixClass.ADVISORY,
+                    owner=Owner.HUMAN,
+                    requires_verification=False,
+                    confidence=75,
+                    evidence=["a.php:1 $x"],
+                )
+            ]
+        )
 
 
 def test_worker_procesa_cola_y_publica_inline() -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import StaticToolingOutputSource
+from reviews.domain.models import ToolingSourceStatus
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -38,7 +39,8 @@ def test_best_line_prefiere_needle_y_cae_al_hint() -> None:
 
 def test_persona_filtra_lo_fuera_del_diff_y_ancla_al_diff() -> None:
     reviewer = ToolingReviewer(phpstan_json=PHPSTAN)
-    findings = reviewer.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF)
+    result = reviewer.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF)
+    findings = result.findings
 
     files = parse_unified_diff(DIFF)
     # Legacy.php no esta en el diff: se descarta.
@@ -53,6 +55,7 @@ def test_persona_filtra_lo_fuera_del_diff_y_ancla_al_diff() -> None:
     # El segundo hallazgo del fixture es de test y de severidad baja.
     test_finding = next(f for f in findings if f.file.endswith("TransferTest.php"))
     assert test_finding.severity.value == "P3"
+    assert result.tooling_status is ToolingSourceStatus.PRESENT
 
 
 def test_persona_marca_tema_protegido() -> None:
@@ -69,34 +72,44 @@ def test_persona_marca_tema_protegido() -> None:
         "+if ($password === 'root') { login(); }\n"
         "+$ok = true;\n"
     )
-    findings = ToolingReviewer(phpstan_json=payload).review(repo="r", pr_id=1, diff=diff)
+    findings = ToolingReviewer(phpstan_json=payload).review(repo="r", pr_id=1, diff=diff).findings
     assert len(findings) == 1
     assert findings[0].protected_subject is not None
     assert findings[0].autofix_class.value == "manual"
 
 
 def test_persona_sin_salida_no_inventa_hallazgos() -> None:
-    assert ToolingReviewer(phpstan_json="").review(repo="r", pr_id=1, diff=DIFF) == []
-    assert ToolingReviewer(phpstan_json="{no json").review(repo="r", pr_id=1, diff=DIFF) == []
+    vacio = ToolingReviewer(phpstan_json="").review(repo="r", pr_id=1, diff=DIFF)
+    roto = ToolingReviewer(phpstan_json="{no json").review(repo="r", pr_id=1, diff=DIFF)
+    assert vacio.findings == []
+    assert roto.findings == []
+    # Un payload ausente o ilegible no equivale a un analisis limpio.
+    assert vacio.tooling_status is not ToolingSourceStatus.PRESENT
+    assert roto.tooling_status is ToolingSourceStatus.UNREADABLE
 
 
 class _ExplodingSource:
-    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> str | None:
+    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str):
         del tool, repo, pr_id, head_sha
         raise AssertionError("el reviewer no debe leer si la herramienta no esta permitida")
 
 
 def test_persona_con_source_externo_lee_la_salida() -> None:
     reviewer = ToolingReviewer(source=StaticToolingOutputSource(PHPSTAN))
-    findings = reviewer.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF, head_sha="abc")
-    assert len(findings) == 2
+    result = reviewer.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF, head_sha="abc")
+    assert len(result.findings) == 2
+    assert result.tooling_status is ToolingSourceStatus.PRESENT
 
 
 def test_persona_source_sin_salida_no_inventa() -> None:
     reviewer = ToolingReviewer(source=StaticToolingOutputSource(""))
-    assert reviewer.review(repo="r", pr_id=1, diff=DIFF) == []
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    assert result.findings == []
+    assert result.tooling_status is not ToolingSourceStatus.PRESENT
 
 
 def test_persona_no_lee_herramientas_no_permitidas() -> None:
     reviewer = ToolingReviewer(source=_ExplodingSource(), allowed_tools=("php-cs-fixer",))
-    assert reviewer.review(repo="r", pr_id=1, diff=DIFF) == []
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    assert result.findings == []
+    assert result.tooling_status is ToolingSourceStatus.MISSING

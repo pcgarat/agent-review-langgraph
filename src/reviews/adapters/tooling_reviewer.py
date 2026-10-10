@@ -9,7 +9,15 @@ from typing import Any
 from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
 from reviews.adapters.tooling_source import StaticToolingOutputSource
 from reviews.domain.contracts import validate_finding
-from reviews.domain.models import AutofixClass, Finding, Owner, ProtectedSubject, Severity
+from reviews.domain.models import (
+    AutofixClass,
+    Finding,
+    Owner,
+    ProtectedSubject,
+    ReviewerResult,
+    Severity,
+    ToolingSourceStatus,
+)
 from reviews.ports.tooling import ToolingOutputSource
 
 logger = logging.getLogger(__name__)
@@ -67,28 +75,39 @@ class ToolingReviewer:
 
     def review(
         self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> list[Finding]:
+    ) -> ReviewerResult:
         files = parse_unified_diff(diff)
+        entries, status = self._entries(repo=repo, pr_id=pr_id, head_sha=head_sha)
         findings: list[Finding] = []
-        for entry in self._entries(repo=repo, pr_id=pr_id, head_sha=head_sha):
+        for entry in entries:
             finding = self._to_finding(entry, files)
             if finding is not None:
                 findings.append(finding)
-        return findings
+        return ReviewerResult(findings=findings, tooling_status=status)
 
-    def _entries(self, *, repo: str, pr_id: int, head_sha: str) -> list[dict[str, Any]]:
-        if "phpstan" not in self._allowed or self._source is None:
-            return []
-        raw = self._source.read("phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha)
+    def _entries(
+        self, *, repo: str, pr_id: int, head_sha: str
+    ) -> tuple[list[dict[str, Any]], ToolingSourceStatus]:
+        # Fuente no disponible: se propaga el motivo para no reportar "limpio".
+        if self._source is None:
+            return [], ToolingSourceStatus.MISSING
+        if "phpstan" not in self._allowed:
+            return [], ToolingSourceStatus.MISSING
+        status, raw = self._source.read(
+            "phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha
+        )
+        if status is not ToolingSourceStatus.PRESENT:
+            return [], status
+        # Un artefacto presente pero vacio no es un JSON valido: no equivale a limpio.
         if not raw or not raw.strip():
-            return []
+            return [], ToolingSourceStatus.UNREADABLE
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("Salida de phpstan ilegible; se ignoran sus hallazgos")
-            return []
+            return [], ToolingSourceStatus.UNREADABLE
         if not isinstance(data, dict):
-            return []
+            return [], ToolingSourceStatus.UNREADABLE
         entries = data.get("files", {})
         result: list[dict[str, Any]] = []
         if isinstance(entries, dict):
@@ -96,7 +115,7 @@ class ToolingReviewer:
                 messages = payload.get("messages", []) if isinstance(payload, dict) else []
                 for message in messages:
                     result.append({"path": path, **message})
-        return result
+        return result, ToolingSourceStatus.PRESENT
 
     def _to_finding(self, entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | None:
         path = str(entry.get("path", ""))
