@@ -40,6 +40,16 @@ Personas de review (puerto `reviews.ports.reviewer`):
 
 El contrato de hallazgo vive en `contracts/findings-schema.json`.
 
+## Smoke real contra Bitbucket
+
+Requiere `twg login` y un PR con cambios:
+
+```bash
+REVIEWS_LIVE_PR=417 uv run pytest tests/test_live_twg.py -m live
+```
+
+Es solo lectura (no publica comentarios). Los tests `live` estan excluidos por defecto.
+
 ## Desarrollo
 
 ```bash

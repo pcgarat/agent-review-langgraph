@@ -269,7 +269,11 @@ un servicio externo difícil de testear. Solo si ya tenéis Power Automate.
 ## 6. Herramientas: qué usar y qué no
 
 ### 6.1 `twg` como adaptador de VCS y Jira — sí
-Es la pieza correcta para Bitbucket y Jira. Comandos relevantes verificados en v1.2.7:
+Es la pieza correcta para Bitbucket y Jira. Comandos relevantes verificados en v1.3.x:
+
+> **Contrato de salida (v1.3).** `-o json` **no** imprime JSON puro: emite un
+> envoltorio YAML con el payload en un fichero aparte (`stdout.json`). Para JSON puro
+> hay que usar `--output json --output-summary none`. El adaptador lo hace así.
 
 ```
 twg bb prs diff <id>                  # diff unificado del PR
@@ -279,6 +283,7 @@ twg bb prs get <id> --full            # descripción, commits, comentarios, chec
 twg bb prs activity <id>              # log cronológico (aprobaciones, comentarios…)
 twg bb prs comment create --pull-request <id> --text "…"
 twg bb prs comment create … --path <file> --line <n>   # inline (lado nuevo)
+twg bb prs diff-line <id> --path <file> --text <quote>  # devuelve matches[].toLine
 twg bb prs task create --pull-request <id> --text "…"
 twg bb prs approve <id>
 twg bb pipeline get --pipeline <id> --logs
@@ -301,17 +306,20 @@ Markdown al final del PR. Por eso el nodo `publish` en Fase 1 hace:
 3. **Teams** sigue siendo solo el teaser: no sustituye los inline.
 
 **Anclaje seguro (no negociable).** Bitbucket rechaza o cuelga mal un comentario si la
-línea no está en el diff actual. Flujo por hallazgo:
+línea no está en el diff actual. En la implementación actual las personas anclan
+directamente en las **líneas añadidas del diff** (`parse_unified_diff`), que por
+construcción son válidas; `diff-line` queda para el adaptador real y como verificación.
+Flujo conceptual por hallazgo:
 
 ```
 Finding(file, line, evidence)
         │
-        ▼
-twg bb prs diff-line <pr> --path <file> --text <quote de evidence>
-        │
-        ├── match → post_inline_comment(path, line_resuelta, body)
-        └── sin match / error → el hallazgo va solo al resumen general
+        ├── linea anadida del diff → post_inline_comment(path, line, body)
+        └── no esta en el diff → el hallazgo va solo al resumen general
 ```
+
+`twg bb prs diff-line` devuelve `{matches: [{path, content, toLine}]}`; el adaptador usa
+`toLine` como línea del lado nuevo.
 
 No usar `--pending`: `twg` no puede cerrar la review en la UI; los comentarios deben
 ser públicos desde el create.

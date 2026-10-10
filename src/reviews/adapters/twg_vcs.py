@@ -12,10 +12,10 @@ class TwgError(RuntimeError):
 
 
 class TwgVcsAdapter:
-    """Adaptador de Bitbucket via el CLI twg.
+    """Adaptador de Bitbucket via el CLI twg (>= 1.3).
 
-    Se invoca siempre con salida JSON cuando aplica y se parsea de forma
-    tolerante: los contratos de twg pueden variar entre versiones.
+    En 1.3 el flag `-o json` emite un envoltorio YAML con el payload en un fichero
+    aparte. Para obtener JSON puro se usa `--output json --output-summary none`.
     """
 
     def __init__(self, *, workspace: str, repo: str, twg_bin: str = "twg") -> None:
@@ -26,7 +26,7 @@ class TwgVcsAdapter:
     def _run(self, args: Sequence[str], *, json_output: bool = True) -> str:
         cmd = [self._twg, "bb", *args, "-w", self._workspace, "-r", self._repo]
         if json_output:
-            cmd += ["-o", "json"]
+            cmd += ["--output", "json", "--output-summary", "none"]
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             raise TwgError(f"twg fallo ({completed.returncode}): {completed.stderr.strip()}")
@@ -44,20 +44,22 @@ class TwgVcsAdapter:
     def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
         del repo
         data = self._run_json(["prs", "get", str(pr_id)])
-        item = data.get("data", data) if isinstance(data, dict) else {}
-        if not isinstance(item, dict):
-            item = {}
+        item = data if isinstance(data, dict) else {}
+        author = item.get("author") or {}
+        source = item.get("source") or {}
+        destination = item.get("destination") or {}
+        links = item.get("links") or {}
         return PullRequestInfo(
             repo=f"{self._workspace}/{self._repo}",
             pr_id=pr_id,
             title=str(item.get("title", "")),
             description=str(item.get("description", "") or ""),
-            source_branch=str(item.get("source_branch", "")),
-            destination_branch=str(item.get("destination_branch", "")),
-            author=str(item.get("author", "")),
-            head_sha=str(item.get("head_sha", "")),
+            source_branch=str((source.get("branch") or {}).get("name", "")),
+            destination_branch=str((destination.get("branch") or {}).get("name", "")),
+            author=str(author.get("display_name", "") if isinstance(author, dict) else ""),
+            head_sha=str((source.get("commit") or {}).get("hash", "")),
             state=str(item.get("state", "OPEN")),
-            url=str(item.get("url", "")),
+            url=str(((links.get("html") or {}) if isinstance(links, dict) else {}).get("href", "")),
         )
 
     def get_diff(self, repo: str, pr_id: int) -> str:
@@ -66,19 +68,23 @@ class TwgVcsAdapter:
 
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         del repo
-        data = self._run_json(["prs", "diffstat", str(pr_id)])
-        entries = data.get("data", []) if isinstance(data, dict) else data
+        entries = self._run_json(["prs", "diffstat", str(pr_id)])
         if not isinstance(entries, list):
             return []
         result: list[tuple[str, int, int]] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            new = entry.get("new") or {}
+            old = entry.get("old") or {}
+            path = str((new or {}).get("path") or (old or {}).get("path") or "")
+            if not path:
+                continue
             result.append(
                 (
-                    str(entry.get("path", entry.get("file", ""))),
-                    int(entry.get("lines_added", entry.get("added", 0)) or 0),
-                    int(entry.get("lines_removed", entry.get("removed", 0)) or 0),
+                    path,
+                    int(entry.get("lines_added", 0) or 0),
+                    int(entry.get("lines_removed", 0) or 0),
                 )
             )
         return result
@@ -92,21 +98,20 @@ class TwgVcsAdapter:
         data = self._run_json(
             ["prs", "diff-line", str(pr_id), "--path", path, "--text", text.strip()]
         )
-        item = data
-        if isinstance(data, dict):
-            nested = data.get("data", data)
-            item = nested[0] if isinstance(nested, list) and nested else nested
-        if not isinstance(item, dict):
+        matches = data.get("matches", []) if isinstance(data, dict) else []
+        if not isinstance(matches, list) or not matches:
             return None
-        line = item.get("line") or item.get("new_line") or item.get("to")
-        if line is None:
+        first = matches[0]
+        if not isinstance(first, dict):
             return None
-        from_line_raw = item.get("from_line") or item.get("old_line") or item.get("from")
-        from_line = int(from_line_raw) if from_line_raw is not None else None
+        to_line = first.get("toLine") or first.get("line")
+        if to_line is None:
+            return None
+        from_line_raw = first.get("fromLine")
         return InlineAnchor(
-            path=str(item.get("path", path)),
-            line=int(line),
-            from_line=from_line,
+            path=str(first.get("path", path)),
+            line=int(to_line),
+            from_line=int(from_line_raw) if from_line_raw is not None else None,
         )
 
     def post_inline_comment(

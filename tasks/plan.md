@@ -212,7 +212,13 @@ con log estructurado; no silenciar fallos de `twg`/Teams.
 
 ---
 
-## Task 5: Endurecer TwgVcsAdapter + filtros de scope + anclas inline
+## Task 5: Endurecer TwgVcsAdapter + filtros de scope + anclas inline — HECHO (2026-10-10)
+
+**Verificado en vivo** contra `cqm/emotivoo-v2` PR 417 con `twg` 1.3.5 (solo lectura).
+Contrato real incorporado: `--output json --output-summary none`, `author.display_name`,
+`source.commit.hash`, `source/destination.branch.name`, `diffstat[].old/new.path` y
+`diff-line.matches[].toLine`. Smoke real en `tests/test_live_twg.py` (marcado `live`).
+
 
 **Description:** Verificar comandos reales de `twg bb prs *`, filtrar ruido en
 `scope`, y ampliar el puerto VCS para comentarios inline. Bitbucket exige líneas

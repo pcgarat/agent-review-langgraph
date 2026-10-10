@@ -42,6 +42,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = [
+    "live: requiere twg autenticado y red contra Bitbucket (excluido por defecto)",
+]
 
 [tool.mypy]
 python_version = "3.11"
