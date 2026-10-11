@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
+from reviews.adapters.openai_llm import OpenAiCompatibleLlm
 from reviews.adapters.teams_webhook import TeamsWebhookAdapter
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
@@ -17,6 +20,7 @@ from reviews.graph.build import build_graph, outcome_from_state
 from reviews.pending_store import PendingStore, RedisPendingStore
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
+from reviews.ports.llm import LlmPort
 from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.tooling import ToolingOutputSource
 from reviews.ports.vcs import VcsPort
@@ -51,35 +55,68 @@ def build_queue(settings: Settings) -> ReviewQueue:
     return InMemoryReviewQueue()
 
 
-def build_reviewers(
-    settings: Settings, *, tooling_source: ToolingOutputSource | None = None
-) -> list[ReviewerPort]:
-    """Personas a partir del perfil del repo.
-
-    Fase 1: solo la persona estatica. El artefacto con la salida de la herramienta
-    lo deposita el pipeline de CI; el worker no ejecuta PHPStan (eso es el sandbox de
-    Fase 3). Si la salida falta, el reviewer no produce hallazgos y no falla.
-    """
+def _load_profile(settings: Settings) -> dict[str, Any]:
     path = Path(settings.repo_profile_config)
     try:
         profile = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except OSError:
-        logger.warning("Sin perfil de repo en %s; se usa NullReviewer", path)
-        return [NullReviewer("null")]
+        logger.warning("Sin perfil de repo en %s; se omite la persona estatica", path)
+        return {}
     except yaml.YAMLError as exc:
-        logger.error("Perfil de repo invalido en %s (%s); se usa NullReviewer", path, exc)
-        return [NullReviewer("null")]
+        logger.error("Perfil de repo invalido en %s (%s); se omite la persona estatica", path, exc)
+        return {}
     if not isinstance(profile, dict):
-        logger.warning("Perfil de repo en %s no es un mapa; se usa NullReviewer", path)
-        return [NullReviewer("null")]
+        logger.warning("Perfil de repo en %s no es un mapa; se omite la persona estatica", path)
+        return {}
+    return profile
 
+
+def build_llm(settings: Settings) -> LlmPort | None:
+    """Proveedor LLM si esta habilitado y configurado. Si no, None (sin ruido)."""
+    if not settings.llm_reviewer_enabled:
+        return None
+    if not settings.llm_model:
+        logger.warning("Persona LLM habilitada sin LLM_MODEL; se omite")
+        return None
+    return OpenAiCompatibleLlm(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+    )
+
+
+def build_reviewers(
+    settings: Settings, *, tooling_source: ToolingOutputSource | None = None
+) -> list[ReviewerPort]:
+    """Personas a partir del perfil del repo y de la configuracion.
+
+    Fase 1: la persona estatica arranca por defecto; la persona LLM `correctness`
+    es opcional (opt-in) para no gastar tokens hasta validar el publish E2E. El
+    artefacto de la herramienta estatica lo deposita el CI; el worker no ejecuta
+    PHPStan (eso es el sandbox de Fase 3).
+    """
+    reviewers: list[ReviewerPort] = []
+    profile = _load_profile(settings)
     checks = profile.get("checks", {}) or {}
     if isinstance(checks, dict) and checks.get("typecheck"):
         source = tooling_source or FileToolingOutputSource(
             template=settings.tooling_output_template
         )
-        return [ToolingReviewer(source=source)]
-    return [NullReviewer("null")]
+        reviewers.append(ToolingReviewer(source=source))
+
+    llm = build_llm(settings)
+    if llm is not None:
+        reviewers.append(
+            LlmReviewer(
+                llm=llm,
+                max_findings=settings.llm_max_findings,
+                budget_tokens_per_pr=settings.llm_budget_tokens_per_pr,
+            )
+        )
+
+    if not reviewers:
+        return [NullReviewer("null")]
+    return reviewers
 
 
 def build_runtime(

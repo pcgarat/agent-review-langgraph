@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     # Herramientas cuya salida espera la review antes de ejecutarse.
     expected_tools: str = "phpstan"
 
+    # Persona LLM `correctness`. Desactivada por defecto: la Fase 1 arranca solo
+    # con la persona estatica. Al activarla, si no hay proveedor configurado, la
+    # persona no se construye y se registra un aviso.
+    llm_reviewer_enabled: bool = False
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_max_findings: int = 10
+    llm_budget_tokens_per_pr: int = 500000
+
 
 @lru_cache
 def get_settings() -> Settings:

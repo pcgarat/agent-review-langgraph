@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.domain.models import ReviewRequest
 from reviews.graph.build import build_graph
@@ -112,3 +113,69 @@ def test_hallazgo_fuera_del_diff_solo_va_al_resumen() -> None:
         }
     )
     assert all("Legacy" not in path for path, _line, _body in vcs.inlines)
+
+
+class _FakeLlm:
+    """Devuelve un hallazgo `correctness` que duplica al de `standards`.
+
+    La dedupe del grafo es por `(fichero, titulo)`: el fake reutiliza el titulo
+    real que produce la persona estatica para que el test verifique el merge de
+    verdad (no una coincidencia accidental de texto).
+    """
+
+    def __init__(self, title: str) -> None:
+        self._title = title
+
+    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
+        del system, prompt, max_tokens
+        import json
+
+        return json.dumps(
+            {
+                "findings": [
+                    {
+                        "title": self._title,
+                        "severity": "P2",
+                        "file": "src/BackOffice/Application/Wallet/Transfer.php",
+                        "line": 13,
+                        "why_it_matters": "El saldo puede ser nulo antes de retirar",
+                        "autofix_class": "gated_auto",
+                        "owner": "downstream-resolver",
+                        "requires_verification": True,
+                        "confidence": 75,
+                        "evidence": [
+                            "src/BackOffice/Application/Wallet/Transfer.php:13 "
+                            "$balance->frozen"
+                        ],
+                    }
+                ]
+            }
+        )
+
+
+def test_e2e_estatica_y_llm_conviven_y_el_merge_deduplica() -> None:
+    # La persona LLM repite un hallazgo de la estatica (mismo fichero y titulo):
+    # el merge debe quedarse con uno, y el publish no duplicar el inline.
+    tooling = ToolingReviewer(phpstan_json=PHPSTAN)
+    tooling_finding = next(
+        f
+        for f in tooling.review(repo="cqm/emotivoo-v2", pr_id=1, diff=DIFF).findings
+        if f.file.endswith("Transfer.php")
+    )
+    vcs = DiffLineVcs(DIFF)
+    reviewers = [tooling, LlmReviewer(llm=_FakeLlm(tooling_finding.title))]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    result = graph.invoke(
+        {
+            "request": ReviewRequest(repo="cqm/emotivoo-v2", pr_id=1, head_sha="abc"),
+            "findings": [],
+        }
+    )
+
+    merged = result["merged"]
+    duplicates = [f for f in merged if f.file.endswith("Transfer.php")]
+    assert len(duplicates) == 1, "el merge deduplica entre personas"
+    # Fase 1 sigue sin pedir arreglos.
+    assert all("fix_auto" not in body for _path, _line, body in vcs.inlines)

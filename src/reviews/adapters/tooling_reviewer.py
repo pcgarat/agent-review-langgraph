@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Sequence
 from typing import Any
 
 from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
+from reviews.adapters.text_utils import guess_protected_subject, slug
 from reviews.adapters.tooling_source import StaticToolingOutputSource
 from reviews.domain.contracts import validate_finding
 from reviews.domain.models import (
     AutofixClass,
     Finding,
     Owner,
-    ProtectedSubject,
     ReviewerResult,
     Severity,
     ToolingSourceStatus,
@@ -23,28 +22,6 @@ from reviews.ports.tooling import ToolingOutputSource
 logger = logging.getLogger(__name__)
 
 _SEVERITY_MAP = {"error": Severity.P2, "warning": Severity.P3}
-
-# Herramientas que marcan temas sensibles: nunca se arreglan solos.
-_PROTECTED_HINTS = {
-    "auth": ProtectedSubject.AUTHORIZATION_AUTHENTICATION,
-    "password": ProtectedSubject.SECRETS_EXPOSURE,
-    "secret": ProtectedSubject.SECRETS_EXPOSURE,
-    "token": ProtectedSubject.SECRETS_EXPOSURE,
-    "sql": ProtectedSubject.INJECTION,
-    "eval": ProtectedSubject.INJECTION,
-}
-
-
-def _slug(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:40]
-
-
-def _protected_subject(text: str) -> ProtectedSubject | None:
-    lowered = text.lower()
-    for hint, subject in _PROTECTED_HINTS.items():
-        if hint in lowered:
-            return subject
-    return None
 
 
 class ToolingReviewer:
@@ -132,10 +109,10 @@ class ToolingReviewer:
         if line is None:
             return None
         severity = _SEVERITY_MAP.get(str(entry.get("level", "warning")), Severity.P3)
-        subject = _protected_subject(message)
+        subject = guess_protected_subject(message)
         evidence_line = added.get(line, "")
         payload = {
-            "id": f"standards-{_slug(path)}-{hint or line}-{_slug(message)[:24]}",
+            "id": f"standards-{slug(path)}-{hint or line}-{slug(message)[:24]}",
             "title": _title(message),
             "severity": severity.value,
             "file": key,

@@ -19,7 +19,7 @@ from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 from reviews.queue import InMemoryReviewQueue
 from reviews.settings import Settings
-from reviews.worker.main import build_reviewers, process_request, sweep_pending
+from reviews.worker.main import build_llm, build_reviewers, process_request, sweep_pending
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -203,6 +203,41 @@ def test_build_reviewers_cae_a_null_con_perfil_invalido(tmp_path: Path) -> None:
     assert [r.name for r in build_reviewers(Settings(repo_profile_config=str(lista)))] == [
         "null"
     ]
+
+
+_PROFILE_WITH_CHECKS = "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n"
+
+
+def test_build_reviewers_llm_desactivado_por_defecto(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    settings = Settings(repo_profile_config=str(profile), llm_model="gpt-x")
+    names = [r.name for r in build_reviewers(settings)]
+    assert names == ["standards"]
+
+
+def test_build_reviewers_anade_correctness_si_se_habilita(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    settings = Settings(
+        repo_profile_config=str(profile),
+        llm_reviewer_enabled=True,
+        llm_model="gpt-x",
+        llm_api_key="k",
+    )
+    names = [r.name for r in build_reviewers(settings)]
+    assert names == ["standards", "correctness"]
+
+
+def test_build_reviewers_llm_habilitado_sin_modelo_no_se_crea(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    settings = Settings(repo_profile_config=str(profile), llm_reviewer_enabled=True)
+    assert [r.name for r in build_reviewers(settings)] == ["standards"]
+
+
+def test_build_llm_sin_habilitar_devuelve_none() -> None:
+    assert build_llm(Settings()) is None
 
 
 def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
