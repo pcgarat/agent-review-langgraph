@@ -1,20 +1,38 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from reviews.domain.models import Finding
 
-_CONTRACT_PATH = Path(__file__).resolve().parents[3] / "contracts" / "findings-schema.json"
+# Candidatos en orden: repo (dev/tests), imagen docker (Dockerfile copia
+# `contracts/` en /app) y una copia empaquetada, si la hubiera.
+_CONTRACT_CANDIDATES = (
+    Path(__file__).resolve().parents[3] / "contracts" / "findings-schema.json",
+    Path("/app/contracts/findings-schema.json"),
+    Path(__file__).resolve().parents[1] / "contracts" / "findings-schema.json",
+)
 
 
 class ContractError(RuntimeError):
     """Un hallazgo no cumple el contrato versionado."""
 
 
+def default_contract_path() -> Path:
+    """Ruta del esquema versionado; `REVIEWS_CONTRACT_PATH` la sobreescribe."""
+    override = os.environ.get("REVIEWS_CONTRACT_PATH", "").strip()
+    if override:
+        return Path(override)
+    for candidate in _CONTRACT_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return _CONTRACT_CANDIDATES[0]
+
+
 def load_findings_schema(path: Path | None = None) -> dict[str, Any]:
-    data: dict[str, Any] = json.loads((path or _CONTRACT_PATH).read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads((path or default_contract_path()).read_text(encoding="utf-8"))
     return data
 
 
