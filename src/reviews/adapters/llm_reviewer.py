@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
-from reviews.adapters.text_utils import guess_protected_subject, slug
+from reviews.adapters.text_utils import guess_protected_subject, shorten_title, slug
 from reviews.domain.contracts import ContractError, validate_finding
 from reviews.domain.models import Finding, ReviewerResult, Severity
 from reviews.ports.llm import LlmError, LlmPort
@@ -185,7 +185,7 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
     subject = entry.get("protected_subject") or guess_protected_subject(f"{title} {why}")
     payload = {
         "id": str(entry.get("id") or f"correctness-{slug(key)}-{line}-{slug(title)[:24]}"),
-        "title": title[:100],
+        "title": shorten_title(title),
         "severity": _severity(entry.get("severity")),
         "file": key,
         "line": line,

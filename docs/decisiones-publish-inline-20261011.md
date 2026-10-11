@@ -83,20 +83,19 @@ autor, idioma y longitud.
 | Longitud resumen | Índice con conteo y `fichero:linea` | Es el mapa, no el detalle |
 | Estado de política | Se muestra la acción aplicada y, en `report`, la razón | En Fase 1 todo es `report`; se informa *qué habría hecho* |
 
-### Ejemplo renderizado (del fixture, para revisar el tono)
+### Ejemplo renderizado (real, del PR 430)
 
-Inline (un hilo por hallazgo):
+Inline (un hilo por hallazgo). Como el titulo es el mensaje de la herramienta
+truncado, la cabecera usa el mensaje **completo** y no se repite en el cuerpo:
 
 ```markdown
-**[P2] Cannot call method withdraw() on App\BackOffice\Domain\Wallet\Balance|null.**
-
-Se llama a `withdraw()` sobre un valor que puede ser `null`: si el saldo no se
-inicializa, el flujo revienta en runtime en vez de fallar al validar.
+**[P3] Rolling back this migration recreates UNIQ_PROGRAM_USER_PORTAL_USER but cannot restore the participants that the 1:1 unique index discarded on the way up**
 
 _Accion: report_ · confianza 100
-_Politica: Fallo critico_
 
-<!-- reviews:ab12cd34ef56:inline:standards-... -->
+_Politica: Ruta protegida (migrations/Version20261008140000.php): requiere aprobacion_
+
+<!-- reviews:5ed90c15838b:i:e4ezailw -->
 ```
 
 Resumen (un comentario general):
@@ -104,13 +103,25 @@ Resumen (un comentario general):
 ```markdown
 ## Code review automatica
 
-2 hallazgos · 2 inline · 0 solo en resumen
+4 hallazgos · 4 inline · 0 solo en resumen
 
-- **[P2] Cannot call method withdraw() ...** (`src/.../Transfer.php:14`) · report · inline
-- **[P3] Method ... is unused.** (`tests/.../TransferTest.php:23`) · report · inline
+- **[P3] PortalUser::$programUser is an inverse OneToOne ...** (`src/.../PortalUser.php:70`) · report · inline
+- **[P3] Rolling back this migration ...** (`migrations/...:39`) · report · inline
 
-<!-- reviews:ab12cd34ef56:ok -->
+<!-- reviews:5ed90c15838b:ok -->
 ```
+
+Reglas de ruido que ya aplica el render:
+
+- El detalle (`why_it_matters`) **no** se repite en el resumen si el hallazgo ya
+  tiene inline; solo aparece en los que caen al resumen.
+- La linea `_Politica:_` se **omite** cuando la razon es la generica ("Regla de
+  politica"); se conserva cuando el guard aporta (p. ej. `never_auto_paths`).
+- La marca de dedupe (`<!-- reviews:...:i:<8> -->`) se acorta a base32 y va al
+  pie: Bitbucket pinta el comentario HTML, asi que cuanto mas corta, menos ruido.
+
+> Nota abierta: Bitbucket **no oculta** los comentarios HTML. Si se encuentra una
+> forma fiable de ocultar la marca, sustituye al pie visible.
 
 Cuando este ejemplo te valga, marca **P3** de `tasks/todo.md` («Formato inline
 revisado por humano»); si quieres cambiar algo (idioma, mención al autor, tono),

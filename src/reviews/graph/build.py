@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import operator
 from typing import Annotated, TypedDict
@@ -352,12 +354,22 @@ def _summary_token(token: str, complete: bool) -> str:
 
 
 def _inline_token(token: str, finding_id: str) -> str:
-    """Marca por hallazgo: el id distingue titulos iguales en ficheros distintos."""
-    return f"<!-- {token}:inline:{finding_id} -->"
+    """Marca por hallazgo, corta a proposito.
+
+    Bitbucket pinta los comentarios HTML en el cuerpo, asi que el id del hallazgo
+    (que puede ser largo) se comprime a base32 para que el pie sea lo mas discreto
+    posible sin perder la distincion entre dos hallazgos con el mismo titulo.
+    """
+    digest = base64.b32encode(hashlib.sha256(finding_id.encode()).digest()).decode()[:8].lower()
+    return f"<!-- {token}:i:{digest} -->"
 
 
 def _footer(token: str, *, complete: bool) -> str:
-    """Marca invisible que identifica lo publicado y si la review fue completa."""
+    """Marca de dedupe: identifica lo publicado y si la review fue completa.
+
+    Bitbucket no oculta los comentarios HTML, asi que esta marca se ve; se
+    mantiene deliberadamente en una sola linea al pie para minimizar el ruido.
+    """
     return f"\n\n<!-- {token}{_token_suffix(complete=complete)} -->"
 
 
@@ -365,19 +377,34 @@ def _token_suffix(*, complete: bool) -> str:
     return ":ok" if complete else ":partial"
 
 
+def _policy_line(decision: Decision) -> str | None:
+    """Razon de la politica, solo si aporta (no la generica de relleno)."""
+    reason = decision.reason.strip()
+    if not reason or reason == "Regla de politica":
+        return None
+    return f"_Politica: {reason}_"
+
+
 def _render_inline(finding: Finding, decision: Decision, *, token: str = "") -> str:
-    lines = [
-        f"**[{finding.severity.value}] {finding.title}**",
-        "",
-        finding.why_it_matters,
-        "",
-        f"_Accion: {decision.action.value}_ · confianza {finding.confidence}",
-    ]
+    # La persona estatica propaga el mensaje crudo de la herramienta como titulo
+    # (truncado a 100) y como `why_it_matters` (completo). Repetir ambos ensena
+    # lo mismo dos veces; mostrar solo el titulo perderia el final del mensaje.
+    # Cuando el titulo es el mensaje truncado, la cabecera usa el mensaje entero
+    # y no hay cuerpo aparte.
+    why = " ".join(finding.why_it_matters.split())
+    title = " ".join(finding.title.split())
+    title_is_truncation = bool(why) and why.lower().startswith(title.lower())
+    header = why if title_is_truncation else title
+    blocks = [f"**[{finding.severity.value}] {header}**"]
+    if why and not title_is_truncation:
+        blocks.append(why)
+    blocks.append(f"_Accion: {decision.action.value}_ · confianza {finding.confidence}")
+    policy = _policy_line(decision)
+    if policy:
+        blocks.append(policy)
     if finding.suggested_fix:
-        lines.extend(["", f"**Sugerencia:** {finding.suggested_fix}"])
-    if decision.action.value == "report" and decision.reason:
-        lines.append(f"_Politica: {decision.reason}_")
-    body = "\n".join(lines)
+        blocks.append(f"**Sugerencia:** {finding.suggested_fix}")
+    body = "\n\n".join(blocks)
     if not token:
         return body
     return body + f"\n\n{_inline_token(token, finding.id)}"
@@ -417,7 +444,10 @@ def _render_summary(
             f"- **[{finding.severity.value}] {finding.title}** "
             f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
         )
-        lines.append(f"  {finding.why_it_matters}")
+        # El detalle ya vive en el inline; no se repite aqui salvo que sea
+        # imprescindible (hallazgo que solo figura en el resumen).
+        if finding not in inlined:
+            lines.append(f"  {finding.why_it_matters.strip()}")
     summary = "\n".join(lines)
     return summary + _footer(token, complete=complete) if token else summary
 

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
-from reviews.adapters.text_utils import guess_protected_subject, slug
+from reviews.adapters.text_utils import guess_protected_subject, shorten_title, slug
 from reviews.adapters.tooling_source import StaticToolingOutputSource
 from reviews.domain.contracts import validate_finding
 from reviews.domain.models import (
@@ -126,7 +126,7 @@ class ToolingReviewer:
 
 def _title(message: str) -> str:
     first = message.split(".")[0].strip() or "Hallazgo de PHPStan"
-    return (first[:97] + "...") if len(first) > 100 else first
+    return shorten_title(first)
 
 
 def _needle(added: dict[int, str], hint: int | None) -> str | None:

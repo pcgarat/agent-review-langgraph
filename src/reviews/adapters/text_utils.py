@@ -87,6 +87,20 @@ def slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:40]
 
 
+def shorten_title(text: str, limit: int = 100) -> str:
+    """Recorta a `limit` sin partir una palabra y sin puntos suspensivos.
+
+    El contrato fija `title` a 100 caracteres; un corte duro dejaba cabos a media
+    palabra ("...on every se"), que se leen como un error. Se normaliza el espaciado
+    y se corta en la ultima frontera de palabra que quepa.
+    """
+    clean = " ".join(text.split())
+    if len(clean) <= limit:
+        return clean
+    cut = clean[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.…-")
+    return cut or clean[:limit].rstrip()
+
+
 def guess_protected_subject(text: str) -> ProtectedSubject | None:
     """Infere un tema protegido a partir de las pistas del texto.
 
