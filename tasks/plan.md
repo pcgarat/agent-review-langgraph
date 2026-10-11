@@ -589,8 +589,10 @@ y pipeline nuevo sobre el mismo `sha`.
 - **DLQ de cola:** hoy un fallo de VCS se loguea y se pierde el job. Tolerable en report-only; no válido cuando el grafo pausa y reanuda.
 - **Canal de decisión del HITL:** aún sin definir (PR/Jira/CLI); es lo que convierte una review pausada en una decisión.
 - **Dedupe por token:** si un humano copia el pie `<!-- reviews:… -->` a otro commit, el publish lo leería como ya publicado. Riesgo bajo (pie invisible), pero conviene no asumirlo en Fase 2.
+- **Checkpointer acoplado a Postgres:** `build_checkpointer` abre una conexión `psycopg` síncrona y construye el `PostgresSaver` directamente, sin puerto. Para Report-only basta (una sola instancia, un solo `DATABASE_URL`), pero el `interrupt` del HITL invertirá la dirección: la reanudación llegará desde el *ingress* (webhook de PR/CI) en **otro proceso**, que necesita el mismo saver. Merece un `CheckpointerPort` (como `VcsPort`/`LlmPort`) para (a) no acoplar worker e ingress a Postgres, (b) poder testear el resume sin BD real, y (c) aislar la retención/poda. Es el primer trabajo de Fase 2, antes del `interrupt`.
 
 **Fase 2 (HITL, Opción B) — boceto de alcance**
+0. Extraer `CheckpointerPort` + adaptador `PostgresCheckpointer` e inyectarlo en worker e ingress (hoy el saver se construye en `build_runtime` y muere con el proceso del worker).
 1. `interrupt` en el nodo de decisión + reanudación (el checkpointer durable ya está listo: D2).
 2. Canal de respuesta (PR/Jira/CLI) y `Command(resume=...)` sobre el mismo `thread_id`.
 3. Devolver el webhook de PR como **descubrimiento** (`PENDING`), nunca como disparo.
