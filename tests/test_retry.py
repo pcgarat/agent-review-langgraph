@@ -4,7 +4,9 @@ import subprocess
 
 import httpx
 import pytest
+from langgraph.types import RetryPolicy
 
+from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.twg_vcs import TwgError, TwgVcsAdapter
 from reviews.domain.models import (
     AutofixClass,
@@ -16,6 +18,7 @@ from reviews.domain.models import (
 from reviews.errors import PermanentError, TransientError, is_transient
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
+from reviews.ports.llm import LlmError, LlmTransientError
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 
 # ---------------------------------------------------------------------------
@@ -279,3 +282,74 @@ def test_solo_los_nodos_puros_o_de_pausa_quedan_sin_politica() -> None:
 
     sin_politica = {name for name, spec in builder.nodes.items() if spec.retry_policy is None}
     assert sin_politica == {"merge", "policy", "hitl"}
+
+
+# ---------------------------------------------------------------------------
+# Persona LLM: reintento de fallos transitorios y degradacion al agotarlos
+# ---------------------------------------------------------------------------
+
+
+class _FlakyLlm:
+    def __init__(self, error: Exception, *, fail_times: int) -> None:
+        self._error = error
+        self._fail = fail_times
+        self.calls = 0
+
+    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
+        del system, prompt, max_tokens
+        self.calls += 1
+        if self.calls <= self._fail:
+            raise self._error
+        return '{"findings": []}'
+
+
+def _fast_retry() -> RetryPolicy:
+    return RetryPolicy(max_attempts=3, initial_interval=0.001, jitter=False, retry_on=is_transient)
+
+
+def _llm_graph(llm: _FlakyLlm):  # noqa: ANN202
+    vcs = FlakyVcs(TwgError("x"))
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[CountingReviewer(), LlmReviewer(llm=llm)],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+        retry_policy=_fast_retry(),
+    ).compile()
+    return graph, vcs
+
+
+def _run(graph) -> dict:  # noqa: ANN001
+    return graph.invoke(
+        {"request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"}, "findings": []}
+    )
+
+
+def test_llm_reviewer_propaga_el_fallo_transitorio_y_degrada_el_permanente() -> None:
+    transient = LlmReviewer(llm=_FlakyLlm(LlmTransientError("503"), fail_times=1))
+    with pytest.raises(LlmTransientError):
+        transient.review(repo="r", pr_id=1, diff="+x\n")
+
+    permanent = LlmReviewer(llm=_FlakyLlm(LlmError("401"), fail_times=1))
+    assert permanent.review(repo="r", pr_id=1, diff="+x\n").findings == []
+
+
+def test_el_nodo_persona_reintenta_un_fallo_transitorio_del_llm() -> None:
+    llm = _FlakyLlm(LlmTransientError("503"), fail_times=2)
+    graph, _vcs = _llm_graph(llm)
+
+    _run(graph)
+
+    assert llm.calls == 3, "dos fallos transitorios y el tercer intento responde"
+
+
+def test_llm_caido_tras_agotar_intentos_no_tumba_la_review() -> None:
+    # Agotados los intentos, la persona LLM degrada a 0 hallazgos: la review se
+    # publica con los de la estatica en vez de acabar en la DLQ.
+    llm = _FlakyLlm(LlmTransientError("503"), fail_times=10**6)
+    graph, vcs = _llm_graph(llm)
+
+    result = _run(graph)
+
+    assert llm.calls == 3
+    assert [f.id for f in result["merged"]] == ["f1"], "los hallazgos de la estatica siguen"
+    assert len(vcs.comments) == 1

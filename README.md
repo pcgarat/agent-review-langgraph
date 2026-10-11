@@ -127,6 +127,9 @@ Puerto `reviews.ports.reviewer`:
 - `LlmReviewer` (`correctness`): propone hallazgos con un modelo y los valida
   contra el contrato; una línea inventada se descarta. **Opt-in**
   (`LLM_REVIEWER_ENABLED`, `LLM_MODEL`). El proveedor es un puerto (`LlmPort`).
+  Un fallo transitorio del modelo se reintenta en el nodo; si se agotan los
+  intentos, o el fallo es permanente, la persona aporta 0 hallazgos y la review
+  sigue.
 - `NullReviewer`: por defecto cuando el perfil no declara checks y no hay LLM.
 
 Ambas personas emiten el mismo contrato `Finding`; `merge` deduplica, de modo que

@@ -11,6 +11,7 @@ from reviews.adapters.diff_parser import FileDiff, best_line, file_key, parse_un
 from reviews.adapters.text_utils import guess_protected_subject, shorten_title, slug
 from reviews.domain.contracts import ContractError, validate_finding
 from reviews.domain.models import Finding, ReviewerResult, Severity
+from reviews.errors import is_transient
 from reviews.ports.llm import LlmError, LlmPort
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,9 @@ class LlmReviewer:
     El modelo es un puerto inyectable (`LlmPort`); esta persona no conoce ningun
     proveedor. La salida se anca al diff igual que la persona estatica, de modo
     que una linea inventada por el modelo se descarta y nunca se publica. Un
-    fallo del modelo o un parseo invalido produce 0 hallazgos, jamas una review
-    caida.
+    fallo permanente del modelo o un parseo invalido produce 0 hallazgos. Un
+    fallo transitorio se propaga para que el nodo lo reintente; agotados los
+    intentos, el nodo degrada a 0 hallazgos: jamas una review caida.
     """
 
     def __init__(
@@ -127,11 +129,17 @@ class LlmReviewer:
             return None
         try:
             return self._llm.complete(system=_SYSTEM, prompt=prompt, max_tokens=self._max_tokens)
-        except LlmError as exc:
-            logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
-            return None
-        except Exception:
-            logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+        except Exception as exc:
+            # Un fallo transitorio (red, timeout, 5xx, 429) sube para que la
+            # `RetryPolicy` del nodo `persona` lo reintente; si se agotan los
+            # intentos, el nodo degrada a 0 hallazgos. Tragarlo aqui dejaba al
+            # nodo sin nada que reintentar.
+            if is_transient(exc):
+                raise
+            if isinstance(exc, LlmError):
+                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+            else:
+                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
             return None
 
     def _entries(self, raw: str) -> list[dict[str, Any]] | None:

@@ -8,6 +8,7 @@ import shlex
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Send, interrupt
 from pydantic import ValidationError
 
@@ -269,8 +270,8 @@ def default_retry_policy() -> RetryPolicy:
     """Politica de reintento de nodo por defecto (fallos transitorios).
 
     Sustituye al `default_retry_on` de LangGraph, que **no** reintenta
-    `RuntimeError` (de la que heredan las excepciones del repo) ni `TimeoutError`:
-    con el default, el grafo no reintentaria nada de lo que nos interesa. Aplica
+    `RuntimeError` (de la que heredan las excepciones del repo), `TimeoutError` ni
+    un `429`: con el default, ningun fallo de `twg` se reintentaria. Aplica
     solo a los nodos con efectos externos (`scope`, `persona`, `publish`, `notify`);
     `merge` y `policy` son puros y no la necesitan.
     """
@@ -299,6 +300,8 @@ def build_graph(
     notify (Teams). El fix llega en la fase 3.
     """
     del sandbox  # reservado para Fase 3
+    # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
+    retry = retry_policy if retry_policy is not None else default_retry_policy()
 
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
@@ -335,18 +338,35 @@ def build_graph(
             for reviewer in reviewers
         ]
 
-    def persona(state: ReviewState) -> ReviewState:
+    def persona(state: ReviewState, runtime: Runtime[None]) -> ReviewState:
         name = state["reviewer"]
         reviewer = next((r for r in reviewers if r.name == name), None)
         if reviewer is None:
             return {"findings": []}
         request = ReviewRequest.model_validate(state["request"])
-        result = reviewer.review(
-            repo=request.repo,
-            pr_id=request.pr_id,
-            diff=state["diff"],
-            head_sha=request.head_sha,
-        )
+        try:
+            result = reviewer.review(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                diff=state["diff"],
+                head_sha=request.head_sha,
+            )
+        except Exception as exc:
+            # Un fallo transitorio se relanza mientras queden intentos (lo reintenta
+            # la `RetryPolicy`). En el ultimo, la persona degrada a 0 hallazgos: una
+            # persona caida (p. ej. el LLM) no tumba la review ni se lleva por
+            # delante los hallazgos de las demas.
+            info = runtime.execution_info
+            attempt = info.node_attempt if info is not None else 1
+            if not is_transient(exc) or attempt < retry.max_attempts:
+                raise
+            logger.warning(
+                "Persona %s sin hallazgos: fallo transitorio tras %d intento(s) (%s)",
+                name,
+                attempt,
+                exc,
+            )
+            return {"findings": []}
         update: ReviewState = {
             "findings": result.findings,
             "finding_sources": {_finding_id(f): reviewer.name for f in result.findings},
@@ -576,7 +596,6 @@ def build_graph(
     # fallo transitorio de twg/LLM/Teams se recupera sin sacar el job de la cola.
     # `merge` y `policy` son deterministas y no lo llevan; `hitl` tampoco (un
     # reintento re-ejecutaria `interrupt` y duplicaria la pausa).
-    retry = retry_policy if retry_policy is not None else default_retry_policy()
     graph.add_node("scope", scope, retry_policy=retry)
     graph.add_node("persona", persona, retry_policy=retry)
     graph.add_node("merge", merge)

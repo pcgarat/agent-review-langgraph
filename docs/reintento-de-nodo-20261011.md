@@ -33,7 +33,9 @@ job: las dos son complementarias, no alternativas.
 ## 2. La trampa: el `default_retry_on` de LangGraph no sirve aquí
 
 La skill (y el módulo 08 de `docs/edu/`) dicen «usa `RetryPolicy(max_attempts=3)`».
-Con el `retry_on` por defecto eso **no reintentaría nada de lo que nos importa**.
+Con el `retry_on` por defecto eso **no reintentaría ningún fallo de `twg` ni un
+`429`**. Sí reintentaría los fallos HTTP «crudos» (5xx, conexión, timeout de
+transporte), como un 500 de Teams, que el adaptador deja salir sin envolver.
 Verificado contra `langgraph.types.default_retry_on` en 1.2.14:
 
 ```
@@ -50,7 +52,9 @@ ConnectionError         -> True
 Dos consecuencias directas:
 
 1. `TwgError` y `LlmError` heredaban de `RuntimeError`, así que el default **jamás**
-   habría reintentado un fallo de `twg` o del modelo.
+   habría reintentado un fallo de `twg` o del modelo. Hacerlas hijas de
+   `TransientError` no lo arregla por sí solo: `TransientError` sigue siendo un
+   `RuntimeError` y el default lo sigue descartando. Hace falta un `retry_on` propio.
 2. Un `429` (rate limit) tampoco se reintenta, que es justo el caso que sí se resuelve
    esperando.
 
@@ -64,7 +68,7 @@ sobre el *tipo*.
 
 | Se reintenta (`True`) | No se reintenta (`False`) |
 |---|---|
-| `TransientError` y sus hijas (`TwgError`, `LlmError`) | `PermanentError` |
+| `TransientError` y sus hijas (`TwgError`, `LlmTransientError`) | `PermanentError` (y `LlmError`: 4xx, respuesta malformada) |
 | `httpx.RequestError` (conexión, DNS, timeout) | Otros `httpx.HTTPStatusError` (4xx) |
 | `httpx.HTTPStatusError` con 5xx o **429** | `ValueError`, `TypeError`, `KeyError`… |
 | `subprocess.TimeoutExpired`, `TimeoutError`, `ConnectionError` | todo lo demás |
@@ -90,6 +94,14 @@ graph.add_node("notify", notify, retry_policy=retry)    # twg (URL del PR) + Tea
   duplicaría la pausa. Además, el nodo tiene que seguir siendo el punto puro de
   sincronización con la persona.
 - **`merge` y `policy` no la llevan** porque son deterministas: un fallo ahí es un bug.
+- **`persona` degrada en el último intento.** `LlmReviewer` deja subir los fallos
+  transitorios del modelo (antes los capturaba y devolvía 0 hallazgos, así que la
+  política no tenía nada que reintentar). El nodo los relanza mientras quedan
+  intentos (`runtime.execution_info.node_attempt < max_attempts`) y, en el último,
+  devuelve 0 hallazgos de esa persona con un aviso en el log. Un proveedor caído no
+  manda la review a la DLQ ni se lleva por delante los hallazgos de la estática. Los
+  fallos permanentes del modelo (4xx, respuesta malformada) siguen degradando en el
+  propio `LlmReviewer`, sin reintentar.
 - **`persona` es un nodo con fan-out (`Send`)**: la política registrada en
   `add_node("persona", ...)` se aplica a las tareas creadas por el `Send`. Verificado
   en 1.2.14: dos ramas que fallan una vez cada una producen 4 llamadas y completan.
@@ -175,13 +187,16 @@ nodo los mitiga y los arreglos de `tasks/todo-revision-main.md` los cierran:
 
 ## 10. Verificación
 
-`tests/test_retry.py` (9 tests) fija el comportamiento:
+`tests/test_retry.py` (12 tests) fija el comportamiento:
 
 - La tabla de clasificación (`is_transient`) completa, incluido el `429` y el 404.
 - El contraste con `default_retry_on` (el porqué de la política propia).
 - `timeout` pasado al `subprocess` y el colgado convertido en `TwgError`.
 - `scope` reintenta un fallo transitorio y completa la review.
 - Un `ValueError` **no** se reintenta (una sola llamada).
+- La persona LLM reintenta un fallo transitorio del modelo y, si se agotan los
+  intentos, degrada a 0 hallazgos sin tumbar la review; un fallo permanente
+  degrada sin reintentar.
 - Una `persona` que falla y se recupera **no duplica** hallazgos (reducer + `writes.clear()`).
 - `publish` reintentado no repite el inline ya publicado.
 - La asignación de política por nodo: la llevan todos los nodos con efectos externos

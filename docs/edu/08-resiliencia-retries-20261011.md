@@ -79,9 +79,12 @@ RetryPolicy(
 )
 ```
 
-`retry_on` por defecto es `default_retry_on`, que reintenta errores **transitorios**
-(`ConnectionError`, HTTP 5xx, timeout) y **no** reintenta errores de programación
-(`ValueError`, `TypeError`…). Puedes pasar:
+`retry_on` por defecto es `default_retry_on`, que reintenta `ConnectionError`, los 5xx
+y los errores de transporte de `httpx`/`requests`, y **no** reintenta errores de
+programación (`ValueError`, `TypeError`…). Ojo con lo que también descarta:
+`RuntimeError` (y sus hijas), cualquier `OSError` (incluido `TimeoutError`) y el `429`.
+Por eso este repo usa su propio predicado, `reviews.errors.is_transient` (ver
+`docs/reintento-de-nodo-20261011.md` §2). Puedes pasar:
 
 - **Una excepción**: `retry_on=TimeoutError`.
 - **Varias**: `retry_on=(TimeoutError, ConnectionError)`.
