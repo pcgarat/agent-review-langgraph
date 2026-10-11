@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 import redis
@@ -20,7 +20,13 @@ DEFAULT_TTL_S = 8 * 24 * 3600
 
 @runtime_checkable
 class PausedStore(Protocol):
-    def pause(self, request: ReviewRequest, approval: ApprovalRequest) -> PausedReview: ...
+    def pause(
+        self,
+        request: ReviewRequest,
+        approval: ApprovalRequest,
+        *,
+        created_at: datetime | None = None,
+    ) -> PausedReview: ...
 
     def get(self, review_key: str) -> PausedReview | None: ...
 
@@ -29,6 +35,15 @@ class PausedStore(Protocol):
     def resume(self, review_key: str) -> None: ...
 
     def sweep(self, *, now: datetime | None = None) -> list[PausedReview]: ...
+
+    def mark_expired_enqueued(self, review_key: str, *, now: datetime | None = None) -> None:
+        """Anota que su reanudacion `expired` ya esta en la cola (no se reencola)."""
+        ...
+
+
+def _is_due(review: PausedReview, now: datetime | None) -> bool:
+    """Vencida y sin reanudacion `expired` encolada todavia."""
+    return review.expired_enqueued_at is None and review.is_expired(now=now)
 
 
 class RedisPausedStore:
@@ -63,10 +78,19 @@ class RedisPausedStore:
     def _entry_key(self, review_key: str) -> str:
         return f"{self._key}:{review_key}"
 
-    def pause(self, request: ReviewRequest, approval: ApprovalRequest) -> PausedReview:
+    def pause(
+        self,
+        request: ReviewRequest,
+        approval: ApprovalRequest,
+        *,
+        created_at: datetime | None = None,
+    ) -> PausedReview:
         if not self.available():
-            return self._fallback.pause(request, approval)
+            return self._fallback.pause(request, approval, created_at=created_at)
         review = PausedReview(review_key=request.review_key, request=request, approval=approval)
+        if created_at is not None:
+            # Re-registro de una pausa perdida: el TTL cuenta desde la pausa real.
+            review.created_at = created_at
         if self._ttl_s is not None:
             review.ttl_s = self._ttl_s
         self._client.set(self._entry_key(review.key), review.model_dump_json(), ex=self._key_ttl_s)
@@ -108,11 +132,24 @@ class RedisPausedStore:
         """Devuelve las pausas vencidas (para reanudarlas con `expired`).
 
         No borra la entrada: la reanudacion la elimina al aplicarse, para que el
-        redis-encolado sea idempotente si el worker reintenta.
+        redis-encolado sea idempotente si el worker reintenta. Las que ya tienen la
+        reanudacion encolada (`mark_expired_enqueued`) no se devuelven: si esa
+        reanudacion falla, su destino es la DLQ, no otra vuelta del barrido.
         """
         if not self.available():
             return self._fallback.sweep(now=now)
-        return [review for review in self.all() if review.is_expired(now=now)]
+        return [review for review in self.all() if _is_due(review, now)]
+
+    def mark_expired_enqueued(self, review_key: str, *, now: datetime | None = None) -> None:
+        if not self.available():
+            self._fallback.mark_expired_enqueued(review_key, now=now)
+            return
+        review = self.get(review_key)
+        if review is None:
+            return
+        review.expired_enqueued_at = now or datetime.now(UTC)
+        # `keepttl`: la marca no debe alargar la vida de la entrada.
+        self._client.set(self._entry_key(review_key), review.model_dump_json(), keepttl=True)
 
 
 class InMemoryPausedStore:
@@ -122,8 +159,16 @@ class InMemoryPausedStore:
         self._items: dict[str, PausedReview] = {}
         self._ttl_s = ttl_s
 
-    def pause(self, request: ReviewRequest, approval: ApprovalRequest) -> PausedReview:
+    def pause(
+        self,
+        request: ReviewRequest,
+        approval: ApprovalRequest,
+        *,
+        created_at: datetime | None = None,
+    ) -> PausedReview:
         review = PausedReview(review_key=request.review_key, request=request, approval=approval)
+        if created_at is not None:
+            review.created_at = created_at
         if self._ttl_s is not None:
             review.ttl_s = self._ttl_s
         self._items[review.key] = review
@@ -139,4 +184,9 @@ class InMemoryPausedStore:
         self._items.pop(review_key, None)
 
     def sweep(self, *, now: datetime | None = None) -> list[PausedReview]:
-        return [review for review in self._items.values() if review.is_expired(now=now)]
+        return [review for review in self._items.values() if _is_due(review, now)]
+
+    def mark_expired_enqueued(self, review_key: str, *, now: datetime | None = None) -> None:
+        review = self._items.get(review_key)
+        if review is not None:
+            review.expired_enqueued_at = now or datetime.now(UTC)

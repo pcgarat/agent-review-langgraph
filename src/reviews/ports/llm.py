@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from reviews.errors import TransientError
 
-class LlmError(RuntimeError):
-    """Fallo del proveedor de modelo (red, cuota, respuesta invalida)."""
+
+class LlmError(TransientError):
+    """Fallo del proveedor de modelo (red, cuota, respuesta invalida).
+
+    Recuperable por diseno: el nodo de la persona LLM ya degrada a 0 hallazgos
+    ante su fallo, pero cuando la clasificacion se use para reintentar, el tipo
+    correcto es este y no un `RuntimeError` generico.
+    """
 
 
 @runtime_checkable

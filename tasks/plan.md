@@ -98,6 +98,8 @@ Decisiones de implementación no obvias, documentadas aparte:
 | Contrato `twg` distinto al adaptador | Goldens de stdout reales; `twg` 1.3.5 verificado | ✅ Resuelto |
 | Persona LLM ruidosa / cara | Tooling primero; validación de contrato; corte de presupuesto | ✅ Controlado |
 | Falla transitoria pierde la review | Reintento con contador + DLQ | ✅ Resuelto |
+| Fallo transitorio dentro de un nodo (twg/LLM/Teams) rehace el grafo entero | `RetryPolicy` por nodo + `is_transient` (`docs/reintento-de-nodo-20261011.md`) | ✅ Resuelto |
+| `twg` colgado bloquea el nodo (y el worker secuencial) | `TWG_TIMEOUT_S` en el `subprocess` → `TwgError` transitorio | ✅ Resuelto |
 | Worker no sobrevive a una cola vacia | Redis sin deadline de socket + `dequeue` tolerante | ✅ Resuelto (smoke 2026-10-11) |
 | Contrato fuera de la imagen | Ruta con candidatos + `contracts/` copiado al Dockerfile | ✅ Resuelto (smoke 2026-10-11) |
 | Re-push duplica inlines | Checkpointer por hilo + marca de publicación por **ejecución** (coherente con el hilo) | ✅ Resuelto |
@@ -126,11 +128,21 @@ decisión y del plan:
   **`fix_with_approval`**; publicar **al decidir**, no al pausar.
 - **Cambio respecto al boceto:** el `CheckpointerPort` **sale del alcance**: con el
   resume en el worker, ningún otro proceso necesita el saver. Se reabre si se mueve.
+  No confundir con **T10** (seam de retención): aquel puerto abstraía *todo* el saver
+  sin segundo cliente; T10 solo aísla la parte **volátil** (la decisión de podar) y
+  mantiene el acoplamiento donde no hay alternativa.
 - **Hallazgo verificado (LangGraph 1.2.14):** una reentrega del job estando **pausado**
   no pierde la decisión (vuelve a pausar) pero **re-ejecuta `scope` y personas**; hay
   que tratar el estado pausado explícitamente en `process_request`.
 
-Tareas en `tasks/todo.md` (T1–T9) y riesgos en el spec §7.
+Tareas en `tasks/todo.md` (T1–T9 + **T10**) y riesgos en el spec §7.
 
-Estado: **T1–T9 cerradas** (227 tests en verde). Fase 2 completa; queda el smoke
+- **T10 (deuda cerrada):** seam de **Strategy** para la retención de checkpoints. Los
+  cuatro backends oficiales declaran `copy_thread`/`delete_for_runs`/`prune` como
+  `NotImplementedError` (verificado en los wheels): la API que tocamos es volátil y
+  hoy está soldada al saver. T10 la confina en un adaptador y saca la decisión a una
+  `RetentionPolicy` testeable, sin cambiar el comportamiento. No reabre el
+  `CheckpointerPort`.
+
+Estado: **T1–T10 cerradas** (228 tests en verde). Fase 2 completa; queda el smoke
 contra infra real (Redis/Postgres/Bitbucket) y la validación P3 del formato inline.

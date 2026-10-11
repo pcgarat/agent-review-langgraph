@@ -13,6 +13,7 @@ Este README cubre como levantarlo y como funciona. La documentacion de fondo:
 | `docs/decisiones-publish-inline-20261011.md` | Formato inline, orden de publicacion y borrados |
 | `docs/smoke-fase1-20261011.md` | Smoke E2E (Nivel 1 local y Nivel 2 contra Bitbucket) |
 | `docs/pendiente-fase1-20261011.md` | Registro de la auditoria de cierre y su resolucion |
+| `docs/reintento-de-nodo-20261011.md` | Reintento por nodo (`RetryPolicy`), clasificacion de errores y el techo de `twg` |
 | `tasks/plan.md` | Estado del plan: tareas cerradas y pendientes humanos |
 
 ## Arranque
@@ -78,6 +79,9 @@ mismo commit no deben duplicar los comentarios del PR. Hay dos capas:
    - Un inline ya publicado no se repite aunque el resumen hubiera fallado. Una
      review **degradada** (`:partial`) **no** bloquea a una completa posterior
      (ni de otro pipeline, ni de la misma ejecucion si el artefacto llega tarde).
+     Para eso la pasada degradada que encola el barrido de ingesta corre en su
+     propio hilo (`thread_id` con sufijo `:partial`): comparte `review_key` y
+     marcas con la completa, pero no su checkpoint.
 
 > Esto alinea el dedupe con el `thread_id` (una ejecucion, una marca) y cierra Q1.
 

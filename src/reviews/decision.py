@@ -46,6 +46,11 @@ def build_decision(
     unknown = [item.finding_id for item in collected if item.finding_id not in pending_ids]
     if unknown:
         raise DecisionError("finding_id ajeno a la review pausada: " + ", ".join(sorted(unknown)))
+    # Una decision parcial publicaria los no decididos como si nadie los hubiera
+    # frenado: se exige responder a todos los pendientes de una vez.
+    missing = pending_ids - {item.finding_id for item in collected}
+    if missing:
+        raise DecisionError("Faltan hallazgos por decidir: " + ", ".join(sorted(missing)))
     if any(item.outcome is DecisionOutcome.EXPIRED for item in collected):
         # `expired` lo emite el barrido del TTL, no una persona.
         raise DecisionError("`expired` no es una decision humana valida")

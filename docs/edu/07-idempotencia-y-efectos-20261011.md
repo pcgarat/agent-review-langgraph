@@ -144,7 +144,7 @@ Las dos claves del sistema (evento de ingesta e intención de review):
 flowchart TD
     SHA["repo:pr:head_sha"] --> IK["ingest_key<br/>= repo:pr:sha:tool<br/><i>el evento de CI se ingesta una vez</i>"]
     SHA --> RK["review_key<br/>= repo:pr:sha:pipeline_id<br/><i>una ejecución = una review</i>"]
-    RK --> TID["thread_id = review_key<br/>hilo del checkpointer"]
+    RK --> TID["thread_id = review_key<br/>(+ :partial si es la pasada degradada)<br/>hilo del checkpointer"]
     RK --> TOK["dedupe_token = sha256(review_key)<br/>marca embebida en el PR"]
     classDef base fill:#e7f5ff,stroke:#1971c2;
     classDef ev fill:#fff3bf,stroke:#f08c00;
@@ -153,6 +153,17 @@ flowchart TD
     class IK ev
     class RK,TID,TOK ex
 ```
+
+La pasada **degradada** (la que encola el barrido cuando vence la espera de
+artefactos) es la única excepción: comparte `review_key` y `dedupe_token`, pero su
+hilo lleva el sufijo `:partial`. Si el artefacto llega tarde, la pasada completa de la
+misma ejecución necesita un hilo propio; con el mismo hilo, el worker lo vería ya
+terminado y no haría nada. El token compartido es lo que evita repetir los inline.
+
+Las claves de la API (`ingest_key`, `review_key`) se reclaman con `SET NX`. Reclamar
+antes de hacer el trabajo obliga a **liberar** la clave si el trabajo falla
+(`IdempotencyStore.release`): si no, el reintento del CI recibe `duplicado` y el
+artefacto se pierde en silencio durante los 7 días de TTL de la clave.
 
 ---
 

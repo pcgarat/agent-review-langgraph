@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9. Estado: **T1–T9 cerradas** (227 tests en verde).
+checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde).
 
 ### Fundación
 
@@ -117,6 +117,75 @@ checkpoints tras T4 y tras T9. Estado: **T1–T9 cerradas** (227 tests en verde)
 ### Checkpoint: tras T5–T9
 
 - [x] Decidir y reanudar funciona de punta a punta; `make ci` en verde (227 tests).
+
+### Deuda nueva (post-Fase 2)
+
+        - [x] **T10** — Seam de retención: `RetentionPolicy` (Strategy) para desacoplar del saver ✅
+  - Nota: `RetentionPolicy` (Protocol) + `CompletedOnlyRetention` (política por
+    defecto) y `prune_threads` como motor público; `prune_completed_threads` queda
+    como atajo. `list`/`delete_thread` quedan confinadas en el motor. Comportamiento
+    observable idéntico (T8 intacto); test nuevo `test_prune_threads_aplica_la_politica_inyectada`.
+  - Aceptación: la decisión «¿este hilo se poda?» vive en una `RetentionPolicy`
+    (Protocol + `CompletedOnlyRetention`), testeable sin saver ni Postgres; su lógica
+    es la actual (`_is_completed` + cutoff + exclusión de pausados) y **no cambia el
+    comportamiento observable**. Las dos llamadas frágiles de LangGraph (`list`,
+    `delete_thread`) quedan confinadas en un único adaptador, de modo que si el
+    paquete implementa `prune` se añade un adaptador que **reusa la misma política**
+    sin tocar el motor.
+  - Motivo: los cuatro backends oficiales declaran `copy_thread`/`delete_for_runs`/
+    `prune` como `NotImplementedError` (verificado en los wheels); la frontera que
+    tocamos es volátil y hoy está soldada al saver. Es un **seam** (aislar lo que
+    puede cambiar), **no** el `CheckpointerPort` que retiró el spec §4.9: sigue sin
+    haber un segundo cliente.
+  - Verifica: `tests/test_checkpointer.py` ✅ (los tres tests de T8 siguen verdes).
+  - Ficheros: `src/reviews/checkpointer.py`, `tests/test_checkpointer.py`.
+
+### Resiliencia de nodo (deuda cerrada)
+
+- [x] **Reintento de nodo (`RetryPolicy`)** — los nodos con efectos externos
+  (`scope`, `persona`, `publish`) reintentan fallos transitorios **dentro** de la
+  invocación, sin sacar el job de la cola. Clasificación propia en
+  `reviews/errors.py` (`is_transient`), porque el `default_retry_on` de LangGraph
+  **no** reintenta `RuntimeError` (nuestros adaptadores) ni `429` ni `TimeoutError`.
+  - Verifica: `tests/test_retry.py` (9 tests) ✅
+  - Ficheros: `src/reviews/errors.py`, `src/reviews/graph/build.py`,
+    `src/reviews/adapters/twg_vcs.py`, `src/reviews/ports/llm.py`,
+    `src/reviews/worker/main.py`, `src/reviews/settings.py`.
+  - Detalle: `docs/reintento-de-nodo-20261011.md`.
+- [x] **`twg` sin `timeout` (B8 de la revisión)** — `RetryPolicy` no puede con un
+  proceso colgado (nunca lanza); `add_node(timeout=...)` solo aplica a nodos async,
+  así que el techo vive en el `subprocess` y el `TimeoutExpired` se convierte en
+  `TwgError` (transitorio). ✅
+
+### Persistencia e interrupciones (revisión 2026-10-11)
+
+- [x] **Decisión completa obligatoria** — `build_decision` rechaza una decisión que
+  deje pendientes sin responder (CLI exit 2, API 409); la pista del aviso nombra
+  todos los `finding_id`. Defensa en el nodo `hitl`: ante una decisión incompleta
+  **vuelve a pausar** (bucle de `interrupt`), no lanza. ✅
+  - Motivo: LangGraph guarda el valor del resume en el checkpoint antes de ejecutar
+    el nodo; si el nodo lanzara, ese valor se re-entregaría en cada reanudación y el
+    hilo quedaría atascado para siempre.
+- [x] **`_is_completed` sin falsos completados** — un `__resume__` junto al
+  `__interrupt__` (resume fallido o re-pausado) ya no cuenta como terminado: antes
+  ese hilo se podaba y la review quedaba indecidible. ✅
+- [x] **Pausas huérfanas** — hilo pausado sin entrada en el inbox (caída del worker
+  entre el checkpoint y `_on_paused`): la reentrega sin decisión la repone y
+  `reconcile_paused` (ciclo de poda) repone las demás, con `created_at` del
+  checkpoint para que el TTL cuente desde la pausa real. ✅
+- [x] **Checkpointer de producción** — con `ENVIRONMENT=production` no cae a memoria
+  (falla el arranque); `ConnectionPool` con `check` y fallo rápido (10 s); un fallo
+  al leer el hilo sube y reencola en vez de re-ejecutar desde `START`. ✅
+- [x] **Enlace del PR en el aviso de pausa** — `_pr_url` leía un `vcs` que nunca
+  estuvo en el estado; ahora el worker pasa el `VcsPort` (`build_vcs`). ✅
+- [x] **Decisión tardía visible** — warning con el actor cuando su decisión llega a
+  un hilo completado o inexistente (carrera con el `expired` del TTL). ✅
+  - Verifica: `tests/test_hitl_persistence.py` (13 tests); suite: 266 en verde.
+  - Ficheros: `src/reviews/decision.py`, `src/reviews/graph/build.py`,
+    `src/reviews/checkpointer.py`, `src/reviews/worker/main.py`,
+    `src/reviews/paused_store.py`, `src/reviews/settings.py`.
+- [ ] **Smoke del checkpointer contra Postgres real** — el pool y el fallo de
+  arranque en producción solo están probados sin base (no había Postgres local).
 
 ### Riesgo asumido (documentado, no una tarea)
 

@@ -237,6 +237,38 @@ def test_prune_nunca_poda_un_pausado_aunque_no_se_le_pase() -> None:
     assert request.review_key not in pruned
 
 
+def test_prune_threads_aplica_la_politica_inyectada() -> None:
+    # T10: el motor de poda acepta cualquier `RetentionPolicy`. Una politica falsa
+    # decide que borrar sin mirar la antiguedad, y el motor la obedece: es el
+    # desacople que permite cambiar de criterio (o de backend) sin tocar el scan.
+    from reviews.checkpointer import prune_threads
+
+    saver = build_checkpointer("")
+    vcs = _MemoryVcs()
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[_OneFinding()],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                "max_autonomy": "fix_with_approval",
+                "default_action": "escalate",
+                "rules": [],
+            }
+        ),
+    ).compile(checkpointer=saver)
+    request = ReviewRequest(repo="r", pr_id=9, head_sha="aaa", pipeline_id="keep")
+    assert process_request(graph, request).paused
+
+    class _Never:
+        def can_prune(self, thread_id: str, latest, now) -> bool:
+            del thread_id, latest, now
+            return False
+
+    # Aunque el hilo exista, una politica que nunca aprueba no borra nada.
+    assert prune_threads(saver, _Never()) == []
+
+
 def test_reentrega_del_mismo_thread_no_republica() -> None:
     vcs = _MemoryVcs()
     graph = _graph(vcs)

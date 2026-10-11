@@ -25,8 +25,11 @@ Hay dos "granularidades" de reintento y conviene no confundirlas:
 | **Nodo** | LangGraph (`retry_policy` en `add_node`) | Dentro de una invocación |
 | **Job / review** | La aplicación (worker + cola) | Entre invocaciones del grafo |
 
-El repo usa **las dos**: LangGraph podría reintentar nodos, y la aplicación reintenta la
-review entera a través de la cola con un contador de intentos y una DLQ.
+El repo usa **las dos**: LangGraph reintenta los nodos con efectos externos
+(`scope`, `persona`, `publish`, `notify`) con `RetryPolicy`, y la aplicación reintenta
+la review entera a través de la cola con un contador de intentos y una DLQ. La política de nodo
+no sustituye a la de job: la primera recupera el fallo transitorio donde ocurrió, la
+segunda es la red de seguridad de lo demás (ver §5).
 
 ```mermaid
 flowchart TB
@@ -258,16 +261,42 @@ solo duplicaría la publicación.
 
 El bucle de reintento de job, en `src/reviews/worker/main.py`:
 
-```startLine:229:258:src/reviews/worker/main.py
+```startLine:554:609:src/reviews/worker/main.py
 def _consume(
-    queue: ReviewQueue, graph: ReviewGraph, request: ReviewRequest, *, max_attempts: int
+    queue: ReviewQueue,
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    paused: PausedStore | None = None,
+    chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
     try:
-        process_request(graph, request)
-    except Exception:
-        logger.exception("Fallo procesando %s", request.review_key)
-        _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        process_request(graph, request, paused=paused, chat=chat, vcs=vcs)
+    except Exception as exc:
+        if is_transient(exc):
+            logger.warning(
+                "Fallo transitorio procesando %s (%s); se reencola",
+                request.review_key,
+                type(exc).__name__,
+            )
+        else:
+            # Un fallo permanente (bug, payload invalido) no se arregla reintentando
+            # el job entero, pero la clasificacion de job es mas laxa que la de
+            # nodo: se registra para poder distinguirlo en la DLQ.
+            logger.exception("Fallo no clasificado como transitorio en %s", request.review_key)
+        try:
+            _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        except Exception:
+            # El manejo del error no puede tumbar el worker: el job ya salio de la
+            # cola (`BLPOP`) y una excepcion aqui mataria el bucle entero.
+            logger.exception(
+                "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
+                request.review_key,
+                request.model_dump_json(),
+            )
 
 
 def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
@@ -290,6 +319,18 @@ def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts
         max_attempts,
     )
 ```
+
+Dos detalles que salieron de la revisión de `main`:
+
+- **El manejo del error no puede lanzar.** El job ya salió de la cola (`BLPOP`); si
+  reencolar o mandar a la DLQ falla dentro del `except`, la excepción mataría el bucle
+  del worker. Por eso `_requeue_or_drop` va en su propio `try` (B1). El fallo real que
+  lo destapó: la DLQ serializaba con `model_dump()` y un job con decisión humana lleva
+  un `datetime` que `json.dumps` no acepta; ahora es `model_dump(mode="json")`.
+- **El reintento de job continúa, no repite.** Cuando el job vuelve, `process_request`
+  ve el hilo a medias y llama a `invoke(None)`: retoma el nodo que falló (ver módulo
+  05). Por eso el aviso de Teams vive en un nodo `notify` propio: si falla, el
+  reintento retoma solo el aviso, no la publicación (B2, B9).
 
 El umbral, en `src/reviews/settings.py`:
 
@@ -332,7 +373,9 @@ tumba el worker:
 Los tests que fijan el comportamiento están en `tests/test_worker.py`:
 `test_consume_reencola_con_intento_incremental_ante_excepcion` y
 `test_consume_descarta_el_job_al_agotar_intentos` (este último comprueba que el job
-descartado **queda en la DLQ**, no solo en el log).
+descartado **queda en la DLQ**, no solo en el log). Las regresiones de la revisión de `main` (DLQ de un job con
+decisión, reintento que continúa desde el checkpoint, fallo de Teams) están en
+`tests/test_revision_main.py`.
 
 Y el "latido" (`heartbeat` en un hilo aparte) es un mecanismo de resiliencia de procesos:
 si el worker muere, el fichero se queda viejo y Docker lo reinicia

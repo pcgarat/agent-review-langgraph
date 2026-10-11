@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
@@ -52,60 +52,114 @@ def build_serde() -> JsonPlusSerializer:
     return JsonPlusSerializer(allowed_msgpack_modules=_STATE_TYPES)
 
 
-def build_checkpointer(database_url: str) -> BaseCheckpointSaver[Any]:
+def build_checkpointer(
+    database_url: str, *, required: bool = False, connect_timeout_s: float = 10.0
+) -> BaseCheckpointSaver[Any]:
     """Checkpointer durable si hay Postgres; en memoria si no (tests/local/CI).
 
-    Nunca lanza: sin base de datos el worker sigue funcionando sin dedupe por
-    hilo (la marca de publicacion cubre el resto de casos). El checkpointer
-    durable permite reanudar el grafo en Fase 2 (HITL) sin cambios adicionales.
+    Con `required` (produccion) lanza en vez de caer a memoria: con HITL, un
+    checkpointer en memoria pierde todas las pausas al reiniciar, y eso no puede
+    descubrirse por un log. Fuera de produccion se mantiene el fallback.
     """
     if not database_url:
+        if required:
+            raise RuntimeError("DATABASE_URL es obligatoria en produccion (checkpointer durable)")
         logger.info("Sin DATABASE_URL; checkpointer en memoria (no durable)")
         return InMemorySaver(serde=build_serde())
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
-        from psycopg import Connection
         from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
 
-        # Conexion dedicada y de larga vida: el worker es un proceso unico.
-        conn = Connection.connect(
-            database_url, autocommit=True, prepare_threshold=0, row_factory=dict_row
+        # Pool pequeno con `check`: una conexion muerta (reinicio de Postgres) se
+        # descarta al pedirla en vez de fallar cada `get_state` hasta reiniciar.
+        pool: ConnectionPool[Any] = ConnectionPool(
+            database_url,
+            min_size=1,
+            max_size=2,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+            check=ConnectionPool.check_connection,
+            timeout=connect_timeout_s,
+            open=True,
         )
-        saver = PostgresSaver(conn, serde=build_serde())
+        # Falla rapido en el arranque si Postgres no responde (sin esto, `setup`
+        # esperaria el timeout de `getconn` con un error menos claro).
+        pool.wait(timeout=connect_timeout_s)
+        saver = PostgresSaver(pool, serde=build_serde())
         saver.setup()
         logger.info("Checkpointer Postgres listo")
         return saver
     except Exception:
+        if required:
+            raise
         logger.exception("No se pudo abrir el checkpointer Postgres; uso memoria")
         return InMemorySaver(serde=build_serde())
 
 
-def prune_completed_threads(
-    saver: BaseCheckpointSaver[Any],
-    *,
-    older_than_days: float,
-    paused_threads: Iterable[str] = (),
-    now: datetime | None = None,
-) -> list[str]:
-    """Borra hilos **completados** mas antiguos que la retencion. Nunca poda pausados.
+class RetentionPolicy(Protocol):
+    """Decide si el ultimo checkpoint de un hilo puede podarse.
+
+    Es el **seam** de T10: la regla de negocio (que merece borrarse) queda aislada
+    de la API del saver (`list`/`delete_thread`), que los cuatro backends oficiales
+    mantienen parcialmente sin implementar (`prune`, `delete_for_runs`,
+    `copy_thread` -> `NotImplementedError`). Con la decision tras un Protocol, un
+    futuro adaptador puede apoyarse en un `prune` nativo **reusando esta misma
+    politica**, sin reescribir el motor ni volver a tocar los tests del contrato.
+    """
+
+    def can_prune(
+        self, thread_id: str, latest: CheckpointTuple, now: datetime
+    ) -> bool:  # pragma: no cover - contrato
+        ...
+
+
+class CompletedOnlyRetention:
+    """Politica por defecto: poda completados antiguos; nunca un pausado.
 
     Un hilo pausado espera una decision humana que puede llegar tarde: podarlo
     dejaria la review indecidible (`Command(resume=...)` sin estado). Por eso los
-    pausados (`paused_threads`, del inbox) se excluyen siempre, aunque superen la
-    retencion; su ciclo lo cierra el TTL de decision (`sweep_expired`).
-
-    La dedupe de publicacion vive en las marcas del PR, no en el checkpoint, asi
-    que podar un hilo completado no puede duplicar comentarios (buena separacion
-    que no hay que romper, spec §4.8). Nunca lanza: la poda es mantenimiento.
+    pausados se excluyen por **doble via**: los de `paused_threads` (inbox) y los
+    que delata el propio checkpoint. La dedupe de publicacion vive en las marcas
+    del PR, no en el checkpoint, asi que podar un completado no puede duplicar
+    comentarios (spec §4.8).
     """
-    if older_than_days <= 0:
-        return []
-    cutoff = (now or datetime.now(UTC)) - timedelta(days=older_than_days)
-    protected = set(paused_threads)
+
+    def __init__(
+        self, *, older_than_days: float, paused_threads: Iterable[str], now: datetime
+    ) -> None:
+        self._cutoff = now - timedelta(days=older_than_days)
+        self._protected = set(paused_threads)
+        # Retencion `<= 0` desactiva la poda: evita borrar todo por un arranque mal
+        # configurado. `can_prune` corta en el primer hilo sin depender del caller.
+        self._enabled = older_than_days > 0
+
+    def can_prune(self, thread_id: str, latest: CheckpointTuple, now: datetime) -> bool:
+        del now  # `now` viaja en la configuracion de la politica (permite fakes)
+        if not self._enabled or thread_id in self._protected:
+            return False
+        if not _is_completed(latest):
+            return False
+        ts = _checkpoint_ts(latest)
+        return ts is not None and ts < self._cutoff
+
+
+def prune_threads(
+    saver: BaseCheckpointSaver[Any],
+    policy: RetentionPolicy,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Poda los hilos que `policy` apruebe. Unico punto que toca el saver.
+
+    Confina las dos llamadas volatiles de LangGraph (`list` y `delete_thread`) en
+    este adaptador: el dia que el paquete implemente `prune`, se anade otro motor
+    que recorra la politica igual. Nunca lanza: la poda es mantenimiento y una
+    base caida no debe tumbar al worker.
+    """
+    moment = now or datetime.now(UTC)
     # Solo la ultima tupla de cada hilo decide si esta completado; se recorre de
-    # la mas nueva a la mas vieja para no dejar que una tupla antigua marque el
-    # hilo como pendiente.
-    latest: dict[str, Any] = {}
+    # la mas nueva a la mas vieja para que una tupla antigua no lo marque pendiente.
+    latest: dict[str, CheckpointTuple] = {}
     try:
         for tup in saver.list(None):
             thread_id = tup.config["configurable"]["thread_id"]
@@ -116,12 +170,7 @@ def prune_completed_threads(
 
     pruned: list[str] = []
     for thread_id, tup in latest.items():
-        if thread_id in protected:
-            continue
-        if not _is_completed(tup):
-            continue
-        ts = _checkpoint_ts(tup)
-        if ts is None or ts >= cutoff:
+        if not policy.can_prune(thread_id, tup, moment):
             continue
         try:
             saver.delete_thread(thread_id)
@@ -130,24 +179,56 @@ def prune_completed_threads(
             continue
         pruned.append(thread_id)
     if pruned:
-        logger.info("Podados %d hilo(s) completados por retencion", len(pruned))
+        logger.info("Podados %d hilo(s) por retencion", len(pruned))
     return pruned
 
 
-def _is_completed(tup: Any) -> bool:
-    """Un hilo terminado no tiene un `interrupt` pendiente ni un `__resume__` vivo.
+def prune_completed_threads(
+    saver: BaseCheckpointSaver[Any],
+    *,
+    older_than_days: float,
+    paused_threads: Iterable[str] = (),
+    now: datetime | None = None,
+) -> list[str]:
+    """Atajo de la politica por defecto (`CompletedOnlyRetention`) sobre `prune_threads`."""
+    moment = now or datetime.now(UTC)
+    policy = CompletedOnlyRetention(
+        older_than_days=older_than_days, paused_threads=paused_threads, now=moment
+    )
+    return prune_threads(saver, policy, now=moment)
 
-    El `__interrupt__` de un hilo pausado aparece en `pending_writes`; el de uno ya
-    reanudado tambien, pero acompanado de un `__resume__` en la misma tupla. Es la
-    senal mas fiable entre versiones, sin depender del formato del mensaje.
+
+def paused_thread_ids(saver: BaseCheckpointSaver[Any]) -> list[str]:
+    """Hilos cuyo ultimo checkpoint tiene un `interrupt` sin reanudar.
+
+    Es la verdad durable de "que esta pausado", independiente del inbox de Redis:
+    sirve para reconciliar las pausas que el inbox perdio (caida del worker entre
+    el checkpoint y el registro). Nunca lanza, como la poda.
     """
-    keys = [write[1] for write in (tup.pending_writes or [])]
-    if "__resume__" in keys:
-        return True
+    latest: dict[str, CheckpointTuple] = {}
+    try:
+        for tup in saver.list(None):
+            latest.setdefault(tup.config["configurable"]["thread_id"], tup)
+    except Exception:  # pragma: no cover - base caida
+        logger.exception("No se pudieron listar los hilos para reconciliar pausas")
+        return []
+    return [thread_id for thread_id, tup in latest.items() if not _is_completed(tup)]
+
+
+def _is_completed(tup: CheckpointTuple) -> bool:
+    """Un hilo terminado no tiene un `__interrupt__` en su ultimo checkpoint.
+
+    Una reanudacion que termina escribe checkpoints nuevos sin escrituras
+    pendientes, asi que el `__interrupt__` desaparece de la ultima tupla. Un
+    `__resume__` junto al `__interrupt__` **no** indica que haya terminado: es una
+    reanudacion que fallo (`__error__`) o que volvio a pausar, y el hilo sigue
+    esperando una decision. Podarlo dejaria la review indecidible.
+    """
+    keys = {write[1] for write in (tup.pending_writes or [])}
     return "__interrupt__" not in keys
 
 
-def _checkpoint_ts(tup: Any) -> datetime | None:
+def _checkpoint_ts(tup: CheckpointTuple) -> datetime | None:
     raw = (tup.checkpoint or {}).get("ts")
     if not raw:
         return None

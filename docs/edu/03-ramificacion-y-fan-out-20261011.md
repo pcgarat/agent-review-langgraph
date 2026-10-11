@@ -257,7 +257,7 @@ sequenceDiagram
         W2-->>MG: findings += [F1]
         W3-->>MG: findings += [F2]
     end
-    Note over MG: solo ahora converge:<br/>dedupe por (file, title) → [F1, F2]
+    Note over MG: solo ahora converge:<br/>dedupe por (file, line, title) → [F1, F2]
 ```
 
 ### 4.3 Estados "de rama" frente a estado estable
@@ -307,7 +307,7 @@ lógica de reducción.
 - **Nodo de fan-out**: `persona`, que resuelve su persona por el campo de rama
   `reviewer`:
 
-```startLine:171:186:src/reviews/graph/build.py
+```startLine:315:333:src/reviews/graph/build.py
     def persona(state: ReviewState) -> ReviewState:
         name = state["reviewer"]
         reviewer = next((r for r in reviewers if r.name == name), None)
@@ -320,34 +320,77 @@ lógica de reducción.
             diff=state["diff"],
             head_sha=request.head_sha,
         )
-        update: ReviewState = {"findings": result.findings}
+        update: ReviewState = {
+            "findings": result.findings,
+            "finding_sources": {_finding_id(f): reviewer.name for f in result.findings},
+        }
         if result.tooling_status is not None:
             update["source_status"] = {reviewer.name: result.tooling_status}
         return update
 ```
 
-- **Fan-in (reducción)**: `merge`, que deduplica por `(fichero, título)`:
+- **Fan-in (reducción)**: `merge`, que deduplica con `_merge_findings`:
 
-```startLine:188:199:src/reviews/graph/build.py
+```startLine:335:341:src/reviews/graph/build.py
     def merge(state: ReviewState) -> ReviewState:
-        """Deduplica por (fichero, titulo) y conserva la evidencia mas rica."""
-        seen: dict[tuple[str, str], Finding] = {}
-        for finding in state.get("findings", []):
-            key = _merge_key(finding)
-            current = seen.get(key)
-            if current is None or len(finding.evidence) > len(current.evidence):
-                seen[key] = finding
-        merged = list(seen.values())
+        """Deduplica (ver `_merge_findings`) y conserva la evidencia mas rica."""
+        merged = _merge_findings(state.get("findings", []), state.get("finding_sources", {}))
         deduped = len(state.get("findings", [])) - len(merged)
         if deduped:
             logger.info("Merge: %d hallazgos duplicados eliminados", deduped)
         return {"merged": merged}
 ```
 
+La regla vive en una función de módulo (testeable sin grafo). Dos hallazgos se
+fusionan si tienen el mismo `(fichero, línea, título)`, o si tienen el mismo fichero
+y título con anclas cercanas **y vienen de personas distintas**: es el mismo
+problema visto por la estática y por el LLM. Dos hallazgos de la misma persona en
+líneas distintas nunca se fusionan (dos errores iguales de PHPStan son dos errores):
+
+```startLine:195:227:src/reviews/graph/build.py
+def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Finding]:
+    """Deduplica y conserva la evidencia mas rica de cada grupo.
+
+    Dos reglas (B5 de docs/revision-main-20261011.md):
+
+    - Mismo `_merge_key` (fichero, linea, titulo): es el mismo hallazgo.
+    - Mismo fichero y titulo con anclas a `_CROSS_PERSONA_NEAR_LINES` o menos, de
+      personas **distintas**: es el mismo problema detectado dos veces. Dos
+      hallazgos de la misma persona en lineas distintas nunca se fusionan.
+    """
+    kept: list[Finding] = []
+    for finding in findings:
+        source = sources.get(_finding_id(finding), "")
+        index = next(
+            (
+                i
+                for i, other in enumerate(kept)
+                if _merge_key(other) == _merge_key(finding)
+                or (
+                    other.file == finding.file
+                    and other.title == finding.title
+                    and abs(other.line - finding.line) <= _CROSS_PERSONA_NEAR_LINES
+                    and source
+                    and sources.get(_finding_id(other), "") not in ("", source)
+                )
+            ),
+            None,
+        )
+        if index is None:
+            kept.append(finding)
+        elif len(finding.evidence) > len(kept[index].evidence):
+            kept[index] = finding
+    return kept
+```
+
 Fíjate en el detalle fino: `persona` escribe `source_status` con **una sola clave**
 (`{reviewer.name: ...}`). Por eso el reducer `_merge_status` (§4.2 del módulo 02) puede
 fusionar las escrituras de varias personas sin pisarse: cada una toca una clave distinta
 del diccionario.
+
+`finding_sources` (id del hallazgo → persona) usa el mismo patrón y el mismo tipo de
+reducer: cada rama escribe solo las claves de sus hallazgos y el merge lee la
+procedencia sin que `Finding` tenga que llevarla.
 
 Y el cableado de la arista condicional, en `src/reviews/graph/build.py:405`:
 

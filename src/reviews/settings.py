@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
     # el job se descarta con el `review_key` en el log para reencolarlo a mano.
     max_review_attempts: int = 3
+    # Reintentos por nodo dentro de una misma invocacion (fallo transitorio de twg,
+    # del LLM o de Teams). Es ortogonal al reintento de job: aquel reencola la
+    # review entera (unidad de idempotencia: la marca del PR); este reintenta la
+    # llamada concreta sin sacar el job de la cola. `node_retry_max_attempts=1`
+    # lo desactiva.
+    node_retry_max_attempts: int = 3
+    node_retry_initial_interval_s: float = 0.5
+    node_retry_backoff_factor: float = 2.0
+    node_retry_max_interval_s: float = 8.0
+    # Techo de una llamada a `twg`. Sin el, un twg colgado bloquea el nodo para
+    # siempre (el timeout de nodo de LangGraph no aplica a nodos sincronos).
+    twg_timeout_s: float = 60.0
     # Limite del cuerpo del POST de tooling, para rechazar payloads enormes (413).
     max_tooling_payload_bytes: int = 5 * 1024 * 1024
 
@@ -127,13 +139,17 @@ def insecure_secrets(settings: Settings) -> list[str]:
     return insecure
 
 
+def is_production(settings: Settings) -> bool:
+    return settings.environment.strip().lower() in {"production", "prod"}
+
+
 def require_production_secrets(settings: Settings) -> None:
     """Falla el arranque en produccion si un secreto sigue en el valor de ejemplo.
 
     En local/test se permite (el secreto `change-me` relaja la firma a proposito);
     en produccion, arrancar con el valor por defecto seria un agujero silencioso.
     """
-    if settings.environment.strip().lower() not in {"production", "prod"}:
+    if not is_production(settings):
         return
     insecure = insecure_secrets(settings)
     if insecure:

@@ -165,7 +165,8 @@ flowchart TD
 | `hitl` | LangGraph `interrupt` | Pausa durable; se reanuda con la decisión del humano. |
 | `fix` | LLM + sandbox | Aplica el `suggested_fix` dentro del sandbox. |
 | `verify` | determinista | Ejecuta las recipes del `repo_profile` (lint, typecheck, tests dirigidos, suite) + segunda pasada de review. |
-| `publish` | tool | Comentarios **inline** por hallazgo + resumen general en el PR + tarjeta Teams. |
+| `publish` | tool | Comentarios **inline** por hallazgo + resumen general en el PR. |
+| `notify` | tool | Tarjeta Teams. Nodo aparte para que un fallo de Teams no repita `publish` (B9 de la revisión de `main`). |
 
 ### 4.3 Estado (con reducers)
 
@@ -206,8 +207,15 @@ Cada `Decision` lleva, además de la acción, la **regla que la disparó** (`mat
 la **versión de la política** (`policy_version`). Sin eso no se puede auditar por qué se
 autoarregló algo meses después.
 
-El criterio de dedupe es **único** en todo el grafo: `(file, title)`. El merge y la
-política usan la misma clave para que no haya dos lógicas.
+El criterio de dedupe es **único** en todo el grafo: `(file, line, title)`. El merge y
+la política usan la misma clave para que no haya dos lógicas. Además, el merge fusiona
+el mismo `(file, title)` con anclas a 5 líneas o menos **solo si viene de personas
+distintas** (la estática y el LLM viendo el mismo problema); dos hallazgos de la misma
+persona en líneas distintas nunca se fusionan. La procedencia viaja en el estado
+(`finding_sources`), no en `Finding`.
+
+> Actualizado tras la revisión de `main` (B5): con `(file, title)`, dos errores de
+> PHPStan con el mismo mensaje en líneas distintas de un fichero se quedaban en uno.
 
 ### 4.4 Checkpointer
 
@@ -303,7 +311,8 @@ Markdown al final del PR. Por eso el nodo `publish` en Fase 1 hace:
    severidad, por qué importa y (si existe) `suggested_fix` corto.
 2. **Un comentario general de resumen**: conteo por severidad, índice de hallazgos y
    enlace; lo que Teams ya resume.
-3. **Teams** sigue siendo solo el teaser: no sustituye los inline.
+3. **Teams** sigue siendo solo el teaser: no sustituye los inline. Sale del nodo
+   `notify`, después de `publish`.
 
 **Anclaje seguro (no negociable).** Bitbucket rechaza o cuelga mal un comentario si la
 línea no está en el diff actual. En la implementación actual las personas anclan
@@ -330,7 +339,7 @@ ser públicos desde el create.
 |---|---|---|
 | `max_inline_comments` | 20 por PR/run | Un PR ruidoso no debe spamear |
 | Prioridad al cortar | P0 → P3 | Los graves siempre anclan; el resto al resumen |
-| Dedupe | `(file, title)` ya visto en comentarios del agente | Re-push no duplica el mismo hallazgo |
+| Dedupe | marca del hallazgo (`_finding_id`) ya vista en comentarios del agente | Re-push no duplica el mismo hallazgo |
 | Fallback | resumen si el ancla falla | Nunca perder el hallazgo por un número de línea malo |
 | Sin inline en borrados puros | usar `--from-line` solo si `diff-line` lo indica | El lado viejo es otro contrato |
 

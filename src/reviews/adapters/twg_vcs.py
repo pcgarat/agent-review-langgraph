@@ -4,14 +4,22 @@ import json
 import subprocess
 from collections.abc import Sequence
 
+from reviews.errors import TransientError
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
-class TwgError(RuntimeError):
-    pass
+class TwgError(TransientError):
+    """Fallo del CLI de Bitbucket: se clasifica como recuperable.
+
+    El CLI no distingue un PR inexistente de un 500 transitorio (devuelve codigo
+    distinto de cero en ambos), y el coste de reintentar de mas es acotado: el
+    grafo da un maximo de intentos y luego se propaga.
+    """
 
 
-def check_twg(twg_bin: str = "twg", *, required: bool = True) -> str | None:
+def check_twg(
+    twg_bin: str = "twg", *, required: bool = True, timeout_s: float = 30.0
+) -> str | None:
     """Comprueba que el binario de `twg` existe y responde, en el arranque.
 
     El contenedor se construye copiando `bin/twg` *si existe*: sin este chequeo,
@@ -21,8 +29,13 @@ def check_twg(twg_bin: str = "twg", *, required: bool = True) -> str | None:
     """
     try:
         completed = subprocess.run(
-            [twg_bin, "--version"], capture_output=True, text=True, check=False
+            [twg_bin, "--version"], capture_output=True, text=True, check=False, timeout=timeout_s
         )
+    except subprocess.TimeoutExpired:
+        # Un `twg` colgado en el arranque no debe dejar el worker esperando sin fin.
+        if required:
+            raise TwgError(f"'{twg_bin} --version' excedio {timeout_s}s") from None
+        return None
     except FileNotFoundError:
         if required:
             raise TwgError(
@@ -45,16 +58,28 @@ class TwgVcsAdapter:
     aparte. Para obtener JSON puro se usa `--output json --output-summary none`.
     """
 
-    def __init__(self, *, workspace: str, repo: str, twg_bin: str = "twg") -> None:
+    def __init__(
+        self, *, workspace: str, repo: str, twg_bin: str = "twg", timeout_s: float = 60.0
+    ) -> None:
         self._workspace = workspace
         self._repo = repo
         self._twg = twg_bin
+        self._timeout_s = timeout_s
 
     def _run(self, args: Sequence[str], *, json_output: bool = True) -> str:
         cmd = [self._twg, "bb", *args, "-w", self._workspace, "-r", self._repo]
         if json_output:
             cmd += ["--output", "json", "--output-summary", "none"]
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        try:
+            completed = subprocess.run(
+                cmd, capture_output=True, text=True, check=False, timeout=self._timeout_s
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Sin este techo, un `twg` colgado bloquea el nodo para siempre y
+            # ningun reintento puede dispararse: el timeout de nodo de LangGraph
+            # no aplica a nodos sincronos, asi que el corte tiene que estar aqui.
+            # Se convierte en `TwgError` (recuperable) para que el grafo reintente.
+            raise TwgError(f"twg excedio {self._timeout_s}s: {' '.join(cmd)}") from exc
         if completed.returncode != 0:
             raise TwgError(f"twg fallo ({completed.returncode}): {completed.stderr.strip()}")
         return completed.stdout
