@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     tooling_output_root: str = "."
     # Secreto para firmar el POST del CI que deposita el artefacto (HMAC-SHA256).
     tooling_webhook_secret: str = "change-me"
+    # Bearer del canal de decision (CLI/API). En `development` se relaja como el
+    # secreto de tooling: con el valor de ejemplo, el endpoint no exige token.
+    reviews_decision_token: str = "change-me"
     # Entorno de despliegue. En `production` se exige que los secretos no sean el
     # valor de ejemplo (fallo ruidoso al arrancar, no un agujero silencioso).
     environment: str = "development"
@@ -104,6 +107,10 @@ def insecure_secrets(settings: Settings) -> list[str]:
     insecure: list[str] = []
     if _is_unset(settings.tooling_webhook_secret):
         insecure.append("TOOLING_WEBHOOK_SECRET")
+    # El token de decision autoriza a un humano a mandar sobre el clamp; en Fase 3
+    # sera la llave del repo (spec §2.1). No puede quedarse en el valor de ejemplo.
+    if _is_unset(settings.reviews_decision_token):
+        insecure.append("REVIEWS_DECISION_TOKEN")
     # La credencial de twg es obligatoria: sin ella no hay diff ni comentarios.
     if not settings.twg_bbc_token.strip():
         insecure.append("TWG_BBC_TOKEN")
