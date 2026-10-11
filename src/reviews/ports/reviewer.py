@@ -20,6 +20,4 @@ class ReviewerPort(Protocol):
 
     name: str
 
-    def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> ReviewerResult: ...
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult: ...

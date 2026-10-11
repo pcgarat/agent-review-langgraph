@@ -50,9 +50,7 @@ class ToolingReviewer:
             self._source = None
         self._allowed = set(allowed_tools)
 
-    def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> ReviewerResult:
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         files = parse_unified_diff(diff)
         entries, status = self._entries(repo=repo, pr_id=pr_id, head_sha=head_sha)
         findings: list[Finding] = []
@@ -70,9 +68,7 @@ class ToolingReviewer:
             return [], ToolingSourceStatus.MISSING
         if "phpstan" not in self._allowed:
             return [], ToolingSourceStatus.MISSING
-        status, raw = self._source.read(
-            "phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha
-        )
+        status, raw = self._source.read("phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha)
         if status is not ToolingSourceStatus.PRESENT:
             return [], status
         # Un artefacto presente pero vacio no es un JSON valido: no equivale a limpio.

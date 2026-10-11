@@ -17,9 +17,12 @@ PR_ID = os.environ.get("REVIEWS_LIVE_PR")
 
 def _twg_ready() -> bool:
     try:
-        return subprocess.run(
-            ["twg", "whoami"], capture_output=True, text=True, check=False, timeout=20
-        ).returncode == 0
+        return (
+            subprocess.run(
+                ["twg", "whoami"], capture_output=True, text=True, check=False, timeout=20
+            ).returncode
+            == 0
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -39,9 +42,7 @@ def test_adaptador_contra_pr_real() -> None:
     stats = adapter.get_diffstat(f"{WORKSPACE}/{REPO}", int(PR_ID))
     assert stats, "diffstat vacio"
 
-    path, added = next(
-        ((p, fd.added) for p, fd in files.items() if fd.added), (None, {})
-    )
+    path, added = next(((p, fd.added) for p, fd in files.items() if fd.added), (None, {}))
     assert path and added
     line_no = sorted(added)[0]
     needle = added[line_no].strip()[:40]

@@ -368,9 +368,7 @@ def test_expected_tools_env_explicito_manda_sobre_el_perfil(tmp_path: Path) -> N
 def test_expected_tools_api_y_worker_coinciden(tmp_path: Path) -> None:
     # La barrera de la API y la del worker deben ver el mismo conjunto (B4).
     profile = tmp_path / "profile.yaml"
-    profile.write_text(
-        "repo: r\nexpected_tools:\n  - phpstan\n  - rector\n", encoding="utf-8"
-    )
+    profile.write_text("repo: r\nexpected_tools:\n  - phpstan\n  - rector\n", encoding="utf-8")
     settings = Settings(repo_profile_config=str(profile))
     assert expected_tools(settings) == ["phpstan", "rector"]
 

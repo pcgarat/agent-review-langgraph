@@ -62,9 +62,7 @@ class FileToolingOutputSource:
         # Valores representativos de los tipos reales (`pr_id` es int, `head_sha`
         # str), para que un format-spec incompatible falle aqui y no en runtime.
         try:
-            rendered = self._template.format(
-                tool="x", slug="x", pr_id=0, head_sha="sha"
-            )
+            rendered = self._template.format(tool="x", slug="x", pr_id=0, head_sha="sha")
         except (KeyError, IndexError, ValueError) as exc:
             raise ValueError(
                 f"Plantilla de artefacto invalida {self._template!r}: {exc}. "
@@ -76,9 +74,7 @@ class FileToolingOutputSource:
         root = self._root.resolve()
         resolved = (root / candidate).resolve()
         if not resolved.is_relative_to(root):
-            raise ValueError(
-                f"La plantilla escapa del root {self._root!r}: {self._template!r}"
-            )
+            raise ValueError(f"La plantilla escapa del root {self._root!r}: {self._template!r}")
 
     def path_for(self, tool: str, *, repo: str, pr_id: int, head_sha: str) -> Path:
         try:

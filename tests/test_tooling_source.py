@@ -22,9 +22,7 @@ def test_file_source_renderiza_la_plantilla_por_review(tmp_path: Path) -> None:
     target.parent.mkdir(parents=True)
     target.write_text('{"files": {}}', encoding="utf-8")
 
-    status, payload = source.read(
-        "phpstan", repo="cqm/emotivoo-v2", pr_id=12, head_sha="abc123"
-    )
+    status, payload = source.read("phpstan", repo="cqm/emotivoo-v2", pr_id=12, head_sha="abc123")
     assert status is ToolingSourceStatus.PRESENT
     assert payload == '{"files": {}}'
 

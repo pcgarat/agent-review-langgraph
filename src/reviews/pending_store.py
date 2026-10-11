@@ -19,9 +19,7 @@ DEFAULT_TTL_S = 7 * 24 * 3600
 
 @runtime_checkable
 class PendingStore(Protocol):
-    def observe(
-        self, request: ReviewRequest, tool: str, payload: str
-    ) -> PendingStatus: ...
+    def observe(self, request: ReviewRequest, tool: str, payload: str) -> PendingStatus: ...
 
     def get(self, key: str) -> PendingReview | None: ...
 

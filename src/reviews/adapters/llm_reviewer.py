@@ -19,7 +19,7 @@ _SYSTEM = (
     "Eres un revisor de codigo senior. Analizas un diff unificado y devuelves "
     "hallazgos accionables. Respondes SOLO con JSON valido, sin texto alrededor. "
     "Cada hallazgo razona sobre el cambio, no sobre estilo que una herramienta "
-    "estatica ya cubre. Si no hay hallazgos, devuelve {\"findings\": []}."
+    'estatica ya cubre. Si no hay hallazgos, devuelve {"findings": []}.'
 )
 
 _SCHEMA_HINT = """\
@@ -82,9 +82,7 @@ class LlmReviewer:
         # gasto real por review (C3) sin acoplar el puerto al proveedor.
         self.last_estimated_tokens = 0
 
-    def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> ReviewerResult:
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         del repo, pr_id, head_sha
         if not diff.strip():
             return ReviewerResult()

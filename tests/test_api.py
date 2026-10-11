@@ -90,9 +90,7 @@ def test_tooling_barrera_de_dos_espera_al_segundo() -> None:
 def test_tooling_rechaza_payload_sin_campos() -> None:
     _reset_fallbacks()
     assert client.post("/webhook/tooling", json={"tool": "phpstan"}).status_code == 400
-    assert (
-        client.post("/webhook/tooling", json=_payload(payload="   ")).status_code == 400
-    )
+    assert client.post("/webhook/tooling", json=_payload(payload="   ")).status_code == 400
     assert client.post("/webhook/tooling", json=_payload(tool="")).status_code == 400
 
 
