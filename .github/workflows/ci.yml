@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Fuerza la version de Python en todos los comandos uv del job.
+  UV_PYTHON: "3.12"
+  # Falla si uv.lock no refleja pyproject.toml, evitando builds no reproducibles.
+  UV_FROZEN: "true"
+
+jobs:
+  ci:
+    name: Lint, tipado y tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Instalar Python
+        run: uv python install 3.12
+
+      - name: Sincronizar dependencias (con extras dev)
+        run: uv sync --extra dev
+
+      - name: Ruff
+        run: uv run --extra dev ruff check src tests
+
+      - name: Mypy
+        run: uv run --extra dev mypy
+
+      - name: Pytest
+        run: uv run --extra dev pytest
