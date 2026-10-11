@@ -20,9 +20,10 @@ Mezclar estas dos cosas es lo que hace que la gestión de secretos parezca un l�
 
 | Variable | Qué es | Obligatorio | Fase | Dueño |
 |---|---|---|---|---|
-| `TWG_BBC_TOKEN` | API token scoped de Bitbucket del **actor de servicio** | Sí | 1 | Agente |
-| `TWG_SITE` | site de Atlassian (p. ej. `cqm.atlassian.net`) | Sí | 1 | Agente |
-| `TWG_USER` | usuario del actor de servicio | Sí | 1 | Agente |
+| `TWG_BBC_TOKEN` | API token scoped de Bitbucket del **actor de servicio** | Sí (`VCS_PROVIDER=twg`) | 1 | Agente |
+| `TWG_SITE` | site de Atlassian (p. ej. `cqm.atlassian.net`) | Sí (`VCS_PROVIDER=twg`) | 1 | Agente |
+| `TWG_USER` | usuario del actor de servicio | Sí (`VCS_PROVIDER=twg`) | 1 | Agente |
+| `GITHUB_TOKEN` | PAT fine-grained de GitHub (`pull_requests: write` + `contents: read`) | Sí (`VCS_PROVIDER=github`) | 1 | Agente |
 | `TOOLING_WEBHOOK_SECRET` | HMAC-SHA256 que firma el `POST /webhook/tooling` | Sin él, review degradada | 1 | Agente **y** CI |
 | `TEAMS_WEBHOOK_URL` | Incoming Webhook de Teams | Si `TEAMS_ENABLED=true` | 1 | Agente |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Al escalar a workitems | 4 | Agente |
@@ -31,7 +32,8 @@ Mezclar estas dos cosas es lo que hace que la gestión de secretos parezca un l�
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen de CI | Al ejecutar tests | 3 | Infra |
 
 `require_production_secrets` (en `agent_review.settings`) hace **fail-closed**: con
-`ENVIRONMENT=production` el arranque falla si falta `TWG_BBC_TOKEN`, si
+`ENVIRONMENT=production` el arranque falla si falta la credencial del proveedor de
+VCS activo (`TWG_BBC_TOKEN` con `VCS_PROVIDER=twg`, `GITHUB_TOKEN` con `github`), si
 `TOOLING_WEBHOOK_SECRET` sigue en `change-me`, o si se activaron Teams/LLM sin su
 credencial. Un despliegue no puede arrancar medio configurado.
 

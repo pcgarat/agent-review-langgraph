@@ -67,7 +67,14 @@ class VcsPort(Protocol):
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
     ) -> InlineAnchor | None:
-        """Resuelve path+texto a una linea presente en el diff (lado nuevo)."""
+        """Resuelve path+texto a una linea presente en el diff (lado nuevo).
+
+        Cada host lo resuelve como puede: Bitbucket tiene un endpoint que lo
+        delega en el servidor (`prs diff-line`); GitHub no lo tiene y lo calcula
+        el adaptador sobre el diff (`resolve_added_line`). El contrato es el
+        mismo: `None` cuando no hay coincidencia y el publish manda el hallazgo
+        al resumen en vez de inventar una linea.
+        """
         ...
 
     def post_inline_comment(

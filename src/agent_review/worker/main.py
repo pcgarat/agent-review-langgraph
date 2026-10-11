@@ -12,6 +12,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
+from agent_review.adapters.github_vcs import GithubVcsAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.null_reviewer import NullReviewer
@@ -187,6 +188,26 @@ def node_retry_policy(settings: Settings) -> RetryPolicy:
 
 
 def build_vcs(settings: Settings) -> VcsPort:
+    """Adaptador del proveedor de VCS activo (`VCS_PROVIDER`).
+
+    El grafo solo conoce el `VcsPort`; este es el unico punto que sabe si detras
+    hay Bitbucket (CLI `twg`) o GitHub (API REST).
+    """
+    if settings.vcs_provider == "github":
+        if not settings.github_token.strip():
+            # Falla ruidoso en el arranque: descubrirlo en la primera review
+            # pareceria un fallo del PR revisado.
+            raise RuntimeError(
+                "VCS_PROVIDER=github requiere GITHUB_TOKEN; sin el no hay diff ni comentarios."
+            )
+        logger.info("Adaptador VCS: GitHub (%s/%s)", settings.github_owner, settings.github_repo)
+        return GithubVcsAdapter(
+            owner=settings.github_owner,
+            repo=settings.github_repo,
+            token=settings.github_token,
+            api_url=settings.github_api_url,
+            timeout_s=settings.twg_timeout_s,
+        )
     # A2: fallar ruidoso en el arranque si twg no esta, en vez de descubrirlo al
     # procesar la primera review (que pareceria un fallo del PR revisado).
     version = check_twg(settings.twg_bin, timeout_s=settings.twg_timeout_s)

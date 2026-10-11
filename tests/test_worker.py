@@ -137,6 +137,27 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
     assert vcs.comments
 
 
+def test_build_vcs_eligio_github_segun_el_proveedor() -> None:
+    from agent_review.adapters.github_vcs import GithubVcsAdapter
+    from agent_review.worker.main import build_vcs
+
+    settings = Settings(
+        vcs_provider="github",
+        github_owner="cqm",
+        github_repo="emotivoo-v2",
+        github_token="ghp_x",
+    )
+    assert isinstance(build_vcs(settings), GithubVcsAdapter)
+
+
+def test_build_vcs_github_sin_token_falla_ruidoso() -> None:
+    from agent_review.worker.main import build_vcs
+
+    settings = Settings(vcs_provider="github", github_token="")
+    with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
+        build_vcs(settings)
+
+
 class _DiffVcs:
     """VCS minimo que ancla como `twg prs diff-line` sobre el diff dado."""
 

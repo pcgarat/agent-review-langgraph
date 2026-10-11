@@ -135,20 +135,36 @@ def _verify_decision_token(settings: Settings, authorization: str | None) -> Non
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de decision invalido")
 
 
+def _expected_repo(settings: Settings) -> str:
+    """Identidad `owner/repo` del repo que revisa este despliegue, o "" si no hay.
+
+    El formato es el mismo en los dos proveedores (`workspace/repo` en Bitbucket,
+    `owner/repo` en GitHub), que es como lo manda el CI en el payload.
+    """
+    if settings.vcs_provider == "github":
+        owner = settings.github_owner.strip()
+        name = settings.github_repo.strip()
+    else:
+        owner = settings.bitbucket_workspace.strip()
+        name = settings.bitbucket_repo.strip()
+    if not (owner and name):
+        return ""
+    return f"{owner}/{name}"
+
+
 def _verify_repo(settings: Settings, repo: str) -> None:
     """Rechaza artefactos de un repo distinto del que revisa este despliegue.
 
-    El adaptador de Bitbucket ignora el `repo` del job y siempre usa
-    `BITBUCKET_WORKSPACE/BITBUCKET_REPO`: sin este filtro, el CI de otro repo (o un
-    error de configuracion) haria que el agente revisara y comentara el PR con el
-    mismo numero del repo configurado. Sin repo configurado no hay con que
-    comparar (el worker tampoco podria publicar) y no se filtra.
+    El adaptador de VCS ignora el `repo` del job y siempre usa el repo
+    configurado (`BITBUCKET_WORKSPACE/BITBUCKET_REPO` o `GITHUB_OWNER/GITHUB_REPO`):
+    sin este filtro, el CI de otro repo (o un error de configuracion) haria que el
+    agente revisara y comentara el PR con el mismo numero del repo configurado.
+    Sin repo configurado no hay con que comparar (el worker tampoco podria
+    publicar) y no se filtra.
     """
-    workspace = settings.bitbucket_workspace.strip()
-    name = settings.bitbucket_repo.strip()
-    if not (workspace and name):
+    expected = _expected_repo(settings)
+    if not expected:
         return
-    expected = f"{workspace}/{name}"
     if repo.strip().casefold() != expected.casefold():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,

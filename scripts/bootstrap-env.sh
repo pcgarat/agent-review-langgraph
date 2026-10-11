@@ -126,13 +126,26 @@ printf -- '\n-- dependencias --\n'
 if has_cmd docker; then ok "docker"; else miss "docker"; MISSING_REQUIRED=$((MISSING_REQUIRED + 1)); fi
 check_compose
 if has_cmd uv; then ok "uv"; else miss "uv"; MISSING_REQUIRED=$((MISSING_REQUIRED + 1)); fi
-check_twg
+# twg solo hace falta como adaptador de Bitbucket; con GitHub el worker no lo usa.
+if [ "$(env_value VCS_PROVIDER)" = "github" ]; then
+  printf '  [info]      VCS_PROVIDER=github: no se comprueba twg (no se usa)\n'
+else
+  check_twg
+fi
 
 printf -- '\n-- variables a rellenar en .env --\n'
 report_var TOOLING_WEBHOOK_SECRET "firma HMAC del POST del CI (POST /webhook/tooling)"
 report_var TEAMS_WEBHOOK_URL      "Incoming Webhook de Teams (teaser de la review)"
-report_var BITBUCKET_WORKSPACE    "workspace de Bitbucket (p. ej. cqm)"
-report_var BITBUCKET_REPO         "repo del PR a revisar (p. ej. emotivoo-v2)"
+# El proveedor elige que identidad y credencial se exigen. twg (Bitbucket) es el
+# defecto; github requiere owner/repo/token de la API.
+if [ "$(env_value VCS_PROVIDER)" = "github" ]; then
+  report_var GITHUB_OWNER "owner del repo a revisar (p. ej. cqm)"
+  report_var GITHUB_REPO  "repo del PR a revisar (p. ej. emotivoo-v2)"
+  report_var GITHUB_TOKEN "PAT fine-grained (pull_requests: write + contents: read)"
+else
+  report_var BITBUCKET_WORKSPACE "workspace de Bitbucket (p. ej. cqm)"
+  report_var BITBUCKET_REPO      "repo del PR a revisar (p. ej. emotivoo-v2)"
+fi
 
 if [ "$(env_value LLM_REVIEWER_ENABLED)" = "true" ]; then
   printf '  (persona LLM habilitada: LLM_REVIEWER_ENABLED=true)\n'
