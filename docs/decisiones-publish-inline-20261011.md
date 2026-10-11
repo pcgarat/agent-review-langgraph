@@ -172,6 +172,17 @@ Tests: `test_publish_no_repite_la_misma_ejecucion`,
 `test_una_ejecucion_degradada_no_bloquea_su_completa_con_mismo_pipeline`,
 `test_dedupe_token_se_ancla_a_la_ejecucion_no_al_commit` (`tests/test_graph.py`).
 
+> **Revisión de `main` (B4):** la fila «degradada → completa con el mismo
+> `pipeline_id`» se cumplía en el `publish`, pero no llegaba a ejecutarse en el
+> worker: las dos pasadas compartían hilo y la completa veía el hilo ya terminado.
+> Ahora la pasada degradada corre en su propio hilo (`thread_id` con sufijo
+> `:partial`). Test: `test_b4_artefacto_tardio_en_la_misma_ejecucion_publica_la_review_completa`
+> (`tests/test_revision_main.py`).
+>
+> **Revisión de `main` (B5):** la marca inline se calcula con `_finding_id`, el mismo
+> id que comprueba `publish`. Antes usaba `finding.id`, y con un id vacío todos los
+> inline compartían marca: el segundo se daba por publicado.
+
 **Riesgo que se acepta.** Un re-push **sin** `pipeline_id` (misma clave que la
 ejecución anterior) no se distingue de un reintento: es el precio de que «una
 ejecución = una marca». Hoy el `pipeline_id` siempre viaja (`BITBUCKET_BUILD_NUMBER`

@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command
+from langgraph.types import Command, RetryPolicy
 
 from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
@@ -22,7 +22,11 @@ from reviews.adapters.tooling_source import (
     validate_tooling_template as validate_tooling_template_source,
 )
 from reviews.adapters.twg_vcs import TwgVcsAdapter, check_twg
-from reviews.checkpointer import build_checkpointer, prune_completed_threads
+from reviews.checkpointer import (
+    build_checkpointer,
+    paused_thread_ids,
+    prune_completed_threads,
+)
 from reviews.domain.models import (
     DecisionOutcome,
     FindingDecision,
@@ -31,6 +35,7 @@ from reviews.domain.models import (
     ReviewRequest,
 )
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
+from reviews.errors import is_transient
 from reviews.graph.build import (
     ReviewState,
     build_approval,
@@ -48,7 +53,7 @@ from reviews.ports.tooling import ToolingOutputSource
 from reviews.ports.vcs import VcsPort
 from reviews.profile import expected_tools, load_profile
 from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
-from reviews.settings import Settings, get_settings, require_production_secrets
+from reviews.settings import Settings, get_settings, is_production, require_production_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +162,37 @@ def build_chat(settings: Settings) -> ChatPort | None:
     return None
 
 
+def node_retry_policy(settings: Settings) -> RetryPolicy | None:
+    """Politica de reintento de nodo segun configuracion; `None` la desactiva.
+
+    El default vive en el grafo (`default_retry_policy`), pero el worker la
+    parametriza para poder subir/bajar los intentos sin tocar codigo y para
+    desactivarla (`node_retry_max_attempts=1`) en escenarios de diagnostico.
+    """
+    if settings.node_retry_max_attempts <= 1:
+        return None
+    return RetryPolicy(
+        max_attempts=settings.node_retry_max_attempts,
+        initial_interval=settings.node_retry_initial_interval_s,
+        backoff_factor=settings.node_retry_backoff_factor,
+        max_interval=settings.node_retry_max_interval_s,
+        retry_on=is_transient,
+    )
+
+
+def build_vcs(settings: Settings) -> VcsPort:
+    # A2: fallar ruidoso en el arranque si twg no esta, en vez de descubrirlo al
+    # procesar la primera review (que pareceria un fallo del PR revisado).
+    version = check_twg(settings.twg_bin, timeout_s=settings.twg_timeout_s)
+    logger.info("Adaptador VCS: twg %s", version)
+    return TwgVcsAdapter(
+        workspace=settings.bitbucket_workspace,
+        repo=settings.bitbucket_repo,
+        twg_bin=settings.twg_bin,
+        timeout_s=settings.twg_timeout_s,
+    )
+
+
 def build_runtime(
     settings: Settings,
     *,
@@ -167,16 +203,7 @@ def build_runtime(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ) -> Any:
     validate_tooling_template(settings)
-    # A2: fallar ruidoso en el arranque si twg no esta, en vez de descubrirlo al
-    # procesar la primera review (que pareceria un fallo del PR revisado).
-    if vcs is None:
-        version = check_twg(settings.twg_bin)
-        logger.info("Adaptador VCS: twg %s", version)
-    vcs = vcs or TwgVcsAdapter(
-        workspace=settings.bitbucket_workspace,
-        repo=settings.bitbucket_repo,
-        twg_bin=settings.twg_bin,
-    )
+    vcs = vcs or build_vcs(settings)
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
     if chat is None:
         chat = build_chat(settings)
@@ -184,13 +211,16 @@ def build_runtime(
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
     )
-    saver = checkpointer or build_checkpointer(settings.database_url)
+    saver = checkpointer or build_checkpointer(
+        settings.database_url, required=is_production(settings)
+    )
     graph = build_graph(
         vcs=vcs,
         reviewers=reviewers,
         policy=policy,
         chat=chat,
         scope_ignore=settings.scope_ignore,
+        retry_policy=node_retry_policy(settings),
     )
     return graph.compile(checkpointer=saver)
 
@@ -201,6 +231,7 @@ def process_request(
     *,
     paused: PausedStore | None = None,
     chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -215,27 +246,66 @@ def process_request(
     - **Pausado** (`interrupt` pendiente): con decision -> `Command(resume=...)`;
       sin decision -> no-op (no se re-ejecuta `scope` ni las personas).
     - **Completado** (`next` vacio): no-op.
-    - **A medias** (`next` no vacio, sin `interrupt`): se re-invoca (dedupe por
-      marcas).
+    - **A medias** (`next` no vacio, sin `interrupt`): se continua desde el ultimo
+      checkpoint con `invoke(None)`. Re-invocar con input arrancaria otra pasada
+      desde `START`: pagaria el LLM otra vez, acumularia `findings` (reducer
+      `operator.add`) y, tras una decision humana, publicaria hallazgos nuevos que
+      nadie decidio (`human_decisions` ya esta en el estado y `hitl` no pausa).
 
-    `paused`/`chat` son opcionales: en los tests se ejecuta sin inbox ni aviso, y
-    en produccion se pasan para registrar la pausa y avisar (spec §4.4).
+    `paused`/`chat`/`vcs` son opcionales: en los tests se ejecuta sin inbox ni
+    aviso, y en produccion se pasan para registrar la pausa y avisar con el enlace
+    del PR (spec §4.4).
     """
     logger.info("Procesando review %s (intento %d)", request.review_key, request.attempts + 1)
     config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
     snapshot = _thread_snapshot(graph, config)
     if snapshot is not None and snapshot.interrupts:
-        return _resume_paused(graph, request, config=config, paused_state=snapshot, paused=paused)
+        return _resume_paused(
+            graph, request, config=config, paused_state=snapshot, paused=paused, chat=chat, vcs=vcs
+        )
     if snapshot is not None and not snapshot.next:
         logger.info(
             "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
             request.review_key,
         )
+        if request.decision is not None:
+            # Carrera habitual: el `expired` del TTL y la decision humana estaban
+            # ambos en cola y gano el primero. No se pierde en silencio.
+            logger.warning(
+                "Decision de %s sobre %s descartada: el hilo ya estaba completado",
+                request.decision.actor,
+                request.review_key,
+            )
+        # Si el worker murio entre el resume y la limpieza, la entrada seguiria en
+        # el inbox y el barrido la reencolaria en bucle.
+        _clear_paused(paused, request)
         return outcome_from_state(cast("ReviewState", snapshot.values))
-    result = cast("ReviewState", graph.invoke({"request": request, "findings": []}, config=config))
+    if snapshot is not None:
+        logger.info(
+            "Review %s a medias en su hilo (siguiente: %s); se continua desde el checkpoint",
+            request.review_key,
+            ", ".join(snapshot.next),
+        )
+        result = cast("ReviewState", graph.invoke(None, config=config))
+    else:
+        if request.decision is not None:
+            # Sin hilo (podado o checkpointer en memoria reiniciado) no hay pausa que
+            # reanudar: se revisa desde cero y la decision no aplica.
+            logger.warning(
+                "Decision de %s sobre %s descartada: no hay hilo; se revisa desde cero",
+                request.decision.actor,
+                request.review_key,
+            )
+        result = cast(
+            "ReviewState", graph.invoke({"request": request, "findings": []}, config=config)
+        )
     outcome = _log_outcome(result)
     if outcome.paused:
-        _on_paused(result, outcome, paused=paused, chat=chat)
+        _on_paused(result, outcome.request, paused=paused, chat=chat, vcs=vcs)
+    else:
+        # Un resume que fallo y se completa en el reintento (rama a medias) tambien
+        # debe salir del inbox.
+        _clear_paused(paused, request)
     return outcome
 
 
@@ -246,61 +316,153 @@ def _resume_paused(
     config: RunnableConfig,
     paused_state: Any,
     paused: PausedStore | None = None,
+    chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
 ) -> ReviewOutcome:
-    """Reanuda un hilo pausado. Sin decision es no-op: no repite el trabajo."""
+    """Reanuda un hilo pausado. Sin decision no repite el trabajo.
+
+    Sin decision, solo comprueba que la pausa siga en el inbox: si el registro se
+    perdio (Redis caido al pausar, el job se reencolo), lo repone. Sin esa entrada
+    nadie la ve ni el TTL la vence nunca.
+    """
+    state = cast("ReviewState", paused_state.values)
     if request.decision is None:
         logger.info(
             "Review %s esta pausada esperando decision; la reentrega no la re-ejecuta",
             request.review_key,
         )
-        return outcome_from_state(cast("ReviewState", paused_state.values), paused=True)
+        _ensure_registered(paused_state, paused=paused, chat=chat, vcs=vcs)
+        return outcome_from_state(state, paused=True)
     result = cast("ReviewState", graph.invoke(Command(resume=request.decision), config=config))
     logger.info(
         "Review %s reanudada con decision de %s", request.review_key, request.decision.actor
     )
-    if paused is not None:
+    outcome = _log_outcome(result)
+    if not outcome.paused:
         # Aplicada la decision, el inbox deja de mostrarla. El estado durable del
         # hilo sigue en el checkpointer.
+        _clear_paused(paused, request)
+    return outcome
+
+
+def _clear_paused(paused: PausedStore | None, request: ReviewRequest) -> None:
+    """Saca la review del inbox si la entrada es de *este* hilo.
+
+    La comprobacion del hilo evita que una pasada degradada ya terminada (hilo
+    `:partial`, ver `ReviewRequest.thread_id`) borre la pausa de la pasada completa
+    de la misma ejecucion, que comparte `review_key`.
+    """
+    if paused is None:
+        return
+    entry = paused.get(request.review_key)
+    if entry is not None and entry.request.thread_id == request.thread_id:
         paused.resume(request.review_key)
-    return _log_outcome(result)
 
 
 def _on_paused(
     result: ReviewState,
-    outcome: ReviewOutcome,
+    request: ReviewRequest,
     *,
     paused: PausedStore | None,
     chat: ChatPort | None,
+    vcs: VcsPort | None = None,
+    paused_at: datetime | None = None,
 ) -> None:
     """Registra la pausa en el inbox y avisa, sin publicar los hallazgos (spec §4.4)."""
     approval = build_approval(result)
     if approval is None:
         # No deberia ocurrir: se pauso con pendientes. Se registra para no quedar mudo.
-        logger.warning(
-            "Review %s pausada sin ApprovalRequest en el estado", outcome.request.review_key
-        )
+        logger.warning("Review %s pausada sin ApprovalRequest en el estado", request.review_key)
         return
     if paused is not None:
-        paused.pause(outcome.request, approval)
+        paused.pause(request, approval, created_at=paused_at)
     if chat is not None:
-        link = _pr_url(result, outcome)
         chat.notify_decision_pending(
-            title=f"{outcome.request.repo}#{outcome.request.pr_id}",
+            title=f"{request.repo}#{request.pr_id}",
             body=render_pause_notice(approval),
-            link=link,
+            link=_pr_url(vcs, request),
         )
     if paused is None:
         logger.info(
             "Review %s pausada con %d pendiente(s) (sin inbox configurado)",
-            outcome.request.review_key,
+            request.review_key,
             len(approval.pending),
         )
 
 
-def _pr_url(result: ReviewState, outcome: ReviewOutcome) -> str | None:
+def _ensure_registered(
+    snapshot: Any,
+    *,
+    paused: PausedStore | None,
+    chat: ChatPort | None,
+    vcs: VcsPort | None,
+) -> bool:
+    """Repone en el inbox un hilo pausado que no esta en el; `True` si lo repuso.
+
+    El hilo es la verdad durable y el inbox solo su indice. `paused_at` sale del
+    checkpoint para que el TTL cuente desde la pausa real, no desde que se repone.
+    """
+    if paused is None:
+        return False
+    state = cast("ReviewState", snapshot.values)
+    request = ReviewRequest.model_validate(state["request"])
+    if paused.get(request.review_key) is not None:
+        return False
+    logger.warning("Pausa de %s ausente del inbox; se repone", request.review_key)
+    _on_paused(
+        state,
+        request,
+        paused=paused,
+        chat=chat,
+        vcs=vcs,
+        paused_at=_snapshot_ts(snapshot),
+    )
+    return True
+
+
+def reconcile_paused(
+    graph: ReviewGraph,
+    paused: PausedStore,
+    *,
+    chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
+) -> list[str]:
+    """Repone en el inbox los hilos pausados que el checkpointer conoce y el inbox no.
+
+    Cubre la caida del worker entre el checkpoint del `interrupt` y `_on_paused`:
+    el job ya salio de la cola (`BLPOP`), asi que ninguna reentrega lo arreglaria.
+    """
+    saver = getattr(graph, "checkpointer", None)
+    if saver is None:
+        return []
+    restored: list[str] = []
+    for thread_id in paused_thread_ids(saver):
+        if paused.get(thread_id) is not None:
+            continue
+        try:
+            snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
+            if snapshot.interrupts and _ensure_registered(
+                snapshot, paused=paused, chat=chat, vcs=vcs
+            ):
+                restored.append(thread_id)
+        except Exception:
+            logger.exception("No se pudo reponer la pausa del hilo %s", thread_id)
+    return restored
+
+
+def _snapshot_ts(snapshot: Any) -> datetime | None:
+    raw = getattr(snapshot, "created_at", None)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _pr_url(vcs: VcsPort | None, request: ReviewRequest) -> str | None:
     """URL del PR para el aviso, si el VCS la tiene; nunca aborta la pausa."""
-    vcs = cast("VcsPort | None", result.get("vcs"))
-    request = outcome.request
     if vcs is None:
         return None
     try:
@@ -323,6 +485,8 @@ def sweep_expired(
     Un hilo pausado no puede quedarse eterno: al superar `DECISION_TTL_S` se
     reanuda con `expired` para todos los pendientes (la review se publica "sin
     decision"), nunca se deja colgada. No borra el inbox: lo limpia el resume.
+    Cada pausa se encola una sola vez: si su reanudacion falla de forma
+    persistente, acaba en la DLQ en vez de volver con `attempts=0` cada barrido.
     """
     enqueued: list[ReviewRequest] = []
     for review in paused.sweep(now=now):
@@ -336,6 +500,7 @@ def sweep_expired(
         )
         request = review.request.model_copy(update={"decision": expired})
         queue.enqueue(request)
+        paused.mark_expired_enqueued(review.review_key, now=now)
         enqueued.append(request)
         logger.warning(
             "Pausa de %s vencida; se reanuda como sin decision (%d hallazgo(s))",
@@ -372,14 +537,14 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
     (duplicando la publicacion). Antes de invocar se consulta el checkpointer y
     se decide: pausado (hay `interrupts`), completado (`next` vacio) o a medias.
     Sin checkpointer no hay hilo que consultar y se procesa siempre.
+
+    Si la lectura falla, la excepcion sube (el job se reencola): tratarlo como
+    "no hay hilo" re-ejecutaria desde `START` un hilo quiza pausado, que volveria
+    a pausar y a avisar.
     """
     if getattr(graph, "checkpointer", None) is None:
         return None
-    try:
-        snapshot = graph.get_state(config)
-    except Exception:  # pragma: no cover - base caida
-        logger.exception("No se pudo leer el estado del hilo %s", config)
-        return None
+    snapshot = graph.get_state(config)
     values = getattr(snapshot, "values", None)
     if not values:
         return None
@@ -394,13 +559,33 @@ def _consume(
     max_attempts: int,
     paused: PausedStore | None = None,
     chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
     try:
-        process_request(graph, request, paused=paused, chat=chat)
-    except Exception:
-        logger.exception("Fallo procesando %s", request.review_key)
-        _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        process_request(graph, request, paused=paused, chat=chat, vcs=vcs)
+    except Exception as exc:
+        if is_transient(exc):
+            logger.warning(
+                "Fallo transitorio procesando %s (%s); se reencola",
+                request.review_key,
+                type(exc).__name__,
+            )
+        else:
+            # Un fallo permanente (bug, payload invalido) no se arregla reintentando
+            # el job entero, pero la clasificacion de job es mas laxa que la de
+            # nodo: se registra para poder distinguirlo en la DLQ.
+            logger.exception("Fallo no clasificado como transitorio en %s", request.review_key)
+        try:
+            _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        except Exception:
+            # El manejo del error no puede tumbar el worker: el job ya salio de la
+            # cola (`BLPOP`) y una excepcion aqui mataria el bucle entero.
+            logger.exception(
+                "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
+                request.review_key,
+                request.model_dump_json(),
+            )
 
 
 def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
@@ -438,8 +623,9 @@ def sweep_pending(
     for review in pending.sweep():
         if review.status is not PendingStatus.DEGRADED:
             continue
-        queue.enqueue(review.request)
-        enqueued.append(review.request)
+        request = review.request.model_copy(update={"degraded": True})
+        queue.enqueue(request)
+        enqueued.append(request)
         logger.warning(
             "Ingesta vencida para %s; review degradada encolada (faltan: %s)",
             review.key,
@@ -464,7 +650,12 @@ def run_forever(
     logging.basicConfig(level=settings.log_level)
     queue = queue or build_queue(settings)
     chat = build_chat(settings)
-    graph = graph or build_runtime(settings, chat=chat)
+    # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
+    # inyectado (tests) no lo hay y el aviso sale sin enlace.
+    vcs: VcsPort | None = None
+    if graph is None:
+        vcs = build_vcs(settings)
+        graph = build_runtime(settings, chat=chat, vcs=vcs)
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     saver = getattr(graph, "checkpointer", None)
@@ -483,6 +674,7 @@ def run_forever(
                 max_attempts=settings.max_review_attempts,
                 paused=paused_store,
                 chat=chat,
+                vcs=vcs,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
@@ -494,6 +686,9 @@ def run_forever(
         # La poda lista todos los hilos (escaneo caro en Postgres): va con su propio
         # intervalo, mucho mas largo que los TTL.
         if saver is not None and now - last_prune >= prune_s:
+            # Antes de podar: repone las pausas que el inbox perdio, para que la
+            # poda (y el barrido del TTL) las vean.
+            reconcile_paused(graph, paused_store, chat=chat, vcs=vcs)
             prune_completed_threads(
                 saver,
                 older_than_days=settings.checkpoint_retention_days,

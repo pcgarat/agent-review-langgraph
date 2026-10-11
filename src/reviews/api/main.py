@@ -131,6 +131,27 @@ def _verify_decision_token(settings: Settings, authorization: str | None) -> Non
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de decision invalido")
 
 
+def _verify_repo(settings: Settings, repo: str) -> None:
+    """Rechaza artefactos de un repo distinto del que revisa este despliegue.
+
+    El adaptador de Bitbucket ignora el `repo` del job y siempre usa
+    `BITBUCKET_WORKSPACE/BITBUCKET_REPO`: sin este filtro, el CI de otro repo (o un
+    error de configuracion) haria que el agente revisara y comentara el PR con el
+    mismo numero del repo configurado. Sin repo configurado no hay con que
+    comparar (el worker tampoco podria publicar) y no se filtra.
+    """
+    workspace = settings.bitbucket_workspace.strip()
+    name = settings.bitbucket_repo.strip()
+    if not (workspace and name):
+        return
+    expected = f"{workspace}/{name}"
+    if repo.strip().casefold() != expected.casefold():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Repo {repo!r} no admitido: este despliegue solo revisa {expected}",
+        )
+
+
 def _persist_artifact(settings: Settings, request: ReviewRequest, tool: str, payload: str) -> Path:
     """Deposita el artefacto en la ruta que resuelve el `ToolingOutputSource`."""
     source = FileToolingOutputSource(
@@ -178,22 +199,37 @@ async def tooling_webhook(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Faltan repo, pr_id, head_sha o tool")
     if not isinstance(payload, str) or not payload.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "El payload del artefacto esta vacio")
+    _verify_repo(settings, review_request.repo)
 
     store = build_store(settings)
-    if not store.claim(review_request.ingest_key(tool)):
-        return JSONResponse({"status": "duplicado", "key": review_request.ingest_key(tool)})
+    ingest_key = review_request.ingest_key(tool)
+    if not store.claim(ingest_key):
+        return JSONResponse({"status": "duplicado", "key": ingest_key})
 
-    _persist_artifact(settings, review_request, tool, payload)
-
-    pending = build_pending(settings)
-    pending_status = pending.observe(review_request, tool, payload)
+    # Cada `claim` se deshace si falla el paso que protege: si no, la clave queda
+    # reclamada 7 dias y el reintento del CI recibe `duplicado` con el artefacto o
+    # la review perdidos en silencio.
+    try:
+        _persist_artifact(settings, review_request, tool, payload)
+        pending = build_pending(settings)
+        pending_status = pending.observe(review_request, tool, payload)
+    except Exception:
+        store.release(ingest_key)
+        raise
 
     if pending_status is PendingStatus.READY:
         # El artefacto esta completo: ahora si se dispara la review. La clave de
         # review es distinta de la de ingesta para que el evento de CI y la
         # ejecucion no se confundan como duplicados.
         if store.claim(review_request.review_key):
-            build_queue(settings).enqueue(review_request)
+            try:
+                build_queue(settings).enqueue(review_request)
+            except Exception:
+                # Se liberan las dos: el reintento del CI tiene que poder volver a
+                # observar el artefacto y disparar la review.
+                store.release(review_request.review_key)
+                store.release(ingest_key)
+                raise
             logger.info("Review encolada: %s", review_request.review_key)
             return JSONResponse(
                 {"status": "aceptado", "key": review_request.review_key},

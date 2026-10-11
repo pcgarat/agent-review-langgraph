@@ -132,6 +132,8 @@ def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:
             "attempts": request.attempts,
             "reason": reason,
             "discarded_at": time.time(),
-            "request": request.model_dump(),
+            # `mode="json"`: una reanudacion lleva `HitlDecision.decided_at`
+            # (`datetime`), que `json.dumps` no serializa.
+            "request": request.model_dump(mode="json"),
         }
     )

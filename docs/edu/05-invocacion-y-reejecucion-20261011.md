@@ -254,53 +254,91 @@ de `a`. Si no lo indicas, LangGraph infiere el último nodo; mejor ser explícit
 ## 5. Dónde aparece en `reviews`
 
 El corazón del asunto está en `src/reviews/worker/main.py`. Primero, la consulta previa
-que decide si re-ejecutar:
+que lee el estado del hilo antes de invocar:
 
-```startLine:206:227:src/reviews/worker/main.py
-def _completed_snapshot(graph: ReviewGraph, config: RunnableConfig) -> dict[str, Any] | None:
-    """Estado guardado del hilo si esa ejecucion ya termino, o `None`.
+```startLine:533:551:src/reviews/worker/main.py
+def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
+    """Snapshot del hilo (pausado o completado), o `None` si no hay.
 
     `invoke(input)` sobre un hilo existente re-ejecuta el grafo desde `START`
-    (duplicando la publicacion). Antes de invocar se consulta el checkpointer:
-    un hilo con estado y sin nodos pendientes (`snapshot.next` vacio) ya corrio
-    entero y no se repite. Un hilo pausado (Fase 2, `interrupt`) tiene `next`
-    pendiente y se deja pasar para reanudarlo. Sin checkpointer no hay hilo que
-    consultar y se procesa siempre.
+    (duplicando la publicacion). Antes de invocar se consulta el checkpointer y
+    se decide: pausado (hay `interrupts`), completado (`next` vacio) o a medias.
+    Sin checkpointer no hay hilo que consultar y se procesa siempre.
+
+    Si la lectura falla, la excepcion sube (el job se reencola): tratarlo como
+    "no hay hilo" re-ejecutaria desde `START` un hilo quiza pausado, que volveria
+    a pausar y a avisar.
     """
     if getattr(graph, "checkpointer", None) is None:
         return None
-    try:
-        snapshot = graph.get_state(config)
-    except Exception:  # pragma: no cover - base caida
-        logger.exception("No se pudo leer el estado del hilo %s", config)
-        return None
-    if getattr(snapshot, "next", None):
-        return None
+    snapshot = graph.get_state(config)
     values = getattr(snapshot, "values", None)
-    return values if values else None
+    if not values:
+        return None
+    return snapshot
 ```
 
-Y su uso en `process_request`:
+Y su uso en `process_request`, que elige **cómo** invocar según el estado del hilo:
 
-```startLine:179:188:src/reviews/worker/main.py
-    config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
-    resumed = _completed_snapshot(graph, config)
-    if resumed is not None:
+```startLine:261:301:src/reviews/worker/main.py
+    snapshot = _thread_snapshot(graph, config)
+    if snapshot is not None and snapshot.interrupts:
+        return _resume_paused(
+            graph, request, config=config, paused_state=snapshot, paused=paused, chat=chat, vcs=vcs
+        )
+    if snapshot is not None and not snapshot.next:
         logger.info(
             "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
             request.review_key,
         )
-        return outcome_from_state(cast("ReviewState", resumed))
-    result = cast("ReviewState", graph.invoke({"request": request, "findings": []}, config=config))
+        if request.decision is not None:
+            # Carrera habitual: el `expired` del TTL y la decision humana estaban
+            # ambos en cola y gano el primero. No se pierde en silencio.
+            logger.warning(
+                "Decision de %s sobre %s descartada: el hilo ya estaba completado",
+                request.decision.actor,
+                request.review_key,
+            )
+        # Si el worker murio entre el resume y la limpieza, la entrada seguiria en
+        # el inbox y el barrido la reencolaria en bucle.
+        _clear_paused(paused, request)
+        return outcome_from_state(cast("ReviewState", snapshot.values))
+    if snapshot is not None:
+        logger.info(
+            "Review %s a medias en su hilo (siguiente: %s); se continua desde el checkpoint",
+            request.review_key,
+            ", ".join(snapshot.next),
+        )
+        result = cast("ReviewState", graph.invoke(None, config=config))
+    else:
+        if request.decision is not None:
+            # Sin hilo (podado o checkpointer en memoria reiniciado) no hay pausa que
+            # reanudar: se revisa desde cero y la decision no aplica.
+            logger.warning(
+                "Decision de %s sobre %s descartada: no hay hilo; se revisa desde cero",
+                request.decision.actor,
+                request.review_key,
+            )
+        result = cast(
+            "ReviewState", graph.invoke({"request": request, "findings": []}, config=config)
+        )
 ```
 
+Las cuatro ramas son la tabla del §3 aplicada:
+
+| Estado del hilo | Invocación |
+|---|---|
+| Pausado (`interrupts`) | `Command(resume=decision)`, o no-op si el job no trae decisión |
+| Completado (`next == ()`) | Ninguna: devuelve el estado guardado |
+| A medias (`next` no vacío, sin `interrupts`) | `invoke(None)`: continúa desde el nodo que falló |
+| Sin estado | `invoke(input)`: pasada nueva |
+
 Fíjate en la sutileza de `if not values: return None`: un hilo **sin valores** se trata
-como "nunca ejecutado" (se procesa). Un hilo con valores y `next == ()` se trata como
-completado (no se procesa).
+como "nunca ejecutado" y se invoca con input.
 
 El test que documenta el fallo a media ejecución (y por qué el reintento re-ejecuta):
 
-```startLine:147:167:tests/test_checkpointer.py
+```startLine:301:321:tests/test_checkpointer.py
 def test_fallo_a_media_ejecucion_deja_el_hilo_incompleto() -> None:
     # La premisa del reintento: un nodo que falla a media ejecucion NO deja el
     # hilo "completado" (queda `next=('publish',)`), asi que el checkpointer no
@@ -320,11 +358,13 @@ def test_fallo_a_media_ejecucion_deja_el_hilo_incompleto() -> None:
     assert vcs.comments == []
 ```
 
-> La deuda anotada en `docs/fase2-hitl-20261011.md` (§7) es precisamente esta: si un
-> nodo falla **a media ejecución**, un `invoke(input)` re-ejecuta **desde `START`**
-> (volviendo a correr `scope` y las personas, con sus tokens). La alternativa sería
-> `invoke(None)` para reanudar desde el nodo pendiente. Hoy se acepta la re-ejecución
-> porque los efectos son idempotentes; el día que no lo sean, esta es la línea a cambiar.
+> Hasta la revisión de `main` (B2), la rama «a medias» re-invocaba con input: cada
+> reintento arrancaba **desde `START`**, volvía a pagar las personas, acumulaba
+> `findings` por el reducer `operator.add` y, si había fallado un resume, publicaba
+> hallazgos recalculados con la decisión humana anterior sin volver a pausar. El
+> test de arriba fija la premisa (el hilo queda con `next=('publish',)`) y
+> `test_b2_*` en `tests/test_revision_main.py` fija que el reintento lo continúa
+> con `invoke(None)` en vez de repetirlo.
 
 ---
 

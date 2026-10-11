@@ -206,6 +206,12 @@ class ReviewRequest(BaseModel):
     # cambia: la reanudacion reutiliza el hilo de la review.
     decision: HitlDecision | None = None
 
+    # Pasada degradada: la encola el barrido de ingesta cuando vence la espera sin
+    # todos los artefactos. Tiene su propio hilo (`thread_id`) para que, si el
+    # artefacto llega tarde, la pasada completa de la misma ejecucion no encuentre
+    # el hilo ya terminado y se quede en no-op.
+    degraded: bool = False
+
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"
@@ -224,7 +230,12 @@ class ReviewRequest(BaseModel):
         Es la clave de ejecucion (`review_key`), no el commit: un `pipeline_id`
         nuevo sobre el mismo `sha` es una review nueva (intencional), y por eso
         va en el hilo. Repetir la *misma* ejecucion reutiliza el hilo.
+
+        La pasada degradada lleva el sufijo `:partial`: comparte `review_key` (y
+        token de dedupe) con la completa, pero no su hilo.
         """
+        if self.degraded:
+            return f"{self.review_key}:partial"
         return self.review_key
 
     @property

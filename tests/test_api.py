@@ -339,3 +339,63 @@ def test_reviews_paused_no_lo_traga_la_ruta_comodin() -> None:
     response = client.get("/reviews/paused")
     assert response.status_code == 200
     assert "paused" in response.json()
+
+
+def test_b7_fallo_al_persistir_libera_la_clave_de_ingesta(monkeypatch) -> None:
+    # Antes la clave quedaba reclamada 7 dias y el reintento del CI era `duplicado`.
+    _reset_fallbacks()
+    real_persist = main._persist_artifact
+    calls = {"n": 0}
+
+    def _flaky_persist(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disco lleno")
+        return real_persist(*args, **kwargs)
+
+    monkeypatch.setattr(main, "_persist_artifact", _flaky_persist)
+    failing = TestClient(app, raise_server_exceptions=False)
+
+    assert failing.post("/webhook/tooling", json=_payload()).status_code == 500
+    retry = failing.post("/webhook/tooling", json=_payload())
+
+    assert retry.status_code == 202
+    assert retry.json()["status"] == "aceptado"
+    assert main._fallback_queue is not None and len(main._fallback_queue) == 1
+
+
+def test_b7_fallo_al_encolar_libera_la_clave_de_review(monkeypatch) -> None:
+    _reset_fallbacks()
+    assert main._fallback_queue is not None
+    real_enqueue = main._fallback_queue.enqueue
+    calls = {"n": 0}
+
+    def _flaky_enqueue(request: ReviewRequest) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("redis caido")
+        real_enqueue(request)
+
+    monkeypatch.setattr(main._fallback_queue, "enqueue", _flaky_enqueue)
+    failing = TestClient(app, raise_server_exceptions=False)
+
+    assert failing.post("/webhook/tooling", json=_payload()).status_code == 500
+    retry = failing.post("/webhook/tooling", json=_payload())
+
+    assert retry.json()["status"] == "aceptado", "el reintento del CI dispara la review"
+    assert len(main._fallback_queue) == 1
+
+
+def test_b6_rechaza_un_repo_distinto_del_configurado(monkeypatch) -> None:
+    # El adaptador VCS ignora el repo del job: aceptar otro repo revisaria (y
+    # comentaria) el PR con el mismo numero del repo configurado.
+    _reset_fallbacks()
+    monkeypatch.setattr(main._settings(), "bitbucket_workspace", "cqm")
+    monkeypatch.setattr(main._settings(), "bitbucket_repo", "emotivoo-v2")
+
+    other = client.post("/webhook/tooling", json=_payload(repo="cqm/otro-repo"))
+    assert other.status_code == 400
+    assert main._fallback_queue is not None and len(main._fallback_queue) == 0
+
+    same = client.post("/webhook/tooling", json=_payload(repo="cqm/emotivoo-v2"))
+    assert same.status_code == 202

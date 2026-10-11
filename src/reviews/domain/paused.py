@@ -26,6 +26,10 @@ class PausedReview(BaseModel):
     approval: ApprovalRequest
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     ttl_s: float = DEFAULT_DECISION_TTL_S
+    # Cuando el barrido ya encolo la reanudacion `expired`. Sin esta marca, una
+    # reanudacion que falla siempre volvia a encolarse en cada barrido (con
+    # `attempts=0`) y esquivaba la DLQ hasta que caducaba la clave de Redis.
+    expired_enqueued_at: datetime | None = None
 
     @property
     def key(self) -> str:

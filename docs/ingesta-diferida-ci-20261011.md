@@ -42,13 +42,23 @@ La solución: **encolar la review solo cuando el dato que necesita ya está dent
 CI de emotivoo-v2 (paso PHPStan)
    │  POST /webhook/tooling {repo, pr_id, head_sha, tool, payload}  (firmado)
    ▼
-api ──► claim(ingest_key) ──► persistir payload ──► upsert PendingReview
+api ──► ¿repo == BITBUCKET_WORKSPACE/BITBUCKET_REPO? ──no──► 400
+   │
+   ├──► claim(ingest_key) ──► persistir payload ──► upsert PendingReview
    │                              ¿están los N artefactos? ──no──► esperar (TTL)
    │                                                   │ sí
-   └──────────────► enqueue(review_key) ──► worker
+   └──────────────► claim(review_key) ──► enqueue ──► worker
                                               scope(twg diff) → persona(tooling)
-                                              → merge → policy → publish
+                                              → merge → policy → hitl → publish → notify
 ```
+
+Si falla el paso que protege una clave (persistir, `observe`, encolar), la API la
+libera (`IdempotencyStore.release`) antes de devolver el error: el reintento del CI
+vuelve a entrar en vez de recibir `duplicado` con el artefacto o la review perdidos
+(B7 de la revisión de `main`). El filtro de `repo` existe porque el adaptador de
+Bitbucket ignora el `repo` del job y siempre usa el configurado: sin él, el CI de
+otro repo haría revisar y comentar el PR con el mismo número del repo configurado
+(B6). Sin `BITBUCKET_WORKSPACE`/`BITBUCKET_REPO` no se filtra.
 
 La carrera desaparece por construcción: la review se encola con el artefacto ya presente.
 
@@ -85,6 +95,15 @@ así que una sola clave rechazaría reviews legítimas como duplicadas. Se separ
 | `ingest_key = repo:pr:sha:tool` | Por artefacto | El evento de CI se ingesta una vez |
 | `review_key = repo:pr:sha:pipeline` | Por ejecución | Un `pipeline_id` nuevo = una review nueva |
 
+El hilo del checkpointer (`thread_id`) es la `review_key`, salvo en la pasada
+**degradada** que encola el barrido de TTL: esa lleva el sufijo `:partial`
+(`ReviewRequest.degraded`). Si el artefacto llega tarde, la barrera pasa a `READY`,
+la API encola la misma ejecución sin degradar y el worker la procesa en un hilo
+nuevo: se publica la review completa, que sustituye al aviso de la parcial. Con un
+solo hilo para las dos, el worker veía el hilo ya terminado y no hacía nada (B4 de
+la revisión de `main`). Las dos pasadas comparten `review_key` y token de dedupe, así
+que los inline ya publicados no se repiten.
+
 ---
 
 ## 3. El contrato del CI del repo revisado
@@ -120,6 +139,7 @@ curl -sS -X POST "$REVIEWS_URL/webhook/tooling" \
 | `head_sha` | `BITBUCKET_COMMIT` (en build de PR, el commit *source* head) |
 | `pr_id` | `BITBUCKET_PR_ID`. **No** existe en builds de rama: si falta, el agente responde `400` |
 | `pipeline_id` | `BITBUCKET_BUILD_NUMBER`; distingue un re-run del mismo commit |
+| `repo` | `workspace/repo`; debe coincidir con `BITBUCKET_WORKSPACE/BITBUCKET_REPO` o el agente responde `400` |
 | `tool` | Debe coincidir con `expected_tools` del `repo_profile` |
 | Firma | HMAC-SHA256 del **cuerpo crudo**; cabecera `X-Reviews-Signature` |
 | Secreto | Variable `secured` de Bitbucket == `TOOLING_WEBHOOK_SECRET` del agente |

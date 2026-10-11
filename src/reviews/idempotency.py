@@ -16,6 +16,10 @@ class IdempotencyStore(Protocol):
         """Devuelve True la primera vez que se ve la clave; False si ya existia."""
         ...
 
+    def release(self, key: str) -> None:
+        """Deshace un `claim` cuyo trabajo fallo, para que el reintento no sea `duplicado`."""
+        ...
+
 
 class RedisIdempotencyStore:
     """Idempotencia por repo:pr:head_sha.
@@ -37,6 +41,9 @@ class RedisIdempotencyStore:
     def claim(self, key: str) -> bool:
         return bool(self._client.set(key, "1", nx=True, ex=self._ttl))
 
+    def release(self, key: str) -> None:
+        self._client.delete(key)
+
 
 class InMemoryIdempotencyStore:
     """Implementacion de apoyo para tests y para correr sin Redis."""
@@ -50,3 +57,6 @@ class InMemoryIdempotencyStore:
             return False
         self._seen.add(key)
         return True
+
+    def release(self, key: str) -> None:
+        self._seen.discard(key)

@@ -7,7 +7,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send, interrupt
+from langgraph.types import RetryPolicy, Send, interrupt
 
 from reviews.domain.models import (
     PENDING_ACTIONS,
@@ -22,6 +22,7 @@ from reviews.domain.models import (
     Severity,
     ToolingSourceStatus,
 )
+from reviews.errors import is_transient
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
 from reviews.ports.reviewer import ReviewerPort
@@ -63,6 +64,10 @@ class ReviewState(TypedDict, total=False):
     reviewer: str
     # Las personas escriben aqui en paralelo; el reducer acumula.
     findings: Annotated[list[Finding], operator.add]
+    # Persona que produjo cada hallazgo (`_finding_id` -> nombre). Solo la usa el
+    # merge para fusionar el mismo problema visto por dos personas con anclas
+    # cercanas sin fusionar dos hallazgos de la misma persona en lineas distintas.
+    finding_sources: Annotated[dict[str, str], _merge_sources]
     # Estado de las fuentes estaticas por reviewer. Sin reducer: se sustituye, y
     # cada rama solo escribe el suyo (el fan-out escribe dicts sobre claves
     # distintas). Las claves ausentes se tratan como PRESENT.
@@ -75,6 +80,16 @@ class ReviewState(TypedDict, total=False):
     # HITL (Fase 2): decision humana. La escribe `hitl` al reanudar; sin ella, si
     # hay pendientes, el grafo pausa antes de publicar.
     human_decisions: HitlDecision | None
+    # Lo escribe `publish` cuando esta pasada publico de verdad (no si se salto por
+    # marcas). `notify` solo avisa en Teams si esta a True: el aviso va en su propio
+    # nodo para que un fallo de Teams no repita `publish` y el reintento (que
+    # continua desde el checkpoint) retome justo el aviso.
+    published: bool
+    inlined_count: int
+
+
+def _merge_sources(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
+    return {**(left or {}), **(right or {})}
 
 
 def _merge_status(
@@ -118,8 +133,11 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
         pr_id=request.pr_id,
         head_sha=request.head_sha,
         pending=pending,
+        # La decision debe cubrir todos los pendientes (`build_decision`): la pista
+        # los nombra todos; se cambia `--approve` por `--reject`/`--noted` donde toque.
         command_hint=(
-            f"reviews decide {request.review_key} --actor <tu-nombre> --approve <finding_id>"
+            f"reviews decide {request.review_key} --actor <tu-nombre> "
+            + " ".join(f"--approve {item.finding_id}" for item in pending)
         ),
     )
 
@@ -159,9 +177,54 @@ def _finding_id(finding: Finding) -> str:
     return finding.id or f"{finding.file}:{finding.line}:{finding.title}"
 
 
-def _merge_key(finding: Finding) -> tuple[str, str]:
-    """Criterio unico de dedupe. Debe coincidir en todo el grafo."""
-    return (finding.file, finding.title)
+def _merge_key(finding: Finding) -> tuple[str, int, str]:
+    """Criterio unico de dedupe. Debe coincidir en todo el grafo.
+
+    La linea forma parte de la clave: PHPStan repite el mismo mensaje en lineas
+    distintas de un fichero («Call to an undefined method…») y son hallazgos
+    distintos. Solo se fusiona el mismo problema en el mismo sitio.
+    """
+    return (finding.file, finding.line, finding.title)
+
+
+# Distancia maxima entre anclas para fusionar el mismo hallazgo visto por dos
+# personas (p. ej. PHPStan en la linea del error y el LLM en la de la llamada).
+_CROSS_PERSONA_NEAR_LINES = 5
+
+
+def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Finding]:
+    """Deduplica y conserva la evidencia mas rica de cada grupo.
+
+    Dos reglas (B5 de docs/revision-main-20261011.md):
+
+    - Mismo `_merge_key` (fichero, linea, titulo): es el mismo hallazgo.
+    - Mismo fichero y titulo con anclas a `_CROSS_PERSONA_NEAR_LINES` o menos, de
+      personas **distintas**: es el mismo problema detectado dos veces. Dos
+      hallazgos de la misma persona en lineas distintas nunca se fusionan.
+    """
+    kept: list[Finding] = []
+    for finding in findings:
+        source = sources.get(_finding_id(finding), "")
+        index = next(
+            (
+                i
+                for i, other in enumerate(kept)
+                if _merge_key(other) == _merge_key(finding)
+                or (
+                    other.file == finding.file
+                    and other.title == finding.title
+                    and abs(other.line - finding.line) <= _CROSS_PERSONA_NEAR_LINES
+                    and source
+                    and sources.get(_finding_id(other), "") not in ("", source)
+                )
+            ),
+            None,
+        )
+        if index is None:
+            kept.append(finding)
+        elif len(finding.evidence) > len(kept[index].evidence):
+            kept[index] = finding
+    return kept
 
 
 def _merged(state: ReviewState) -> list[Finding]:
@@ -179,6 +242,24 @@ def _quote_for_anchor(finding: Finding) -> str:
     return raw.strip()
 
 
+def default_retry_policy() -> RetryPolicy:
+    """Politica de reintento de nodo por defecto (fallos transitorios).
+
+    Sustituye al `default_retry_on` de LangGraph, que **no** reintenta
+    `RuntimeError` (de la que heredan las excepciones del repo) ni `TimeoutError`:
+    con el default, el grafo no reintentaria nada de lo que nos interesa. Aplica
+    solo a los nodos con efectos externos (`scope`, `persona`, `publish`, `notify`);
+    `merge` y `policy` son puros y no la necesitan.
+    """
+    return RetryPolicy(
+        max_attempts=3,
+        initial_interval=0.5,
+        backoff_factor=2.0,
+        max_interval=8.0,
+        retry_on=is_transient,
+    )
+
+
 def build_graph(
     *,
     vcs: VcsPort,
@@ -187,11 +268,12 @@ def build_graph(
     chat: ChatPort | None = None,
     sandbox: SandboxPort | None = None,
     scope_ignore: str = "",
+    retry_policy: RetryPolicy | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review.
 
-    Fase 1: scope -> fan-out -> merge -> policy -> publish (inline + resumen).
-    HITL y fix llegan en las fases 2 y 3.
+    scope -> fan-out -> merge -> policy -> hitl -> publish (inline + resumen) ->
+    notify (Teams). El fix llega en la fase 3.
     """
     del sandbox  # reservado para Fase 3
 
@@ -242,20 +324,17 @@ def build_graph(
             diff=state["diff"],
             head_sha=request.head_sha,
         )
-        update: ReviewState = {"findings": result.findings}
+        update: ReviewState = {
+            "findings": result.findings,
+            "finding_sources": {_finding_id(f): reviewer.name for f in result.findings},
+        }
         if result.tooling_status is not None:
             update["source_status"] = {reviewer.name: result.tooling_status}
         return update
 
     def merge(state: ReviewState) -> ReviewState:
-        """Deduplica por (fichero, titulo) y conserva la evidencia mas rica."""
-        seen: dict[tuple[str, str], Finding] = {}
-        for finding in state.get("findings", []):
-            key = _merge_key(finding)
-            current = seen.get(key)
-            if current is None or len(finding.evidence) > len(current.evidence):
-                seen[key] = finding
-        merged = list(seen.values())
+        """Deduplica (ver `_merge_findings`) y conserva la evidencia mas rica."""
+        merged = _merge_findings(state.get("findings", []), state.get("finding_sources", {}))
         deduped = len(state.get("findings", [])) - len(merged)
         if deduped:
             logger.info("Merge: %d hallazgos duplicados eliminados", deduped)
@@ -263,7 +342,7 @@ def build_graph(
 
     def apply_policy(state: ReviewState) -> ReviewState:
         decisions: list[Decision] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, int, str]] = set()
         for finding in _merged(state):
             key = _merge_key(finding)
             if key in seen:
@@ -292,13 +371,29 @@ def build_graph(
         approval = build_approval(state)
         if approval is None:
             return {}
-        resume_value = interrupt(approval)
-        decision = (
-            resume_value
-            if isinstance(resume_value, HitlDecision)
-            else HitlDecision.model_validate(resume_value)
-        )
-        return {"human_decisions": decision}
+        # Bucle de validacion: `build_decision` ya exige cubrir todos los
+        # pendientes, pero un job forjado o antiguo podria no hacerlo. No se lanza:
+        # LangGraph guarda el valor del resume en el checkpoint antes de ejecutar el
+        # nodo y lo re-entregaria en cada reanudacion, dejando el hilo atascado.
+        # Se vuelve a pausar y la siguiente decision responde al nuevo `interrupt`.
+        while True:
+            resume_value = interrupt(approval)
+            decision = (
+                resume_value
+                if isinstance(resume_value, HitlDecision)
+                else HitlDecision.model_validate(resume_value)
+            )
+            missing = [
+                p.finding_id for p in approval.pending if decision.outcome_for(p.finding_id) is None
+            ]
+            if not missing:
+                return {"human_decisions": decision}
+            logger.warning(
+                "Decision incompleta de %s sobre %s (faltan: %s); se vuelve a pausar",
+                decision.actor,
+                approval.review_key,
+                ", ".join(sorted(missing)),
+            )
 
     def publish(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
@@ -411,22 +506,53 @@ def build_graph(
         )
         if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
             vcs.post_comment(request.repo, request.pr_id, summary)
-        if chat is not None:
+        return {"published": True, "inlined_count": len(inlined)}
+
+    def notify(state: ReviewState) -> ReviewState:
+        """Aviso en Teams de una review recien publicada. Nodo propio (B9).
+
+        Un fallo transitorio lo reintenta la `RetryPolicy` del nodo y, si se agota,
+        el reintento del job continua aqui (no repite `publish`). Un fallo no
+        transitorio es un bug del canal: se registra y no tumba una review que ya
+        esta publicada en el PR.
+        """
+        if chat is None or not state.get("published"):
+            return {}
+        request = ReviewRequest.model_validate(state["request"])
+        try:
             pr = vcs.get_pull_request(request.repo, request.pr_id)
             chat.notify(
                 title=f"Review de {request.repo}#{request.pr_id}",
-                body=_render_teams_body(findings, decisions, inlined_count=len(inlined)),
+                body=_render_teams_body(
+                    _merged(state),
+                    state.get("decisions", []),
+                    inlined_count=state.get("inlined_count", 0),
+                ),
                 link=pr.url or None,
+            )
+        except Exception as exc:
+            if is_transient(exc):
+                raise
+            logger.exception(
+                "No se pudo avisar en Teams de %s#%s; la review ya esta publicada",
+                request.repo,
+                request.pr_id,
             )
         return {}
 
     graph = StateGraph(ReviewState)
-    graph.add_node("scope", scope)
-    graph.add_node("persona", persona)
+    # Reintento de nodo (RetryPolicy) solo en los nodos que llaman a fuera: un
+    # fallo transitorio de twg/LLM/Teams se recupera sin sacar el job de la cola.
+    # `merge` y `policy` son deterministas y no lo llevan; `hitl` tampoco (un
+    # reintento re-ejecutaria `interrupt` y duplicaria la pausa).
+    retry = retry_policy if retry_policy is not None else default_retry_policy()
+    graph.add_node("scope", scope, retry_policy=retry)
+    graph.add_node("persona", persona, retry_policy=retry)
     graph.add_node("merge", merge)
     graph.add_node("policy", apply_policy)
     graph.add_node("hitl", hitl)
-    graph.add_node("publish", publish)
+    graph.add_node("publish", publish, retry_policy=retry)
+    graph.add_node("notify", notify, retry_policy=retry)
 
     graph.add_edge(START, "scope")
     graph.add_conditional_edges("scope", dispatch, ["persona"])
@@ -434,7 +560,8 @@ def build_graph(
     graph.add_edge("merge", "policy")
     graph.add_edge("policy", "hitl")
     graph.add_edge("hitl", "publish")
-    graph.add_edge("publish", END)
+    graph.add_edge("publish", "notify")
+    graph.add_edge("notify", END)
 
     return graph
 
@@ -548,7 +675,9 @@ def _render_inline(
     body = "\n\n".join(blocks)
     if not token:
         return body
-    return body + f"\n\n{_inline_token(token, finding.id)}"
+    # Mismo id que la comprobacion de `publish`: con `finding.id` vacio, todos los
+    # inlines compartian marca y el segundo se daba por publicado.
+    return body + f"\n\n{_inline_token(token, _finding_id(finding))}"
 
 
 def _render_summary(
