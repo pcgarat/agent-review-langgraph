@@ -11,15 +11,19 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from reviews.adapters.tooling_source import FileToolingOutputSource, validate_tooling_template
-from reviews.domain.models import ReviewRequest
+from reviews.decision import build_decision
+from reviews.domain.models import FindingDecision, ReviewRequest
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
 from reviews.idempotency import IdempotencyStore, InMemoryIdempotencyStore, RedisIdempotencyStore
+from reviews.paused_store import InMemoryPausedStore, RedisPausedStore
 from reviews.pending_store import RedisPendingStore
 from reviews.profile import expected_tools
 from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from reviews.settings import Settings, get_settings, require_production_secrets
 
 logger = logging.getLogger(__name__)
+
+_INSECURE_DECISION_TOKENS = {"change-me", "changeme"}
 
 
 @asynccontextmanager
@@ -45,6 +49,7 @@ def _settings() -> Settings:
 _fallback_store: InMemoryIdempotencyStore | None = None
 _fallback_queue: InMemoryReviewQueue | None = None
 _fallback_pending: InMemoryPendingStore | None = None
+_fallback_paused: InMemoryPausedStore | None = None
 
 
 def build_store(settings: Settings) -> IdempotencyStore:
@@ -89,6 +94,18 @@ def build_pending(settings: Settings) -> RedisPendingStore | InMemoryPendingStor
     return _fallback_pending
 
 
+def build_paused(settings: Settings) -> RedisPausedStore | InMemoryPausedStore:
+    """Inbox de reviews pausadas: indice para validar y descubrir decisiones."""
+    global _fallback_paused
+    store = RedisPausedStore(url=settings.redis_url)
+    if store.available():
+        return store
+    if _fallback_paused is None:
+        logger.warning("Redis no disponible; uso inbox de pausas en memoria")
+        _fallback_paused = InMemoryPausedStore()
+    return _fallback_paused
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -102,6 +119,16 @@ def _verify_signature(secret: str, raw_body: bytes, signature: str | None) -> No
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Firma del webhook invalida")
+
+
+def _verify_decision_token(settings: Settings, authorization: str | None) -> None:
+    """Bearer del canal de decision; relajado con el valor de ejemplo en dev."""
+    token = settings.reviews_decision_token.strip()
+    if not token or token in _INSECURE_DECISION_TOKENS:
+        return
+    expected = f"Bearer {token}"
+    if not authorization or not hmac.compare_digest(expected, authorization):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de decision invalido")
 
 
 def _persist_artifact(settings: Settings, request: ReviewRequest, tool: str, payload: str) -> Path:
@@ -195,6 +222,78 @@ def list_pending() -> dict[str, object]:
     pending = build_pending(settings)
     degraded = pending.sweep()
     return {"degraded": [review.key for review in degraded]}
+
+
+@app.get("/reviews/paused")
+def list_paused() -> dict[str, object]:
+    """Reviews pausadas esperando decision, con sus hallazgos pendientes."""
+    settings = _settings()
+    paused = build_paused(settings).all()
+    return {
+        "paused": [
+            {
+                "review_key": review.review_key,
+                "created_at": review.created_at.isoformat(),
+                "pending": [item.model_dump(mode="json") for item in review.approval.pending],
+                "command_hint": review.approval.command_hint,
+            }
+            for review in paused
+        ]
+    }
+
+
+@app.post("/reviews/{review_key:path}/decision")
+async def post_decision(
+    review_key: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Encola una decision humana sobre una review pausada.
+
+    No toca el grafo: valida contra el inbox y encola un job de reanudacion. El
+    worker aplica `Command(resume=...)` sobre el mismo hilo (spec §4.4). Rechaza
+    (409) si la review no esta pausada o el `finding_id` no esta entre pendientes.
+
+    El `:path` es necesario porque la `review_key` es `repo:pr:sha[:pipeline]` y el
+    repo lleva `/` (`cqm/emotivoo-v2`): sin el, el routing corta en el primer `/`.
+    """
+    settings = _settings()
+    _verify_decision_token(settings, authorization)
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON")
+    actor = str(body.get("actor", ""))
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta `items`")
+
+    store = build_paused(settings)
+    paused = store.get(review_key)
+    if paused is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"La review {review_key} no esta pausada")
+
+    try:
+        items = [FindingDecision.model_validate(item) for item in raw_items]
+        decision = build_decision(paused, actor=actor, items=items, reviewed_key=review_key)
+    except ValueError as exc:  # incluye DecisionError y validacion pydantic de items
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    build_queue(settings).enqueue(paused.request.model_copy(update={"decision": decision}))
+    logger.info(
+        "Decision encolada para %s: %d hallazgo(s), actor=%s",
+        decision.review_key,
+        len(decision.items),
+        decision.actor,
+    )
+    return JSONResponse(
+        {
+            "status": "aceptado",
+            "review_key": decision.review_key,
+            "decision_id": decision.decision_id,
+        },
+        status_code=status.HTTP_202_ACCEPTED,
+    )
 
 
 @app.get("/profile/{repo_name}")

@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9. Estado: **T1–T5 cerradas** (199 tests en verde).
+checkpoints tras T4 y tras T9. Estado: **T1–T6 cerradas** (216 tests en verde).
 
 ### Fundación
 
@@ -74,12 +74,15 @@ checkpoints tras T4 y tras T9. Estado: **T1–T5 cerradas** (199 tests en verde)
   - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`,
     `src/reviews/checkpointer.py` (allowlist del serde con los tipos HITL).
 
-- [ ] **T6** — Canal CLI + `POST /reviews/{key}/decision`
+- [x] **T6** — Canal CLI + `POST /reviews/{key}/decision`
   - Aceptación: CLI construye y encola la decisión con `actor`; el endpoint
-    valida contra el inbox (`409` si no pausada o `finding_id` ajeno).
-  - Verifica: `tests/test_api.py`, `tests/test_cli.py`.
+    valida contra el inbox (`409` si no pausada o `finding_id` ajeno). ✅
+    (`tests/test_cli.py`, `tests/test_api.py::test_decision_*`)
   - Ficheros: `src/reviews/cli.py`, `src/reviews/api/main.py`, `src/reviews/settings.py`,
     `pyproject.toml`.
+  - Nota: el endpoint usa `{review_key:path}` porque la clave lleva `/`
+    (`cqm/emotivoo-v2:42:sha:7`); `REVIEWS_DECISION_TOKEN` entra en el contrato de
+    secretos de producción. La validación compartida vive en `reviews/decision.py`.
 
 - [ ] **T7** — Notificación de pausa + expiración
   - Aceptación: aviso por `notify_decision_pending` + comentario de PR **sin** pie

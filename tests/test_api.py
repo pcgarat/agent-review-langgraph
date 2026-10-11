@@ -9,8 +9,16 @@ from fastapi.testclient import TestClient
 
 from reviews.api import main
 from reviews.api.main import app
+from reviews.domain.models import (
+    ApprovalRequest,
+    FindingAction,
+    PendingDecision,
+    ReviewRequest,
+    Severity,
+)
 from reviews.domain.pending import InMemoryPendingStore
 from reviews.idempotency import InMemoryIdempotencyStore
+from reviews.paused_store import InMemoryPausedStore
 from reviews.queue import InMemoryReviewQueue
 
 client = TestClient(app)
@@ -29,6 +37,7 @@ def _reset_fallbacks(expected_tools: list[str] | None = None) -> None:
     main._fallback_store = InMemoryIdempotencyStore()
     main._fallback_queue = InMemoryReviewQueue()
     main._fallback_pending = InMemoryPendingStore(expected_tools=expected_tools or ["phpstan"])
+    main._fallback_paused = InMemoryPausedStore()
 
 
 def _payload(**overrides: object) -> dict[str, object]:
@@ -190,4 +199,118 @@ def test_arranque_en_produccion_con_secreto_real_pasa(monkeypatch) -> None:
     monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
     monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
     monkeypatch.setattr(settings, "teams_enabled", False)
+    monkeypatch.setattr(settings, "reviews_decision_token", "token-decision-real")
     require_production_secrets(settings)
+
+
+def test_arranque_en_produccion_sin_token_de_decision_falla(monkeypatch) -> None:
+    from reviews.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    monkeypatch.setattr(settings, "reviews_decision_token", "change-me")
+    with pytest.raises(RuntimeError, match="REVIEWS_DECISION_TOKEN"):
+        require_production_secrets(settings)
+
+
+def _paused_request() -> ReviewRequest:
+    return ReviewRequest(repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc123", pipeline_id="7")
+
+
+def _pause(review_key: str = "cqm/emotivoo-v2:42:abc123:7") -> None:
+    request = _paused_request()
+    approval = ApprovalRequest(
+        review_key=review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pending=[
+            PendingDecision(
+                finding_id="f1",
+                proposed_action=FindingAction.ESCALATE,
+                reason="Tema protegido",
+                matched_rule="default",
+                policy_version="1",
+                title="T",
+                file="a.php",
+                line=3,
+                severity=Severity.P1,
+            )
+        ],
+        command_hint=f"reviews decide {review_key} --actor alice --approve f1",
+    )
+    assert main._fallback_paused is not None
+    main._fallback_paused.pause(request, approval)
+
+
+def test_list_paused_muestra_pendientes() -> None:
+    _reset_fallbacks()
+    _pause()
+    response = client.get("/reviews/paused")
+    assert response.status_code == 200
+    paused = response.json()["paused"]
+    assert [item["review_key"] for item in paused] == ["cqm/emotivoo-v2:42:abc123:7"]
+    assert paused[0]["pending"][0]["finding_id"] == "f1"
+
+
+def test_decision_encola_la_reanudacion(monkeypatch) -> None:
+    _reset_fallbacks()
+    monkeypatch.setattr(main._settings(), "reviews_decision_token", "change-me")
+    _pause()
+    response = client.post(
+        "/reviews/cqm/emotivoo-v2:42:abc123:7/decision",
+        json={"actor": "alice", "items": [{"finding_id": "f1", "outcome": "approved"}]},
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "aceptado"
+    assert main._fallback_queue is not None
+    assert len(main._fallback_queue) == 1
+    job = main._fallback_queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.actor == "alice"
+    assert job.decision.review_key == "cqm/emotivoo-v2:42:abc123:7"
+
+
+def test_decision_rechaza_review_no_pausada() -> None:
+    _reset_fallbacks()
+    response = client.post(
+        "/reviews/no-existe/decision",
+        json={"actor": "alice", "items": [{"finding_id": "f1", "outcome": "approved"}]},
+    )
+    assert response.status_code == 409
+
+
+def test_decision_rechaza_finding_ajeno() -> None:
+    _reset_fallbacks()
+    _pause()
+    response = client.post(
+        "/reviews/cqm/emotivoo-v2:42:abc123:7/decision",
+        json={"actor": "alice", "items": [{"finding_id": "otro", "outcome": "approved"}]},
+    )
+    assert response.status_code == 409
+    assert main._fallback_queue is not None and len(main._fallback_queue) == 0
+
+
+def test_decision_rechaza_sin_actor() -> None:
+    _reset_fallbacks()
+    _pause()
+    response = client.post(
+        "/reviews/cqm/emotivoo-v2:42:abc123:7/decision",
+        json={"actor": "  ", "items": [{"finding_id": "f1", "outcome": "approved"}]},
+    )
+    assert response.status_code == 409
+
+
+def test_decision_exige_bearer_cuando_hay_token(monkeypatch) -> None:
+    _reset_fallbacks()
+    monkeypatch.setattr(main._settings(), "reviews_decision_token", "secreto-decision")
+    _pause()
+    body = {"actor": "alice", "items": [{"finding_id": "f1", "outcome": "approved"}]}
+    url = "/reviews/cqm/emotivoo-v2:42:abc123:7/decision"
+
+    assert client.post(url, json=body).status_code == 401
+    assert client.post(url, json=body, headers={"Authorization": "Bearer malo"}).status_code == 401
+    ok = client.post(url, json=body, headers={"Authorization": "Bearer secreto-decision"})
+    assert ok.status_code == 202

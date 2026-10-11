@@ -26,6 +26,9 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+[project.scripts]
+reviews = "reviews.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
