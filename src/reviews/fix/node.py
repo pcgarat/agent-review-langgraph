@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from reviews.domain.models import (
     CommandResult,
@@ -15,6 +14,7 @@ from reviews.domain.models import (
 from reviews.errors import is_transient
 from reviews.fix.selection import select_candidates
 from reviews.fix.validation import validate_patch
+from reviews.policy.engine import PolicyEngine
 from reviews.ports.fixer import FixerPort
 from reviews.ports.sandbox import SandboxPort, VerifyRequest
 from reviews.ports.vcs import VcsPort
@@ -29,6 +29,21 @@ class FixerUnavailable(RuntimeError):
     """Fallo no transitorio del fixer (respuesta inaprovechable, presupuesto)."""
 
 
+def blocked_reason(finding: Finding, policy: PolicyEngine) -> str | None:
+    """Motivo por el que un hallazgo no se arregla aunque una persona lo apruebe.
+
+    La proteccion de seguridad manda sobre la decision humana (D3 invertida):
+    una ruta nunca-auto o un tema protegido **nunca** produce un parche, ni con
+    `APPROVED`. El humano decide sobre lo que el agente puede hacer; no amplia lo
+    que tiene prohibido. Un fix bloqueado se publica como `BLOCKED` con su razon.
+    """
+    if finding.protected_subject is not None:
+        return f"tema protegido ({finding.protected_subject.value}): no se arregla automaticamente"
+    if policy.is_never_auto(finding.file):
+        return f"ruta nunca-auto ({finding.file}): no se arregla automaticamente"
+    return None
+
+
 def run_fixes(
     *,
     request: ReviewRequest,
@@ -38,17 +53,19 @@ def run_fixes(
     vcs: VcsPort,
     fixer: FixerPort | None,
     sandbox: SandboxPort | None,
+    policy: PolicyEngine,
     recipes: list[str],
     targets: list[str],
-    guards: dict[str, Any],
 ) -> dict[str, FixResult]:
     """Ejecuta el fix de los hallazgos aprobados. No escribe el repo (§5).
 
-    Flujo por hallazgo (spec §4): leer el fichero al `head_sha`, pedir un parche,
-    validarlo localmente, verificar en el sandbox y, si pasa, dejarlo listo para
-    publicar. Secuencial y acotado por `max_fixes_per_pr`. Los que exceden el tope
-    se marcan `SKIPPED` para que no desaparezcan en silencio.
+    Flujo por hallazgo (spec §4): comprobar el bloqueo de seguridad, leer el
+    fichero al `head_sha`, pedir un parche, validarlo localmente, verificar en el
+    sandbox y, si pasa, dejarlo listo para publicar. Secuencial y acotado por
+    `max_fixes_per_pr`. Los que exceden el tope o quedan bloqueados se registran
+    para que no desaparezcan en silencio.
     """
+    guards = policy.guards
     max_fixes = int(guards.get("max_fixes_per_pr", 3) or 0)
     max_attempts = int(guards.get("max_fix_attempts", _DEFAULT_MAX_ATTEMPTS) or 1)
     max_lines = int(guards.get("max_fix_lines", _DEFAULT_MAX_LINES) or _DEFAULT_MAX_LINES)
@@ -63,10 +80,25 @@ def run_fixes(
         for finding_id in skipped
     }
 
-    if not candidates:
+    # Bloqueo de seguridad antes de gastar fixer ni sandbox. Es un gate duro: la
+    # proteccion manda sobre la aprobacion humana (D3 invertida).
+    actionable = []
+    for candidate in candidates:
+        reason = blocked_reason(candidate.finding, policy)
+        if reason is not None:
+            logger.warning(
+                "Fase 3: fix bloqueado por seguridad en %s (%s)", candidate.finding.id, reason
+            )
+            results[candidate.finding.id] = FixResult(
+                finding_id=candidate.finding.id, status=FixStatus.BLOCKED, reason=reason
+            )
+            continue
+        actionable.append(candidate)
+
+    if not actionable:
         return results
     if fixer is None:
-        for candidate in candidates:
+        for candidate in actionable:
             results[candidate.finding.id] = FixResult(
                 finding_id=candidate.finding.id,
                 status=FixStatus.NOT_VERIFIABLE,
@@ -74,7 +106,7 @@ def run_fixes(
             )
         return results
     if sandbox is None:
-        for candidate in candidates:
+        for candidate in actionable:
             results[candidate.finding.id] = FixResult(
                 finding_id=candidate.finding.id,
                 status=FixStatus.NOT_VERIFIABLE,
@@ -84,7 +116,7 @@ def run_fixes(
 
     # El diff del PR se lee una vez: la validacion local lo necesita por hallazgo.
     pr_diff = vcs.get_diff(request.repo, request.pr_id)
-    for candidate in candidates:
+    for candidate in actionable:
         result = _fix_one(
             request=request,
             finding=candidate.finding,

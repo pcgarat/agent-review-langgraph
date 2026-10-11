@@ -317,6 +317,9 @@ class FixStatus(StrEnum):
     INVALID_PATCH = "invalid_patch"  # no pasa la validacion local
     NOT_VERIFIABLE = "not_verifiable"  # imagen cambiada, sin digest, runner caido
     SKIPPED = "skipped"  # tope max_fixes_per_pr o presupuesto
+    # Bloqueo de seguridad: ruta nunca-auto o tema protegido. Ni con aprobacion
+    # humana se arregla: la proteccion manda sobre la decision (D3 invertida).
+    BLOCKED = "blocked"
 
 
 class ProposedPatch(BaseModel):

@@ -482,9 +482,9 @@ def build_graph(
             vcs=vcs,
             fixer=fixer,
             sandbox=sandbox,
+            policy=policy,
             recipes=recipes,
             targets=[],
-            guards=policy.guards,
         )
         if fixes:
             verified = sum(1 for result in fixes.values() if result.status is FixStatus.VERIFIED)
@@ -820,8 +820,12 @@ def _render_fix(fix: FixResult | None, *, delivery: DeliveryFormatter | None) ->
         return ""
     if fix.status is FixStatus.VERIFIED and fix.patch is not None and delivery is not None:
         return delivery.render(fix.patch, checks=fix.checks, image_digest=fix.image_digest or "")
-    if fix.status in (FixStatus.SKIPPED, FixStatus.NOT_VERIFIABLE):
-        label = "sin arreglo automatico" if fix.status is FixStatus.SKIPPED else "no verificable"
+    if fix.status in (FixStatus.SKIPPED, FixStatus.NOT_VERIFIABLE, FixStatus.BLOCKED):
+        label = {
+            FixStatus.SKIPPED: "sin arreglo automatico",
+            FixStatus.NOT_VERIFIABLE: "no verificable",
+            FixStatus.BLOCKED: "bloqueado por seguridad",
+        }[fix.status]
         return f"_Fix {label}: {fix.reason}_" if fix.reason else f"_Fix {label}_"
     # FAILED / INVALID_PATCH: hay algo que contar y un check que fallo.
     lines = [f"_Fix no verificado ({fix.status.value}): {fix.reason}_"]
@@ -843,6 +847,7 @@ def _fix_reason_line(fix: FixResult | None) -> str:
         FixStatus.INVALID_PATCH: "parche invalido",
         FixStatus.NOT_VERIFIABLE: "no verificable",
         FixStatus.SKIPPED: "sin arreglo automatico",
+        FixStatus.BLOCKED: "bloqueado por seguridad",
     }
     label = icons.get(fix.status, fix.status.value)
     return f"Fix: {label}" + (f" · {fix.reason}" if fix.reason else "")

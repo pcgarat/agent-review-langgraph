@@ -13,12 +13,14 @@ from reviews.domain.models import (
     HitlDecision,
     Owner,
     ProposedPatch,
+    ProtectedSubject,
     ReviewRequest,
     Severity,
 )
 from reviews.fix.delivery import DiffFormatter, SuggestionFormatter
 from reviews.fix.node import run_fixes
 from reviews.fix.patch import build_patch
+from reviews.policy.engine import PolicyEngine
 
 
 class _Vcs:
@@ -111,18 +113,38 @@ def _human(fid: str = "f1", outcome: DecisionOutcome = DecisionOutcome.APPROVED)
     )
 
 
-def _run(*, fixer, sandbox, human=None, decisions=None, guards=None) -> dict[str, FixResult]:
+def _policy(guards: dict | None = None) -> PolicyEngine:
+    return PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "fix_with_approval",
+            "default_action": "report",
+            "guards": guards or {"max_fixes_per_pr": 3, "max_fix_attempts": 2, "max_fix_lines": 30},
+        }
+    )
+
+
+def _run(
+    *,
+    fixer,
+    sandbox,
+    human=None,
+    decisions=None,
+    guards=None,
+    policy: PolicyEngine | None = None,
+    finding: Finding | None = None,
+) -> dict[str, FixResult]:
     return run_fixes(
         request=_REQUEST,
-        findings=[_FINDING],
+        findings=[finding or _FINDING],
         decisions=decisions or [_decision("f1")],
         human=human or _human(),
         vcs=_Vcs(),  # type: ignore[arg-type]
         fixer=fixer,
         sandbox=sandbox,
+        policy=policy or _policy(guards),
         recipes=["typecheck"],
         targets=[],
-        guards=guards or {"max_fixes_per_pr": 3, "max_fix_attempts": 2, "max_fix_lines": 30},
     )
 
 
@@ -177,6 +199,42 @@ def test_tope_de_fixes_marca_skipped() -> None:
         guards={"max_fixes_per_pr": 0, "max_fix_attempts": 2, "max_fix_lines": 30},
     )
     assert results["f1"].status is FixStatus.SKIPPED
+
+
+def test_ruta_nunca_auto_bloquea_el_fix_aunque_lo_aprueben() -> None:
+    sandbox = _Sandbox()
+    fixer = _Fixer()
+    policy = _policy(
+        {
+            "max_fixes_per_pr": 3,
+            "max_fix_attempts": 2,
+            "max_fix_lines": 30,
+            "never_auto_paths": ["src/Foo.php"],
+        }
+    )
+    results = _run(
+        fixer=fixer,
+        sandbox=sandbox,
+        policy=policy,
+        human=_human(outcome=DecisionOutcome.APPROVED),
+    )
+    assert results["f1"].status is FixStatus.BLOCKED
+    assert "nunca-auto" in results["f1"].reason
+    assert fixer.calls == 0, "una ruta protegida no gasta fixer"
+    assert sandbox.requests == [], "una ruta protegida no gasta sandbox"
+
+
+def test_tema_protegido_bloquea_el_fix_aunque_lo_aprueben() -> None:
+    finding = _FINDING.model_copy(
+        update={"protected_subject": ProtectedSubject.AUTHORIZATION_AUTHENTICATION}
+    )
+    sandbox = _Sandbox()
+    fixer = _Fixer()
+    results = _run(fixer=fixer, sandbox=sandbox, finding=finding)
+    assert results["f1"].status is FixStatus.BLOCKED
+    assert "tema protegido" in results["f1"].reason
+    assert fixer.calls == 0
+    assert sandbox.requests == []
 
 
 def test_delivery_diff_usa_el_bloque_diff() -> None:
