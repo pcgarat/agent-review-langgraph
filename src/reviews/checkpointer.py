@@ -66,6 +66,7 @@ def build_checkpointer(
             raise RuntimeError("DATABASE_URL es obligatoria en produccion (checkpointer durable)")
         logger.info("Sin DATABASE_URL; checkpointer en memoria (no durable)")
         return InMemorySaver(serde=build_serde())
+    pool: Any = None
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
         from psycopg.rows import dict_row
@@ -73,7 +74,7 @@ def build_checkpointer(
 
         # Pool pequeno con `check`: una conexion muerta (reinicio de Postgres) se
         # descarta al pedirla en vez de fallar cada `get_state` hasta reiniciar.
-        pool: ConnectionPool[Any] = ConnectionPool(
+        pool = ConnectionPool(
             database_url,
             min_size=1,
             max_size=2,
@@ -90,6 +91,13 @@ def build_checkpointer(
         logger.info("Checkpointer Postgres listo")
         return saver
     except Exception:
+        if pool is not None:
+            # Sin cerrarlo, sus hilos de fondo seguirian reconectando (y logueando)
+            # contra un Postgres que no se va a usar durante toda la vida del proceso.
+            try:
+                pool.close()
+            except Exception:  # pragma: no cover - cierre best effort
+                logger.debug("No se pudo cerrar el pool de Postgres", exc_info=True)
         if required:
             raise
         logger.exception("No se pudo abrir el checkpointer Postgres; uso memoria")
@@ -143,30 +151,44 @@ class CompletedOnlyRetention:
         return ts is not None and ts < self._cutoff
 
 
+def latest_checkpoints(saver: BaseCheckpointSaver[Any]) -> dict[str, CheckpointTuple] | None:
+    """Ultima tupla de cada hilo, o `None` si la base no responde. Nunca lanza.
+
+    Es el escaneo caro (lista y deserializa todos los checkpoints): el worker lo
+    hace una vez por ciclo y lo comparte entre la reconciliacion y la poda. Se
+    recorre de la tupla mas nueva a la mas vieja para que una antigua no marque
+    el hilo como pendiente.
+    """
+    latest: dict[str, CheckpointTuple] = {}
+    try:
+        for tup in saver.list(None):
+            latest.setdefault(tup.config["configurable"]["thread_id"], tup)
+    except Exception:  # pragma: no cover - base caida
+        logger.exception("No se pudieron listar los hilos del checkpointer")
+        return None
+    return latest
+
+
 def prune_threads(
     saver: BaseCheckpointSaver[Any],
     policy: RetentionPolicy,
     *,
     now: datetime | None = None,
+    latest: dict[str, CheckpointTuple] | None = None,
 ) -> list[str]:
     """Poda los hilos que `policy` apruebe. Unico punto que toca el saver.
 
     Confina las dos llamadas volatiles de LangGraph (`list` y `delete_thread`) en
     este adaptador: el dia que el paquete implemente `prune`, se anade otro motor
     que recorra la politica igual. Nunca lanza: la poda es mantenimiento y una
-    base caida no debe tumbar al worker.
+    base caida no debe tumbar al worker. `latest` reutiliza un listado ya hecho
+    (`latest_checkpoints`) para no escanear dos veces.
     """
     moment = now or datetime.now(UTC)
-    # Solo la ultima tupla de cada hilo decide si esta completado; se recorre de
-    # la mas nueva a la mas vieja para que una tupla antigua no lo marque pendiente.
-    latest: dict[str, CheckpointTuple] = {}
-    try:
-        for tup in saver.list(None):
-            thread_id = tup.config["configurable"]["thread_id"]
-            latest.setdefault(thread_id, tup)
-    except Exception:  # pragma: no cover - base caida
-        logger.exception("No se pudieron listar los hilos para podar")
-        return []
+    if latest is None:
+        latest = latest_checkpoints(saver)
+        if latest is None:
+            return []
 
     pruned: list[str] = []
     for thread_id, tup in latest.items():
@@ -189,29 +211,31 @@ def prune_completed_threads(
     older_than_days: float,
     paused_threads: Iterable[str] = (),
     now: datetime | None = None,
+    latest: dict[str, CheckpointTuple] | None = None,
 ) -> list[str]:
     """Atajo de la politica por defecto (`CompletedOnlyRetention`) sobre `prune_threads`."""
     moment = now or datetime.now(UTC)
     policy = CompletedOnlyRetention(
         older_than_days=older_than_days, paused_threads=paused_threads, now=moment
     )
-    return prune_threads(saver, policy, now=moment)
+    return prune_threads(saver, policy, now=moment, latest=latest)
 
 
-def paused_thread_ids(saver: BaseCheckpointSaver[Any]) -> list[str]:
+def paused_thread_ids(
+    saver: BaseCheckpointSaver[Any],
+    *,
+    latest: dict[str, CheckpointTuple] | None = None,
+) -> list[str]:
     """Hilos cuyo ultimo checkpoint tiene un `interrupt` sin reanudar.
 
     Es la verdad durable de "que esta pausado", independiente del inbox de Redis:
     sirve para reconciliar las pausas que el inbox perdio (caida del worker entre
     el checkpoint y el registro). Nunca lanza, como la poda.
     """
-    latest: dict[str, CheckpointTuple] = {}
-    try:
-        for tup in saver.list(None):
-            latest.setdefault(tup.config["configurable"]["thread_id"], tup)
-    except Exception:  # pragma: no cover - base caida
-        logger.exception("No se pudieron listar los hilos para reconciliar pausas")
-        return []
+    if latest is None:
+        latest = latest_checkpoints(saver)
+        if latest is None:
+            return []
     return [thread_id for thread_id, tup in latest.items() if not _is_completed(tup)]
 
 

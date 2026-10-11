@@ -152,6 +152,20 @@ def _verify_repo(settings: Settings, repo: str) -> None:
         )
 
 
+def _release_quietly(store: IdempotencyStore, *keys: str) -> None:
+    """Libera cada clave de la compensacion sin enmascarar el error original.
+
+    Corre dentro de un `except` que va a relanzar: si una liberacion lanzara
+    (Redis caido), taparia la excepcion original y dejaria sin liberar las
+    claves siguientes.
+    """
+    for key in keys:
+        try:
+            store.release(key)
+        except Exception:
+            logger.exception("No se pudo liberar la clave %s; queda reclamada", key)
+
+
 def _persist_artifact(settings: Settings, request: ReviewRequest, tool: str, payload: str) -> Path:
     """Deposita el artefacto en la ruta que resuelve el `ToolingOutputSource`."""
     source = FileToolingOutputSource(
@@ -214,7 +228,7 @@ async def tooling_webhook(
         pending = build_pending(settings)
         pending_status = pending.observe(review_request, tool, payload)
     except Exception:
-        store.release(ingest_key)
+        _release_quietly(store, ingest_key)
         raise
 
     if pending_status is PendingStatus.READY:
@@ -227,8 +241,7 @@ async def tooling_webhook(
             except Exception:
                 # Se liberan las dos: el reintento del CI tiene que poder volver a
                 # observar el artefacto y disparar la review.
-                store.release(review_request.review_key)
-                store.release(ingest_key)
+                _release_quietly(store, review_request.review_key, ingest_key)
                 raise
             logger.info("Review encolada: %s", review_request.review_key)
             return JSONResponse(

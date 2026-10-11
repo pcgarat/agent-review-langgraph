@@ -41,9 +41,34 @@ class PausedStore(Protocol):
         ...
 
 
+# Si la reanudacion `expired` encolada no aplico en este plazo (el job se perdio:
+# el worker murio tras el `BLPOP` o no pudo reencolar), el barrido la reencola.
+EXPIRED_REQUEUE_AFTER_S = 3600.0
+# Tope de encolados `expired` por pausa: una reanudacion que falla siempre acaba
+# en la DLQ unas pocas veces, no en un bucle eterno con `attempts=0`.
+MAX_EXPIRED_ENQUEUES = 3
+
+
 def _is_due(review: PausedReview, now: datetime | None) -> bool:
-    """Vencida y sin reanudacion `expired` encolada todavia."""
-    return review.expired_enqueued_at is None and review.is_expired(now=now)
+    """Vencida y sin reanudacion `expired` en vuelo.
+
+    Una vez encolada no se devuelve hasta pasado `EXPIRED_REQUEUE_AFTER_S`: si la
+    reanudacion se aplico, la entrada ya no estaria en el inbox; si sigue, el job
+    se perdio y hay que reencolarlo para que la review no quede colgada.
+    """
+    if not review.is_expired(now=now):
+        return False
+    if review.expired_enqueued_at is None:
+        return True
+    if review.expired_enqueues >= MAX_EXPIRED_ENQUEUES:
+        return False
+    elapsed = ((now or datetime.now(UTC)) - review.expired_enqueued_at).total_seconds()
+    return elapsed >= EXPIRED_REQUEUE_AFTER_S
+
+
+def _mark_enqueued(review: PausedReview, now: datetime | None) -> None:
+    review.expired_enqueued_at = now or datetime.now(UTC)
+    review.expired_enqueues += 1
 
 
 class RedisPausedStore:
@@ -133,8 +158,8 @@ class RedisPausedStore:
 
         No borra la entrada: la reanudacion la elimina al aplicarse, para que el
         redis-encolado sea idempotente si el worker reintenta. Las que ya tienen la
-        reanudacion encolada (`mark_expired_enqueued`) no se devuelven: si esa
-        reanudacion falla, su destino es la DLQ, no otra vuelta del barrido.
+        reanudacion encolada (`mark_expired_enqueued`) solo vuelven si sigue sin
+        aplicarse pasado un plazo, y como mucho `MAX_EXPIRED_ENQUEUES` veces.
         """
         if not self.available():
             return self._fallback.sweep(now=now)
@@ -147,7 +172,7 @@ class RedisPausedStore:
         review = self.get(review_key)
         if review is None:
             return
-        review.expired_enqueued_at = now or datetime.now(UTC)
+        _mark_enqueued(review, now)
         # `keepttl`: la marca no debe alargar la vida de la entrada.
         self._client.set(self._entry_key(review_key), review.model_dump_json(), keepttl=True)
 
@@ -189,4 +214,4 @@ class InMemoryPausedStore:
     def mark_expired_enqueued(self, review_key: str, *, now: datetime | None = None) -> None:
         review = self._items.get(review_key)
         if review is not None:
-            review.expired_enqueued_at = now or datetime.now(UTC)
+            _mark_enqueued(review, now)

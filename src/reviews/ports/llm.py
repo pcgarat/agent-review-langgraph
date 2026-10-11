@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from reviews.errors import TransientError
+from reviews.errors import PermanentError, TransientError
 
 
-class LlmError(TransientError):
-    """Fallo del proveedor de modelo (red, cuota, respuesta invalida).
+class LlmError(PermanentError):
+    """Fallo del proveedor de modelo que no se arregla reintentando.
 
-    Recuperable por diseno: el nodo de la persona LLM ya degrada a 0 hallazgos
-    ante su fallo, pero cuando la clasificacion se use para reintentar, el tipo
-    correcto es este y no un `RuntimeError` generico.
+    Respuesta malformada, 4xx (credenciales, modelo inexistente, peticion
+    invalida). Los fallos recuperables son `LlmTransientError`.
+    """
+
+
+class LlmTransientError(LlmError, TransientError):
+    """Fallo recuperable del proveedor: red, timeout, 5xx o 429.
+
+    Hereda de `LlmError` para que quien captura "cualquier fallo del modelo" lo
+    siga haciendo, y de `TransientError` para que `is_transient` lo reintente
+    (comprueba `TransientError` antes que `PermanentError`).
     """
 
 
