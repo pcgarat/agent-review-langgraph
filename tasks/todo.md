@@ -33,14 +33,15 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 
 ## Slice C — Señal + smoke
 
-- [ ] **T8** Persona LLM `correctness` (modelo inyectable, parseo seguro)
-- [ ] **T9** Smoke E2E documentado + README “Fase 1” (verificar inlines en Bitbucket)
+- [x] **T8** Persona LLM `correctness` (modelo inyectable, parseo seguro)
+- [x] **T9** Smoke E2E documentado + README “Fase 1” (verificar inlines en Bitbucket)
 
 ### Checkpoint C — Fase 1 hecha
 
-- [ ] Hallazgos anclados en el diff (+ resumen/Teams)
-- [ ] Cero escritura de código en el repo del PR
-- [ ] Decisión go/no-go para Fase 2 (HITL Opción B)
+- [x] Hallazgos anclados en el diff (+ resumen/Teams)
+- [x] Cero escritura de código en el repo del PR
+- [ ] Decisión go/no-go para Fase 2 (HITL Opción B)  ← decisión humana
+- [ ] Nivel 2 del smoke ejecutado contra Bitbucket real (requiere twg + secretos)
 
 ## Camino crítico mínimo (si hay que acortar)
 

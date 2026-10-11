@@ -341,56 +341,66 @@ ir antes)
 
 ---
 
-## Task 8: Persona LLM `correctness`
+## Task 8: Persona LLM `correctness` — HECHO (2026-10-11)
 
-**Description:** Segunda persona: LLM con prompt acotado al diff, salida JSON
-validada contra el contrato. Presupuesto de tokens por PR desde settings/guards.
-Si falla el parseo, 0 hallazgos + log (no tumbar la review).
+**Entrega:** `LlmReviewer` (`correctness`) con el puerto `LlmPort` inyectable
+(`complete(system, prompt, max_tokens)`), validador de salida contra el contrato,
+anclaje al diff igual que la persona estatica (una linea inventada por el modelo
+se descarta; cae al ancla por evidencia), tope `max_findings`, truncado de diff
+por coste y `budget_tokens_per_pr` logueado. Cualquier fallo (proveedor caido,
+JSON invalido, fields fuera de contrato) => 0 hallazgos, nunca excepcion al grafo.
+Adaptador incluido: `OpenAiCompatibleLlm` (contrato `/chat/completions`; vale
+OpenAI, Azure, Groq, vLLM, Ollama). Opt-in via `LLM_REVIEWER_ENABLED` +
+`LLM_MODEL`; desactivado por defecto en Fase 1.
+La heuristica de tema protegido se extrajo a `adapters/text_utils.py` (fuente
+unica compartida con `ToolingReviewer`).
 
 **Acceptance criteria:**
-- [ ] `LlmReviewer(name="correctness")` con puerto de modelo inyectable
-- [ ] Salida inválida → lista vacía + métrica/log, no excepción al grafo
-- [ ] Test con LLM fake que devuelve JSON válido/inválido
-- [ ] `budget_tokens_per_pr` consultado o al menos logueado
+- [x] `LlmReviewer(name="correctness")` con puerto de modelo inyectable
+- [x] Salida invalida → lista vacia + log, no excepcion al grafo
+- [x] Test con LLM fake que devuelve JSON valido/invalido
+- [x] `budget_tokens_per_pr` consultado o al menos logueado
 
 **Verification:**
-- [ ] `uv run pytest tests/test_llm_reviewer.py`
-- [ ] Grafo con tooling + correctness: merge deduplica por `(file, title)`
+- [x] `uv run pytest tests/test_llm_reviewer.py tests/test_openai_llm.py`
+- [x] Grafo con tooling + correctness: merge deduplica por `(file, title)`
+      (`test_e2e_estatica_y_llm_conviven_y_el_merge_deduplica`)
 
 **Dependencies:** Tasks 2, 4, 6, 7 (publish ya estable)
 
-**Files likely touched:**
+**Files touched:**
 - `src/reviews/adapters/llm_reviewer.py` (nuevo)
-- `src/reviews/ports/llm.py` (opcional)
-- `tests/test_llm_reviewer.py`
-- `src/reviews/settings.py`
-- `.env.example`
+- `src/reviews/adapters/openai_llm.py` (nuevo)
+- `src/reviews/adapters/text_utils.py` (nuevo)
+- `src/reviews/ports/llm.py` (nuevo)
+- `src/reviews/settings.py`, `src/reviews/worker/main.py`
+- `tests/test_llm_reviewer.py`, `tests/test_openai_llm.py`, `tests/test_e2e_tooling.py`
 
 **Estimated scope:** Medium
 
 ---
 
-## Task 9: Smoke E2E documentado
+## Task 9: Smoke E2E documentado — HECHO (2026-10-11)
 
-**Description:** Checklist reproducible: compose up, webhook de prueba o CLI
-interna, un PR de `emotivoo-v2` (o replay de payload + diff golden), verificar
-comentario + Teams. Actualizar README a Fase 1.
+**Entrega:** `docs/smoke-fase1-20261011.md` con dos niveles: Nivel 1 (replay local
+sin red sobre los tests E2E, la "definicion de hecho" diaria) y Nivel 2 (smoke real
+contra Bitbucket: compose up, `POST /webhook/tooling` firmado con el JSON de
+PHPStan, verificacion de inline + resumen + Teams). README actualizado con las
+personas `standards`/`correctness`/`null` y `.env.example` con las variables LLM.
 
 **Acceptance criteria:**
-- [ ] `docs/` o sección README con pasos y variables necesarias
-- [ ] Resultado esperado descrito (ej. “aparece comentario con sección P2/P3”)
-- [ ] Lista de secretos mínimos: webhook Bitbucket, Teams, credenciales twg
+- [x] `docs/` con pasos y variables necesarias
+- [x] Resultado esperado descrito ("202 aceptado", inline por hallazgo, un teaser Teams)
+- [x] Lista de secretos minimos: webhook Bitbucket, Teams, credenciales twg
 
 **Verification:**
-- [ ] Ejecución manual una vez; capturar logs o IDs
-- [ ] `uv run pytest` + `uv run ruff check src` verdes
+- [ ] Ejecucion manual una vez (Nivel 2; requiere `twg` + secretos)
+- [x] `uv run pytest` + `uv run ruff check src` verdes
 
 **Dependencies:** Tasks 1–8
 
-**Files likely touched:**
-- `README.md`
-- `docs/smoke-fase1-YYYYMMDD.md` (si se documenta el run; fecha en nombre)
-- `.env.example`
+**Files touched:**
+- `README.md`, `docs/smoke-fase1-20261011.md` (nuevo), `.env.example`
 
 **Estimated scope:** Small
 

@@ -42,8 +42,18 @@ PR + Teams). Politica en `max_autonomy: report`.
 Personas de review (puerto `reviews.ports.reviewer`):
 
 - `ToolingReviewer` (`standards`): convierte la salida de PHPStan en hallazgos y
-  los ancla a lineas reales del diff. No ejecuta la herramienta.
-- `NullReviewer`: por defecto cuando el perfil no declara checks.
+  los ancla a lineas reales del diff. No ejecuta la herramienta. Activa por
+  defecto cuando el perfil declara `checks.typecheck`.
+- `LlmReviewer` (`correctness`): propone hallazgos con un modelo y los valida
+  contra el contrato; una linea inventada por el modelo se descarta. **Opt-in**:
+  requiere `LLM_REVIEWER_ENABLED=true` y `LLM_MODEL` (ver `.env.example`). El
+  proveedor es un puerto (`LlmPort`); el adaptador incluido habla el contrato
+  OpenAI `/chat/completions`, asi que vale OpenAI, Azure, Groq, vLLM u Ollama.
+- `NullReviewer`: por defecto cuando el perfil no declara checks y no hay LLM.
+
+Ambas personas emiten el mismo contrato `Finding`; el nodo `merge` deduplica por
+`(fichero, titulo)`, de modo que un mismo problema detectado por estatica y por
+LLM aparece **una sola vez**.
 
 **De donde sale la salida de PHPStan (Fase 1).** El agente **no** ejecuta la
 herramienta: eso es el sandbox de la Fase 3. La salida la deposita el pipeline de
