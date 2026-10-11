@@ -135,11 +135,24 @@ def test_diff_vacio_no_llama_al_modelo() -> None:
     assert llm.calls == []
 
 
-def test_presupuesto_se_registra(caplog) -> None:
-    reviewer = LlmReviewer(llm=FakeLlm(_response(_finding_json())), budget_tokens_per_pr=500_000)
-    with caplog.at_level(logging.INFO):
-        reviewer.review(repo="r", pr_id=1, diff=DIFF)
+def test_presupuesto_corta_la_llamada_al_modelo(caplog) -> None:
+    # C3: un presupuesto por debajo del coste estimado no se loguea y sigue: se
+    # corta la persona antes de llamar al modelo.
+    llm = FakeLlm(_response(_finding_json()))
+    reviewer = LlmReviewer(llm=llm, budget_tokens_per_pr=1)
+    with caplog.at_level(logging.WARNING):
+        result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    assert result.findings == []
+    assert llm.calls == [], "no debe llamarse al modelo si excede el presupuesto"
     assert "presupuesto" in caplog.text
+
+
+def test_presupuesto_amplio_permite_la_llamada() -> None:
+    llm = FakeLlm(_response(_finding_json()))
+    reviewer = LlmReviewer(llm=llm, budget_tokens_per_pr=500_000)
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    assert len(result.findings) == 1
+    assert reviewer.last_estimated_tokens > 0
 
 
 # --- Integracion con el grafo: merge deduplica por (fichero, titulo) ---

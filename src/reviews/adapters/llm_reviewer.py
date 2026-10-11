@@ -46,6 +46,12 @@ puede ser 0/25/50/75/100; la primera evidencia cita la linea. Como maximo %d hal
 # Un diff enorme no debe dispararse como prompt entero: se acota por coste.
 _MAX_DIFF_CHARS = 60_000
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+# Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
+_CHARS_PER_TOKEN = 4
+
+
+def _estimate_tokens(text: str) -> int:
+    return len(text) // _CHARS_PER_TOKEN
 
 
 class LlmReviewer:
@@ -72,6 +78,9 @@ class LlmReviewer:
         self._max_findings = max_findings
         self._max_tokens = max_tokens
         self._budget = budget_tokens_per_pr
+        # Tokens estimados de la ultima llamada: se expone para poder medir el
+        # gasto real por review (C3) sin acoplar el puerto al proveedor.
+        self.last_estimated_tokens = 0
 
     def review(
         self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
@@ -81,12 +90,6 @@ class LlmReviewer:
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
         # del CI, asi que su ausencia de hallazgos si es un analisis limpio.
-        if self._budget is not None:
-            logger.info(
-                "correctness: presupuesto %d tokens/PR, pidiendo %d",
-                self._budget,
-                self._max_tokens,
-            )
         raw = self._call(diff)
         if raw is None:
             return ReviewerResult()
@@ -110,6 +113,20 @@ class LlmReviewer:
                 "correctness: diff truncado de %d a %d chars", len(diff), _MAX_DIFF_CHARS
             )
         prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{diff[:_MAX_DIFF_CHARS]}"
+        # Corte real de presupuesto (C3): no basta con loguear. Si el coste
+        # estimado de esta review (prompt + respuesta) supera el tope, no se
+        # llama al modelo: mejor 0 hallazgos de esta persona que una factura
+        # desbocada. El estimador es ~4 chars/token (conservador).
+        estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
+        self.last_estimated_tokens = estimated
+        if self._budget is not None and estimated > self._budget:
+            logger.warning(
+                "correctness: coste estimado %d tokens supera el presupuesto %d; "
+                "se omite la persona",
+                estimated,
+                self._budget,
+            )
+            return None
         try:
             return self._llm.complete(system=_SYSTEM, prompt=prompt, max_tokens=self._max_tokens)
         except LlmError as exc:
