@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9. Estado: **T1–T8 cerradas** (225 tests en verde).
+checkpoints tras T4 y tras T9. Estado: **T1–T9 cerradas** (227 tests en verde).
 
 ### Fundación
 
@@ -107,14 +107,16 @@ checkpoints tras T4 y tras T9. Estado: **T1–T8 cerradas** (225 tests en verde)
   - Nota: la API no habla con el checkpointer; `/reviews/{key}` responde `PAUSED`
     desde el inbox (404 si no consta pausada).
 
-- [ ] **T9** — E2E de pausa → decisión → reanudación → publish
-  - Aceptación: inline + resumen sin duplicar; marcas de dedupe correctas.
-  - Verifica: `tests/test_hitl_e2e.py`.
+- [x] **T9** — E2E de pausa → decisión → reanudación → publish
+  - Aceptación: inline + resumen sin duplicar; marcas de dedupe correctas. ✅
+    (`tests/test_hitl_e2e.py`: artefacto → pausa → `reviews decide` → resume → publish,
+    sin `twg` ni red)
+  - Verifica: `tests/test_hitl_e2e.py`. ✅
   - Ficheros: `tests/test_hitl_e2e.py`.
 
 ### Checkpoint: tras T5–T9
 
-- [ ] Decidir y reanudar funciona de punta a punta; `make ci` en verde.
+- [x] Decidir y reanudar funciona de punta a punta; `make ci` en verde (227 tests).
 
 ### Riesgo asumido (documentado, no una tarea)
 

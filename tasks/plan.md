@@ -132,4 +132,5 @@ decisión y del plan:
 
 Tareas en `tasks/todo.md` (T1–T9) y riesgos en el spec §7.
 
-Estado: **T1–T8 cerradas** (225 tests en verde). T9 pendiente.
+Estado: **T1–T9 cerradas** (227 tests en verde). Fase 2 completa; queda el smoke
+contra infra real (Redis/Postgres/Bitbucket) y la validación P3 del formato inline.
