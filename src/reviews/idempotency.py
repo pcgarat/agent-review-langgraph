@@ -5,6 +5,8 @@ from typing import Protocol, runtime_checkable
 
 import redis
 
+from reviews.redis_utils import build_redis_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,7 @@ class RedisIdempotencyStore:
     """
 
     def __init__(self, *, url: str, ttl_seconds: int = 60 * 60 * 24 * 7) -> None:
-        self._client = redis.Redis.from_url(url, decode_responses=True)
+        self._client = build_redis_client(url)
         self._ttl = ttl_seconds
 
     def available(self) -> bool:

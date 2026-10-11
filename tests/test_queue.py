@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import pytest
+import redis
+from redis.connection import DEFAULT_SOCKET_TIMEOUT
+
 from reviews.domain.models import ReviewRequest
-from reviews.queue import InMemoryReviewQueue
+from reviews.queue import InMemoryReviewQueue, RedisReviewQueue
+from reviews.redis_utils import build_redis_client
 
 
 def test_cola_en_memoria_fifo() -> None:
@@ -27,3 +32,42 @@ def test_dead_letter_guarda_el_job_descartado() -> None:
     assert entry["review_key"] == request.review_key
     assert entry["reason"] == "intentos agotados (3)"
     assert entry["request"]["pipeline_id"] == "7"
+
+
+def test_cliente_bloqueante_sin_deadline_de_socket() -> None:
+    """Blpop no debe competir con el `socket_timeout` por defecto de redis-py.
+
+    redis-py 8 fija 5 s de deadline por defecto; con `BLPOP timeout=5` el socket
+    vencia antes que el comando y una cola vacia mataba al worker. El cliente que
+    bloquea tiene que renunciar a ese deadline.
+    """
+    client = build_redis_client("redis://localhost:6379/0", blocking=True)
+    assert client.connection_pool.connection_kwargs["socket_timeout"] is None
+
+
+def test_cliente_normal_conserva_deadline() -> None:
+    client = build_redis_client("redis://localhost:6379/0")
+    conn = client.connection_pool.make_connection()
+    assert conn.socket_timeout == DEFAULT_SOCKET_TIMEOUT
+
+
+def test_dequeue_devuelve_none_si_redis_falla(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un fallo transitorio de la cola no propaga: es un poll sin resultado."""
+    queue = RedisReviewQueue(url="redis://localhost:6379/0")
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise redis.exceptions.ConnectionError("servidor reiniciando")
+
+    monkeypatch.setattr(queue._client, "blpop", _boom)
+    assert queue.dequeue() is None
+
+
+def test_dequeue_propaga_errores_no_transitorios(monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = RedisReviewQueue(url="redis://localhost:6379/0")
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("payload corrupto")
+
+    monkeypatch.setattr(queue._client, "blpop", _boom)
+    with pytest.raises(ValueError):
+        queue.dequeue()

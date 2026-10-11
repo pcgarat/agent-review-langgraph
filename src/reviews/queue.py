@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 import redis
 
 from reviews.domain.models import ReviewRequest
+from reviews.redis_utils import build_redis_client, is_transient_redis_error
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ class RedisReviewQueue:
     def __init__(
         self, *, url: str, key: str = QUEUE_KEY, dead_letter_key: str = DEAD_LETTER_KEY
     ) -> None:
-        self._client = redis.Redis.from_url(url, decode_responses=True)
+        # `blocking=True`: `BLPOP` bloquea y no debe llevar deadline de socket.
+        self._client = build_redis_client(url, blocking=True)
         self._key = key
         self._dead_key = dead_letter_key
 
@@ -52,7 +54,19 @@ class RedisReviewQueue:
         self._client.rpush(self._key, request.model_dump_json())
 
     def dequeue(self, *, timeout_s: float = 5.0) -> ReviewRequest | None:
-        item = self._client.blpop(self._key, timeout=max(1, int(timeout_s)))
+        """Siguiente trabajo, o `None` en el timeout. No deja morir al worker.
+
+        La espera venida, un Redis que cae a mitad y un servidor que se reinicia
+        son rutinas de un consumidor de cola: se registran y se devuelve `None`
+        para reintentar en la siguiente vuelta, no se propaga una excepcion.
+        """
+        try:
+            item = self._client.blpop(self._key, timeout=max(1, int(timeout_s)))
+        except Exception as exc:  # noqa: BLE001 - el poll no debe tumbar el worker
+            if not is_transient_redis_error(exc):
+                raise
+            logger.warning("Cola no disponible al leer; se reintenta en el proximo poll: %s", exc)
+            return None
         if item is None:
             return None
         _, payload = item

@@ -8,6 +8,7 @@ import redis
 
 from reviews.domain.models import ReviewRequest
 from reviews.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
+from reviews.redis_utils import build_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class RedisPendingStore:
         key_ttl_s: int = DEFAULT_TTL_S,
         key: str = KEY_PREFIX,
     ) -> None:
-        self._client = redis.Redis.from_url(url, decode_responses=True)
+        self._client = build_redis_client(url)
         self._key = key
         self._expected = expected_tools or []
         self._ttl_ready_s = ttl_ready_s
