@@ -30,6 +30,9 @@ class PausedReview(BaseModel):
     # reanudacion que falla siempre volvia a encolarse en cada barrido (con
     # `attempts=0`) y esquivaba la DLQ hasta que caducaba la clave de Redis.
     expired_enqueued_at: datetime | None = None
+    # Veces que el barrido encolo la reanudacion `expired`. Acota el reencolado
+    # de una reanudacion perdida (ver `paused_store._is_due`).
+    expired_enqueues: int = 0
 
     @property
     def key(self) -> str:

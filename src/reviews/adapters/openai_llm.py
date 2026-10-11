@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 
-from reviews.ports.llm import LlmError
+from reviews.errors import is_transient
+from reviews.ports.llm import LlmError, LlmTransientError
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,9 @@ class OpenAiCompatibleLlm:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as exc:
-            raise LlmError(f"Fallo del proveedor LLM: {exc}") from exc
+            # Solo red, 5xx y 429 cambian entre intentos; un 4xx es permanente.
+            error = LlmTransientError if is_transient(exc) else LlmError
+            raise error(f"Fallo del proveedor LLM: {exc}") from exc
 
         try:
             choices = data["choices"]

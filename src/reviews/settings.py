@@ -75,11 +75,12 @@ class Settings(BaseSettings):
     # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
     # el job se descarta con el `review_key` en el log para reencolarlo a mano.
     max_review_attempts: int = 3
-    # Reintentos por nodo dentro de una misma invocacion (fallo transitorio de twg,
-    # del LLM o de Teams). Es ortogonal al reintento de job: aquel reencola la
-    # review entera (unidad de idempotencia: la marca del PR); este reintenta la
-    # llamada concreta sin sacar el job de la cola. `node_retry_max_attempts=1`
-    # lo desactiva.
+    # Reintentos por nodo dentro de una misma invocacion (fallo transitorio de twg
+    # o de Teams). Es ortogonal al reintento de job: aquel reencola la review
+    # entera (unidad de idempotencia: la marca del PR); este reintenta la llamada
+    # concreta sin sacar el job de la cola. `node_retry_max_attempts=1` lo
+    # desactiva. El LLM no pasa por aqui: `LlmReviewer` captura su fallo y degrada
+    # la persona a 0 hallazgos, para que una caida del proveedor no tumbe la review.
     node_retry_max_attempts: int = 3
     node_retry_initial_interval_s: float = 0.5
     node_retry_backoff_factor: float = 2.0

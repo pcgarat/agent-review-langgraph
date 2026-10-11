@@ -4,10 +4,12 @@ import base64
 import hashlib
 import logging
 import operator
+import shlex
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy, Send, interrupt
+from pydantic import ValidationError
 
 from reviews.domain.models import (
     PENDING_ACTIONS,
@@ -135,9 +137,11 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
         pending=pending,
         # La decision debe cubrir todos los pendientes (`build_decision`): la pista
         # los nombra todos; se cambia `--approve` por `--reject`/`--noted` donde toque.
+        # Los ids pueden venir del LLM (espacios, parentesis...): se citan para que
+        # la pista se pueda pegar tal cual en la shell.
         command_hint=(
-            f"reviews decide {request.review_key} --actor <tu-nombre> "
-            + " ".join(f"--approve {item.finding_id}" for item in pending)
+            f"reviews decide {shlex.quote(request.review_key)} --actor <tu-nombre> "
+            + " ".join(f"--approve {shlex.quote(item.finding_id)}" for item in pending)
         ),
     )
 
@@ -200,31 +204,50 @@ def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Fi
     - Mismo `_merge_key` (fichero, linea, titulo): es el mismo hallazgo.
     - Mismo fichero y titulo con anclas a `_CROSS_PERSONA_NEAR_LINES` o menos, de
       personas **distintas**: es el mismo problema detectado dos veces. Dos
-      hallazgos de la misma persona en lineas distintas nunca se fusionan.
+      hallazgos de la misma persona en lineas distintas nunca acaban en el mismo
+      grupo, ni siquiera a traves de un tercero de otra persona.
+
+    El resultado no depende del orden del fan-out: se agrupa en un orden canonico
+    (linea, persona, id) y solo se compara dentro de cada (fichero, titulo).
     """
-    kept: list[Finding] = []
-    for finding in findings:
-        source = sources.get(_finding_id(finding), "")
-        index = next(
-            (
-                i
-                for i, other in enumerate(kept)
-                if _merge_key(other) == _merge_key(finding)
-                or (
-                    other.file == finding.file
-                    and other.title == finding.title
-                    and abs(other.line - finding.line) <= _CROSS_PERSONA_NEAR_LINES
-                    and source
-                    and sources.get(_finding_id(other), "") not in ("", source)
-                )
-            ),
-            None,
-        )
-        if index is None:
-            kept.append(finding)
-        elif len(finding.evidence) > len(kept[index].evidence):
-            kept[index] = finding
-    return kept
+
+    def source_of(finding: Finding) -> str:
+        return sources.get(_finding_id(finding), "")
+
+    def joins(group: list[Finding], finding: Finding) -> bool:
+        source = source_of(finding)
+        if any(_merge_key(other) == _merge_key(finding) for other in group):
+            return True
+        if not source:
+            return False
+        near_other = False
+        for other in group:
+            other_source = source_of(other)
+            if other_source == source:
+                # Misma persona en otra linea: hallazgo distinto, nunca se fusiona.
+                return False
+            if other_source and abs(other.line - finding.line) <= _CROSS_PERSONA_NEAR_LINES:
+                near_other = True
+        return near_other
+
+    buckets: dict[tuple[str, str], list[list[Finding]]] = {}
+    groups: list[list[Finding]] = []
+    for finding in sorted(
+        findings, key=lambda f: (f.file, f.title, f.line, source_of(f), _finding_id(f))
+    ):
+        candidates = buckets.setdefault((finding.file, finding.title), [])
+        group = next((g for g in candidates if joins(g, finding)), None)
+        if group is None:
+            group = []
+            candidates.append(group)
+            groups.append(group)
+        group.append(finding)
+
+    # Se conserva el orden de llegada para no reordenar la publicacion.
+    position = {id(f): i for i, f in enumerate(findings)}
+    groups.sort(key=lambda group: min(position[id(f)] for f in group))
+    # Representante: la evidencia mas rica; a igualdad, el primero en orden canonico.
+    return [max(group, key=lambda f: len(f.evidence)) for group in groups]
 
 
 def _merged(state: ReviewState) -> list[Finding]:
@@ -378,11 +401,19 @@ def build_graph(
         # Se vuelve a pausar y la siguiente decision responde al nuevo `interrupt`.
         while True:
             resume_value = interrupt(approval)
-            decision = (
-                resume_value
-                if isinstance(resume_value, HitlDecision)
-                else HitlDecision.model_validate(resume_value)
-            )
+            try:
+                decision = (
+                    resume_value
+                    if isinstance(resume_value, HitlDecision)
+                    else HitlDecision.model_validate(resume_value)
+                )
+            except ValidationError as exc:
+                logger.warning(
+                    "Decision ilegible sobre %s (%d error(es)); se vuelve a pausar",
+                    approval.review_key,
+                    exc.error_count(),
+                )
+                continue
             missing = [
                 p.finding_id for p in approval.pending if decision.outcome_for(p.finding_id) is None
             ]

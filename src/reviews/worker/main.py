@@ -24,6 +24,7 @@ from reviews.adapters.tooling_source import (
 from reviews.adapters.twg_vcs import TwgVcsAdapter, check_twg
 from reviews.checkpointer import (
     build_checkpointer,
+    latest_checkpoints,
     paused_thread_ids,
     prune_completed_threads,
 )
@@ -34,6 +35,7 @@ from reviews.domain.models import (
     ReviewOutcome,
     ReviewRequest,
 )
+from reviews.domain.paused import PausedReview
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
 from reviews.errors import is_transient
 from reviews.graph.build import (
@@ -162,17 +164,17 @@ def build_chat(settings: Settings) -> ChatPort | None:
     return None
 
 
-def node_retry_policy(settings: Settings) -> RetryPolicy | None:
-    """Politica de reintento de nodo segun configuracion; `None` la desactiva.
+def node_retry_policy(settings: Settings) -> RetryPolicy:
+    """Politica de reintento de nodo segun configuracion.
 
     El default vive en el grafo (`default_retry_policy`), pero el worker la
     parametriza para poder subir/bajar los intentos sin tocar codigo y para
     desactivarla (`node_retry_max_attempts=1`) en escenarios de diagnostico.
+    Se desactiva con `max_attempts=1` y no con `None`: `build_graph` lee `None`
+    como "usa el default" y volveria a reintentar 3 veces.
     """
-    if settings.node_retry_max_attempts <= 1:
-        return None
     return RetryPolicy(
-        max_attempts=settings.node_retry_max_attempts,
+        max_attempts=max(1, settings.node_retry_max_attempts),
         initial_interval=settings.node_retry_initial_interval_s,
         backoff_factor=settings.node_retry_backoff_factor,
         max_interval=settings.node_retry_max_interval_s,
@@ -375,6 +377,14 @@ def _on_paused(
         logger.warning("Review %s pausada sin ApprovalRequest en el estado", request.review_key)
         return
     if paused is not None:
+        if _superseded(paused.get(request.review_key), request):
+            # La pasada completa ya esta pausada: manda ella. La degradada queda
+            # superada y `reconcile_paused` borra su hilo.
+            logger.info(
+                "Pausa degradada de %s superada por la pasada completa; no se registra",
+                request.review_key,
+            )
+            return
         paused.pause(request, approval, created_at=paused_at)
     if chat is not None:
         chat.notify_decision_pending(
@@ -406,7 +416,7 @@ def _ensure_registered(
         return False
     state = cast("ReviewState", snapshot.values)
     request = ReviewRequest.model_validate(state["request"])
-    if paused.get(request.review_key) is not None:
+    if not _needs_registration(paused.get(request.review_key), request):
         return False
     logger.warning("Pausa de %s ausente del inbox; se repone", request.review_key)
     _on_paused(
@@ -420,30 +430,65 @@ def _ensure_registered(
     return True
 
 
+def _superseded(current: PausedReview | None, request: ReviewRequest) -> bool:
+    """¿La entrada del inbox es de otra pasada que manda sobre este hilo?
+
+    La pasada degradada (`:partial`) y la completa comparten `review_key`, la
+    unica clave del inbox. Si ambas pausan, manda la completa: la degradada queda
+    superada (no se registra) y `reconcile_paused` borra su hilo.
+    """
+    return (
+        current is not None
+        and current.request.thread_id != request.thread_id
+        and request.degraded
+        and not current.request.degraded
+    )
+
+
+def _needs_registration(current: PausedReview | None, request: ReviewRequest) -> bool:
+    """Falta en el inbox, o lo ocupa una pasada degradada que esta supera."""
+    if current is None:
+        return True
+    return current.request.thread_id != request.thread_id and not _superseded(current, request)
+
+
 def reconcile_paused(
     graph: ReviewGraph,
     paused: PausedStore,
     *,
     chat: ChatPort | None = None,
     vcs: VcsPort | None = None,
+    thread_ids: list[str] | None = None,
 ) -> list[str]:
     """Repone en el inbox los hilos pausados que el checkpointer conoce y el inbox no.
 
     Cubre la caida del worker entre el checkpoint del `interrupt` y `_on_paused`:
     el job ya salio de la cola (`BLPOP`), asi que ninguna reentrega lo arreglaria.
+
+    Tambien borra los hilos degradados (`:partial`) pausados cuya entrada del
+    inbox ocupa la pasada completa: nadie puede decidirlos ni el TTL los vence, y
+    la poda los protege por tener `interrupt`, asi que vivirian para siempre.
+
+    `thread_ids` permite pasar los hilos pausados ya calculados (el bucle del
+    worker comparte un unico listado del saver con la poda).
     """
     saver = getattr(graph, "checkpointer", None)
     if saver is None:
         return []
     restored: list[str] = []
-    for thread_id in paused_thread_ids(saver):
-        if paused.get(thread_id) is not None:
-            continue
+    for thread_id in thread_ids if thread_ids is not None else paused_thread_ids(saver):
         try:
             snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
-            if snapshot.interrupts and _ensure_registered(
-                snapshot, paused=paused, chat=chat, vcs=vcs
-            ):
+            if not snapshot.interrupts:
+                continue
+            request = ReviewRequest.model_validate(snapshot.values["request"])
+            if _superseded(paused.get(request.review_key), request):
+                logger.warning(
+                    "Hilo degradado %s superado por la pausa completa; se borra", thread_id
+                )
+                saver.delete_thread(thread_id)
+                continue
+            if _ensure_registered(snapshot, paused=paused, chat=chat, vcs=vcs):
                 restored.append(thread_id)
         except Exception:
             logger.exception("No se pudo reponer la pausa del hilo %s", thread_id)
@@ -485,7 +530,8 @@ def sweep_expired(
     Un hilo pausado no puede quedarse eterno: al superar `DECISION_TTL_S` se
     reanuda con `expired` para todos los pendientes (la review se publica "sin
     decision"), nunca se deja colgada. No borra el inbox: lo limpia el resume.
-    Cada pausa se encola una sola vez: si su reanudacion falla de forma
+    Cada pausa se encola una vez y solo se reencola si el job se perdio (sigue en
+    el inbox pasado un plazo), con tope: si su reanudacion falla de forma
     persistente, acaba en la DLQ en vez de volver con `attempts=0` cada barrido.
     """
     enqueued: list[ReviewRequest] = []
@@ -686,14 +732,24 @@ def run_forever(
         # La poda lista todos los hilos (escaneo caro en Postgres): va con su propio
         # intervalo, mucho mas largo que los TTL.
         if saver is not None and now - last_prune >= prune_s:
-            # Antes de podar: repone las pausas que el inbox perdio, para que la
-            # poda (y el barrido del TTL) las vean.
-            reconcile_paused(graph, paused_store, chat=chat, vcs=vcs)
-            prune_completed_threads(
-                saver,
-                older_than_days=settings.checkpoint_retention_days,
-                paused_threads=[review.review_key for review in paused_store.all()],
-            )
+            # Un solo listado del saver alimenta la reconciliacion y la poda.
+            latest = latest_checkpoints(saver)
+            if latest is not None:
+                # Antes de podar: repone las pausas que el inbox perdio, para que
+                # la poda (y el barrido del TTL) las vean.
+                reconcile_paused(
+                    graph,
+                    paused_store,
+                    chat=chat,
+                    vcs=vcs,
+                    thread_ids=paused_thread_ids(saver, latest=latest),
+                )
+                prune_completed_threads(
+                    saver,
+                    older_than_days=settings.checkpoint_retention_days,
+                    paused_threads=[review.review_key for review in paused_store.all()],
+                    latest=latest,
+                )
             last_prune = now
 
 
