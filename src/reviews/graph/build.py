@@ -18,6 +18,8 @@ from reviews.domain.models import (
     Decision,
     DecisionOutcome,
     Finding,
+    FixResult,
+    FixStatus,
     HitlDecision,
     PendingDecision,
     ReviewOutcome,
@@ -26,8 +28,11 @@ from reviews.domain.models import (
     ToolingSourceStatus,
 )
 from reviews.errors import is_transient
+from reviews.fix.delivery import DeliveryFormatter
+from reviews.fix.node import run_fixes
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
+from reviews.ports.fixer import FixerPort
 from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.sandbox import SandboxPort
 from reviews.ports.vcs import ReviewMarker, VcsPort
@@ -89,6 +94,9 @@ class ReviewState(TypedDict, total=False):
     # continua desde el checkpoint) retome justo el aviso.
     published: bool
     inlined_count: int
+    # Fase 3: resultado del fix por hallazgo. Reducer de merge por `finding_id`
+    # (como `_merge_sources`): un fix no re-ejecutado conserva su resultado.
+    fixes: Annotated[dict[str, FixResult], _merge_fixes]
 
 
 def _merge_sources(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
@@ -99,6 +107,13 @@ def _merge_status(
     left: dict[str, ToolingSourceStatus] | None,
     right: dict[str, ToolingSourceStatus] | None,
 ) -> dict[str, ToolingSourceStatus]:
+    return {**(left or {}), **(right or {})}
+
+
+def _merge_fixes(
+    left: dict[str, FixResult] | None, right: dict[str, FixResult] | None
+) -> dict[str, FixResult]:
+    """Merge por `finding_id`: el resultado de un fix no re-ejecutado se conserva."""
     return {**(left or {}), **(right or {})}
 
 
@@ -291,17 +306,21 @@ def build_graph(
     policy: PolicyEngine,
     chat: ChatPort | None = None,
     sandbox: SandboxPort | None = None,
+    fixer: FixerPort | None = None,
+    delivery: DeliveryFormatter | None = None,
+    fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
     retry_policy: RetryPolicy | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review.
 
-    scope -> fan-out -> merge -> policy -> hitl -> publish (inline + resumen) ->
-    notify (Teams). El fix llega en la fase 3.
+    scope -> fan-out -> merge -> policy -> hitl -> fix -> publish (inline +
+    resumen) -> notify (Teams). `fix` es un no-op si no hay hallazgos aprobados
+    con accion `fix_*`.
     """
-    del sandbox  # reservado para Fase 3
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
+    recipes = fix_recipes or []
 
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
@@ -446,11 +465,43 @@ def build_graph(
                 ", ".join(sorted(missing)),
             )
 
+    def apply_fixes(state: ReviewState) -> ReviewState:
+        """Fase 3: arregla los hallazgos aprobados con `fix_*`; no-op si no hay.
+
+        El fixer **propone** y el sandbox **verifica**: si algo falla, el parche
+        nunca llega al PR (§5). No escribe el repo en ningun caso.
+        """
+        request = ReviewRequest.model_validate(state["request"])
+        decisions = state.get("decisions", [])
+        human = state.get("human_decisions")
+        fixes = run_fixes(
+            request=request,
+            findings=_merged(state),
+            decisions=decisions,
+            human=human,
+            vcs=vcs,
+            fixer=fixer,
+            sandbox=sandbox,
+            recipes=recipes,
+            targets=[],
+            guards=policy.guards,
+        )
+        if fixes:
+            verified = sum(1 for result in fixes.values() if result.status is FixStatus.VERIFIED)
+            logger.info(
+                "Fase 3: %d fix(es), %d verificado(s) en %s",
+                len(fixes),
+                verified,
+                request.review_key,
+            )
+        return {"fixes": fixes} if fixes else {}
+
     def publish(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
         findings = _merged(state)
         decisions = state.get("decisions", [])
         human = state.get("human_decisions")
+        fixes = state.get("fixes", {})
         unavailable = _unavailable_sources(state)
         if not findings and not unavailable:
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
@@ -522,7 +573,14 @@ def build_graph(
             if anchor is None:
                 summary_only.append(finding)
                 continue
-            body = _render_inline(finding, decision, token=request.dedupe_token, human=human)
+            body = _render_inline(
+                finding,
+                decision,
+                token=request.dedupe_token,
+                human=human,
+                fix=fixes.get(_finding_id(finding)),
+                delivery=delivery,
+            )
             if _has_marker(published, _inline_token(request.dedupe_token, _finding_id(finding))):
                 # Ya esta publicado (p.ej. el resumen no llego a escribirse por un
                 # fallo transitorio): no se repite el inline. La marca lleva el id
@@ -551,6 +609,7 @@ def build_graph(
             summary_only=summary_only,
             inlined=inlined,
             unavailable=unavailable,
+            fixes=fixes,
             token=request.dedupe_token,
             complete=complete,
             human=human,
@@ -601,6 +660,7 @@ def build_graph(
     graph.add_node("merge", merge)
     graph.add_node("policy", apply_policy)
     graph.add_node("hitl", hitl)
+    graph.add_node("fix", apply_fixes, retry_policy=retry)
     graph.add_node("publish", publish, retry_policy=retry)
     graph.add_node("notify", notify, retry_policy=retry)
 
@@ -609,7 +669,8 @@ def build_graph(
     graph.add_edge("persona", "merge")
     graph.add_edge("merge", "policy")
     graph.add_edge("policy", "hitl")
-    graph.add_edge("hitl", "publish")
+    graph.add_edge("hitl", "fix")
+    graph.add_edge("fix", "publish")
     graph.add_edge("publish", "notify")
     graph.add_edge("notify", END)
 
@@ -667,6 +728,18 @@ def _token_suffix(*, complete: bool) -> str:
     return ":ok" if complete else ":partial"
 
 
+# Limite del log crudo que se publica en el inline: suficiente para diagnosticar,
+# no para inundar el PR.
+_MAX_TAIL_CHARS = 1500
+
+
+def _tail(text: str, limit: int = _MAX_TAIL_CHARS) -> str:
+    clean = text.strip()
+    if len(clean) <= limit:
+        return clean
+    return "…\n" + clean[-limit:]
+
+
 def _policy_line(decision: Decision) -> str | None:
     """Razon de la politica, solo si aporta (no la generica de relleno)."""
     reason = decision.reason.strip()
@@ -700,6 +773,8 @@ def _render_inline(
     *,
     token: str = "",
     human: HitlDecision | None = None,
+    fix: FixResult | None = None,
+    delivery: DeliveryFormatter | None = None,
 ) -> str:
     # La persona estatica propaga el mensaje crudo de la herramienta como titulo
     # (truncado a 100) y como `why_it_matters` (completo). Repetir ambos ensena
@@ -720,7 +795,11 @@ def _render_inline(
     policy = _policy_line(decision)
     if policy:
         blocks.append(policy)
-    if finding.suggested_fix:
+    fix_block = _render_fix(fix, delivery=delivery)
+    if fix_block:
+        blocks.append(fix_block)
+    elif finding.suggested_fix:
+        # Sin fix ejecutado (aun), la pista libre de la persona es lo que hay.
         blocks.append(f"**Sugerencia:** {finding.suggested_fix}")
     body = "\n\n".join(blocks)
     if not token:
@@ -730,6 +809,45 @@ def _render_inline(
     return body + f"\n\n{_inline_token(token, _finding_id(finding))}"
 
 
+def _render_fix(fix: FixResult | None, *, delivery: DeliveryFormatter | None) -> str:
+    """Bloque de fix para el inline: la sugerencia verificada o el fallo con log.
+
+    Un `VERIFIED` usa el `DeliveryFormatter` (E6); cualquier otro estado explica
+    por que no se entrega nada y con que check fallo, para que nadie aplique a
+    ciegas. `None` significa "no habia fix que hacer" y no anade ruido.
+    """
+    if fix is None:
+        return ""
+    if fix.status is FixStatus.VERIFIED and fix.patch is not None and delivery is not None:
+        return delivery.render(fix.patch, checks=fix.checks, image_digest=fix.image_digest or "")
+    if fix.status in (FixStatus.SKIPPED, FixStatus.NOT_VERIFIABLE):
+        label = "sin arreglo automatico" if fix.status is FixStatus.SKIPPED else "no verificable"
+        return f"_Fix {label}: {fix.reason}_" if fix.reason else f"_Fix {label}_"
+    # FAILED / INVALID_PATCH: hay algo que contar y un check que fallo.
+    lines = [f"_Fix no verificado ({fix.status.value}): {fix.reason}_"]
+    failed = next((check for check in fix.checks if not check.ok), None)
+    if failed is not None:
+        tail = (failed.stderr_tail or failed.stdout_tail).strip()
+        if tail:
+            lines.append(f"```\n{_tail(tail)}\n```")
+    return "\n\n".join(lines)
+
+
+def _fix_reason_line(fix: FixResult | None) -> str:
+    """Linea de estado del fix para el resumen (compacta)."""
+    if fix is None:
+        return ""
+    icons = {
+        FixStatus.VERIFIED: "sugerencia verificada",
+        FixStatus.FAILED: "fix no verificado",
+        FixStatus.INVALID_PATCH: "parche invalido",
+        FixStatus.NOT_VERIFIABLE: "no verificable",
+        FixStatus.SKIPPED: "sin arreglo automatico",
+    }
+    label = icons.get(fix.status, fix.status.value)
+    return f"Fix: {label}" + (f" · {fix.reason}" if fix.reason else "")
+
+
 def _render_summary(
     findings: list[Finding],
     decisions: list[Decision],
@@ -737,11 +855,13 @@ def _render_summary(
     summary_only: list[Finding] | None = None,
     inlined: list[Finding] | None = None,
     unavailable: list[tuple[str, ToolingSourceStatus]] | None = None,
+    fixes: dict[str, FixResult] | None = None,
     token: str = "",
     complete: bool = True,
     human: HitlDecision | None = None,
 ) -> str:
     by_key = {d.finding_id: d for d in decisions}
+    fixes = fixes or {}
     inlined = inlined or []
     summary_only = summary_only or []
     lines: list[str] = []
@@ -756,6 +876,8 @@ def _render_summary(
             "",
         ]
     )
+    if fixes:
+        lines.extend(_render_fixes_section(fixes))
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
@@ -772,10 +894,22 @@ def _render_summary(
         decision_line = _decision_line(human, decision)
         if decision_line:
             lines.append(f"  {decision_line}")
+        fix_line = _fix_reason_line(fixes.get(_finding_id(finding)))
+        if fix_line:
+            lines.append(f"  {fix_line}")
         if human is not None and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED:
             lines.append("  Descartado por una persona: no se anota inline.")
     summary = "\n".join(lines)
     return summary + _footer(token, complete=complete) if token else summary
+
+
+def _render_fixes_section(fixes: dict[str, FixResult]) -> list[str]:
+    """Seccion "Fixes" del resumen: recuento por estado (spec §5.5)."""
+    counts: dict[FixStatus, int] = {}
+    for result in fixes.values():
+        counts[result.status] = counts.get(result.status, 0) + 1
+    detail = ", ".join(f"{status.value}: {count}" for status, count in sorted(counts.items()))
+    return ["### Fixes", "", detail, ""]
 
 
 def _render_incomplete_header(
@@ -826,4 +960,5 @@ def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOut
         },
         human_decisions=state.get("human_decisions"),
         paused=paused or bool(state.get("__interrupt__")),
+        fixes=state.get("fixes", {}),
     )

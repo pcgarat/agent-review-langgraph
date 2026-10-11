@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     sandbox_enabled: bool = False
     sandbox_registry_user: str = ""
     sandbox_registry_token: str = ""
+    # URL interna del `sandbox-runner` (Fase 3). Con `SANDBOX_ENABLED=true` y esta
+    # URL, el nodo `fix` puede verificar parches; sin ellas, queda `NOT_VERIFIABLE`.
+    sandbox_runner_url: str = ""
+    sandbox_runner_token: str = ""
+    # Formato de entrega del parche verificado: `diff` (fallback seguro) o
+    # `suggestion` (si Bitbucket lo renderiza). E6.
+    fix_delivery: str = "diff"
+    # Nombres de recipe del perfil que ejecuta la verificacion, en orden.
+    fix_recipes: str = "typecheck,arch,lint,targeted,tests"
+    # Tope de lineas de un parche (guard espejo de autonomy.yaml).
+    max_fix_lines: int = 30
 
     autonomy_config: str = "config/autonomy.yaml"
     repo_profile_config: str = "config/repo_profile.emotivoo-v2.yaml"
@@ -100,6 +111,10 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_max_findings: int = 10
     llm_budget_tokens_per_pr: int = 500000
+
+    @property
+    def fix_recipes_list(self) -> list[str]:
+        return [item.strip() for item in self.fix_recipes.split(",") if item.strip()]
 
 
 @lru_cache

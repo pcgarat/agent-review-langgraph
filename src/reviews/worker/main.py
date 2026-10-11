@@ -12,6 +12,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
+from reviews.adapters.llm_fixer import LlmFixer
 from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
 from reviews.adapters.openai_llm import OpenAiCompatibleLlm
@@ -38,6 +39,7 @@ from reviews.domain.models import (
 from reviews.domain.paused import PausedReview
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
 from reviews.errors import is_transient
+from reviews.fix.delivery import DeliveryFormatter, DiffFormatter, SuggestionFormatter
 from reviews.graph.build import (
     ReviewState,
     build_approval,
@@ -49,8 +51,10 @@ from reviews.paused_store import InMemoryPausedStore, PausedStore, RedisPausedSt
 from reviews.pending_store import PendingStore, RedisPendingStore
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
+from reviews.ports.fixer import FixerPort
 from reviews.ports.llm import LlmPort
 from reviews.ports.reviewer import ReviewerPort
+from reviews.ports.sandbox import SandboxPort
 from reviews.ports.tooling import ToolingOutputSource
 from reviews.ports.vcs import VcsPort
 from reviews.profile import expected_tools, load_profile
@@ -195,6 +199,37 @@ def build_vcs(settings: Settings) -> VcsPort:
     )
 
 
+def build_fixer(settings: Settings) -> FixerPort | None:
+    """Fixer LLM si el modelo esta configurado. Sin el, el nodo `fix` marca
+    `NOT_VERIFIABLE` (no se puede proponer parche) en vez de fingir un fix."""
+    llm = build_llm(settings)
+    if llm is None:
+        return None
+    return LlmFixer(
+        llm=llm,
+        budget_tokens_per_pr=settings.llm_budget_tokens_per_pr,
+        max_fix_lines=settings.max_fix_lines,
+    )
+
+
+def build_delivery(settings: Settings) -> DeliveryFormatter:
+    """Formato de entrega del parche verificado (E6). `diff` hasta que R1 confirme
+    que Bitbucket aplica `suggestion`."""
+    if settings.fix_delivery.strip().lower() == "suggestion":
+        return SuggestionFormatter()
+    return DiffFormatter()
+
+
+def build_sandbox(settings: Settings) -> SandboxPort | None:
+    """Adaptador HTTP del `sandbox-runner` (Fase 3). `None` si no esta habilitado:
+    en ese caso el nodo `fix` marca `NOT_VERIFIABLE` y no se ejecuta nada (F7)."""
+    if not settings.sandbox_enabled or not settings.sandbox_runner_url.strip():
+        return None
+    # Import local: el adaptador HTTP llega con el runner (F7); hasta entonces el
+    # worker arranca sin sandbox y el fix queda `NOT_VERIFIABLE`.
+    return None
+
+
 def build_runtime(
     settings: Settings,
     *,
@@ -203,6 +238,8 @@ def build_runtime(
     reviewers: list[ReviewerPort] | None = None,
     policy: PolicyEngine | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    fixer: FixerPort | None = None,
+    sandbox: SandboxPort | None = None,
 ) -> Any:
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
@@ -221,6 +258,10 @@ def build_runtime(
         reviewers=reviewers,
         policy=policy,
         chat=chat,
+        sandbox=sandbox if sandbox is not None else build_sandbox(settings),
+        fixer=fixer if fixer is not None else build_fixer(settings),
+        delivery=build_delivery(settings),
+        fix_recipes=settings.fix_recipes_list,
         scope_ignore=settings.scope_ignore,
         retry_policy=node_retry_policy(settings),
     )
