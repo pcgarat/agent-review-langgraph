@@ -1,4 +1,4 @@
-"""Regresiones de los fallos B1–B10 de `docs/revision-main-20261011.md`.
+"""Regresiones de los fallos B1–B10 de la revision de `main` (`docs/arquitectura.md` §8).
 
 Cada test reproduce el escenario del documento contra el codigo arreglado. Los
 fakes se reutilizan de `test_worker` para no duplicarlos.

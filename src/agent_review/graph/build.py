@@ -215,7 +215,7 @@ _CROSS_PERSONA_NEAR_LINES = 5
 def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Finding]:
     """Deduplica y conserva la evidencia mas rica de cada grupo.
 
-    Dos reglas (B5 de docs/revision-main-20261011.md):
+    Dos reglas (B5; docs/adr/0014-criterio-de-merge-entre-personas.md):
 
     - Mismo `_merge_key` (fichero, linea, titulo): es el mismo hallazgo.
     - Mismo fichero y titulo con anclas a `_CROSS_PERSONA_NEAR_LINES` o menos, de
