@@ -42,12 +42,15 @@ Detalle y porqués de cada uno están en el código y en el commit que lo introd
 - **A1 / P1** — El CI de `emotivoo-v2` haga el `POST /webhook/tooling` firmado.
   **Opcional**: sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1
   (`docs/ingesta-diferida-ci-20261011.md` §3–4).
-- **A3 / P2** — Ejecutar el smoke Nivel 2 con `twg` y secretos reales
-  (`scripts/smoke-nivel2.sh <pr_id>`).
+- **A3 / P2** — **Ejecutado (2026-10-11, PR 430).** `scripts/smoke-nivel2.sh`
+  contra `cqm/emotivoo-v2#430`: 4 inline anclados + resumen + dedupe por commit;
+  el detalle y los dos fallos de arranque que destapo (worker en crash-loop y
+  contrato fuera de la imagen) estan en `docs/smoke-fase1-20261011.md` §5.
 - **C1 / P3** — Revisión humana del formato inline
   (`docs/decisiones-publish-inline-20261011.md`).
 - **P4** — Decisión go/no-go para Fase 2 (HITL Opción B).
-- **P5** — Medir la latencia real de una review (la cola es secuencial).
+- **P5** — **Medición orientativa hecha (2026-10-11)**: ~15 s para 4 hallazgos en
+  la cola secuencial; falta una review con carga real (LLM + PR grande).
 - **P6** — Revisar la heurística de tema protegido con seguridad (decide el autofix en
   Fase 3).
 - **Rate-limit** explícito en `/webhook/tooling`: no bloqueante (lo acotan firma +

@@ -83,10 +83,10 @@ Decisiones de implementación no obvias, documentadas aparte:
 | # | Pendiente | Tipo |
 |---|---|---|
 | P1 | El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado | Externo, **opcional** (`docs/ingesta-diferida-ci-20261011.md` §3–4) |
-| P2 | Nivel 2 del smoke: un PR real, verificar inline + resumen + Teams | Verificación manual (`scripts/smoke-nivel2.sh`) |
+| P2 | Nivel 2 del smoke: un PR real, verificar inline + resumen + Teams | ✅ Hecho con el PR 430 (`docs/smoke-fase1-20261011.md` §5); Teams queda en no-op sin webhook real |
 | P3 | Revisión humana del formato inline + resumen | Humano (`docs/decisiones-publish-inline-20261011.md`) |
 | P4 | Decisión go/no-go para Fase 2 (HITL Opción B) | Humano |
-| P5 | Medir latencia real de una review (cola secuencial) | Verificación manual |
+| P5 | Medir latencia real de una review (cola secuencial) | Medición orientativa hecha (~15 s, 4 hallazgos); falta carga real |
 | P6 | Revisar la heurística de tema protegido con seguridad | Humano (Fase 3) |
 
 ---
@@ -98,6 +98,8 @@ Decisiones de implementación no obvias, documentadas aparte:
 | Contrato `twg` distinto al adaptador | Goldens de stdout reales; `twg` 1.3.5 verificado | ✅ Resuelto |
 | Persona LLM ruidosa / cara | Tooling primero; validación de contrato; corte de presupuesto | ✅ Controlado |
 | Falla transitoria pierde la review | Reintento con contador + DLQ | ✅ Resuelto |
+| Worker no sobrevive a una cola vacia | Redis sin deadline de socket + `dequeue` tolerante | ✅ Resuelto (smoke 2026-10-11) |
+| Contrato fuera de la imagen | Ruta con candidatos + `contracts/` copiado al Dockerfile | ✅ Resuelto (smoke 2026-10-11) |
 | Re-push duplica inlines | Checkpointer por hilo + marca de publicación por commit | ✅ Resuelto |
 | Review sin datos del CI (carrera) | Ingesta diferida: encolar solo con el artefacto presente | ✅ Resuelto |
 | Review larga reinicia el worker | Latido en hilo independiente | ✅ Resuelto |
