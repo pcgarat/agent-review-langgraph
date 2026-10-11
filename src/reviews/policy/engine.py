@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from reviews.domain.models import (
     ProtectedSubject,
     Severity,
 )
+from reviews.globs import path_matches
 
 
 class PolicyError(RuntimeError):
@@ -44,6 +44,32 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _lower_cap(configured: FindingAction, override: str | None) -> FindingAction:
+    """Techo efectivo: el override solo puede *bajar* el declarado en el YAML (D1).
+
+    Un deploy puede endurecer la politica (menos autonomia) sin tocar el repo,
+    pero nunca subirla por encima de lo que el YAML permitio: subir el techo
+    exige un cambio versionado y revisable.
+    """
+    if override is None or not override.strip():
+        return configured
+    try:
+        candidate = FindingAction(override.strip())
+    except ValueError:
+        raise PolicyError(f"max_autonomy invalido en settings: {override!r}") from None
+    rank = {
+        FindingAction.REPORT: 0,
+        FindingAction.FIX_WITH_APPROVAL: 1,
+        FindingAction.FIX_AUTO: 2,
+    }
+    # El override solo aplica a techos no-escalate; escalate es un freno aparte.
+    if configured is FindingAction.ESCALATE:
+        return configured
+    if rank[candidate] <= rank[configured]:
+        return candidate
+    return configured
+
+
 def _match_condition(condition: dict[str, Any], finding: Finding) -> bool:
     """Casa una condicion. Todas las claves del `when` deben cumplirse."""
     for key, expected in condition.items():
@@ -66,17 +92,11 @@ def _match_condition(condition: dict[str, Any], finding: Finding) -> bool:
                 return False
         elif key == "paths":
             patterns = [str(p) for p in _as_list(expected)]
-            if not any(_path_matches(finding.file, p) for p in patterns):
+            if not any(path_matches(finding.file, p) for p in patterns):
                 return False
         else:
             raise PolicyError(f"Campo no soportado en la politica: {key}")
     return True
-
-
-def _path_matches(path: str, pattern: str) -> bool:
-    """Match simple de glob sobre rutas. `**` cruza directorios."""
-    regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
-    return re.fullmatch(regex, path) is not None
 
 
 class PolicyEngine:
@@ -92,8 +112,9 @@ class PolicyEngine:
         FindingAction.ESCALATE: 3,
     }
 
-    def __init__(self, config: dict[str, Any]) -> None:
-        self._max_autonomy = FindingAction(config.get("max_autonomy", "report"))
+    def __init__(self, config: dict[str, Any], *, cap_override: str | None = None) -> None:
+        configured = FindingAction(config.get("max_autonomy", "report"))
+        self._max_autonomy = _lower_cap(configured, cap_override)
         self._default = FindingAction(config.get("default_action", "report"))
         self._version = str(config.get("version", "0"))
         self._guards: dict[str, Any] = config.get("guards", {}) or {}
@@ -108,9 +129,9 @@ class PolicyEngine:
         ]
 
     @classmethod
-    def from_file(cls, path: str | Path) -> PolicyEngine:
+    def from_file(cls, path: str | Path, *, cap_override: str | None = None) -> PolicyEngine:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-        return cls(data)
+        return cls(data, cap_override=cap_override)
 
     @property
     def version(self) -> str:
@@ -146,7 +167,7 @@ class PolicyEngine:
         patterns = [str(p) for p in self._guards.get("never_auto_paths", [])]
         # Herramientas propias del agente: el agente no debe reescribirlas.
         patterns.append(".cursor/**")
-        return any(_path_matches(file, pattern) for pattern in patterns)
+        return any(path_matches(file, pattern) for pattern in patterns)
 
     def decide(self, finding: Finding) -> PolicyResult:
         # Los guardas preceden a las reglas: son el freno de seguridad.

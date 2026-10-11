@@ -133,3 +133,34 @@ def test_decision_lleva_trazabilidad(policy: PolicyEngine) -> None:
 
 def test_max_inline_comments_en_guards(policy: PolicyEngine) -> None:
     assert policy.guards.get("max_inline_comments") == 20
+
+
+def test_cap_override_solo_puede_bajar_el_techo() -> None:
+    # D1: el YAML permite fix_auto, pero el deploy lo baja a report.
+    lowered = PolicyEngine(
+        {"version": 1, "max_autonomy": "fix_auto", "default_action": "report", "rules": []},
+        cap_override="report",
+    )
+    assert lowered.raw()["max_autonomy"] == "report"
+
+
+def test_cap_override_no_puede_subir_el_techo() -> None:
+    # Un override que pide mas autonomia que el YAML se ignora (el YAML manda).
+    engine = PolicyEngine(
+        {"version": 1, "max_autonomy": "report", "default_action": "report", "rules": []},
+        cap_override="fix_auto",
+    )
+    assert engine.raw()["max_autonomy"] == "report"
+
+
+def test_cap_override_vacio_deja_el_yaml() -> None:
+    engine = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "fix_with_approval",
+            "default_action": "report",
+            "rules": [],
+        },
+        cap_override="",
+    )
+    assert engine.raw()["max_autonomy"] == "fix_with_approval"
