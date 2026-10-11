@@ -17,3 +17,6 @@ var/
 
 # Binario local de twg (se copia a mano; ver bin/README.md)
 bin/twg
+
+# Preferencias locales de Claude Code (no se comparten)
+.claude/settings.local.json
