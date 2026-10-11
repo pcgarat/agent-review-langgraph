@@ -57,7 +57,7 @@ from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.sandbox import SandboxPort
 from reviews.ports.tooling import ToolingOutputSource
 from reviews.ports.vcs import VcsPort
-from reviews.profile import expected_tools, load_profile
+from reviews.profile import expected_tools, fix_recipes, load_profile
 from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from reviews.settings import Settings, get_settings, is_production, require_production_secrets
 
@@ -261,7 +261,7 @@ def build_runtime(
         sandbox=sandbox if sandbox is not None else build_sandbox(settings),
         fixer=fixer if fixer is not None else build_fixer(settings),
         delivery=build_delivery(settings),
-        fix_recipes=settings.fix_recipes_list,
+        fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
         retry_policy=node_retry_policy(settings),
     )

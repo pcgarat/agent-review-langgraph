@@ -31,8 +31,11 @@ checks:
   targeted: "bin/phpunit {targets}"
   tests: make test
 
-# Orden de verificacion del pre-commit (§15.3) ampliado con lo que solo corre en CI.
-verify: [typecheck, arch, lint, targeted, tests]
+# Orden de verificacion. `targeted` va antes de `typecheck` a proposito: da la
+# senal mas barata y local (tests del area tocada) antes de la mas cara, y las
+# reglas custom de PHPStan (ApplicationServiceMustHaveTestRule) exigen el test
+# que el fix ya deberia traer. Fiel al pre-commit (§15.3), ampliado con CI.
+verify: [targeted, typecheck, arch, lint, tests]
 
 # Herramientas cuya salida espera la review antes de ejecutarse (barrera de ingesta).
 expected_tools:
