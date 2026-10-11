@@ -1,7 +1,7 @@
 # Perfil del repositorio emotivoo-v2.
 # Deriva de bitbucket-pipelines.yml. Es el contrato que el sandbox ejecuta.
 # La clave es EXEC_PHP="": en local es `docker compose exec php`, en CI es vacio.
-# Ver docs/diseno-agente-code-review-20261010.md, apartado 15.
+# Ver docs/iniciativas/001-diseno-base/spec.md, apartado 15.
 
 repo: cqm/emotivoo-v2
 language: php 8.4
@@ -19,16 +19,20 @@ env:
   EXEC_PHP: ""
   APP_ENV: test
 
-setup: []
-# `setup_network`: los comandos de `setup` que necesitan red y SI pueden ejecutar
-# codigo del PR (p. ej. `composer install`). El resto de `setup`, y todos los
-# checks, corren con `--network none`. Aqui solo van los que requieren descargar
-# dependencias; `cache:clear`/`assets:install` van en `setup` (sin red).
+# `setup_network`: solo lo que necesita descargar algo. Corre ANTES que `setup`.
+# - `composer install --no-scripts`: baja dependencias sin ejecutar codigo del PR.
+# - `importmap:install`: baja los paquetes JS del CDN. Arranca el kernel (codigo
+#   del PR) con red: riesgo asumido, porque sin ellos fallan los tests funcionales
+#   que renderizan plantillas. Si deja de hacer falta, se mueve a `setup`.
 setup_network:
   - composer install --no-interaction --prefer-dist --optimize-autoloader --no-progress --no-scripts
+  - bin/console importmap:install -n
+# `setup`: el resto, con `--network none` como los checks. `cache:clear` regenera
+# la cache que necesita `stan` y `assets:install` copia assets desde `vendor/`;
+# ninguno descarga nada.
+setup:
   - bin/console cache:clear -n
   - bin/console assets:install -n
-  - bin/console importmap:install -n
 
 checks:
   lint: make cs-check
