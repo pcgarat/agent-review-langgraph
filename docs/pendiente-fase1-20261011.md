@@ -105,17 +105,25 @@ una ejecución.
 > la práctica no deduplica nada de valor. El dedupe que importa es *este* (contra
 > lo ya publicado), no el del merge.
 
-### B2. Cola sin ack, sin reintentos y sin DLQ
+### B2. Cola sin ack, sin reintentos y sin DLQ — ✅ Resuelto (2026-10-11)
 
-`process_request` hace `BLPOP` (el job **ya salió** de la cola), y ante cualquier
-excepción solo registra el log. El job **se pierde**: no hay reintento ni dead
-letter. El propio plan lo aceptaba para Fase 1, pero un fallo transitorio de `twg`
-o de Teams pasa de «un reintento» a «review que nunca ocurrió».
+`process_request` hacía `BLPOP` (el job **ya salió** de la cola) y ante cualquier
+excepción solo registraba el log: el job **se perdía**, así que un fallo
+transitorio de `twg` o de Teams pasaba de «un reintento» a «review que nunca
+ocurrió».
 
-- [ ] Decidir: reintento con contador en Redis (simple) o aceptar pérdida con log
-      que incluya la clave para reencolar a mano.
-- [ ] Si se acepta la pérdida, dejar el `review_key` en el log de forma explícita
-      para poder reinyectarlo.
+**Solución:** `process_request` propaga la excepción y `_consume` decide con ella.
+Ante un fallo transitorio reencola el mismo request con `attempts + 1` hasta
+`MAX_REVIEW_ATTEMPTS` (3 por defecto); agotados, descarta el job dejando el
+`review_key` en el log para reencolarlo a mano. Las reviews **incompletas** no se
+reencolan: la ingesta diferida ya esperó al artefacto (barrera/TTL) y re-ejecutar
+duplicaría la publicación, que ya corrió en el nodo `publish`.
+
+- [x] Reintento con contador (`ReviewRequest.attempts` + `MAX_REVIEW_ATTEMPTS`).
+- [x] `review_key` explícito en el log al agotar los intentos.
+- [ ] **DLQ explícita:** sigue pendiente. Hoy el job que agota intentos se
+      descarta con log; solo se recupera si alguien lee el log y reinyecta la
+      clave. Aceptable en report-only; revisar antes del HITL de Fase 2.
 
 ### B3. Procesamiento secuencial (un solo worker)
 

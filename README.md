@@ -50,6 +50,15 @@ mismo commit no deben duplicar los comentarios del PR. Hay dos capas:
    hubiera fallado. Una review **degradada** (`:partial`) **no** bloquea a una
    completa posterior con los datos ya disponibles.
 
+### Fallos transitorios (reintento)
+
+Un fallo de `twg` o de Teams no debe perder la review. `process_request` propaga la
+excepcion y el worker reencola el mismo job con un contador de intentos
+(`MAX_REVIEW_ATTEMPTS`, 3 por defecto). Agotados los intentos, descarta el job y
+deja el `review_key` en el log para reencolarlo a mano (aun no hay DLQ). Las
+reviews **incompletas no se reencolan**: la ingesta diferida ya espero al artefacto
+(ver `.env.example`), asi que re-ejecutar solo duplicaria la publicacion.
+
 ## Estado actual
 
 Fase 1 en curso: la ingesta diferida encola en Redis al completarse los artefactos

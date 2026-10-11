@@ -476,7 +476,7 @@ TTL (review degradada). El webhook de PR se retira. Diseño en
 |------|--------|------------|--------|
 | Contrato `twg` distinto al adaptador | Alto | Goldens de stdout reales; Task 5 antes de smoke | ✅ Resuelto (twg 1.3.5 verificado) |
 | Persona LLM ruidosa / cara | Medio | Tooling primero; umbral confidence; presupuesto | ✅ Opt-in + validación de contrato |
-| Cola sin DLQ | Medio | Log + no ack en error; DLQ explícita en Fase 2 si duele | ⚠️ Aceptado (Fase 2) |
+| Cola sin DLQ | Medio | Reintento con contador + log del `review_key` al agotar; DLQ explícita en Fase 2 si duele | ⚠️ Aceptado (Fase 2) |
 | Ejecutar PHPStan "de verdad" sin sandbox | Alto | En Fase 1 solo fixtures/artefacto inyectado; sandbox = Fase 3 | ✅ Fuera de alcance |
 | `escalate` en comentarios confunde | Bajo | Clamp a `report` + texto "habría escalado: …" | ✅ Clamp activo |
 | Línea de Finding fuera del diff | Alto | Ancla sobre el diff; fallback a resumen | ✅ Cubierto por tests |
@@ -586,7 +586,7 @@ y pipeline nuevo sobre el mismo `sha`.
 - Ingesta diferida como "un dato = un evento": el `PendingReview` hizo explícito un estado que antes era implícito (y erróneo).
 
 **Señales de deuda a vigilar en Fase 2**
-- **DLQ de cola:** hoy un fallo de VCS se loguea y se pierde el job. Tolerable en report-only; no válido cuando el grafo pausa y reanuda.
+- **DLQ de cola:** un fallo transitorio ya no se pierde: `_consume` reencola con contador hasta `MAX_REVIEW_ATTEMPTS` y, agotado, descarta dejando el `review_key` en el log. Falta la DLQ explícita (hoy solo log) para no depender de reinyección manual; no válido cuando el grafo pausa y reanuda.
 - **Canal de decisión del HITL:** aún sin definir (PR/Jira/CLI); es lo que convierte una review pausada en una decisión.
 - **Dedupe por token:** si un humano copia el pie `<!-- reviews:… -->` a otro commit, el publish lo leería como ya publicado. Riesgo bajo (pie invisible), pero conviene no asumirlo en Fase 2.
 - **Checkpointer acoplado a Postgres:** `build_checkpointer` abre una conexión `psycopg` síncrona y construye el `PostgresSaver` directamente, sin puerto. Para Report-only basta (una sola instancia, un solo `DATABASE_URL`), pero el `interrupt` del HITL invertirá la dirección: la reanudación llegará desde el *ingress* (webhook de PR/CI) en **otro proceso**, que necesita el mismo saver. Merece un `CheckpointerPort` (como `VcsPort`/`LlmPort`) para (a) no acoplar worker e ingress a Postgres, (b) poder testear el resume sin BD real, y (c) aislar la retención/poda. Es el primer trabajo de Fase 2, antes del `interrupt`.
