@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9. Estado: **T1–T6 cerradas** (216 tests en verde).
+checkpoints tras T4 y tras T9. Estado: **T1–T7 cerradas** (220 tests en verde).
 
 ### Fundación
 
@@ -84,11 +84,16 @@ checkpoints tras T4 y tras T9. Estado: **T1–T6 cerradas** (216 tests en verde)
     (`cqm/emotivoo-v2:42:sha:7`); `REVIEWS_DECISION_TOKEN` entra en el contrato de
     secretos de producción. La validación compartida vive en `reviews/decision.py`.
 
-- [ ] **T7** — Notificación de pausa + expiración
+- [x] **T7** — Notificación de pausa + expiración
   - Aceptación: aviso por `notify_decision_pending` + comentario de PR **sin** pie
-    de dedupe; `DECISION_TTL_S` reencola `EXPIRED`.
-  - Verifica: `tests/test_teams.py`, `tests/test_pending.py`.
+    de dedupe; `DECISION_TTL_S` reencola `EXPIRED`. ✅
+    (`test_pausa_escribe_el_inbox_y_avisa_sin_publicar`,
+    `test_aviso_de_pausa_sin_marca_de_dedupe`, `test_sweep_expired_reencola_sin_decision`,
+    `test_resume_borra_la_pausa_del_inbox`)
   - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`.
+  - Nota: el aviso va por Teams; el comentario de PR sin marca queda disponible vía
+    `render_pause_notice` (el endpoint de PR de Fase 2 difiere su uso). El barrido de
+    vencidas vive en `worker.sweep_expired` y se integra en `run_forever`.
 
 - [ ] **T8** — Poda de checkpoints + estado en la API
   - Aceptación: se podan hilos **completados** por retención; un hilo pausado

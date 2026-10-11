@@ -132,4 +132,4 @@ decisión y del plan:
 
 Tareas en `tasks/todo.md` (T1–T9) y riesgos en el spec §7.
 
-Estado: **T1–T6 cerradas** (216 tests en verde). T7–T9 pendientes.
+Estado: **T1–T7 cerradas** (220 tests en verde). T8–T9 pendientes.

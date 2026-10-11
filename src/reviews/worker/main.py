@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,9 +23,22 @@ from reviews.adapters.tooling_source import (
 )
 from reviews.adapters.twg_vcs import TwgVcsAdapter, check_twg
 from reviews.checkpointer import build_checkpointer
-from reviews.domain.models import ReviewOutcome, ReviewRequest
+from reviews.domain.models import (
+    DecisionOutcome,
+    FindingDecision,
+    HitlDecision,
+    ReviewOutcome,
+    ReviewRequest,
+)
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
-from reviews.graph.build import ReviewState, build_graph, outcome_from_state
+from reviews.graph.build import (
+    ReviewState,
+    build_approval,
+    build_graph,
+    outcome_from_state,
+    render_pause_notice,
+)
+from reviews.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from reviews.pending_store import PendingStore, RedisPendingStore
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
@@ -65,6 +79,15 @@ def build_queue(settings: Settings) -> ReviewQueue:
         return queue
     logger.warning("Redis no disponible en worker; cola en memoria (solo util en tests)")
     return InMemoryReviewQueue()
+
+
+def build_paused(settings: Settings) -> PausedStore:
+    """Inbox de reviews pausadas: lo escribe el worker al pausar, lo lee el canal."""
+    store = RedisPausedStore(url=settings.redis_url, ttl_s=settings.decision_ttl_s)
+    if store.available():
+        return store
+    logger.warning("Redis no disponible en worker; inbox de pausas en memoria")
+    return InMemoryPausedStore(ttl_s=settings.decision_ttl_s)
 
 
 def validate_tooling_template(settings: Settings) -> None:
@@ -127,6 +150,13 @@ def build_reviewers(
     return reviewers
 
 
+def build_chat(settings: Settings) -> ChatPort | None:
+    """Canal de chat si hay URL. Sin URL no hay canal: no se construye un no-op."""
+    if settings.teams_webhook_url.strip():
+        return TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
+    return None
+
+
 def build_runtime(
     settings: Settings,
     *,
@@ -148,8 +178,8 @@ def build_runtime(
         twg_bin=settings.twg_bin,
     )
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
-    if chat is None and settings.teams_webhook_url.strip():
-        chat = TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
+    if chat is None:
+        chat = build_chat(settings)
     reviewers = reviewers if reviewers is not None else build_reviewers(settings)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
@@ -165,7 +195,13 @@ def build_runtime(
     return graph.compile(checkpointer=saver)
 
 
-def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome:
+def process_request(
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    paused: PausedStore | None = None,
+    chat: ChatPort | None = None,
+) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
     Publicar y reencolar no pueden convivir en la misma pasada: `graph.invoke`
@@ -181,12 +217,15 @@ def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome
     - **Completado** (`next` vacio): no-op.
     - **A medias** (`next` no vacio, sin `interrupt`): se re-invoca (dedupe por
       marcas).
+
+    `paused`/`chat` son opcionales: en los tests se ejecuta sin inbox ni aviso, y
+    en produccion se pasan para registrar la pausa y avisar (spec §4.4).
     """
     logger.info("Procesando review %s (intento %d)", request.review_key, request.attempts + 1)
     config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
     snapshot = _thread_snapshot(graph, config)
     if snapshot is not None and snapshot.interrupts:
-        return _resume_paused(graph, request, config=config, paused_state=snapshot)
+        return _resume_paused(graph, request, config=config, paused_state=snapshot, paused=paused)
     if snapshot is not None and not snapshot.next:
         logger.info(
             "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
@@ -194,7 +233,10 @@ def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome
         )
         return outcome_from_state(cast("ReviewState", snapshot.values))
     result = cast("ReviewState", graph.invoke({"request": request, "findings": []}, config=config))
-    return _log_outcome(result)
+    outcome = _log_outcome(result)
+    if outcome.paused:
+        _on_paused(result, outcome, paused=paused, chat=chat)
+    return outcome
 
 
 def _resume_paused(
@@ -203,6 +245,7 @@ def _resume_paused(
     *,
     config: RunnableConfig,
     paused_state: Any,
+    paused: PausedStore | None = None,
 ) -> ReviewOutcome:
     """Reanuda un hilo pausado. Sin decision es no-op: no repite el trabajo."""
     if request.decision is None:
@@ -215,7 +258,91 @@ def _resume_paused(
     logger.info(
         "Review %s reanudada con decision de %s", request.review_key, request.decision.actor
     )
+    if paused is not None:
+        # Aplicada la decision, el inbox deja de mostrarla. El estado durable del
+        # hilo sigue en el checkpointer.
+        paused.resume(request.review_key)
     return _log_outcome(result)
+
+
+def _on_paused(
+    result: ReviewState,
+    outcome: ReviewOutcome,
+    *,
+    paused: PausedStore | None,
+    chat: ChatPort | None,
+) -> None:
+    """Registra la pausa en el inbox y avisa, sin publicar los hallazgos (spec §4.4)."""
+    approval = build_approval(result)
+    if approval is None:
+        # No deberia ocurrir: se pauso con pendientes. Se registra para no quedar mudo.
+        logger.warning(
+            "Review %s pausada sin ApprovalRequest en el estado", outcome.request.review_key
+        )
+        return
+    if paused is not None:
+        paused.pause(outcome.request, approval)
+    if chat is not None:
+        link = _pr_url(result, outcome)
+        chat.notify_decision_pending(
+            title=f"{outcome.request.repo}#{outcome.request.pr_id}",
+            body=render_pause_notice(approval),
+            link=link,
+        )
+    if paused is None:
+        logger.info(
+            "Review %s pausada con %d pendiente(s) (sin inbox configurado)",
+            outcome.request.review_key,
+            len(approval.pending),
+        )
+
+
+def _pr_url(result: ReviewState, outcome: ReviewOutcome) -> str | None:
+    """URL del PR para el aviso, si el VCS la tiene; nunca aborta la pausa."""
+    vcs = cast("VcsPort | None", result.get("vcs"))
+    request = outcome.request
+    if vcs is None:
+        return None
+    try:
+        return vcs.get_pull_request(request.repo, request.pr_id).url or None
+    except Exception:
+        logger.exception(
+            "No se pudo resolver la URL del PR %s#%s para el aviso", request.repo, request.pr_id
+        )
+        return None
+
+
+def sweep_expired(
+    paused: PausedStore,
+    queue: ReviewQueue,
+    *,
+    now: datetime | None = None,
+) -> list[ReviewRequest]:
+    """Reencola una reanudacion `expired` para cada pausa vencida (spec §4.7).
+
+    Un hilo pausado no puede quedarse eterno: al superar `DECISION_TTL_S` se
+    reanuda con `expired` para todos los pendientes (la review se publica "sin
+    decision"), nunca se deja colgada. No borra el inbox: lo limpia el resume.
+    """
+    enqueued: list[ReviewRequest] = []
+    for review in paused.sweep(now=now):
+        expired = HitlDecision(
+            review_key=review.review_key,
+            actor="system:ttl",
+            items=[
+                FindingDecision(finding_id=item.finding_id, outcome=DecisionOutcome.EXPIRED)
+                for item in review.approval.pending
+            ],
+        )
+        request = review.request.model_copy(update={"decision": expired})
+        queue.enqueue(request)
+        enqueued.append(request)
+        logger.warning(
+            "Pausa de %s vencida; se reanuda como sin decision (%d hallazgo(s))",
+            review.review_key,
+            len(expired.items),
+        )
+    return enqueued
 
 
 def _log_outcome(result: ReviewState) -> ReviewOutcome:
@@ -260,11 +387,17 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
 
 
 def _consume(
-    queue: ReviewQueue, graph: ReviewGraph, request: ReviewRequest, *, max_attempts: int
+    queue: ReviewQueue,
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    paused: PausedStore | None = None,
+    chat: ChatPort | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
     try:
-        process_request(graph, request)
+        process_request(graph, request, paused=paused, chat=chat)
     except Exception:
         logger.exception("Fallo procesando %s", request.review_key)
         _requeue_or_drop(queue, request, max_attempts=max_attempts)
@@ -321,6 +454,7 @@ def run_forever(
     queue: ReviewQueue | None = None,
     graph: ReviewGraph | None = None,
     pending: PendingStore | None = None,
+    paused: PausedStore | None = None,
     poll_s: float = 5.0,
     sweep_s: float = 30.0,
 ) -> None:
@@ -328,20 +462,30 @@ def run_forever(
     require_production_secrets(settings)
     logging.basicConfig(level=settings.log_level)
     queue = queue or build_queue(settings)
-    graph = graph or build_runtime(settings)
+    chat = build_chat(settings)
+    graph = graph or build_runtime(settings, chat=chat)
     pending_store = pending if pending is not None else build_pending(settings)
-    logger.info("Worker de reviews arrancado (Fase 1)")
+    paused_store = paused if paused is not None else build_paused(settings)
+    logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
     start_heartbeat()
     while True:
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
-            _consume(queue, graph, request, max_attempts=settings.max_review_attempts)
+            _consume(
+                queue,
+                graph,
+                request,
+                max_attempts=settings.max_review_attempts,
+                paused=paused_store,
+                chat=chat,
+            )
             continue
-        # La cola esta vacia: es el momento de aplicar los TTL de ingesta.
+        # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
         if time.monotonic() - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
+            sweep_expired(paused_store, queue)
             last_sweep = time.monotonic()
 
 

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # TTL de la ingesta diferida: cuanto se espera a los artefactos del CI.
     ingest_ttl_ready_s: float = 1200.0
     ingest_ttl_pending_s: float = 24 * 3600.0
+    # TTL de una decision pendiente (Fase 2): pasado, el barrido reanuda la review
+    # como `expired` (se publica "sin decision"), nunca se deja colgada.
+    decision_ttl_s: float = 7 * 24 * 3600.0
     # Herramientas cuya salida espera la review antes de ejecutarse.
     expected_tools: str = "phpstan"
     # Patrones extra (coma-separados) de ficheros que el scope ignora, ademas de
