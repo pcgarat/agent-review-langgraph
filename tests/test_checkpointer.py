@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from reviews.checkpointer import build_checkpointer, build_serde
 from reviews.domain.models import (
     AutofixClass,
@@ -11,7 +13,7 @@ from reviews.domain.models import (
 )
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from reviews.worker.main import process_request
 
 
@@ -59,10 +61,11 @@ class _MemoryVcs:
     def post_task(self, repo: str, pr_id: int, body: str) -> None:  # pragma: no cover
         del repo, pr_id, body
 
-    def list_review_markers(self, repo: str, pr_id: int) -> list:  # pragma: no cover
+    def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
         del repo, pr_id
-        # El PR no devuelve lo publicado: se prueba el dedupe por hilo aislado.
-        return []
+        # Devuelve lo publicado por este VCS, como haria Bitbucket: es lo que
+        # evita duplicar un inline ya escrito cuando el resumen fallo despues.
+        return [ReviewMarker(id="", body=body) for body in self.inlines + self.comments]
 
 
 class _OneFinding:
@@ -126,3 +129,55 @@ def test_reentrega_del_mismo_thread_no_republica() -> None:
     process_request(graph, request.model_copy(update={"attempts": 1}))
     assert len(vcs.inlines) == 1
     assert len(vcs.comments) == 1
+
+
+class _MidRunFailVcs(_MemoryVcs):
+    """Falla el resumen la primera vez, tras haber publicado el inline."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_summary = True
+
+    def post_comment(self, repo: str, pr_id: int, body: str) -> None:
+        if self.fail_next_summary:
+            self.fail_next_summary = False
+            raise RuntimeError("resumen caido (transitorio)")
+        super().post_comment(repo, pr_id, body)
+
+
+def test_fallo_a_media_ejecucion_deja_el_hilo_incompleto() -> None:
+    # La premisa del reintento: un nodo que falla a media ejecucion NO deja el
+    # hilo "completado" (queda `next=('publish',)`), asi que el checkpointer no
+    # puede saltarse la re-ejecucion. El job ya salio de la cola con BLPOP: solo
+    # `_consume` impide perderlo.
+    vcs = _MidRunFailVcs()
+    graph = _graph(vcs)
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+
+    with pytest.raises(RuntimeError):
+        process_request(graph, request)
+
+    config = {"configurable": {"thread_id": request.thread_id}}
+    snapshot = graph.get_state(config)
+    assert snapshot.next, "el hilo queda con el nodo pendiente, no completado"
+    assert len(vcs.inlines) == 1
+    assert vcs.comments == []
+
+
+def test_reintento_con_checkpointer_completa_sin_duplicar_el_inline() -> None:
+    # End-to-end del fallo parcial: el reintento re-ejecuta el nodo pendiente,
+    # completa el resumen que faltaba y no repite el inline ya publicado (lo
+    # detecta por la marca del commit leida del VCS).
+    vcs = _MidRunFailVcs()
+    graph = _graph(vcs)
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+
+    with pytest.raises(RuntimeError):
+        process_request(graph, request)
+
+    process_request(graph, request.model_copy(update={"attempts": 1}))
+
+    assert len(vcs.inlines) == 1, "no debe duplicar el inline ya publicado"
+    assert len(vcs.comments) == 1, "debe escribir el resumen que faltaba"
+    snapshot = graph.get_state({"configurable": {"thread_id": request.thread_id}})
+    assert not snapshot.next, "el hilo queda completado"
