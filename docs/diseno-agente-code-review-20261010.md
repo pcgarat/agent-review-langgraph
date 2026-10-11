@@ -1,4 +1,4 @@
-Última modificación: 2026-10-10 (inline comments) | Creado: 2026-10-10
+Última modificación: 2026-10-11 | Creado: 2026-10-10
 
 # Diseño: agente autónomo de code review sobre LangGraph
 
@@ -635,6 +635,12 @@ image:
 Se construye en el pipeline custom `build-ci-image` desde `docker/php/Dockerfile.ci`
 (un `php:8.4-cli-alpine` + `make` + `pcov` + Composer, ver §15.5). Este es exactamente el
 caso dulce de §9.2: **el sandbox usa esta misma imagen**.
+
+> **Pendiente que vive fuera de este repo.** Para la Fase 1, el step de PHPStan del
+> pipeline debe publicar su salida en el agente (`POST /webhook/tooling`, firmado), no
+> solo subirla a Bitbucket. El detalle, el cuerpo exacto y el ejemplo de `curl` están en
+> `docs/ingesta-diferida-ci-20261011.md` (§7.1). Sin ese cambio, el agente no recibe
+> artefactos y toda review sale degradada por TTL.
 
 ### 15.2 Los checks de PR (lo que el agente debe reproducir)
 

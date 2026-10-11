@@ -222,6 +222,78 @@ api ──► claim(ingest_key) ──► persistir payload ──► upsert Pen
 La carrera desaparece por construcción: **la review solo se encola cuando el dato
 que necesita ya está dentro**.
 
+### 7.1 Cambio obligatorio en el CI del repo revisado
+
+**El agente no puede funcionar sin este cambio.** Hoy el step de PHPStan de
+`emotivoo-v2` publica el artefacto en Bitbucket (`var/tooling/...` con
+`capture-on: always`). Si sigue así, el pipeline sube la salida **a un sitio que
+nadie lee**: el agente esperaría indefinidamente un `POST` que nunca llega, y toda
+review acabaría degradada por TTL. Es el interruptor que enciende la Fase 1.
+
+El step debe **hacer `POST` al agente**, además de (o en vez de) subirlo a
+Bitbucket. El destino es `POST /webhook/tooling`, con firma HMAC en
+`X-Reviews-Signature` y este cuerpo:
+
+```json
+{
+  "repo": "cqm/emotivoo-v2",
+  "pr_id": 417,
+  "head_sha": "<BITBUCKET_COMMIT>",
+  "pipeline_id": "<BITBUCKET_BUILD_NUMBER>",
+  "tool": "phpstan",
+  "payload": "{ ... JSON crudo de phpstan --error-format=json ... }"
+}
+```
+
+`payload` es la salida **cruda** de la herramienta, como string (no re-serializada
+ni recortada): el agente la parsea igual que hoy lee el fichero.
+
+Ejemplo de step (bash, el mismo intérprete que ya usa el pipeline):
+
+```bash
+# PHPStan ya volcó su JSON; se envia al agente. El cuerpo se construye UNA vez
+# porque la firma es sobre los bytes exactos que se envian.
+jq -n \
+  --arg repo "$BITBUCKET_REPO_FULL_NAME" \
+  --argjson pr_id "$BITBUCKET_PR_ID" \
+  --arg head_sha "$BITBUCKET_COMMIT" \
+  --arg pipeline_id "$BITBUCKET_BUILD_NUMBER" \
+  --arg payload "$(cat var/tooling/report.json)" \
+  '{repo: $repo, pr_id: $pr_id, head_sha: $head_sha, pipeline_id: $pipeline_id,
+    tool: "phpstan", payload: $payload}' > /tmp/agent-body.json
+
+SIGNATURE=$(openssl dgst -sha256 -hmac "$TOOLING_WEBHOOK_SECRET" -r /tmp/agent-body.json | cut -d' ' -f1)
+
+curl -sS -X POST "$REVIEWS_URL/webhook/tooling" \
+  -H "Content-Type: application/json" \
+  -H "X-Reviews-Signature: $SIGNATURE" \
+  --data-binary @/tmp/agent-body.json
+```
+
+Detalles que condicionan la integración:
+
+| Aspecto | Valor / regla |
+|---|---|
+| `head_sha` | `BITBUCKET_COMMIT` (en un build de PR es el commit *source* head, el mismo que usa `diff-line`) |
+| `pr_id` | `BITBUCKET_PR_ID`. **No** existe en builds de rama: si falta, el agente responde `400` |
+| `pipeline_id` | `BITBUCKET_BUILD_NUMBER`. Distingue un re-run del mismo commit (review nueva) |
+| `tool` | Debe coincidir con `expected_tools` del `repo_profile` |
+| Firma | HMAC-SHA256 del **cuerpo crudo** con `TOOLING_WEBHOOK_SECRET`; cabecera `X-Reviews-Signature` |
+| Secreto | Variable de repo de Bitbucket (secured) compartida con `TOOLING_WEBHOOK_SECRET` del agente |
+| Alcance de red | `REVIEWS_URL` debe ser alcanzable desde el runner de Bitbucket |
+| Fallo del `POST` | **El pipeline no debe ponerse rojo porque el agente esté caído.** Envolver en `|| true` y loguear |
+
+> **Crítica:** el `POST` no debe bloquear el resultado del pipeline. El agente es un
+> consumidor de la salida de PHPStan, no un check de merge: si el agente está caído
+> o tarda, el PR debe seguir su curso normal. La review se recuperará por el barrido
+> de TTL o en el siguiente push. Convertir este `POST` en un paso bloqueante
+> acoplaría la disponibilidad de Bitbucket a la del agente — justo lo que el diseño
+> quiere evitar.
+
+**Mientras este cambio no esté desplegado, la Fase 1 no produce reviews reales**:
+el endpoint existe y está probado, pero nadie lo llama. Es el punto 6 de las
+decisiones abiertas (§10) y el único trabajo que vive fuera de este repo.
+
 ---
 
 ## 8. Cambios concretos en el repo
@@ -236,7 +308,7 @@ que necesita ya está dentro**.
 | `worker/main.py` | `process_request` solo procesa reviews `READY`/`DEGRADED`; un barrido aplica los TTL. |
 | `config/repo_profile.emotivoo-v2.yaml` | Declarar `expected_tools: [typecheck]` y `ttl_ready`/`ttl_pending`. |
 | `docker-compose.yml` | La API necesita volumen de escritura para payloads (hoy `var` es `:ro` en el worker). |
-| repo revisado (emotivoo-v2) | El step de PHPStan apunta su `curl` al agente además de (o en vez de) Bitbucket. |
+| repo revisado (emotivoo-v2) | El step de PHPStan apunta su `curl` al agente además de (o en vez de) Bitbucket. **Obligatorio**; instrucciones en §7.1. |
 
 ---
 
@@ -258,7 +330,7 @@ que necesita ya está dentro**.
 | Decisión | Opciones | Recomendación |
 |---|---|---|
 | Transporte del artefacto | A (push), B (estado + descarga), C (sondEO) | A; C como red de seguridad |
-| ¿Cambiar el CI del repo revisado? | Sí (push al agente) / No (mantener upload a Bitbucket) | Sí, si se acepta el acoplamiento |
+| ¿Cambiar el CI del repo revisado? | Sí (push al agente) / No (mantener upload a Bitbucket) | **Obligatorio** para la opción A: sin el `POST`, no hay reviews (ver §7.1) |
 | Barrera | Esperar N / ejecutar al primer artefacto | Esperar N con TTL |
 | TTL | 20 min ready / 24 h pending | Empezar ahí; medir y ajustar |
 | Reintento del CI | Reintento del mismo pipeline / nuevo pipeline | Nuevo `pipeline_id` = review nueva |
