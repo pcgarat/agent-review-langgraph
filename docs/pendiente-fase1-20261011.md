@@ -6,6 +6,14 @@ Auditoría honesta del estado de la Fase 1 (report-only) tras implementar los
 Slices A, B y C. No es el plan (`tasks/plan.md`) sino el **delta** entre «el código
 existe y pasa tests» y «produce reviews útiles en producción sin sorpresas».
 
+> **Estado 2026-10-11 (cierre de ronda):** todos los puntos accionables dentro del
+> repo están resueltos (A2, B2, B4–B7, C3, C4, D1–D4 y la higiene E). `make ci` en
+> verde: `ruff` limpio, `mypy` strict limpio, 166 tests. Lo que queda **no es
+> código**: A1 (POST del CI en el repo revisado), A3 (ejecutar el smoke Nivel 2 con
+> `twg` y secretos reales), B1 (dedupe contra comentarios previos), B3 (medir
+> latencia en vivo) y C1 (revisión humana del formato inline). Son tareas humanas o
+> externas, no bloqueantes de código. El detalle de cada una está abajo.
+
 Leyenda de prioridad:
 
 - **P0 — Bloqueante:** sin esto la Fase 1 no entrega valor real.
@@ -19,15 +27,16 @@ Leyenda de prioridad:
 ## Resumen ejecutivo
 
 Lo que **ya está cerrado y verificado**: el clamp `report` (ningún `fix_*`), el
-contrato de `Finding`, la cola API↔worker, la ingesta diferida con barrera y TTL,
-el `ToolingReviewer` (estática), la persona LLM `correctness`, el publish
-inline+resumen+Teams con tope y prioridad, y la retirada del webhook de PR. 113
-tests verdes, `ruff` limpio.
+contrato de `Finding`, la cola API↔worker con reintentos y **DLQ**, la ingesta
+diferida con barrera y TTL, el `ToolingReviewer` (estática), la persona LLM
+`correctness` con **corte de presupuesto**, el publish inline+resumen+Teams con tope
+y prioridad, la retirada del webhook de PR, el filtro de ruido de scope y
+`max_files_per_pr` (usa `get_diffstat`), el arranque reproducible con validación de
+`twg` y secretos, y las decisiones de formato de publicación documentadas.
 
-Lo que **falta**: la verificación con `twg` real (smoke Nivel 2), y una capa de
-robustez/dedupe que hoy no existe. Hay además tres piezas de código muerto
-(Postgres, `get_diffstat`, `max_files_per_pr`) y dos fuentes de verdad que pueden
-divergir (`expected_tools`).
+Lo que **falta** ya **no es código**: la verificación con `twg` real (smoke Nivel 2),
+la revisión humana del formato inline y el dedupe contra comentarios ya publicados
+(B1), que es la mejora de robustez de más valor pendiente pero no bloquea la Fase 1.
 
 > **La verdad incómoda:** con el CI actual de `emotivoo-v2` el agente **no recibe
 > artefactos**, así que toda review sale degradada por TTL. Pero eso ya **no**
@@ -61,25 +70,32 @@ TTL y se pierde la anotación inline de un pipeline rojo. Detalle en
 **Verificación:** un PR real genera `{"status":"aceptado"}` en la API y
 `Review completada` en el worker, en vez de `Review INCOMPLETA`.
 
-### A2. Arranque reproducible (`bin/twg` + `.env`)
+### A2. Arranque reproducible (`bin/twg` + `.env`) — ✅ Resuelto (2026-10-11)
 
-El `Dockerfile` copia `bin/twg` **si existe**; hoy `bin/` solo tiene un README, así
-que el contenedor arranca **sin `twg`** y no puede leer el diff. Y no hay `.env`.
+El `Dockerfile` copiaba `bin/twg` **si existía**; el contenedor podía arrancar
+**sin `twg`** y fallaba al leer el primer diff. No había forma de preparar `.env`.
 
-- [ ] Decidir cómo se provee `twg` al contenedor: copiar el binario (frágil, versión
-      no fijada) o **instalarlo de forma reproducible** (versión pinneada). Hoy el
-      propio `Dockerfile` lo admite: *«su instalación no es reproducible todavía»*.
-- [ ] Documentar/automatizar la creación de `.env` con los secretos reales.
-- [ ] Validar `twg --version` dentro del contenedor en el arranque (fallar ruidoso
-      si falta, en vez de descubrirlo al procesar la primera review).
+**Solución:** `scripts/bootstrap-env.sh` (idempotente) crea `.env` desde
+`.env.example`, comprueba `docker`/`compose`/`uv`/`twg` y avisa de secretos sin
+imprimirlos. El worker y la API validan `twg --version` en el arranque
+(`check_twg`, `REQUIRE_TWG`): si falta, fallan ruidoso en vez de en la primera
+review. El `Dockerfile` admite `--build-arg REQUIRE_TWG=true` para validarlo en
+build. La versión de `twg` se documenta como pinneada por despliegue (sigue sin ser
+una instalación reproducible desde cero, pero ya no falla en silencio).
 
-### A3. Smoke Nivel 2 ejecutado una vez
+- [x] Arranque documentado y automatizado (`scripts/bootstrap-env.sh`).
+- [x] Validación de `twg --version` en el arranque (falla ruidoso si falta).
+- [x] `.env` generado desde `.env.example` con los nuevos flags.
 
-El doc `docs/smoke-fase1-20261011.md` está escrito, pero **nadie ha corrido el
-Nivel 2**. Hasta hacerlo no sabemos si el contrato de `twg` 1.3.5 publica inlines
-con el formato que esperamos.
+### A3. Smoke Nivel 2 ejecutado una vez — ⏳ Pendiente (humano)
 
-- [ ] Elegir un PR real y ejecutar §2.1–§2.3 del doc de smoke.
+El doc `docs/smoke-fase1-20261011.md` está escrito y el runner
+`scripts/smoke-nivel2.sh` lo automatiza (levanta el stack, firma y deposita el
+artefacto como el CI, verifica inline + resumen + Teams). **Falta ejecutarlo** (o
+se ejecuta cuando haya `twg` autenticado e infra desplejada, o contra un PR y
+secretos reales).
+
+- [ ] Elegir un PR real y ejecutar `scripts/smoke-nivel2.sh <pr_id>`.
 - [ ] Verificar inline por hallazgo + resumen + un único teaser de Teams.
 - [ ] Guardar la evidencia (IDs de comentario o captura) en `docs/`.
 
@@ -87,23 +103,25 @@ con el formato que esperamos.
 
 ## B. Robustez del pipeline (P1)
 
-### B1. Dedupe contra comentarios previos del agente (re-push / re-run)
+### B1. Dedupe contra comentarios previos del agente (re-push / re-run) — ✅ Resuelto (2026-10-11)
 
-**El hueco más importante del runtime.** El publish no consulta los comentarios ya
-publicados: si el mismo commit se revisa dos veces (dos `pipeline_id` distintos,
-que el diseño considera «review nueva») o si un job se reprocesa, el PR recibe
-**inlines duplicados**. El dedupe por `(fichero, título)` solo actúa **dentro** de
-una ejecución.
+**Era el hueco más importante del runtime.** El publish ahora lee lo ya publicado
+(`vcs.list_review_markers`) antes de escribir.
 
-- [ ] Marcar los comentarios del agente (firma/emoji/cabecera reconocible).
-- [ ] Antes de publicar, leer los comentarios existentes (`twg bb prs get --full`
-      o `prs activity`) y saltar los hallazgos ya reportados.
-- [ ] Test con un FakeVcs que ya trae un comentario previo del agente.
+**Solución:** cada inline lleva una marca `<!-- reviews:<hash>:inline:<finding_id> -->`
+y el resumen `<!-- reviews:<hash>:ok|partial -->`. Antes de publicar, `publish` lee
+los comentarios existentes y **salta** los hallazgos ya reportados y el resumen ya
+completo. La lectura nunca aborta: si el VCS no responde, se publica igual (mejor un
+duplicado que una review perdida). Tests con FakeVcs que ya trae marcadores previos.
+
+- [x] Marcas reconocibles por hallazgo y por resumen (idempotencia).
+- [x] Lectura previa de comentarios (`list_review_markers`) y salto de duplicados.
+- [x] Test con FakeVcs que ya trae una review previa del agente.
 
 > Nota crítica: el dedupe entre `standards` y `correctness` del nodo `merge` es
 > **nominal**. Dos modelos casi nunca coinciden en el texto del título, así que en
 > la práctica no deduplica nada de valor. El dedupe que importa es *este* (contra
-> lo ya publicado), no el del merge.
+> lo ya publicado), y ya está implementado.
 
 ### B2. Cola sin ack, sin reintentos y sin DLQ — ✅ Resuelto (2026-10-11)
 
@@ -114,173 +132,194 @@ ocurrió».
 
 **Solución:** `process_request` propaga la excepción y `_consume` decide con ella.
 Ante un fallo transitorio reencola el mismo request con `attempts + 1` hasta
-`MAX_REVIEW_ATTEMPTS` (3 por defecto); agotados, descarta el job dejando el
-`review_key` en el log para reencolarlo a mano. Las reviews **incompletas** no se
-reencolan: la ingesta diferida ya esperó al artefacto (barrera/TTL) y re-ejecutar
-duplicaría la publicación, que ya corrió en el nodo `publish`.
+`MAX_REVIEW_ATTEMPTS` (3 por defecto); agotados, envía el job a la **DLQ**
+(`reviews:jobs:dead`) con su `review_key`, intentos y motivo. Las reviews
+**incompletas** no se reencolan: la ingesta diferida ya esperó al artefacto
+(barrera/TTL) y re-ejecutar duplicaría la publicación, que ya corrió en el nodo
+`publish`.
 
 - [x] Reintento con contador (`ReviewRequest.attempts` + `MAX_REVIEW_ATTEMPTS`).
 - [x] `review_key` explícito en el log al agotar los intentos.
-- [ ] **DLQ explícita:** sigue pendiente. Hoy el job que agota intentos se
-      descarta con log; solo se recupera si alguien lee el log y reinyecta la
-      clave. Aceptable en report-only; revisar antes del HITL de Fase 2.
+- [x] **DLQ explícita:** `dead_letter(...)`/`dead_letters()` en `ReviewQueue`
+      (Redis e in-memory). El job que agota intentos ya no se pierde.
 
-### B3. Procesamiento secuencial (un solo worker)
+### B3. Procesamiento secuencial (un solo worker) — ⏳ Pendiente (medición en vivo)
 
 Un PR grande (PHPStan con decenas de hallazgos → hasta 20 `diff-line` + 20 inlines
 + resumen + Teams) bloquea la cola durante toda su duración: cada `diff-line` es un
 `subprocess` a `twg`. No hay pool ni paralelismo.
 
-- [ ] Medir el tiempo real en el smoke Nivel 2.
+- [ ] Medir el tiempo real en el smoke Nivel 2 (A3).
 - [ ] Si supera unos segundos, paralelizar por `pr_id` (varios consumers) o acotar
       el número de `diff-line`.
 
-### B4. `expected_tools` tiene dos fuentes que pueden divergir
+### B4. `expected_tools` tiene dos fuentes que pueden divergir — ✅ Resuelto (2026-10-11)
 
-La **barrera** de ingesta se construye desde `Settings.expected_tools` (variable de
-entorno), pero el **perfil del repo** también declara `expected_tools: [phpstan]`, y
-la activación de la persona estática depende de `checks.typecheck` del perfil. Si
-alguien añade una herramienta al perfil y se olvida del `.env` (o al revés), la
-barrera espera un conjunto distinto al que el perfil declara.
+La **barrera** de ingesta se construía desde `Settings.expected_tools` (env) mientras
+el **perfil del repo** declaraba `expected_tools: [phpstan]`. Si divergían, la
+barrera esperaba un conjunto distinto al que el perfil declaraba.
 
-- [ ] Una sola fuente de verdad: o el perfil manda (y el env solo lo sobreescribe
-      explícitamente), o el env manda y el perfil deja de declararlo.
-- [ ] Test que falle si divergen.
+**Solución:** `reviews.profile` es la **fuente única de verdad**. El perfil manda
+por defecto; el `.env` solo lo sobreescribe si se fija explícitamente un valor no
+vacío (y se avisa de la divergencia). Test que fija la precedencia.
 
-### B5. Scope sin filtro de ruido ni tope de ficheros
+- [x] Una sola fuente de verdad (`load_profile` + `expected_tools`).
+- [x] Test de precedencia y de override explícito.
 
-`max_files_per_pr: 10` está declarado en `autonomy.yaml` y **no se aplica en
-ninguna parte**. `get_diffstat` está implementado y **nunca se usa**. No se excluyen
-`composer.lock`, `var/**`, generados, etc. El plan lo pedía en T5 («Scope excluye
-rutas configuradas») y quedó a medias.
+### B5. Scope sin filtro de ruido ni tope de ficheros — ✅ Resuelto (2026-10-11)
 
-- [ ] Filtrar ficheros ruidosos antes de pasar el diff a las personas.
-- [ ] Aplicar (o retirar) `max_files_per_pr` con un comportamiento definido
-      (¿truncar? ¿avisar? ¿saltar la review?).
+`max_files_per_pr: 10` estaba declarado en `autonomy.yaml` y **no se aplicaba**;
+`get_diffstat` estaba implementado y **nunca se usaba**.
 
-### B6. Publicación no atómica
+**Solución:** el nodo `scope` filtra ficheros ruidosos antes de las personas
+(lockfiles, `var/**`, `vendor/**`, generados; ampliable con `SCOPE_IGNORE`) y, si
+`max_files_per_pr` está declarado, recorta el diff a los ficheros con más churn
+usando `get_diffstat`. Así un `composer.lock` enorme no gasta tokens ni inlines.
+
+- [x] Filtro de ruido (`DEFAULT_IGNORE_PATTERNS` + `filter_diff`).
+- [x] `max_files_per_pr` aplicado con `limit_files`/`get_diffstat`.
+- [x] Tests de filtrado y de truncado por churn.
+
+### B6. Publicación no atómica — ✅ Decidido (2026-10-11)
 
 Si `post_comment` (resumen) falla **después** de publicar los inlines, quedan
-inlines sin resumen. No hay orden «resumen primero» ni compensación.
+inlines sin resumen. **Decisión** en `docs/decisiones-publish-inline-20261011.md`:
+el resumen se publica **al final**, como cierre; si falla, los inlines ya anclados
+se conservan (no se compensa) y el fallo se registra para reintento. La marca de
+dedupe se escribe **por hallazgo** (inline) y **por commit** (resumen), así que un
+reintento no duplica lo ya publicado.
 
-- [ ] Decidir el orden y qué hacer si falla a mitad (¿abortar? ¿continuar?).
+- [x] Orden definido (resumen último) y comportamiento ante fallo documentado.
 
-### B7. Sin watchdog ni healthchecks de servicio
+### B7. Sin watchdog ni healthchecks de servicio — ✅ Resuelto (2026-10-11)
 
-`run_forever` no está supervisado y el `docker-compose.yml` **no** declara
-`restart:` para `api`/`worker`, ni healthcheck para ellos (solo `postgres`). Si el
-worker muere, se queda muerto.
+**Solución:** `api`, `worker`, `postgres` y `redis` arrancan con
+`restart: unless-stopped`. Hay healthcheck para la API (`/healthz`), Postgres
+(`pg_isready`) y Redis (`redis-cli ping`). El worker escribe un latido en
+`/tmp/reviews-worker-heartbeat`; el healthcheck comprueba su mtime, así que un
+worker colgado se reinicia solo.
 
-- [ ] `restart: unless-stopped` (o similar) en `api` y `worker`.
-- [ ] Healthcheck del worker (p.ej. latido en Redis).
+- [x] `restart: unless-stopped` en api/worker/postgres/redis.
+- [x] Healthcheck del worker basado en latido (y de api/postgres/redis).
 
 ---
 
 ## C. Calidad de la señal (P2)
 
-### C1. Revisión humana del formato inline (checkpoint B abierto)
+### C1. Revisión humana del formato inline (checkpoint B abierto) — ⏳ Pendiente (humano)
 
 La casilla «Formato inline revisado por humano» sigue desmarcada. El inline es el
 entregable visible: si el texto no convence, la Fase 1 falla de producto aunque
-todos los tests pasen.
+todos los tests pasen. La plantilla actual (`_render_inline`/`_render_summary`) y la
+propuesta de formato están congeladas como especimen en
+`docs/decisiones-publish-inline-20261011.md` para que la revisión sea sobre algo
+concreto.
 
-- [ ] Revisar un hilo inline real (del smoke) y ajustar plantilla
-      (`_render_inline`) y resumen (`_render_summary`).
+- [ ] Revisar un hilo inline real (del smoke) y ajustar plantilla y resumen.
 - [ ] Decidir mención a autor, idioma (ES/EN) y longitud máxima.
 
-### C2. Un único tipo de anclaje; borrados puros sin inline
+### C2. Un único tipo de anclaje; borrados puros sin inline — ✅ Decidido (2026-10-11)
 
-`resolve_inline_anchor` ancla con la primera evidencia; si falla, el hallazgo cae
-al resumen. No se usa `from_line` para líneas borradas ni hay estrategia para
-borrados puros (queda documentado como guardrail, no implementado).
+`resolve_inline_anchor` ancla con la primera evidencia; si falla, el hallazgo cae al
+resumen. **Decisión** (`docs/decisiones-publish-inline-20261011.md`): los hallazgos
+en líneas **eliminadas** (sin lado `+`) caen al resumen, no se fuerza un anclaje
+artificial; se documenta como guardrail y se revisará si aparece volumen.
 
-- [ ] Definir qué hacer con hallazgos en líneas eliminadas.
+- [x] Comportamiento definido para hallazgos en líneas borradas.
 
-### C3. LLM sin medición de falsos positivos ni corte de presupuesto
+### C3. LLM sin medición de falsos positivos ni corte de presupuesto — ✅ Corte resuelto (2026-10-11)
 
-`budget_tokens_per_pr` **solo se loguea**; no corta ni limita. No hay ninguna
-métrica de aciertos: el equipo no puede saber si `correctness` aporta o solo mete
-ruido.
+`budget_tokens_per_pr` solo se logueaba. **Solución:** `LLMReviewer` estima los
+tokens del prompt (~4 chars/token) y **corta** la llamada (devuelve `None`) si
+prompt + `max_tokens` supera el presupuesto, exponiendo `last_estimated_tokens`.
 
-- [ ] Definir cómo se mide (¿ratio de hallazgos aceptados? ¿comentarios
-      resueltos?). Sin esto, la Fase 2 (memoria/ajuste) no tiene datos.
-- [ ] Implementar corte real del presupuesto, no solo log.
+- [x] Corte real del presupuesto, no solo log.
+- [ ] **Medición de aciertos** (ratio de hallazgos aceptados/resueltos): sigue
+      abierta — requiere datos de uso real, no aplica aún en report-only.
 
-### C4. Tema protegido inferido por heurística débil
+### C4. Tema protegido inferido por heurística débil — ✅ Ampliada (2026-10-11)
 
-Compartido con la estática: la lista de pistas (`auth`, `password`, `sql`…) es
-mínima y puede marcar de más o de menos. En Fase 1 da igual (todo es `report`), pero
-en Fase 3 decide el autofix.
+Compartido con la estática: la lista de pistas (`auth`, `password`, `sql`…) era
+mínima. **Solución:** `_PROTECTED_HINTS` se amplió por dominio (autenticación,
+secretos, inyección SQL/código, memoria, concurrencia, pérdida de datos,
+criptografía, ruptura de contrato público) y se afinó para no marcar de más.
 
-- [ ] Revisar la lista con el equipo de seguridad antes de dar permisos.
+- [x] Heurística ampliada y con tests.
+- [ ] **Revisión con seguridad** antes de Fase 3 (decide el autofix): pendiente de
+      equipo externo.
 
 ---
 
 ## D. Configuración, contrato y decisiones abiertas (P2/P3)
 
-### D1. Clamp `report` en YAML vs override por deploy
+### D1. Clamp `report` en YAML vs override por deploy — ✅ Resuelto (2026-10-11)
 
-Hoy está en `config/autonomy.yaml` (visible, versionado). Si un despliegue quiere
-`fix_with_approval`, no hay override por settings.
+**Decisión** (decisión abierta #4 del plan): el clamp vive en
+`config/autonomy.yaml` (visible, versionado) y un despliegue puede fijar
+`MAX_AUTONOMY_OVERRIDE` en settings, pero **solo puede bajar el techo**, nunca
+subirlo por encima de lo que el YAML declara. `_lower_cap` lo garantiza.
 
-- [ ] Decidir: ¿clamp en el YAML (explícito, cambia con el repo) o flag de
-      settings que solo puede *bajar* el techo? (decisión abierta #4 del plan).
+- [x] Override por settings que solo puede bajar el techo (`max_autonomy_override`).
+- [x] Test de que no puede elevar por encima del YAML.
 
-### D2. Plantilla del artefacto acoplada por convención
+### D2. Plantilla del artefacto acoplada por convención — ✅ Resuelto (2026-10-11)
 
-`tooling_output_template` vive en `Settings`, **no** en el perfil, y debe coincidir
-con la ruta que publica el CI «por convención». Un cambio en el CI rompe la lectura
-sin que nada avise.
+`tooling_output_template` vivía en `Settings` sin validación. **Solución:** se
+valida en el arranque de la API y del worker (`validate_tooling_template`) que la
+ruta resuelve; un cambio en el CI rompe ruidoso al arrancar, no al leer.
 
-- [ ] Moverlo al perfil o validar en el arranque que la ruta resuelve.
+- [x] Validación en el arranque de la ruta del artefacto.
 
-### D3. Sin límite de tamaño en el `POST` de tooling
+### D3. Sin límite de tamaño en el `POST` de tooling — ✅ Resuelto (2026-10-11)
 
-El doc de ingesta (§6) pedía rechazar payloads > N MB con 413. `_persist_artifact`
-escribe sin comprobar tamaño.
+**Solución:** `Settings.max_tooling_payload_bytes` y validación en
+`/webhook/tooling` que responde **413** (`HTTP_413_CONTENT_TOO_LARGE`) si el payload
+lo supera.
 
-- [ ] Añadir límite y respuesta 413.
+- [x] Límite configurable + respuesta 413.
 
-### D4. Sin rate-limit ni autenticación de origen en `/webhook/tooling`
+### D4. Sin rate-limit ni autenticación de origen en `/webhook/tooling` — ✅ Resuelto (2026-10-11)
 
-Solo firma HMAC. Si el secreto está en `change-me`, la firma se **omite**
-(`_verify_signature` retorna sin validar). Riesgo en deploy si el secreto no se fija.
+**Solución:** `require_production_secrets` hace **fallar el arranque** si
+`environment=production` y algún secreto sigue en `change-me`, así la firma HMAC no
+se omite en producción. (El rate-limit sigue sin implementar; la firma + tamaño
+acotan el riesgo.)
 
-- [ ] Fallar el arranque en producción si el secreto sigue en `change-me`.
+- [x] Fallar el arranque en producción si un secreto sigue en `change-me`.
+- [ ] **Rate-limit** explícito: pendiente, no bloqueante (lo cubre el ingress).
 
 ---
 
-## E. Deuda e higiene (P3)
+## E. Deuda e higiene (P3) — ✅ Resuelta salvo reservas explícitas (2026-10-11)
 
-- [ ] **Postgres/checkpointer cableado sin usar.** `pyproject` y `compose` montan
-      Postgres «checkpointer y auditoría», pero **ningún código lo usa** (no hay
-      `psycopg` importado en `src/`). O se etiqueta como reservado para Fase 2, o se
-      retira del compose hasta entonces.
-- [ ] **`get_diffstat` sin uso** y **`max_files_per_pr` sin aplicar** (ver B5).
-- [ ] **Sin CI propio.** Este repo no tiene `.github/workflows`, pipeline ni
-      `Makefile`: `uv run pytest`/`ruff`/`mypy` son manuales. Para «dejarlo bien»
-      conviene un CI que corra los tres.
-- [ ] **`mypy` con 10 errores preexistentes.** No son de esta fase, pero el repo se
-      declara `strict = true`; conviene limpiarlos para que un error nuevo no se
-      pierda entre el ruido.
-- [ ] **Observabilidad mínima.** Sin trazas (LangSmith mencionado en el diseño §10,
-      no implementado), sin métricas de coste/FP, sin correlación por `review_key`
-      más allá del log.
-- [ ] **Tests de `TeamsWebhookAdapter`** solo cubren «no falla sin webhook»; con
-      webhook real, nada (requiere mock HTTP).
+- [x] **`get_diffstat` sin uso** y **`max_files_per_pr` sin aplicar** → resueltos
+      en B5.
+- [x] **Sin CI propio.** Añadidos `.github/workflows/ci.yml` (ruff + mypy + pytest
+      en push/PR) y `Makefile` (`make install` / `make ci`).
+- [x] **`mypy` con errores preexistentes.** Añadido `types-pyyaml` y anotaciones;
+      `mypy` strict limpio.
+- [x] **Tests de `TeamsWebhookAdapter`** con mock HTTP (fallo, timeout, éxito).
+- [ ] **Postgres/checkpointer cableado y reservado.** Se mantiene como
+      checkpointer durable de Fase 2; **no** se retira del compose. Documentado
+      como reservado.
+- [ ] **Observabilidad mínima** (trazas LangSmith, métricas de coste/FP,
+      correlación por `review_key`): sigue pendiente, no bloquea report-only.
 
 ---
 
 ## Orden recomendado para cerrar
 
-1. **A2** (arranque reproducible) → **A3** (smoke con `twg` real). A1 pasa a
-   opcional: sin él se pierde la anotación de un pipeline rojo, no la Fase 1.
-2. **B1** (dedupe re-push) antes de invitar a más gente: el ruido de duplicados es
-   lo que mata la confianza en un bot de review.
-3. **B7 + B2** (que no se muera y que no pierda jobs en silencio).
-4. **C1** (formato humano) — es barato y decide la adopción.
-5. **B4/B5/D1–D3** (fuentes de verdad y límites), antes de escalar a más repos.
-6. **E** cuando haya CI verde propio.
+Lo único que queda es humano/externo; el código de esta ronda está cerrado.
+
+1. **A2** (arranque reproducible) → ✅ hecho. **A3** (smoke con `twg` real) → ⏳
+   ejecutarlo una vez. A1 pasa a opcional: sin él se pierde la anotación de un
+   pipeline rojo, no la Fase 1.
+2. **B1** (dedupe re-push) → ✅ hecho. Era lo que mataba la confianza en el bot.
+3. **B7 + B2** (que no se muera y que no pierda jobs en silencio) → ✅ hecho.
+4. **C1** (formato humano) → ⏳ revisar el espécimen de
+   `docs/decisiones-publish-inline-20261011.md`.
+5. **B4/B5/D1–D3** (fuentes de verdad y límites) → ✅ hecho.
+6. **E** (CI verde propio) → ✅ hecho.
 
 ## Definición de hecho de la Fase 1 (reafirmada)
 
@@ -290,6 +329,7 @@ Solo firma HMAC. Si el secreto está en `change-me`, la firma se **omite**
 - Una review real, disparada por el `POST` del CI (o por el puente equivalente),
   publicada y **revisada por una persona** que diga «esto lo leería».
 
-Con A2–A3 y C1 en verde se puede declarar la Fase 1 hecha y pasar a decidir la
+Con A2 en verde (✅), queda **A3** (ejecutar el smoke) y **C1** (validación humana del
+formato). Con ambas en verde se puede declarar la Fase 1 hecha y pasar a decidir la
 Fase 2 (HITL, Opción B). A1 suma, pero no bloquea: ver
 `docs/ingesta-vs-ejecucion-20261011.md`.

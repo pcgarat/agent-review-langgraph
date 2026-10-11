@@ -29,25 +29,30 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 - [x] Fixture → hallazgos → ≥1 inline (o fallback documentado al resumen)
 - [x] Resumen general + Teams presentes
 - [x] Cero push/commit en VCS
-- [ ] Formato inline revisado por humano
+- [ ] Formato inline revisado por humano  ← humano (`docs/decisiones-publish-inline-20261011.md`)
 
 ## Slice C — Señal + smoke
 
-- [x] **T8** Persona LLM `correctness` (modelo inyectable, parseo seguro)
+- [x] **T8** Persona LLM `correctness` (modelo inyectable, parseo seguro, corte de presupuesto)
 - [x] **T9** Smoke E2E documentado + README “Fase 1” (verificar inlines en Bitbucket)
+- [x] **T9b** Runner `scripts/smoke-nivel2.sh` (levanta stack, firma, deposita artefacto, verifica)
 
 ### Checkpoint C — Fase 1 hecha
 
 - [x] Hallazgos anclados en el diff (+ resumen/Teams)
 - [x] Cero escritura de código en el repo del PR
+- [x] Dedupe contra lo ya publicado (marca por hallazgo y por resumen)
+- [x] Robustez: reintentos + DLQ, healthchecks + restart, scope sin ruido + tope
+- [x] CI propio (`.github/workflows/ci.yml` + `make ci`) con `ruff`/`mypy`/`pytest` verdes
 - [ ] Decisión go/no-go para Fase 2 (HITL Opción B)  ← decisión humana
-- [ ] Nivel 2 del smoke ejecutado contra Bitbucket real (requiere twg + secretos)
+- [ ] Nivel 2 del smoke ejecutado contra Bitbucket real (requiere twg + secretos)  ← humano
+- [ ] Formato inline revisado por humano  ← humano (`docs/decisiones-publish-inline-20261011.md`)
 
 ## Fuera del repo (no bloquea la Fase 1)
 
 - [ ] **A1 (opcional)** El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado — sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1 (`docs/ingesta-vs-ejecucion-20261011.md`)
-- [ ] **A2** Arranque reproducible: `bin/twg` + `.env`
-- [ ] **A3** Smoke Nivel 2 una vez (verifica el contrato real de `twg` 1.3.5)
+- [x] **A2** Arranque reproducible: `bin/twg` + `.env` (`scripts/bootstrap-env.sh`, validación `twg`/secretos)
+- [ ] **A3** Smoke Nivel 2 una vez (verifica el contrato real de `twg` 1.3.5) — runner listo, falta ejecutarlo
 
 ## Camino crítico mínimo (si hay que acortar)
 
@@ -58,6 +63,6 @@ Orden sugerido: **A2 → T1 → T3 → T4 → T6 → T7** (FakeVcs con anclas) �
 - [ ] ¿PR real de emotivoo-v2 o solo fixtures para el smoke?
 - [ ] ¿Provider/modelo para T8?
 - [ ] ¿Webhook Teams listo?
-- [ ] ¿Clamp en `autonomy.yaml` o solo en settings de deploy?
+- [x] ¿Clamp en `autonomy.yaml` o solo en settings de deploy? → **Clamp en YAML; settings solo puede bajar el techo** (`MAX_AUTONOMY_OVERRIDE`, D1)
 - [x] ¿El CI publica el artefacto en el agente o se mantiene la subida a Bitbucket? → **Artefacto = puente desechable; el CI puede publicarlo (A1 opcional), pero la Fase 1 no depende de ello** (`docs/ingesta-vs-ejecucion-20261011.md`)
 - [x] `max_inline_comments` = **20** (confirmado)

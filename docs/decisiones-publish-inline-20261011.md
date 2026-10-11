@@ -1,0 +1,117 @@
+Última modificación: 2026-10-11 | Creado: 2026-10-11
+
+# Decisiones de publicación: orden, borrados y formato inline
+
+Cierra tres puntos abiertos de `docs/pendiente-fase1-20261011.md` que **no** son
+completables por un agente solo (B6, C2 y C1): son decisiones de producto que hay
+que fijar y dejar por escrito. El formato inline (C1) queda además preparado para
+la revisión humana con un ejemplo renderizado.
+
+---
+
+## B6 — Publicación no atómica: orden y compensación
+
+**Pregunta original:** si `post_comment` (resumen) falla después de publicar los
+inlines, quedan inlines sin resumen. ¿Abortar o continuar?
+
+**Decisión: resumen al final, y el reintento completa lo que falta. Ya está
+resuelto por el diseño de marca (`:ok`/`:partial`) más el checkpointer.**
+
+El orden es deliberado y no se cambia:
+
+1. Se publican los **inlines** (uno por hallazgo anclado).
+2. Se publica **el resumen**, que es quien lleva la marca invisible
+   `<!-- <token>:ok|:partial -->`.
+3. La marca va **solo en el resumen** porque es la **última** escritura: si el
+   proceso muere entre el paso 1 y el 2, el resumen no llegó a escribir la marca,
+   así que el reintento ve la review como **no publicada** y:
+   - no repite los inlines ya escritos (los reconoce por su marca por hallazgo
+     `<!-- <token>:inline:<id> -->` leída del PR), y
+   - escribe el resumen que faltaba.
+
+Esto se fija con tests (`test_reintento_tras_fallo_del_resumen_no_duplica_el_inline`
+y `test_reintento_con_checkpointer_completa_sin_duplicar_el_inline`). La
+alternativa «resumen primero» rompería la propiedad: una marca `:ok` sin inlines
+haría que un reintento **no** completase nada.
+
+**Compensación:** no se compensa (no se borran inlines huérfanos). Es preferible
+un inline sin resumen, que se recupera en el reintento, a borrar comentarios que
+una persona ya podría estar leyendo. El único caso irrecoverable (agotar los
+reintentos) acaba en la DLQ (B2) y no en silencio.
+
+---
+
+## C2 — Borrados puros: sin inline, al resumen
+
+**Pregunta original:** ¿qué hacer con hallazgos en líneas eliminadas?
+
+**Decisión: se mantiene como guardrail — un hallazgo en una línea borrada cae al
+resumen, nunca se ancla con `--from-line` de forma automática.**
+
+Motivo: Bitbucket ancla el lado nuevo (`--line`) de forma estable, pero el lado
+viejo (`--from-line`) exige un número de la revisión *anterior* que `twg prs
+diff-line` no garantiza de forma inequívoca en todos los casos. Un ancla mal
+resuelta publica el comentario en la línea equivocada, que es peor que no anclarlo.
+
+- Los revisores (`ToolingReviewer`, `LlmReviewer`) anclan **solo** en líneas
+  añadidas; un hallazgo cuya evidencia apunta a una línea borrada no encuentra
+  ancla y va al resumen con su `fichero:linea`, sin perderse.
+- `VcsPort.post_inline_comment` ya acepta `from_line` para cuando en Fase 3 el
+  sandbox pueda resolver borrados con contexto fiable; hoy **no se usa**.
+- Está alineado con el diseño §5: *«Sin inline en borrados puros: usar
+  `--from-line` solo si `diff-line` lo indica»*.
+
+**Reevaluar** cuando exista un caso real de PR donde el borrado sea el hallazgo
+principal y el resumen no baste. Hoy no hay evidencia de que anclar borrados
+aporte más que ruido.
+
+---
+
+## C1 — Formato inline: preparado para revisión humana
+
+**Pregunta original:** revisar un hilo inline real y ajustar plantilla y resumen;
+decidir mención a autor, idioma y longitud.
+
+**Decisión de partida (pendiente de tu visto bueno, que es el checkpoint B):**
+
+| Aspecto | Propuesta | Motivo |
+|---|---|---|
+| Idioma | **ES** en el texto, **EN** en rutas/símbolos | El canal del equipo está en español; el código no se traduce |
+| Mención al autor | **No** mencionar por defecto | Evita notificar a alguien por cada hallazgo; el PR ya notifica |
+| Longitud inline | Cabecera + `why_it_matters` + `sugerencia` opcional | El detalle largo no cabe en un hilo del diff |
+| Longitud resumen | Índice con conteo y `fichero:linea` | Es el mapa, no el detalle |
+| Estado de política | Se muestra la acción aplicada y, en `report`, la razón | En Fase 1 todo es `report`; se informa *qué habría hecho* |
+
+### Ejemplo renderizado (del fixture, para revisar el tono)
+
+Inline (un hilo por hallazgo):
+
+```markdown
+**[P2] Cannot call method withdraw() on App\BackOffice\Domain\Wallet\Balance|null.**
+
+Se llama a `withdraw()` sobre un valor que puede ser `null`: si el saldo no se
+inicializa, el flujo revienta en runtime en vez de fallar al validar.
+
+_Accion: report_ · confianza 100
+_Politica: Fallo critico_
+
+<!-- reviews:ab12cd34ef56:inline:standards-... -->
+```
+
+Resumen (un comentario general):
+
+```markdown
+## Code review automatica
+
+2 hallazgos · 2 inline · 0 solo en resumen
+
+- **[P2] Cannot call method withdraw() ...** (`src/.../Transfer.php:14`) · report · inline
+- **[P3] Method ... is unused.** (`tests/.../TransferTest.php:23`) · report · inline
+
+<!-- reviews:ab12cd34ef56:ok -->
+```
+
+**Checkpoint B:** marca la casilla de `tasks/todo.md` («Formato inline revisado
+por humano») cuando este ejemplo te valga, o dime qué cambiar (idioma, mención al
+autor, tono) y ajusto `_render_inline` / `_render_summary` en
+`src/reviews/graph/build.py`.

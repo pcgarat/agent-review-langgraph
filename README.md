@@ -9,15 +9,24 @@ El diseno completo esta en `docs/`. Este README solo cubre como levantarlo.
 ## Arranque
 
 ```bash
-cp .env.example .env    # rellena BITBUCKET_WEBHOOK_SECRET y TEAMS_WEBHOOK_URL
-cp ~/.local/bin/twg bin/twg   # el contenedor lo usa como adaptador de Bitbucket/Jira
+scripts/bootstrap-env.sh          # crea .env desde .env.example y comprueba dependencias
+cp ~/.local/bin/twg bin/twg       # el contenedor lo usa como adaptador de Bitbucket/Jira
 docker compose up --build
 ```
+
+`bootstrap-env.sh` es idempotente: no sobreescribe un `.env` existente y resume qué
+secretos faltan por rellenar sin imprimir sus valores. El worker valida `twg
+--version` en el arranque y falla ruidoso si falta (en vez de descubrirlo al
+procesar la primera review).
 
 - `api`  — FastAPI, expone `POST /webhook/tooling`, `GET /healthz`, `/pending` y `/profile/{repo}`
 - `worker` — ejecuta el grafo LangGraph con checkpointer durable (Postgres)
 - `postgres` — checkpointer y auditoria
 - `redis` — cola de eventos e idempotencia
+
+`api` y `worker` arrancan con `restart: unless-stopped` y healthcheck (el del
+worker es un latido en `/tmp/reviews-worker-heartbeat`): si el worker se cuelga, se
+re-arranca solo.
 
 ## Flujo
 
@@ -50,14 +59,27 @@ mismo commit no deben duplicar los comentarios del PR. Hay dos capas:
    hubiera fallado. Una review **degradada** (`:partial`) **no** bloquea a una
    completa posterior con los datos ya disponibles.
 
-### Fallos transitorios (reintento)
+### Fallos transitorios (reintento y DLQ)
 
 Un fallo de `twg` o de Teams no debe perder la review. `process_request` propaga la
 excepcion y el worker reencola el mismo job con un contador de intentos
-(`MAX_REVIEW_ATTEMPTS`, 3 por defecto). Agotados los intentos, descarta el job y
-deja el `review_key` en el log para reencolarlo a mano (aun no hay DLQ). Las
-reviews **incompletas no se reencolan**: la ingesta diferida ya espero al artefacto
-(ver `.env.example`), asi que re-ejecutar solo duplicaria la publicacion.
+(`MAX_REVIEW_ATTEMPTS`, 3 por defecto). Agotados los intentos, el job **no se
+pierde en el log**: va a una **DLQ** (`reviews:jobs:dead`) con su `review_key`,
+intentos y motivo, desde donde se puede reinyectar o inspeccionar. Las reviews
+**incompletas no se reencolan**: la ingesta diferida ya espero al artefacto (ver
+`.env.example`), asi que re-ejecutar solo duplicaria la publicacion.
+
+### Scope y coste
+
+Antes de las personas, el nodo `scope` descarta ficheros ruidosos (lockfiles,
+`var/**`, `vendor/**`, generados; ampliable con `SCOPE_IGNORE`) y, si
+`max_files_per_pr` esta declarado en `autonomy.yaml`, recorta el diff a los
+ficheros con mas churn. Asi un PR con un `composer.lock` enorme no gasta tokens ni
+inlines en ruido. El presupuesto de la persona LLM (`budget_tokens_per_pr`) **corta**
+la llamada si el coste estimado lo supera, no solo la loguea.
+
+Las decisiones abiertas de formato de publicacion (orden, borrados puros, formato
+inline) estan fijadas en `docs/decisiones-publish-inline-20261011.md`.
 
 ## Estado actual
 
@@ -125,10 +147,19 @@ REVIEWS_LIVE_PR=417 uv run pytest tests/test_live_twg.py -m live
 
 Es solo lectura (no publica comentarios). Los tests `live` estan excluidos por defecto.
 
+Para el **Nivel 2** completo (levanta el stack, firma y deposita el artefacto como
+el CI, verifica inline + resumen + Teams):
+
+```bash
+scripts/smoke-nivel2.sh 417            # PR real; requiere twg autenticado y .env
+```
+
 ## Desarrollo
 
 ```bash
-uv venv && uv pip install -e ".[dev]"
-uv run pytest
-uv run ruff check src
+make install     # uv sync con extras dev
+make ci          # ruff + mypy + pytest, igual que el CI
 ```
+
+El CI propio (`.github/workflows/ci.yml`) corre `ruff`, `mypy` y `pytest` en cada
+push y PR. `mypy` esta limpio (strict) y `pytest` en verde.
