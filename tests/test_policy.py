@@ -164,3 +164,30 @@ def test_cap_override_vacio_deja_el_yaml() -> None:
         cap_override="",
     )
     assert engine.raw()["max_autonomy"] == "fix_with_approval"
+
+
+def test_cap_override_escalate_no_baja_el_techo() -> None:
+    # `escalate` no es un nivel de autonomia: pedirlo como override no endurece
+    # nada (el YAML manda) y no debe lanzar KeyError al comparar la escalera.
+    engine = PolicyEngine(
+        {"version": 1, "max_autonomy": "fix_auto", "default_action": "report", "rules": []},
+        cap_override="escalate",
+    )
+    assert engine.raw()["max_autonomy"] == "fix_auto"
+
+
+def test_max_autonomy_escalate_no_rompe_el_arranque() -> None:
+    # Un techo `escalate` es absurdo como politica, pero no debe tumbar el
+    # arranque con KeyError: el clamp lo deja pasar (freno de seguridad).
+    engine = _engine(max_autonomy="escalate")
+    assert engine.raw()["max_autonomy"] == "escalate"
+    assert engine.decide(make_finding(severity=Severity.P0)).action is FindingAction.ESCALATE
+
+
+def test_techo_fix_with_approval_conserva_escalate_y_degrada_fix_auto() -> None:
+    # Techo de Fase 2: `escalate` pasa (freno), `fix_auto` se degrada a
+    # `fix_with_approval` (nunca se autoarregla sin aprobacion).
+    engine = _engine(max_autonomy="fix_with_approval")
+    assert engine.decide(make_finding(severity=Severity.P0)).action is FindingAction.ESCALATE
+    degradado = engine.decide(make_finding(severity=Severity.P3, confidence=100))
+    assert degradado.action is FindingAction.FIX_WITH_APPROVAL

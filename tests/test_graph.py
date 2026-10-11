@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 
+from langgraph.checkpoint.memory import InMemorySaver
+
 from reviews.adapters.teams_webhook import TeamsWebhookAdapter
 from reviews.domain.models import (
     AutofixClass,
@@ -731,3 +733,113 @@ def test_resumen_no_repite_el_detalle_de_los_inline() -> None:
     # El anclado no arrastra su detalle; el que solo va al resumen si.
     assert "No cubre el caso borde" not in lineas[idx_anclado + 1]
     assert "No cubre el caso borde" in lineas[idx_resumen + 1]
+
+
+# ---------------------------------------------------------------------------
+# HITL (Fase 2): pausa, reanudacion y decision humana.
+# ---------------------------------------------------------------------------
+
+
+def _hitl_graph(vcs: FakeVcs, findings: list[Finding]):
+    return build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", findings)],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                # `escalate` y `fix_with_approval` dejan pendiente; `fix_auto`
+                # se degrada a aprobacion, asi que el pendiente siempre llega.
+                "max_autonomy": "fix_with_approval",
+                "default_action": "escalate",
+                "rules": [],
+            }
+        ),
+    ).compile(checkpointer=InMemorySaver())
+
+
+def test_hitl_pausa_antes_de_publicar() -> None:
+
+    vcs = FakeVcs(anchors={})
+    graph = _hitl_graph(vcs, [make_finding()])
+    config = {"configurable": {"thread_id": "r:1:abc"}}
+    result = graph.invoke(
+        {"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []}, config=config
+    )
+    # Pausada: hay interrupt pendiente y NO se publico nada.
+    snapshot = graph.get_state(config)
+    assert snapshot.next == ("hitl",)
+    assert snapshot.interrupts, "debe haber un interrupt pendiente"
+    assert vcs.comments == [] and vcs.inlines == []
+    assert "__interrupt__" in result
+
+
+def test_hitl_sin_pendientes_no_pausa() -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding()])],
+        policy=PolicyEngine(
+            {"version": 1, "max_autonomy": "report", "default_action": "report", "rules": []}
+        ),
+    ).compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "r:1:abc"}}
+    graph.invoke(
+        {"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []}, config=config
+    )
+    snapshot = graph.get_state(config)
+    assert snapshot.next == ()
+    assert not snapshot.interrupts
+    assert vcs.comments, "sin pendientes publica como en Fase 1"
+
+
+def test_hitl_reanuda_y_publica_con_la_decision() -> None:
+    from langgraph.types import Command
+
+    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = _hitl_graph(vcs, [make_finding()])
+    config = {"configurable": {"thread_id": "r:1:abc"}}
+    graph.invoke(
+        {"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []}, config=config
+    )
+    assert graph.get_state(config).interrupts
+
+    decision = HitlDecision(
+        review_key="r:1:abc",
+        actor="alice",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+    )
+    graph.invoke(Command(resume=decision), config=config)
+
+    snapshot = graph.get_state(config)
+    assert snapshot.next == ()
+    assert vcs.comments, "tras decidir se publica"
+    assert len(vcs.inlines) == 1
+    assert "Decision: aprobado · alice" in vcs.inlines[0][4]
+
+
+def test_hitl_rechazo_va_al_resumen_sin_inline() -> None:
+    from langgraph.types import Command
+
+    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = _hitl_graph(vcs, [make_finding()])
+    config = {"configurable": {"thread_id": "r:1:abc"}}
+    graph.invoke(
+        {"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []}, config=config
+    )
+    decision = HitlDecision(
+        review_key="r:1:abc",
+        actor="alice",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.REJECTED)],
+    )
+    graph.invoke(Command(resume=decision), config=config)
+
+    assert vcs.inlines == [], "un hallazgo descartado no se anota inline"
+    assert vcs.comments
+    assert "Descartado por una persona" in vcs.comments[0][2]
+    assert "Decision: descartado · alice" in vcs.comments[0][2]

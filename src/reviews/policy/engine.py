@@ -20,6 +20,18 @@ class PolicyError(RuntimeError):
     pass
 
 
+# Escalera unica de autonomia, compartida por el techo global y su override.
+# `escalate` no es un nivel de autonomia (es un freno aparte) pero entra en la
+# escala: asi comparar techos nunca lanza KeyError y un override a `escalate`
+# queda como no-op (no puede *bajar* nada).
+_AUTONOMY_RANK = {
+    FindingAction.REPORT: 0,
+    FindingAction.FIX_WITH_APPROVAL: 1,
+    FindingAction.FIX_AUTO: 2,
+    FindingAction.ESCALATE: 3,
+}
+
+
 @dataclass(frozen=True)
 class PolicyResult:
     """Resultado de aplicar la politica a un hallazgo, con trazabilidad."""
@@ -57,15 +69,10 @@ def _lower_cap(configured: FindingAction, override: str | None) -> FindingAction
         candidate = FindingAction(override.strip())
     except ValueError:
         raise PolicyError(f"max_autonomy invalido en settings: {override!r}") from None
-    rank = {
-        FindingAction.REPORT: 0,
-        FindingAction.FIX_WITH_APPROVAL: 1,
-        FindingAction.FIX_AUTO: 2,
-    }
     # El override solo aplica a techos no-escalate; escalate es un freno aparte.
     if configured is FindingAction.ESCALATE:
         return configured
-    if rank[candidate] <= rank[configured]:
+    if _AUTONOMY_RANK[candidate] <= _AUTONOMY_RANK[configured]:
         return candidate
     return configured
 
@@ -105,12 +112,7 @@ class PolicyEngine:
     Ver docs/diseno-agente-code-review-20261010.md, apartado 3.
     """
 
-    _RANK = {
-        FindingAction.REPORT: 0,
-        FindingAction.FIX_WITH_APPROVAL: 1,
-        FindingAction.FIX_AUTO: 2,
-        FindingAction.ESCALATE: 3,
-    }
+    _RANK = _AUTONOMY_RANK
 
     def __init__(self, config: dict[str, Any], *, cap_override: str | None = None) -> None:
         configured = FindingAction(config.get("max_autonomy", "report"))

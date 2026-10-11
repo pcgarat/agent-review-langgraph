@@ -7,12 +7,16 @@ import operator
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.types import Send, interrupt
 
 from reviews.domain.models import (
     PENDING_ACTIONS,
+    ApprovalRequest,
     Decision,
+    DecisionOutcome,
     Finding,
+    HitlDecision,
+    PendingDecision,
     ReviewOutcome,
     ReviewRequest,
     Severity,
@@ -68,6 +72,9 @@ class ReviewState(TypedDict, total=False):
     # Juicio de la politica sobre cada hallazgo mergeado. Sin reducer.
     # `pending_approvals` no vive aqui: es derivado de decisions.
     decisions: list[Decision]
+    # HITL (Fase 2): decision humana. La escribe `hitl` al reanudar; sin ella, si
+    # hay pendientes, el grafo pausa antes de publicar.
+    human_decisions: HitlDecision | None
 
 
 def _merge_status(
@@ -211,10 +218,65 @@ def build_graph(
             )
         return {"decisions": decisions}
 
+    def build_approval(state: ReviewState) -> ApprovalRequest | None:
+        """Carga del HITL si hay decisiones pendientes; `None` si no las hay."""
+        request = ReviewRequest.model_validate(state["request"])
+        by_id = {d.finding_id: d for d in state.get("decisions", [])}
+        pending: list[PendingDecision] = []
+        for finding in _merged(state):
+            decision = by_id.get(_finding_id(finding))
+            if decision is None or decision.action.value not in PENDING_ACTIONS:
+                continue
+            pending.append(
+                PendingDecision(
+                    finding_id=decision.finding_id,
+                    proposed_action=decision.action,
+                    reason=decision.reason,
+                    matched_rule=decision.matched_rule,
+                    policy_version=decision.policy_version,
+                    title=finding.title,
+                    file=finding.file,
+                    line=finding.line,
+                    severity=finding.severity,
+                )
+            )
+        if not pending:
+            return None
+        return ApprovalRequest(
+            review_key=request.review_key,
+            repo=request.repo,
+            pr_id=request.pr_id,
+            head_sha=request.head_sha,
+            pending=pending,
+            command_hint=(
+                f"reviews decide {request.review_key} --actor <tu-nombre> --approve <finding_id>"
+            ),
+        )
+
+    def hitl(state: ReviewState) -> ReviewState:
+        """Pausa durable si hay decisiones pendientes; si no, sigue a publish.
+
+        `interrupt` no bloquea: el `invoke` retorna con el hilo pendiente y el
+        worker no espera a nadie (ver docs/fase2-hitl-20261011.md, §4.2).
+        """
+        if state.get("human_decisions") is not None:
+            return {}
+        approval = build_approval(state)
+        if approval is None:
+            return {}
+        resume_value = interrupt(approval)
+        decision = (
+            resume_value
+            if isinstance(resume_value, HitlDecision)
+            else HitlDecision.model_validate(resume_value)
+        )
+        return {"human_decisions": decision}
+
     def publish(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
         findings = _merged(state)
         decisions = state.get("decisions", [])
+        human = state.get("human_decisions")
         unavailable = _unavailable_sources(state)
         if not findings and not unavailable:
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
@@ -265,6 +327,13 @@ def build_graph(
                 raise ReviewIntegrityError(
                     f"Hallazgo sin decision de politica: {_finding_id(finding)}"
                 )
+            if (
+                human is not None
+                and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED
+            ):
+                # Descartado por una persona: va al resumen, sin inline.
+                summary_only.append(finding)
+                continue
             if len(inlined) >= max_inline:
                 summary_only.append(finding)
                 continue
@@ -279,7 +348,7 @@ def build_graph(
             if anchor is None:
                 summary_only.append(finding)
                 continue
-            body = _render_inline(finding, decision, token=request.dedupe_token)
+            body = _render_inline(finding, decision, token=request.dedupe_token, human=human)
             if _has_marker(published, _inline_token(request.dedupe_token, _finding_id(finding))):
                 # Ya esta publicado (p.ej. el resumen no llego a escribirse por un
                 # fallo transitorio): no se repite el inline. La marca lleva el id
@@ -310,6 +379,7 @@ def build_graph(
             unavailable=unavailable,
             token=request.dedupe_token,
             complete=complete,
+            human=human,
         )
         if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
             vcs.post_comment(request.repo, request.pr_id, summary)
@@ -327,13 +397,15 @@ def build_graph(
     graph.add_node("persona", persona)
     graph.add_node("merge", merge)
     graph.add_node("policy", apply_policy)
+    graph.add_node("hitl", hitl)
     graph.add_node("publish", publish)
 
     graph.add_edge(START, "scope")
     graph.add_conditional_edges("scope", dispatch, ["persona"])
     graph.add_edge("persona", "merge")
     graph.add_edge("merge", "policy")
-    graph.add_edge("policy", "publish")
+    graph.add_edge("policy", "hitl")
+    graph.add_edge("hitl", "publish")
     graph.add_edge("publish", END)
 
     return graph
@@ -398,7 +470,32 @@ def _policy_line(decision: Decision) -> str | None:
     return f"_Politica: {reason}_"
 
 
-def _render_inline(finding: Finding, decision: Decision, *, token: str = "") -> str:
+def _decision_line(human: HitlDecision | None, decision: Decision) -> str | None:
+    """Linea de decision humana, solo si la hay para este hallazgo."""
+    if human is None:
+        return None
+    outcome = human.outcome_for(decision.finding_id)
+    if outcome is None:
+        return None
+    label = _OUTCOME_LABEL.get(outcome, outcome.value)
+    return f"_Decision: {label} · {human.actor}_"
+
+
+_OUTCOME_LABEL = {
+    DecisionOutcome.APPROVED: "aprobado",
+    DecisionOutcome.REJECTED: "descartado",
+    DecisionOutcome.NOTED: "anotado",
+    DecisionOutcome.EXPIRED: "sin decision (expirado)",
+}
+
+
+def _render_inline(
+    finding: Finding,
+    decision: Decision,
+    *,
+    token: str = "",
+    human: HitlDecision | None = None,
+) -> str:
     # La persona estatica propaga el mensaje crudo de la herramienta como titulo
     # (truncado a 100) y como `why_it_matters` (completo). Repetir ambos ensena
     # lo mismo dos veces; mostrar solo el titulo perderia el final del mensaje.
@@ -412,6 +509,9 @@ def _render_inline(finding: Finding, decision: Decision, *, token: str = "") -> 
     if why and not title_is_truncation:
         blocks.append(why)
     blocks.append(f"_Accion: {decision.action.value}_ · confianza {finding.confidence}")
+    decision_line = _decision_line(human, decision)
+    if decision_line:
+        blocks.append(decision_line)
     policy = _policy_line(decision)
     if policy:
         blocks.append(policy)
@@ -432,6 +532,7 @@ def _render_summary(
     unavailable: list[tuple[str, ToolingSourceStatus]] | None = None,
     token: str = "",
     complete: bool = True,
+    human: HitlDecision | None = None,
 ) -> str:
     by_key = {d.finding_id: d for d in decisions}
     inlined = inlined or []
@@ -461,6 +562,11 @@ def _render_summary(
         # imprescindible (hallazgo que solo figura en el resumen).
         if finding not in inlined:
             lines.append(f"  {finding.why_it_matters.strip()}")
+        decision_line = _decision_line(human, decision)
+        if decision_line:
+            lines.append(f"  {decision_line}")
+        if human is not None and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED:
+            lines.append("  Descartado por una persona: no se anota inline.")
     summary = "\n".join(lines)
     return summary + _footer(token, complete=complete) if token else summary
 
@@ -505,4 +611,5 @@ def outcome_from_state(state: ReviewState) -> ReviewOutcome:
             for name, status in state.get("source_status", {}).items()
             if not status.available
         },
+        human_decisions=state.get("human_decisions"),
     )
