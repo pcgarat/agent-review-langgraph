@@ -158,8 +158,9 @@ scripts/smoke-nivel2.sh 417            # PR real; requiere twg autenticado y .en
 
 ```bash
 make install     # uv sync con extras dev
-make ci          # ruff + mypy + pytest, igual que el CI
+make ci          # ruff (lint+formato) + mypy + pytest, igual que el CI
 ```
 
-El CI propio (`.github/workflows/ci.yml`) corre `ruff`, `mypy` y `pytest` en cada
-push y PR. `mypy` esta limpio (strict) y `pytest` en verde.
+El CI propio (`.github/workflows/ci.yml`) corre `ruff check`, `ruff format
+--check`, `mypy` y `pytest` en cada push y PR. `mypy` esta limpio (strict) y
+`pytest` en verde.

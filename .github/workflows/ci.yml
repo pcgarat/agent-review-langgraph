@@ -30,8 +30,11 @@ jobs:
       - name: Sincronizar dependencias (con extras dev)
         run: uv sync --extra dev
 
-      - name: Ruff
+      - name: Ruff (lint)
         run: uv run --extra dev ruff check src tests
+
+      - name: Ruff (formato)
+        run: uv run --extra dev ruff format --check src tests
 
       - name: Mypy
         run: uv run --extra dev mypy
