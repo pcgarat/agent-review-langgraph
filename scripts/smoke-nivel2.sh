@@ -11,7 +11,10 @@
 #   PR_ID=417 PIPELINE_ID=smoke-1 scripts/smoke-nivel2.sh
 #
 # Variables: PR_ID (obligatoria), PIPELINE_ID (opcional, por defecto con
-# timestamp), REVIEWS_URL (por defecto http://localhost:8000).
+# timestamp), REVIEWS_URL (por defecto http://localhost:8000 o el valor de
+# `.env`) y PHPSTAN_ARTIFACT (ruta al JSON de PHPStan; por defecto el fixture del
+# repo). Para que el anclaje inline sea representativo, el artefacto deberia
+# corresponder a ficheros/lineas del PR que se revisa.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,11 +22,10 @@ readonly SCRIPT_DIR
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT
 readonly ENV_FILE="${REPO_ROOT}/.env"
-readonly FIXTURE="${REPO_ROOT}/tests/fixtures/phpstan/analysis.json"
+readonly FIXTURE="${PHPSTAN_ARTIFACT:-${REPO_ROOT}/tests/fixtures/phpstan/analysis.json}"
 
 readonly PR_ID="${1:-${PR_ID:-}}"
 readonly PIPELINE_ID="${2:-${PIPELINE_ID:-smoke-$(date +%Y%m%d%H%M%S)}}"
-readonly REVIEWS_URL="${REVIEWS_URL:-http://localhost:8000}"
 
 readonly REQUIRED_CMDS=(docker twg jq openssl curl)
 
@@ -56,9 +58,6 @@ wait_for_api() {
 
 [ -n "$PR_ID" ] || die "falta PR_ID (pasalo como argumento o variable de entorno)"
 
-printf '\n== smoke Nivel 2: artefacto del CI -> cola -> grafo -> PR + Teams ==\n'
-printf '   PR_ID=%s  PIPELINE_ID=%s  REVIEWS_URL=%s\n\n' "$PR_ID" "$PIPELINE_ID" "$REVIEWS_URL"
-
 info "comprobando dependencias"
 for cmd in "${REQUIRED_CMDS[@]}"; do
   has_cmd "$cmd" || die "dependencia ausente: $cmd"
@@ -76,6 +75,12 @@ if [ -f "$ENV_FILE" ]; then
 else
   warn ".env no encontrado; se usaran solo las variables ya exportadas en el entorno"
 fi
+# `REVIEWS_URL` puede venir de `.env`; si no, el default. Se fija despues de
+# cargarlo porque el `.env` la declararia como de solo lectura.
+readonly REVIEWS_URL="${REVIEWS_URL:-http://localhost:8000}"
+
+printf '\n== smoke Nivel 2: artefacto del CI -> cola -> grafo -> PR + Teams ==\n'
+printf '   PR_ID=%s  PIPELINE_ID=%s  REVIEWS_URL=%s\n\n' "$PR_ID" "$PIPELINE_ID" "$REVIEWS_URL"
 
 for key in TOOLING_WEBHOOK_SECRET BITBUCKET_WORKSPACE BITBUCKET_REPO; do
   value="${!key:-}"
@@ -94,8 +99,26 @@ else
   warn "la API no respondio a /healthz en 30s; revisa 'docker compose logs api'"
 fi
 
+info "inyectando la config de twg en el worker (auth de Bitbucket)"
+# El contenedor solo recibe el binario; su autenticacion vive en el host.
+# Sin esto, `twg prs diff` falla con 77 y la review va a la DLQ.
+if [ -d "${HOME}/.config/twg" ]; then
+  compose_cmd exec -T worker mkdir -p /root/.config/twg
+  for conf in auth.conf auth_oauth.conf; do
+    if [ -f "${HOME}/.config/twg/${conf}" ]; then
+      compose_cmd cp "${HOME}/.config/twg/${conf}" worker:/root/.config/twg/"${conf}"
+      printf '  [ok]    %s\n' "$conf"
+    fi
+  done
+else
+  warn "no hay ~/.config/twg en el host; el worker no podra leer el diff"
+fi
+
 info "resolviendo HEAD_SHA del PR $PR_ID con twg"
-HEAD_SHA="$(twg bb prs get "$PR_ID" --output json --output-summary none \
+# El repo destino se pasa explicito: el cwd del script es `reviews`, no el
+# checkout de Bitbucket, asi que twg no puede autodetectar el workspace.
+HEAD_SHA="$(twg bb prs get "$PR_ID" --repo "${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO}" \
+  --output json --output-summary none \
   | jq -r '.source.commit.hash')"
 [ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" != "null" ] \
   || die "no se pudo resolver head_sha del PR $PR_ID (¿twg autenticado?)"

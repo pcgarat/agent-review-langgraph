@@ -41,6 +41,10 @@ services:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
+      # La autenticacion de twg vive en el host, no en la imagen (solo se copia
+      # el binario). Descomenta para que el worker la vea sin copiarla a mano;
+      # `scripts/smoke-nivel2.sh` la inyecta automaticamente como alternativa.
+      # - ${HOME}/.config/twg:/root/.config/twg:ro
     depends_on:
       postgres:
         condition: service_healthy
