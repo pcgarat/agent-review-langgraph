@@ -131,3 +131,5 @@ decisión y del plan:
   que tratar el estado pausado explícitamente en `process_request`.
 
 Tareas en `tasks/todo.md` (T1–T9) y riesgos en el spec §7.
+
+Estado: **T1–T5 cerradas** (195→199 tests en verde). T6–T9 pendientes.

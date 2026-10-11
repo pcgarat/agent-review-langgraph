@@ -10,7 +10,10 @@ from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
 from reviews.domain.models import (
     AutofixClass,
+    DecisionOutcome,
     Finding,
+    FindingDecision,
+    HitlDecision,
     Owner,
     ReviewerResult,
     ReviewRequest,
@@ -387,3 +390,113 @@ def test_heartbeat_refresca_el_fichero_desde_un_hilo(tmp_path: Path) -> None:
     while path.read_text(encoding="utf-8") == first and time.monotonic() < deadline:
         time.sleep(0.005)
     assert path.read_text(encoding="utf-8") != first, "el latido debe refrescarse periodicamente"
+
+
+class _CountingReviewer:
+    """Persona que cuenta cuantas veces se le llama (para medir re-ejecuciones)."""
+
+    name = "correctness"
+
+    def __init__(self, finding: Finding) -> None:
+        self._finding = finding
+        self.calls = 0
+
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+        del repo, pr_id, diff, head_sha
+        self.calls += 1
+        return ReviewerResult(findings=[self._finding])
+
+
+def _escalating_finding() -> Finding:
+    return Finding(
+        id="w1",
+        title="Naming",
+        severity=Severity.P3,
+        file="a.php",
+        line=1,
+        why_it_matters="Claridad",
+        autofix_class=AutofixClass.ADVISORY,
+        owner=Owner.HUMAN,
+        requires_verification=False,
+        confidence=75,
+        evidence=["a.php:1 $x"],
+    )
+
+
+def _hitl_graph(vcs: FakeVcs, reviewer: _CountingReviewer):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    return build_graph(
+        vcs=vcs,
+        reviewers=[reviewer],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                # `escalate` y `fix_with_approval` dejan pendiente; `fix_auto`
+                # se degrada a aprobacion, asi que el pendiente siempre llega.
+                "max_autonomy": "fix_with_approval",
+                "default_action": "escalate",
+                "rules": [],
+            }
+        ),
+    ).compile(checkpointer=InMemorySaver())
+
+
+def test_worker_reentrega_pausada_no_reejecuta_scope_ni_personas() -> None:
+    # §4.3: re-invocar con input mientras esta pausada re-ejecuta scope+personas
+    # (fuga de tokens). La reentrega sin decision debe ser no-op.
+    reviewer = _CountingReviewer(_escalating_finding())
+    graph = _hitl_graph(FakeVcs(), reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    first = process_request(graph, request)
+    assert first.paused, "las decisiones pendientes deben pausar la review"
+    assert reviewer.calls == 1
+
+    second = process_request(graph, request)
+    assert second.paused
+    assert reviewer.calls == 1, "la reentrega pausada no debe re-ejecutar las personas"
+
+
+def test_worker_resume_aplica_command_y_publica() -> None:
+    reviewer = _CountingReviewer(_escalating_finding())
+    vcs = FakeVcs()
+    graph = _hitl_graph(vcs, reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request)
+    assert vcs.inlines == [] and vcs.comments == []
+
+    decision = HitlDecision(
+        review_key=request.review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id="w1", outcome=DecisionOutcome.APPROVED)],
+    )
+    outcome = process_request(graph, request.model_copy(update={"decision": decision}))
+
+    assert not outcome.paused
+    assert outcome.human_decisions is not None
+    assert len(vcs.inlines) == 1, "tras decidir se publica el inline"
+    assert vcs.comments, "y el resumen"
+    assert reviewer.calls == 1, "reanudar no vuelve a ejecutar las personas"
+
+
+def test_worker_doble_decision_es_noop() -> None:
+    reviewer = _CountingReviewer(_escalating_finding())
+    vcs = FakeVcs()
+    graph = _hitl_graph(vcs, reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request)
+
+    decision = HitlDecision(
+        review_key=request.review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id="w1", outcome=DecisionOutcome.APPROVED)],
+    )
+    process_request(graph, request.model_copy(update={"decision": decision}))
+    published = (len(vcs.inlines), len(vcs.comments))
+
+    repeated = process_request(graph, request.model_copy(update={"decision": decision}))
+
+    assert not repeated.paused
+    assert (len(vcs.inlines), len(vcs.comments)) == published, "no se republica"
+    assert reviewer.calls == 1

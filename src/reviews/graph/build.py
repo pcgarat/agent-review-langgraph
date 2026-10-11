@@ -601,7 +601,13 @@ def _render_teams_body(
     return "\n".join(lines)
 
 
-def outcome_from_state(state: ReviewState) -> ReviewOutcome:
+def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOutcome:
+    """Construye el resultado. `paused` se pasa explicito al leer un hilo pausado.
+
+    El `__interrupt__` no vive en los `values` del snapshot (LangGraph lo aparta en
+    `snapshot.interrupts`), asi que la mera presencia en el estado no basta: quien
+    lee un `get_state` de un hilo pausado lo sabe y lo declara.
+    """
     return ReviewOutcome(
         request=ReviewRequest.model_validate(state["request"]),
         findings=_merged(state),
@@ -612,4 +618,5 @@ def outcome_from_state(state: ReviewState) -> ReviewOutcome:
             if not status.available
         },
         human_decisions=state.get("human_decisions"),
+        paused=paused or bool(state.get("__interrupt__")),
     )

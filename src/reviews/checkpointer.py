@@ -8,11 +8,16 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from reviews.domain.models import (
+    ApprovalRequest,
     AutofixClass,
     Decision,
+    DecisionOutcome,
     Finding,
     FindingAction,
+    FindingDecision,
+    HitlDecision,
     Owner,
+    PendingDecision,
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
@@ -22,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Tipos del dominio que viajan por el estado del grafo. Allowlist explicita para
 # que el serializer no dependa del msgpack permisivo (que avisa hoy y bloqueara
-# los tipos no registrados en versiones futuras).
+# los tipos no registrados en versiones futuras). Incluye los HITL (Fase 2): el
+# `ApprovalRequest` del `interrupt` y la `HitlDecision` de la reanudacion.
 _STATE_TYPES: tuple[type, ...] = (
     ReviewRequest,
     Finding,
@@ -32,6 +38,11 @@ _STATE_TYPES: tuple[type, ...] = (
     Owner,
     FindingAction,
     ToolingSourceStatus,
+    ApprovalRequest,
+    PendingDecision,
+    FindingDecision,
+    HitlDecision,
+    DecisionOutcome,
 )
 
 

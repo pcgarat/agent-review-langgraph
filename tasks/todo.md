@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9.
+checkpoints tras T4 y tras T9. Estado: **T1–T5 cerradas** (199 tests en verde).
 
 ### Fundación
 
@@ -63,13 +63,16 @@ checkpoints tras T4 y tras T9.
 - [x] El grafo pausa y el hilo queda durable con un `interrupt` pendiente
       (`tests/test_graph.py::test_hitl_*`). 195 tests en verde.
 
-### Reanudación y canal
+### Reanudación y canal (T5 ✅)
 
-- [ ] **T5** — Worker: estado pausado, resume con `Command` y no-op
+- [x] **T5** — Worker: estado pausado, resume con `Command` y no-op
   - Aceptación: reentrega estando pausada **no re-ejecuta** `scope`/personas;
     resume aplica `Command` sobre el mismo hilo; doble decisión es no-op.
-  - Verifica: `tests/test_worker.py`, `tests/test_checkpointer.py`.
-  - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`.
+  - Verifica: `tests/test_worker.py`, `tests/test_checkpointer.py`. ✅
+    (`test_worker_reentrega_pausada_no_reejecuta_*`, `test_worker_resume_*`,
+    `test_worker_doble_decision_es_noop`, `test_hilo_pausado_serializa_sin_avisos`)
+  - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`,
+    `src/reviews/checkpointer.py` (allowlist del serde con los tipos HITL).
 
 - [ ] **T6** — Canal CLI + `POST /reviews/{key}/decision`
   - Aceptación: CLI construye y encola la decisión con `actor`; el endpoint
