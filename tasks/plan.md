@@ -111,22 +111,23 @@ Decisiones de implementación no obvias, documentadas aparte:
 
 ---
 
-## Fase 2 (HITL, Opción B) — boceto de alcance
+## Fase 2 (HITL) — especificada (2026-10-11)
 
-0. Extraer `CheckpointerPort` + adaptador `PostgresCheckpointer` e inyectarlo en worker
-   e ingress: hoy el saver se construye en `build_runtime` y muere con el proceso del
-   worker, pero la reanudación del `interrupt` llegará desde **otro** proceso.
-1. `interrupt` en el nodo de decisión + reanudación (el checkpointer durable ya está).
-2. Canal de respuesta (PR/Jira/CLI) y `Command(resume=...)` sobre el mismo `thread_id`.
-3. Devolver el webhook de PR como **descubrimiento** (`PENDING`), nunca como disparo.
-4. Retención/poda de checkpoints antiguos en Postgres.
+La especificación completa vive en `docs/fase2-hitl-20261011.md`. Resumen de la
+decisión y del plan:
 
-### Señales de deuda a vigilar
+- **Objetivo:** el bucle **pausa → decisión → reanudación** durable; el grafo pausa
+  ante un hallazgo pendiente y reanuda el mismo `thread_id` sin duplicar publicación.
+  Sigue **sin escribir código** (eso es Fase 3).
+- **Decisiones:** go ya; canal **CLI + `POST …/decision`** (comentario de PR después);
+  la decisión humana **manda** sobre el clamp y `never_auto_paths` (ratificado sin
+  segunda señal, también en Fase 3: **riesgo asumido**, ver spec §2.1); transporte en
+  **cola única** con el resume en el worker; inbox en **Redis**; techo
+  **`fix_with_approval`**; publicar **al decidir**, no al pausar.
+- **Cambio respecto al boceto:** el `CheckpointerPort` **sale del alcance**: con el
+  resume en el worker, ningún otro proceso necesita el saver. Se reabre si se mueve.
+- **Hallazgo verificado (LangGraph 1.2.14):** una reentrega del job estando **pausado**
+  no pierde la decisión (vuelve a pausar) pero **re-ejecuta `scope` y personas**; hay
+  que tratar el estado pausado explícitamente en `process_request`.
 
-- **Canal de decisión del HITL:** sin definir (PR/Jira/CLI); es lo que convierte una
-  review pausada en una decisión.
-- **Checkpointer acoplado a Postgres:** abrir el puerto es el primer trabajo de Fase 2.
-- **Dedupe por token:** si un humano copiase el pie `<!-- reviews:… -->` a otro commit,
-  el publish lo leería como ya publicado. Riesgo bajo, pero no asumirlo en Fase 2.
-  Desde Q1 la marca es de la **ejecución** (hilo); al reanudar el HITL sobre el mismo
-  `thread_id`, la coherencia hilo == marca evita re-publicar.
+Tareas en `tasks/todo.md` (T1–T9) y riesgos en el spec §7.
