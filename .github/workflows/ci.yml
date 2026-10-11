@@ -41,3 +41,6 @@ jobs:
 
       - name: Pytest
         run: uv run --extra dev pytest
+
+      - name: Documentacion
+        run: uv run --extra dev python scripts/check_docs.py

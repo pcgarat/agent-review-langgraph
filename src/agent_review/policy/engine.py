@@ -109,7 +109,7 @@ def _match_condition(condition: dict[str, Any], finding: Finding) -> bool:
 class PolicyEngine:
     """Enrutamiento por hallazgo. Determinista y auditable: sin LLM.
 
-    Ver docs/diseno-agente-code-review-20261010.md, apartado 3.
+    Ver docs/iniciativas/001-diseno-base/spec.md, apartado 3.
     """
 
     _RANK = _AUTONOMY_RANK

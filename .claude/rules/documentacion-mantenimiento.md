@@ -1,0 +1,1 @@
+../../.agents/rules/documentacion-mantenimiento.md

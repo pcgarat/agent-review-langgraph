@@ -2,7 +2,7 @@
 # sync-twg-credentials.sh - Atajo de DESARROLLO: copia al `.env` la credencial de
 # Bitbucket que `twg` ya tiene en el host (sesion OAuth + `bbc-token` de la persona).
 #
-# NO es el actor de servicio que describe docs/gestion-de-secretos-20261011.md: en
+# NO es el actor de servicio que describe docs/operacion.md (§3): en
 # un despliegue real `TWG_BBC_TOKEN` debe ser un API token scoped de un actor de
 # servicio. Aqui se reutiliza la sesion de twg porque no hay produccion y la cuenta
 # es de pruebas.

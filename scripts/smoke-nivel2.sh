@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke-nivel2.sh - Nivel 2 del smoke de Fase 1 (docs/smoke-fase1-20261011.md §2).
+# smoke-nivel2.sh - Nivel 2 del smoke de Fase 1 (docs/operacion.md §6).
 #
 # EJECUTA UN SMOKE REAL: levanta el stack, firma y deposita el artefacto de
 # PHPStan como lo haria el CI y espera que la review se publique en el PR real de

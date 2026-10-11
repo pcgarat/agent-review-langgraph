@@ -4,21 +4,17 @@ Agente autónomo de code review sobre LangGraph. Recibe del CI la salida de las
 herramientas estáticas, revisa el diff de un PR, decide por hallazgo (informar,
 escalar, arreglar) y publica en Microsoft Teams y en el propio PR.
 
-Documentación de fondo:
+Documentación: empieza por el índice [`docs/README.md`](docs/README.md).
 
 | Documento | Contenido |
 |---|---|
-| `docs/diseno-agente-code-review-20261010.md` | Diseño completo: arquitectura, autonomía, HITL, fases, perfil de `emotivoo-v2` |
-| `docs/ingesta-diferida-ci-20261011.md` | Por qué la review espera al CI y por qué el artefacto es un puente desechable |
-| `docs/fase2-hitl-20261011.md` | Pausa durable, decisión humana y reanudación |
-| `docs/fase3-fix-verificacion-20261011.md` | Fix aprobado: parche, verificación en sandbox y entrega como sugerencia |
-| `docs/decisiones-publish-inline-20261011.md` | Formato inline, orden de publicación y borrados |
-| `docs/reintento-de-nodo-20261011.md` | `RetryPolicy` por nodo, clasificación de errores y DLQ |
-| `docs/proveedor-github-20261011.md` | Adaptador de GitHub: contrato del puerto, ancla en cliente y configuración |
-| `docs/smoke-fase1-20261011.md` | Smoke E2E (Nivel 1 local y Nivel 2 contra Bitbucket) |
-| `docs/edu/` | Serie didáctica sobre LangGraph aplicada a este repo |
-| `tasks/plan.md` | Estado del plan: tareas cerradas y pendientes humanos |
-| `tasks/todo-fase3.md` | Checklist de la Fase 3 (fix + verificación) |
+| [`CONTEXT.md`](CONTEXT.md) | Glosario del dominio |
+| [`docs/arquitectura.md`](docs/arquitectura.md) | Componentes, grafo, flujos, estado por fase y deuda conocida |
+| [`docs/operacion.md`](docs/operacion.md) | Arranque, configuración, secretos, contrato del CI, API/CLI, smoke y diagnóstico |
+| [`docs/desarrollo.md`](docs/desarrollo.md) | Tests, cómo extender e invariantes |
+| [`docs/adr/`](docs/adr/README.md) | Decisiones de arquitectura |
+| [`docs/iniciativas/`](docs/iniciativas/README.md) | Spec, plan y todo de cada iniciativa, con su estado |
+| [`docs/edu/`](docs/edu/README.md) | Serie didáctica sobre LangGraph aplicada a este repo |
 
 ## Arquitectura
 
@@ -122,7 +118,7 @@ flowchart TD
 > **Por qué no dispara el PR.** El webhook de PR llegaba *antes* de que el CI
 > produjese el artefacto, así que la review corría sin datos (`0 hallazgos`
 > engañoso). La ingesta diferida encola solo cuando el artefacto ya está dentro
-> (`docs/ingesta-diferida-ci-20261011.md`).
+> ([ADR-0004](docs/adr/0004-ingesta-diferida-por-artefacto-del-ci.md)).
 
 ### Personas de review
 
@@ -168,7 +164,7 @@ contenedor **no monta** `~/.config/twg`.
 **Proveedor de GitHub.** Con `VCS_PROVIDER=github`, `GITHUB_OWNER`/`GITHUB_REPO` y
 un PAT fine-grained (`GITHUB_TOKEN`) sustituyen a `twg`: el worker instala el
 adaptador de la API REST y ya no requiere el binario. Ver
-`docs/proveedor-github-20261011.md`.
+[ADR-0012](docs/adr/0012-vcs-tras-un-puerto.md).
 
 `api` y `worker` arrancan con `restart: unless-stopped` y healthcheck (el del
 worker es un latido en `/tmp/reviews-worker-heartbeat`).
@@ -202,7 +198,7 @@ Antes de las personas, `scope` descarta ficheros ruidosos (lockfiles, `var/**`,
 declarado, recorta el diff a los ficheros con más churn. El presupuesto de la
 persona LLM (`budget_tokens_per_pr`) **corta** la llamada si el coste estimado lo
 supera. Las decisiones de publicación están fijadas en
-`docs/decisiones-publish-inline-20261011.md`.
+[ADR-0006](docs/adr/0006-publicacion-inline-primero-resumen-al-final.md).
 
 ## Estado actual
 
@@ -232,7 +228,7 @@ seguridad), precondición para ejecutar código de PRs de terceros.
   eligen el formato del bloque; Bitbucket no tiene *suggested changes* como GitHub.
 - **Sin sandbox no hay `VERIFIED`:** sin fixer o sin runner, el fix queda
   `NOT_VERIFIABLE` y el inline lo dice. Un fallo tras los intentos queda `FAILED`
-  con el `stderr_tail` acotado. Ver `docs/fase3-fix-verificacion-20261011.md`.
+  con el `stderr_tail` acotado. Ver `docs/iniciativas/003-fase3-fix-verificacion/spec.md`.
 
 ### Servicio `sandbox-runner`
 
@@ -266,5 +262,12 @@ make ci          # ruff (lint+formato) + mypy + pytest, igual que el CI
 El CI propio (`.github/workflows/ci.yml`) corre `ruff check`, `ruff format
 --check`, `mypy` y `pytest` en cada push y PR. `mypy` está limpio (strict) y
 `pytest` en verde.
+
+`tests/conftest.py` aísla la suite del entorno del host: desactiva el `.env` en
+`Settings` y borra del proceso las variables que el modelo conoce, de modo que
+los tests parten siempre de los valores por defecto y no de un `.env` local (los
+tests `live` quedan fuera, que sí necesitan credenciales). Añadir un campo a
+`Settings` no requiere tocar el `conftest`: las claves se derivan del modelo y de
+`.env`/`.env.example`.
 
 El contrato de hallazgo vive en `contracts/findings-schema.json`.

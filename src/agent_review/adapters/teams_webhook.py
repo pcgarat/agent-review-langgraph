@@ -41,7 +41,7 @@ class TeamsWebhookAdapter:
 
     Nota de diseno: con solo un Incoming Webhook no se pueden recibir
     respuestas. Las decisiones llegan por otro canal (comentario de PR, Jira o
-    CLI). Ver docs/diseno-agente-code-review-20261010.md, apartado 5.
+    CLI). Ver docs/iniciativas/001-diseno-base/spec.md, apartado 5.
     """
 
     def __init__(self, *, webhook_url: str) -> None:

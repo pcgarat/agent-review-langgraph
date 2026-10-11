@@ -1,0 +1,294 @@
+Última modificación: 2026-10-11 | Creado: 2026-10-11
+
+# Arquitectura
+
+Cómo está construido el agente **hoy**, contado desde el código. El vocabulario está
+en [`CONTEXT.md`](../CONTEXT.md) y el porqué de cada decisión, en [`adr/`](adr/).
+Para arrancarlo y operarlo, ver [`operacion.md`](operacion.md).
+
+---
+
+## 1. Vista de conjunto
+
+```mermaid
+flowchart LR
+    subgraph EXT["Externos"]
+        CI["CI del repo revisado<br/>(emotivoo-v2)"]
+        VCS["Bitbucket (twg)<br/>o GitHub (REST)"]
+        TEAMS["Microsoft Teams<br/>Incoming Webhook"]
+        LLM["Proveedor LLM<br/>(compatible OpenAI)"]
+        HUMAN["Persona"]
+    end
+
+    subgraph PLAT["docker compose"]
+        API["api · FastAPI :8000"]
+        WORKER["worker · grafo LangGraph"]
+        RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
+        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox")]
+        PG[("postgres<br/>checkpoints")]
+        VAR[/"./var · artefactos"/]
+        CFG[/"./config · política + perfil"/]
+    end
+
+    CI -->|"POST /webhook/tooling (HMAC)"| API
+    API --> VAR
+    API --> REDIS
+    HUMAN -->|"CLI agent_review / POST decision"| API
+    REDIS -->|BLPOP| WORKER
+    WORKER --> VAR
+    WORKER --> CFG
+    WORKER <-->|checkpoint| PG
+    WORKER -->|"diff · inline · resumen"| VCS
+    WORKER -->|aviso| TEAMS
+    WORKER -->|"personas · fixer"| LLM
+    WORKER -->|"POST /verify (bearer)"| RUNNER
+    RUNNER -->|"clona (token solo lectura)"| VCS
+    TEAMS -.-> HUMAN
+```
+
+| Proceso | Entrada | Responsabilidad |
+|---|---|---|
+| `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
+| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. |
+| `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
+| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
+
+---
+
+## 2. Capas del código
+
+```
+src/agent_review/
+├── domain/        Modelos puros (Finding, ReviewRequest, Decision, HITL, Fix) y contrato
+├── ports/         Protocolos: VcsPort, ReviewerPort, LlmPort, ChatPort, ToolingOutputSource,
+│                  FixerPort, SandboxPort
+├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
+│                  openai_llm, teams_webhook, http_sandbox, tooling_source, diff_parser
+├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
+├── policy/        PolicyEngine (autonomy.yaml)
+├── fix/           Selección, validación local, nodo fix, formatters de entrega
+├── sandbox_runner/ Servicio de verificación (verifier, workspace, runtime, recipes)
+├── api/  worker/  cli.py   Procesos (raíces de composición)
+└── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
+    paused_store.py checkpointer.py scope.py decision.py
+```
+
+Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**,
+**Strategy** (`FixerPort`, `DeliveryFormatter`, `RetentionPolicy`), **map-reduce**
+(fan-out de personas con `Send` + reducer) y **ejecución durable** (checkpoint +
+`interrupt`).
+
+---
+
+## 3. El grafo
+
+```mermaid
+flowchart TD
+    START([START]) --> scope
+    scope["scope<br/>diff · filtro de ruido · max_files_per_pr"] -->|"Send ×N"| persona
+    persona["persona<br/>standards · correctness · null"] --> merge
+    merge["merge<br/>(fichero, línea, título) + fusión entre personas"] --> policy
+    policy["policy<br/>autonomy.yaml → Decision"] --> hitl
+    hitl{"hitl<br/>¿acciones pendientes?"} -->|no| fix
+    hitl -.->|"sí: interrupt(ApprovalRequest)"| PAUSE(["pausa durable"])
+    PAUSE -.->|"Command(resume=HitlDecision)"| hitl
+    fix["fix<br/>no-op sin aprobados fix_*"] --> publish
+    publish["publish<br/>inline + resumen con marca"] --> notify
+    notify["notify<br/>Teams, solo si publish publicó"] --> END([END])
+```
+
+| Nodo | Reintento de nodo | Qué hace |
+|---|---|---|
+| `scope` | Sí | `get_diff`; con `max_files_per_pr`, también `get_diffstat` y recorte por churn. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`). Vacía `findings` y `source_status`. |
+| `persona` | Sí; degrada en el último intento | Una rama por revisor. Escribe `findings`, `finding_sources` y `source_status`. |
+| `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). |
+| `policy` | No (puro) | Una `Decision` por hallazgo, con `matched_rule` y `policy_version`. |
+| `hitl` | **Nunca** | Sin pendientes o con `human_decisions` ya presente, sigue. Si no, `interrupt`. Si la decisión está incompleta o es ilegible, vuelve a pausar. |
+| `fix` | Sí | `fix/node.run_fixes`: selección → bloqueo de seguridad → fixer → validación → sandbox. |
+| `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. |
+| `notify` | Sí | Avisa a Teams. Un fallo no transitorio se registra y no tumba la review. |
+
+### Estado (`ReviewState`)
+
+| Campo | Reducer | Nota |
+|---|---|---|
+| `request`, `diff`, `reviewer` | Sustituye | `reviewer` solo existe en cada rama del `Send` |
+| `findings` | `operator.add` | Lo escriben las personas en paralelo |
+| `finding_sources`, `source_status`, `fixes` | Merge de dict | Por `finding_id` o por persona |
+| `merged`, `decisions` | Sustituye | Si compartieran campo con `findings`, se reacumularían |
+| `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
+| `published`, `inlined_count` | Sustituye | Señal de `publish` a `notify` |
+
+`pending_approvals` no se guarda: se deriva de `decisions`.
+
+---
+
+## 4. Flujo de una review
+
+### 4.1 Ingesta (API)
+
+```mermaid
+sequenceDiagram
+    participant CI
+    participant API
+    participant R as Redis
+    participant FS as ./var
+    CI->>API: POST /webhook/tooling {repo, pr_id, head_sha, pipeline_id, tool, payload}
+    API->>API: tamaño ≤ 5 MB (413) · firma HMAC (401) · campos (400) · repo == configurado (400)
+    API->>R: claim(ingest_key)
+    alt ya visto
+        API-->>CI: 200 duplicado
+    end
+    API->>FS: var/tooling/<pr>/<sha>/<tool>.json
+    API->>R: PendingReview.observe(tool)
+    alt faltan herramientas
+        API-->>CI: 202 pendiente
+    else barrera completa (READY)
+        API->>R: claim(review_key) + RPUSH reviews:jobs
+        API-->>CI: 202 aceptado
+    end
+```
+
+Si algo falla tras un `claim`, la clave se libera (`_release_quietly`) antes de
+propagar el error.
+
+### 4.2 Bucle del worker
+
+```
+loop:
+  job = BLPOP reviews:jobs (5 s)
+  si hay job → _consume → process_request (según el estado del hilo, ADR-0007)
+                fallo → reencolar con attempts+1, o DLQ al agotar
+  si la cola está vacía:
+    cada 30 s  → sweep_pending  (TTL de ingesta → pasada degradada :partial)
+                 sweep_expired  (TTL de decisión → reanudación expired)
+    cada 1 h   → reconcile_paused (repone pausas perdidas del inbox)
+                 prune_completed_threads (CHECKPOINT_RETENTION_DAYS)
+  hilo aparte  → latido /tmp/reviews-worker-heartbeat cada 10 s (healthcheck)
+```
+
+### 4.3 Pausa y reanudación (HITL)
+
+```mermaid
+sequenceDiagram
+    participant W as worker
+    participant PG as Postgres
+    participant R as Redis
+    participant T as Teams
+    participant H as Persona
+    participant API as API/CLI
+    W->>PG: invoke → hitl → interrupt(ApprovalRequest)
+    W->>R: inbox reviews:paused:<review_key>
+    W->>T: aviso de pausa (sin marca)
+    H->>API: agent_review decide <key> --actor … --approve/--reject/--noted …
+    API->>R: valida contra el inbox (todos los pendientes) → RPUSH job con decision
+    R->>W: BLPOP
+    W->>PG: Command(resume=HitlDecision) sobre el mismo thread_id
+    W->>W: fix → publish → notify
+    W->>R: borra la entrada del inbox
+```
+
+Al publicar con una decisión humana:
+
+- `rejected`: solo en el resumen («descartado»).
+- `approved`, `noted` y `expired`: inline con la línea `_Decision: … · actor_`.
+
+### 4.4 Fix y verificación
+
+```mermaid
+sequenceDiagram
+    participant F as nodo fix
+    participant V as VcsPort
+    participant L as LlmFixer
+    participant S as sandbox-runner
+    F->>F: select_candidates (approved ∧ fix_*) · tope max_fixes_per_pr
+    F->>F: blocked_reason → BLOCKED (ruta nunca-auto / tema protegido)
+    F->>V: get_diff (una vez) · get_file(path, ref=head_sha)
+    loop hasta max_fix_attempts
+        F->>L: propose(finding, source, previous)
+        F->>F: validate_patch → INVALID_PATCH
+        F->>S: POST /verify {run_key, repo, head_sha, patch, recipes, targets}
+        S->>S: imagen@digest · clone · git apply · targets del fichero tocado
+        S->>S: setup_network · setup/checks --network none (targeted … tests) · destroy
+        S-->>F: VerifyReport → VERIFIED | FAILED (reintenta con stderr_tail)
+    end
+```
+
+---
+
+## 5. Claves y almacenes
+
+| Dónde | Clave | Contenido | TTL |
+|---|---|---|---|
+| Redis | `<repo:pr:sha:tool>` / `<review_key>` | Claim de idempotencia | 7 días |
+| Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
+| Redis | `reviews:jobs` | Cola (`ReviewRequest` en JSON) | — |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
+| Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox) | 8 días |
+| Postgres | `thread_id` | Checkpoints de LangGraph | Poda de completados a los 30 días |
+| Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
+| PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>` | Marcas de publicación | Lo que viva el PR |
+
+---
+
+## 6. Estado por fase
+
+| Fase | Estado | Qué falta |
+|---|---|---|
+| 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1) |
+| 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación) | Smoke contra infraestructura real. Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
+| 3 — Fix + verificación | Base pura (F1–F6) y runner (F7–F10) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), desacople E7, P6 (revisión de seguridad; precondición) |
+| 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
+
+El estado vivo de cada iniciativa y sus tareas están en
+[`iniciativas/README.md`](iniciativas/README.md).
+
+---
+
+## 7. Deuda y discrepancias conocidas
+
+Lo que el código hace distinto de lo que dice una spec, o lo que está a medias:
+
+| # | Tema | Situación |
+|---|---|---|
+| D1 | **Targets heurísticos** | El runner deriva los tests dirigidos por nombre de clase (`ClaseTest.php`). Un test con otro nombre no se encuentra y la receta se salta; la suite completa sigue cubriéndolo. |
+| D2 | **`APP_ENV=test` en todo el sandbox** | El perfil fija `APP_ENV=test` para todos los comandos, pero el CI de `emotivoo-v2` hace `cache:clear` en entorno `dev`, porque PHPStan lee `var/cache/dev/…Container.xml`. Sin verificar contra un fix real: es candidato a fallar en `typecheck` (F12). |
+| D3 | **`importmap:install` con red** | Arranca el kernel (código del PR) con red. Es un riesgo asumido ([ADR-0011](adr/0011-sandbox-runner-aislado.md)). |
+| D4 | **Guardas declarativas sin efecto** | `dedupe_by` y `require_tests_pass` no los lee ningún código. |
+| D5 | **Orden de recetas por defecto** | `FIX_RECIPES` (fallback sin perfil) es `typecheck,arch,lint,targeted,tests`; el perfil dice `targeted` primero. |
+| D6 | **Fallbacks a memoria abiertos** | Si Redis no responde, la API y el CLI encolan en memoria y responden OK (R1 de la revisión de `main`). |
+| D7 | **Firma y tokens desactivados por defecto** | Fuera de `production`, `change-me` desactiva el HMAC y los bearer de decisión y runner (R2). |
+| D8 | **`observe` no atómico** | `RedisPendingStore.observe` lee, modifica y escribe sin `WATCH`. Además guarda payloads de hasta 5 MB (R4). |
+| D9 | **Una sola fuente de tooling** | `ToolingReviewer` solo entiende PHPStan; añadir `deptrac` exige tocarlo (P3 de la revisión). |
+| D10 | **Raíces de composición duplicadas** | `build_queue`/`build_paused`/`build_pending` existen en `api`, `worker` y `cli`, con diferencias (por ejemplo, el TTL del inbox). |
+| D11 | **Worker secuencial** | Una verificación de ~20 min bloquea la cola. E7 está en curso; diseño aprobado en la [spec de E7](iniciativas/004-fase3-e7-desacople/spec.md). |
+| D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
+| D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
+| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas de coste o de falsos positivos; solo logs. |
+| D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
+| D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
+
+---
+
+## 8. Registro de fallos corregidos (revisión de `main`, 2026-10-11)
+
+Los códigos B1–B10 aparecen en comentarios, tests y ADRs. Todos están corregidos y
+cada uno tiene su test de regresión en `tests/test_revision_main.py` o
+`tests/test_api.py`.
+
+| Id | Fallo | Arreglo |
+|---|---|---|
+| B1 | Mandar a la DLQ una reanudación tumbaba el worker (`datetime` no serializable) | `model_dump(mode="json")`; el manejo del error ya no propaga excepciones |
+| B2 | Un reintento re-ejecutaba el grafo desde `START` (LLM pagado dos veces, `findings` acumulados, hallazgos nuevos sin decidir) | Hilo a medias → `invoke(None)`; `RetryPolicy` por nodo ([ADR-0007](adr/0007-reintento-en-dos-capas.md)) |
+| B3 | Una pausa vencida cuyo resume fallaba esquivaba la DLQ para siempre | `expired_enqueued_at` y tope de 3 encolados; limpieza del inbox también en la rama «completada» |
+| B4 | Un artefacto tardío nunca publicaba la review completa | Hilo `:partial` para la pasada degradada ([ADR-0005](adr/0005-identidad-de-la-ejecucion.md)) |
+| B5 | El merge por `(fichero, título)` se comía hallazgos | Clave `(fichero, línea, título)` + fusión entre personas ([ADR-0014](adr/0014-criterio-de-merge-entre-personas.md)) |
+| B6 | El webhook aceptaba cualquier `repo` y comentaba el PR del repo configurado | `400` si `repo` ≠ configurado |
+| B7 | La idempotencia se reclamaba antes de hacer el trabajo | Liberar la clave si falla el paso que protege |
+| B8 | `twg` sin `timeout` bloqueaba el worker | `TWG_TIMEOUT_S` → `TwgError` transitorio |
+| B9 | Un fallo de Teams contaba como fallo de la review y la notificación se perdía | Nodo `notify` propio |
+| B10 | El aviso de pausa nunca llevaba enlace al PR | El worker pasa el `VcsPort` al aviso |
+
+Las propuestas de esa revisión que siguen abiertas (fallbacks a memoria, firma por
+defecto, `observe` atómico, raíz de composición única, parsers por herramienta,
+configuración tipada, DTOs en la API, separar el render del grafo) están en la §7.
