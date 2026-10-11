@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,8 +63,15 @@ class FindingAction(StrEnum):
     FIX_WITH_APPROVAL = "fix_with_approval"
     FIX_AUTO = "fix_auto"
 
+    @property
+    def pending(self) -> bool:
+        """¿La accion pide a una persona? Freno (escalate) o aprobacion (fix)."""
+        return self in (FindingAction.ESCALATE, FindingAction.FIX_WITH_APPROVAL)
 
-PENDING_ACTIONS = frozenset({"escalate", "fix_with_approval"})
+
+# Acciones que dejan la review pendiente de una persona. Se mantiene como
+# frozenset de strings por compatibilidad.
+PENDING_ACTIONS = frozenset({FindingAction.ESCALATE.value, FindingAction.FIX_WITH_APPROVAL.value})
 
 
 class Finding(BaseModel):
@@ -115,6 +124,68 @@ class Decision(BaseModel):
     policy_version: str
 
 
+# ---------------------------------------------------------------------------
+# HITL (Fase 2): el contrato de la pausa y de la decision humana.
+# ---------------------------------------------------------------------------
+
+
+class DecisionOutcome(StrEnum):
+    """Que decide una persona sobre un hallazgo pendiente."""
+
+    APPROVED = "approved"  # autoriza el arreglo (lo ejecuta la Fase 3)
+    REJECTED = "rejected"  # descarta el hallazgo (falso positivo o no aplica)
+    NOTED = "noted"  # se atiende fuera del agente (deuda, ticket)
+    EXPIRED = "expired"  # nadie decidio dentro del TTL
+
+
+class FindingDecision(BaseModel):
+    finding_id: str
+    outcome: DecisionOutcome
+    note: str = ""
+
+
+class HitlDecision(BaseModel):
+    """Respuesta humana a una review pausada. Viaja *en* el job de reanudacion."""
+
+    review_key: str
+    actor: str
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Estable por decision: un reintento del resume reutiliza el mismo id.
+    decision_id: str = Field(default_factory=lambda: uuid4().hex)
+    items: list[FindingDecision] = Field(default_factory=list)
+
+    def outcome_for(self, finding_id: str) -> DecisionOutcome | None:
+        for item in self.items:
+            if item.finding_id == finding_id:
+                return item.outcome
+        return None
+
+
+class PendingDecision(BaseModel):
+    """Lo que el nodo `hitl` pide a una persona: contexto + accion propuesta."""
+
+    finding_id: str
+    proposed_action: FindingAction  # escalate | fix_with_approval
+    reason: str
+    matched_rule: str
+    policy_version: str
+    title: str
+    file: str
+    line: int = Field(ge=1)
+    severity: Severity
+
+
+class ApprovalRequest(BaseModel):
+    """Carga del `interrupt`: lo que se muestra en el aviso y en el CLI."""
+
+    review_key: str
+    repo: str
+    pr_id: int
+    head_sha: str
+    pending: list[PendingDecision] = Field(default_factory=list)
+    command_hint: str = ""
+
+
 class ReviewRequest(BaseModel):
     repo: str
     pr_id: int
@@ -129,6 +200,11 @@ class ReviewRequest(BaseModel):
     # el mismo request con `attempts + 1`; agotados los intentos, se descarta con
     # el `review_key` en el log para reinyectarlo a mano.
     attempts: int = Field(default=0, ge=0)
+
+    # HITL (Fase 2): si viene una decision, este job es una *reanudacion* de un
+    # hilo pausado, no una review nueva. La identidad (review_key/thread_id) no
+    # cambia: la reanudacion reutiliza el hilo de la review.
+    decision: HitlDecision | None = None
 
     @property
     def idempotency_key(self) -> str:
@@ -179,6 +255,10 @@ class ReviewOutcome(BaseModel):
     # del grafo, nunca almacenado por las personas: si no esta vacio, la review
     # NO esta completa y "sin hallazgos" no puede leerse como "sin errores".
     unavailable_sources: dict[str, ToolingSourceStatus] = Field(default_factory=dict)
+    # HITL (Fase 2): decision humana ya aplicada, si la hubo.
+    human_decisions: HitlDecision | None = None
+    # El grafo quedo pausado esperando a una persona (no publico los hallazgos).
+    paused: bool = False
 
     @property
     def complete(self) -> bool:
