@@ -15,7 +15,7 @@ docker compose up --build
 ```
 
 - `api`  — FastAPI, expone `POST /webhook/tooling`, `GET /healthz`, `/pending` y `/profile/{repo}`
-- `worker` — ejecuta el grafo LangGraph
+- `worker` — ejecuta el grafo LangGraph con checkpointer durable (Postgres)
 - `postgres` — checkpointer y auditoria
 - `redis` — cola de eventos e idempotencia
 
@@ -32,6 +32,23 @@ docker compose up --build
 > artefacto, asi que la review se ejecutaba sin datos (`0 hallazgos` enganoso). La ingesta
 > diferida encola la review **solo cuando el artefacto que necesita ya esta dentro**. El
 > detalle del diseno esta en `docs/ingesta-diferida-ci-20261011.md`.
+
+### No re-publicar la misma review (dedupe)
+
+Un reinicio del worker, la reentrega de un mensaje o un `pipeline_id` nuevo sobre el
+mismo commit no deben duplicar los comentarios del PR. Hay dos capas:
+
+1. **Checkpointer durable** (Postgres): el grafo se invoca con `thread_id =
+   review_key` (commit + `pipeline_id`). Si el hilo ya tiene estado y no hay nodos
+   pendientes, el worker **no vuelve a ejecutar** el grafo. Es tambien la base del
+   `interrupt` de la Fase 2 (HITL).
+2. **Marca de publicacion**: el resumen general lleva un pie invisible
+   (`<!-- reviews:<hash-del-commit>:ok -->`, o `:partial` si la review fue
+   incompleta) con el hash del **commit** (no del pipeline). Antes de publicar, el
+   `publish` lee los comentarios del PR y, si ya existe una review *completa* de ese
+   commit, no re-publica. Un inline ya publicado no se repite aunque el resumen
+   hubiera fallado. Una review **degradada** (`:partial`) **no** bloquea a una
+   completa posterior con los datos ya disponibles.
 
 ## Estado actual
 
@@ -61,7 +78,10 @@ CI como artefacto y el `ToolingReviewer` la lee a traves del puerto
 `ToolingOutputSource`. El `worker` monta `FileToolingOutputSource` con la
 plantilla `TOOLING_OUTPUT_TEMPLATE` (por defecto
 `var/tooling/{pr_id}/{head_sha}/{tool}.json`). Cambiar a «ejecutar en sandbox» en
-Fase 3 es otro adaptador de ese puerto, sin tocar reviewer ni grafo.
+Fase 3 es otro adaptador, sin tocar reviewer ni grafo: el diseno converge ambos
+casos en un puerto `CheckRunner`/`ExecResult` (`docs/ingesta-vs-ejecucion-20261011.md`).
+El artefacto del CI es un **puente desechable**, no la cimentacion: con PHPStan y
+Deptrac bloqueantes y en verde, su salida aporta cero senal nueva.
 
 La fuente distingue **analisis limpio** de **salida no leida**: `read()` devuelve
 el estado (`present` / `missing` / `unreadable`) junto al contenido, y la persona

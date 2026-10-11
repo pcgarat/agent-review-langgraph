@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     ingest_ttl_pending_s: float = 24 * 3600.0
     # Herramientas cuya salida espera la review antes de ejecutarse.
     expected_tools: str = "phpstan"
+    # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
+    # el job se descarta con el `review_key` en el log para reencolarlo a mano.
+    max_review_attempts: int = 3
 
     # Persona LLM `correctness`. Desactivada por defecto: la Fase 1 arranca solo
     # con la persona estatica. Al activarla, si no hay proveedor configurado, la

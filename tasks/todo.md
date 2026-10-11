@@ -8,7 +8,7 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 - [x] **T2** Contrato versionado en `contracts/` + validación
 - [x] **T3** Cola Redis: API enqueue tras idempotencia
 - [x] **T4** Worker consume cola e invoca el grafo
-- [x] **T10** Ingesta diferida: `/webhook/tooling` + `PendingReview` + TTL; webhook de PR retirado
+- [x] **T10** Ingesta diferida: `/webhook/tooling` + `PendingReview` + TTL; webhook de PR retirado — **puente desechable** (`docs/ingesta-vs-ejecucion-20261011.md`), no endurecer
 
 ### Checkpoint A
 
@@ -43,9 +43,15 @@ Checklist operativa. Detalle y criterios en `tasks/plan.md`.
 - [ ] Decisión go/no-go para Fase 2 (HITL Opción B)  ← decisión humana
 - [ ] Nivel 2 del smoke ejecutado contra Bitbucket real (requiere twg + secretos)
 
+## Fuera del repo (no bloquea la Fase 1)
+
+- [ ] **A1 (opcional)** El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado — sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1 (`docs/ingesta-vs-ejecucion-20261011.md`)
+- [ ] **A2** Arranque reproducible: `bin/twg` + `.env`
+- [ ] **A3** Smoke Nivel 2 una vez (verifica el contrato real de `twg` 1.3.5)
+
 ## Camino crítico mínimo (si hay que acortar)
 
-Orden sugerido: **T1 → T3 → T4 → T6 → T7** (FakeVcs con anclas) → T5/T8/T9 con twg real.
+Orden sugerido: **A2 → T1 → T3 → T4 → T6 → T7** (FakeVcs con anclas) → T5/T8 → **A3** con twg real. A1 es opcional.
 
 ## Preguntas abiertas (bloquear si no hay respuesta)
 
@@ -53,5 +59,5 @@ Orden sugerido: **T1 → T3 → T4 → T6 → T7** (FakeVcs con anclas) → T5/T
 - [ ] ¿Provider/modelo para T8?
 - [ ] ¿Webhook Teams listo?
 - [ ] ¿Clamp en `autonomy.yaml` o solo en settings de deploy?
-- [ ] ¿El CI publica el artefacto en el agente o se mantiene la subida a Bitbucket?
+- [x] ¿El CI publica el artefacto en el agente o se mantiene la subida a Bitbucket? → **Artefacto = puente desechable; el CI puede publicarlo (A1 opcional), pero la Fase 1 no depende de ello** (`docs/ingesta-vs-ejecucion-20261011.md`)
 - [x] `max_inline_comments` = **20** (confirmado)

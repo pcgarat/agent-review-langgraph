@@ -641,6 +641,12 @@ caso dulce de §9.2: **el sandbox usa esta misma imagen**.
 > solo subirla a Bitbucket. El detalle, el cuerpo exacto y el ejemplo de `curl` están en
 > `docs/ingesta-diferida-ci-20261011.md` (§7.1). Sin ese cambio, el agente no recibe
 > artefactos y toda review sale degradada por TTL.
+>
+> **Matiz (2026-10-11):** el artefacto del CI es un **puente desechable**, no la
+> cimentación. Con `stan`/`deptrac` bloqueantes y verdes, ingerir su salida aporta
+> cero señal nueva; el aporte estructural es **ejecutar** (verificación tras fix).
+> Ver `docs/ingesta-vs-ejecucion-20261011.md`. Sin el `POST`, la Fase 1 no se
+> invalida: se pierde la anotación inline de un pipeline rojo.
 
 ### 15.2 Los checks de PR (lo que el agente debe reproducir)
 

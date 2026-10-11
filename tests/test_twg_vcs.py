@@ -116,3 +116,23 @@ def test_post_inline_comment_sin_pending(monkeypatch) -> None:
     adapter.post_inline_comment("r", 1, path="a.php", line=3, body="hola", from_line=2)
     assert seen
     assert "--from-line" in seen[0]
+
+
+def test_list_review_markers_extrae_raw(monkeypatch) -> None:
+    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
+    payload = [
+        {"id": 1, "content": {"raw": "resumen <!-- reviews:abc -->"}},
+        {"id": 2, "content": {"raw": "otro comentario humano"}},
+        {"id": 3, "content": "texto plano"},
+    ]
+    monkeypatch.setattr(adapter, "_run", lambda *a, **k: json.dumps(payload))
+    markers = adapter.list_review_markers("cqm/emotivoo-v2", 417)
+    assert [m.id for m in markers] == ["1", "2", "3"]
+    assert "reviews:abc" in markers[0].body
+    assert markers[2].body == "texto plano"
+
+
+def test_list_review_markers_ignora_payload_inesperado(monkeypatch) -> None:
+    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
+    monkeypatch.setattr(adapter, "_run", lambda *a, **k: json.dumps({"no": "lista"}))
+    assert adapter.list_review_markers("r", 1) == []

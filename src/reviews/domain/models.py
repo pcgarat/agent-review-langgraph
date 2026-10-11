@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
 from typing import Literal
 
@@ -124,6 +125,11 @@ class ReviewRequest(BaseModel):
     # de commit.
     pipeline_id: str = ""
 
+    # Procesamientos ya intentados por el worker. Un fallo transitorio reencola
+    # el mismo request con `attempts + 1`; agotados los intentos, se descarta con
+    # el `review_key` en el log para reinyectarlo a mano.
+    attempts: int = Field(default=0, ge=0)
+
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"
@@ -134,6 +140,27 @@ class ReviewRequest(BaseModel):
         if self.pipeline_id:
             return f"{self.idempotency_key}:{self.pipeline_id}"
         return self.idempotency_key
+
+    @property
+    def thread_id(self) -> str:
+        """Hilo del checkpointer: una review re-ejecutada no duplica comentarios.
+
+        Es la clave de ejecucion (`review_key`), no el commit: un `pipeline_id`
+        nuevo sobre el mismo `sha` es una review nueva (intencional), y por eso
+        va en el hilo. Repetir la *misma* ejecucion reutiliza el hilo.
+        """
+        return self.review_key
+
+    @property
+    def dedupe_token(self) -> str:
+        """Marca estable de esta review, embebida en lo que publica.
+
+        Es la clave de commit (`idempotency_key`), no la de ejecucion: si un
+        `pipeline_id` nuevo re-corre el mismo `sha`, el token coincide y el
+        publish reconoce que ya publico sobre ese commit.
+        """
+        digest = hashlib.sha256(self.idempotency_key.encode()).hexdigest()[:12]
+        return f"reviews:{digest}"
 
     def ingest_key(self, tool: str) -> str:
         """Clave del *evento de CI* que deposita la salida de `tool`."""

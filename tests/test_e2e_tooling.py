@@ -74,6 +74,10 @@ class DiffLineVcs:
     def post_task(self, repo: str, pr_id: int, body: str) -> None:  # pragma: no cover
         del repo, pr_id, body
 
+    def list_review_markers(self, repo: str, pr_id: int) -> list:
+        del repo, pr_id
+        return []
+
 
 def test_flujo_completo_estatico_ancla_en_lineas_reales() -> None:
     vcs = DiffLineVcs(DIFF)
@@ -144,8 +148,7 @@ class _FakeLlm:
                         "requires_verification": True,
                         "confidence": 75,
                         "evidence": [
-                            "src/BackOffice/Application/Wallet/Transfer.php:13 "
-                            "$balance->frozen"
+                            "src/BackOffice/Application/Wallet/Transfer.php:13 $balance->frozen"
                         ],
                     }
                 ]

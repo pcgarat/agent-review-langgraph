@@ -19,7 +19,7 @@ from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
 from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.sandbox import SandboxPort
-from reviews.ports.vcs import VcsPort
+from reviews.ports.vcs import ReviewMarker, VcsPort
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,15 @@ def build_graph(
         if not findings and not unavailable:
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
+
+        published = _published_markers(vcs, request)
+        if _has_marker(published, _summary_token(request.dedupe_token, complete=True)):
+            logger.info(
+                "PR %s#%s: ya hay una review completa publicada para este commit; no se re-publica",
+                request.repo,
+                request.pr_id,
+            )
+            return {}
         if unavailable:
             # La review NO esta completa: no se puede leer "sin hallazgos" como
             # "sin errores". Se publica igual, con el aviso por delante.
@@ -208,6 +217,7 @@ def build_graph(
         by_id = {d.finding_id: d for d in decisions}
         max_inline = int(policy.guards.get("max_inline_comments", 20))
         ordered = sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
+        complete = not unavailable
 
         inlined: list[Finding] = []
         summary_only: list[Finding] = []
@@ -227,14 +237,19 @@ def build_graph(
                     request.repo, request.pr_id, path=finding.file, text=quote
                 )
             except Exception:
-                logger.exception(
-                    "Fallo al resolver ancla %s:%s", finding.file, finding.line
-                )
+                logger.exception("Fallo al resolver ancla %s:%s", finding.file, finding.line)
                 anchor = None
             if anchor is None:
                 summary_only.append(finding)
                 continue
-            body = _render_inline(finding, decision)
+            body = _render_inline(finding, decision, token=request.dedupe_token)
+            if _has_marker(published, _inline_token(request.dedupe_token, _finding_id(finding))):
+                # Ya esta publicado (p.ej. el resumen no llego a escribirse por un
+                # fallo transitorio): no se repite el inline. La marca lleva el id
+                # del hallazgo, asi que dos titulos iguales en ficheros distintos
+                # no se confunden.
+                inlined.append(finding)
+                continue
             try:
                 vcs.post_inline_comment(
                     request.repo,
@@ -244,11 +259,10 @@ def build_graph(
                     body=body,
                     from_line=anchor.from_line,
                 )
+                published.append(ReviewMarker(id="", body=body))
                 inlined.append(finding)
             except Exception:
-                logger.exception(
-                    "Fallo al publicar inline %s:%s", finding.file, finding.line
-                )
+                logger.exception("Fallo al publicar inline %s:%s", finding.file, finding.line)
                 summary_only.append(finding)
 
         summary = _render_summary(
@@ -257,8 +271,11 @@ def build_graph(
             summary_only=summary_only,
             inlined=inlined,
             unavailable=unavailable,
+            token=request.dedupe_token,
+            complete=complete,
         )
-        vcs.post_comment(request.repo, request.pr_id, summary)
+        if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
+            vcs.post_comment(request.repo, request.pr_id, summary)
         if chat is not None:
             pr = vcs.get_pull_request(request.repo, request.pr_id)
             chat.notify(
@@ -285,7 +302,48 @@ def build_graph(
     return graph
 
 
-def _render_inline(finding: Finding, decision: Decision) -> str:
+def _published_markers(vcs: VcsPort, request: ReviewRequest) -> list[ReviewMarker]:
+    """Lo que el agente ya publico en este PR (marca leida como respaldo).
+
+    Nunca aborta: si el VCS no responde, se publica (mejor un duplicado que una
+    review perdida).
+    """
+    try:
+        return vcs.list_review_markers(request.repo, request.pr_id)
+    except Exception:
+        logger.exception(
+            "No se pudieron leer los comentarios del PR %s#%s; se publica igual",
+            request.repo,
+            request.pr_id,
+        )
+        return []
+
+
+def _has_marker(markers: list[ReviewMarker], needle: str) -> bool:
+    """¿Algun comentario publicado lleva esta marca?"""
+    return any(needle in (marker.body or "") for marker in markers)
+
+
+def _summary_token(token: str, complete: bool) -> str:
+    suffix = ":ok" if complete else ":partial"
+    return f"<!-- {token}{suffix} -->"
+
+
+def _inline_token(token: str, finding_id: str) -> str:
+    """Marca por hallazgo: el id distingue titulos iguales en ficheros distintos."""
+    return f"<!-- {token}:inline:{finding_id} -->"
+
+
+def _footer(token: str, *, complete: bool) -> str:
+    """Marca invisible que identifica lo publicado y si la review fue completa."""
+    return f"\n\n<!-- {token}{_token_suffix(complete=complete)} -->"
+
+
+def _token_suffix(*, complete: bool) -> str:
+    return ":ok" if complete else ":partial"
+
+
+def _render_inline(finding: Finding, decision: Decision, *, token: str = "") -> str:
     lines = [
         f"**[{finding.severity.value}] {finding.title}**",
         "",
@@ -297,7 +355,10 @@ def _render_inline(finding: Finding, decision: Decision) -> str:
         lines.extend(["", f"**Sugerencia:** {finding.suggested_fix}"])
     if decision.action.value == "report" and decision.reason:
         lines.append(f"_Politica: {decision.reason}_")
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    if not token:
+        return body
+    return body + f"\n\n{_inline_token(token, finding.id)}"
 
 
 def _render_summary(
@@ -307,6 +368,8 @@ def _render_summary(
     summary_only: list[Finding] | None = None,
     inlined: list[Finding] | None = None,
     unavailable: list[tuple[str, ToolingSourceStatus]] | None = None,
+    token: str = "",
+    complete: bool = True,
 ) -> str:
     by_key = {d.finding_id: d for d in decisions}
     inlined = inlined or []
@@ -326,16 +389,15 @@ def _render_summary(
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
-            raise ReviewIntegrityError(
-                f"Hallazgo sin decision de politica: {_finding_id(finding)}"
-            )
+            raise ReviewIntegrityError(f"Hallazgo sin decision de politica: {_finding_id(finding)}")
         marker = "inline" if finding in inlined else "resumen"
         lines.append(
             f"- **[{finding.severity.value}] {finding.title}** "
             f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
         )
         lines.append(f"  {finding.why_it_matters}")
-    return "\n".join(lines)
+    summary = "\n".join(lines)
+    return summary + _footer(token, complete=complete) if token else summary
 
 
 def _render_incomplete_header(
@@ -361,8 +423,7 @@ def _render_teams_body(
 ) -> str:
     pending = [d for d in decisions if d.action.value in PENDING_ACTIONS]
     lines = [
-        f"{len(findings)} hallazgos ({inlined_count} inline), "
-        f"{len(pending)} requieren decision."
+        f"{len(findings)} hallazgos ({inlined_count} inline), {len(pending)} requieren decision."
     ]
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])[:5]:
         lines.append(f"{finding.severity.value} · {finding.title} ({finding.file})")

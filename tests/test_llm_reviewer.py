@@ -81,9 +81,7 @@ def test_fallo_del_modelo_no_tumba_la_review() -> None:
 
 
 def test_fichero_inventado_por_el_modelo_se_descarta() -> None:
-    reviewer = LlmReviewer(
-        llm=FakeLlm(_response(_finding_json(file="src/NoExiste.php")))
-    )
+    reviewer = LlmReviewer(llm=FakeLlm(_response(_finding_json(file="src/NoExiste.php"))))
     assert reviewer.review(repo="r", pr_id=1, diff=DIFF).findings == []
 
 
@@ -138,9 +136,7 @@ def test_diff_vacio_no_llama_al_modelo() -> None:
 
 
 def test_presupuesto_se_registra(caplog) -> None:
-    reviewer = LlmReviewer(
-        llm=FakeLlm(_response(_finding_json())), budget_tokens_per_pr=500_000
-    )
+    reviewer = LlmReviewer(llm=FakeLlm(_response(_finding_json())), budget_tokens_per_pr=500_000)
     with caplog.at_level(logging.INFO):
         reviewer.review(repo="r", pr_id=1, diff=DIFF)
     assert "presupuesto" in caplog.text
@@ -200,6 +196,10 @@ class FakeVcs:
 
     def post_task(self, repo: str, pr_id: int, body: str) -> None:
         del repo, pr_id, body
+
+    def list_review_markers(self, repo: str, pr_id: int) -> list:
+        del repo, pr_id
+        return []
 
 
 def _static_duplicate() -> Finding:

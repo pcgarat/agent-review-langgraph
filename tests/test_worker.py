@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
@@ -19,7 +21,13 @@ from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 from reviews.queue import InMemoryReviewQueue
 from reviews.settings import Settings
-from reviews.worker.main import build_llm, build_reviewers, process_request, sweep_pending
+from reviews.worker.main import (
+    _consume,
+    build_llm,
+    build_reviewers,
+    process_request,
+    sweep_pending,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -77,13 +85,15 @@ class FakeVcs:
     def post_task(self, repo: str, pr_id: int, body: str) -> None:
         del repo, pr_id, body
 
+    def list_review_markers(self, repo: str, pr_id: int) -> list:
+        del repo, pr_id
+        return []
+
 
 class OneShotReviewer:
     name = "standards"
 
-    def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> ReviewerResult:
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
             findings=[
@@ -108,9 +118,7 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
     queue = InMemoryReviewQueue()
     vcs = FakeVcs()
     policy = PolicyEngine.from_file("config/autonomy.yaml")
-    graph = build_graph(
-        vcs=vcs, reviewers=[OneShotReviewer()], policy=policy
-    ).compile()
+    graph = build_graph(vcs=vcs, reviewers=[OneShotReviewer()], policy=policy).compile()
 
     queue.enqueue(ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef"))
     request = queue.dequeue()
@@ -170,12 +178,14 @@ class _DiffVcs:
     def post_task(self, repo: str, pr_id: int, body: str) -> None:
         del repo, pr_id, body
 
+    def list_review_markers(self, repo: str, pr_id: int) -> list:
+        del repo, pr_id
+        return []
+
 
 def _settings_for(tmp_path: Path) -> Settings:
     profile = tmp_path / "profile.yaml"
-    profile.write_text(
-        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
-    )
+    profile.write_text("repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8")
     return Settings(repo_profile_config=str(profile))
 
 
@@ -200,9 +210,7 @@ def test_build_reviewers_cae_a_null_con_perfil_invalido(tmp_path: Path) -> None:
 
     lista = tmp_path / "lista.yaml"
     lista.write_text("- a\n- b\n", encoding="utf-8")
-    assert [r.name for r in build_reviewers(Settings(repo_profile_config=str(lista)))] == [
-        "null"
-    ]
+    assert [r.name for r in build_reviewers(Settings(repo_profile_config=str(lista)))] == ["null"]
 
 
 _PROFILE_WITH_CHECKS = "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n"
@@ -244,13 +252,9 @@ def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
     # Se usa la plantilla de produccion (Settings) y el artefacto se deposita en
     # la ruta que resuelve, para ejercitar la ruta por defecto de extremo a extremo.
     profile = tmp_path / "profile.yaml"
-    profile.write_text(
-        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
-    )
+    profile.write_text("repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8")
     settings = Settings(repo_profile_config=str(profile))
-    source = FileToolingOutputSource(
-        template=settings.tooling_output_template, root=tmp_path
-    )
+    source = FileToolingOutputSource(template=settings.tooling_output_template, root=tmp_path)
     artifact = source.path_for("phpstan", repo="cqm/emotivoo-v2", pr_id=5, head_sha="abc")
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text(PHPSTAN, encoding="utf-8")
@@ -272,21 +276,18 @@ def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
 
 def test_worker_head_sha_vacio_no_publica_en_silencio(tmp_path: Path) -> None:
     # Un head_sha vacio no puede resolverse a un segmento `unknown` y salir verde:
-    # la persona falla ruidoso y process_request lo registra sin publicar nada.
+    # la persona falla ruidoso, process_request propaga la excepcion y no publica.
     profile = tmp_path / "profile.yaml"
-    profile.write_text(
-        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
-    )
+    profile.write_text("repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8")
     settings = Settings(repo_profile_config=str(profile))
-    source = FileToolingOutputSource(
-        template=settings.tooling_output_template, root=tmp_path
-    )
+    source = FileToolingOutputSource(template=settings.tooling_output_template, root=tmp_path)
     vcs = _DiffVcs(DIFF)
     reviewers = build_reviewers(settings, tooling_source=source)
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
 
-    process_request(graph, ReviewRequest(repo="cqm/emotivoo-v2", pr_id=5, head_sha=""))
+    with pytest.raises(ValueError, match="head_sha"):
+        process_request(graph, ReviewRequest(repo="cqm/emotivoo-v2", pr_id=5, head_sha=""))
 
     assert vcs.inlines == []
     assert vcs.comments == [], "ante sha vacio no se debe reportar 'sin hallazgos'"
@@ -296,9 +297,7 @@ def test_sweep_pending_encola_solo_las_degradadas(tmp_path: Path) -> None:
     # Una ingesta que nunca completa debe terminar ejecutandose (degradada), no
     # quedarse en PENDING para siempre.
     profile = tmp_path / "profile.yaml"
-    profile.write_text(
-        "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8"
-    )
+    profile.write_text("repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n", encoding="utf-8")
     settings = Settings(repo_profile_config=str(profile))
     pending = InMemoryPendingStore(expected_tools=["phpstan", "php-cs-fixer"])
     queue = InMemoryReviewQueue()
@@ -309,3 +308,34 @@ def test_sweep_pending_encola_solo_las_degradadas(tmp_path: Path) -> None:
 
     assert [r.pipeline_id for r in enqueued] == ["7"]
     assert len(queue) == 1
+
+
+class _FailingGraph:
+    """Grafo que falla siempre, para ejercitar el reintento sin side effects."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke(self, state):
+        del state
+        self.calls += 1
+        raise RuntimeError("twg caido")
+
+
+def test_consume_reencola_con_intento_incremental_ante_excepcion() -> None:
+    # Un fallo transitorio (twg/Teams) no puede perder el job: se reencola con el
+    # contador incrementado para no reintentar infinitamente.
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7")
+    _consume(queue, _FailingGraph(), request, max_attempts=3)
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.attempts == 1
+    assert retried.review_key == request.review_key
+
+
+def test_consume_descarta_el_job_al_agotar_intentos() -> None:
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7", attempts=2)
+    _consume(queue, _FailingGraph(), request, max_attempts=3)
+    assert queue.dequeue() is None, "agotado el tope, el job se descarta"

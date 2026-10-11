@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
@@ -14,9 +15,10 @@ from reviews.adapters.teams_webhook import TeamsWebhookAdapter
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
 from reviews.adapters.twg_vcs import TwgVcsAdapter
-from reviews.domain.models import ReviewRequest
+from reviews.checkpointer import build_checkpointer
+from reviews.domain.models import ReviewOutcome, ReviewRequest
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
-from reviews.graph.build import build_graph, outcome_from_state
+from reviews.graph.build import ReviewState, build_graph, outcome_from_state
 from reviews.pending_store import PendingStore, RedisPendingStore
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.chat import ChatPort
@@ -126,7 +128,8 @@ def build_runtime(
     chat: ChatPort | None = None,
     reviewers: list[ReviewerPort] | None = None,
     policy: PolicyEngine | None = None,
-):
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> Any:
     vcs = vcs or TwgVcsAdapter(
         workspace=settings.bitbucket_workspace,
         repo=settings.bitbucket_repo,
@@ -135,30 +138,100 @@ def build_runtime(
     chat = chat if chat is not None else TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
     reviewers = reviewers if reviewers is not None else build_reviewers(settings)
     policy = policy or PolicyEngine.from_file(settings.autonomy_config)
-    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy, chat=chat).compile()
-    return graph
+    saver = checkpointer or build_checkpointer(settings.database_url)
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy, chat=chat)
+    return graph.compile(checkpointer=saver)
 
 
-def process_request(graph, request: ReviewRequest) -> None:
-    logger.info("Procesando review %s", request.idempotency_key)
-    try:
-        result = graph.invoke({"request": request, "findings": []})
-    except Exception:
-        logger.exception("Fallo procesando %s", request.idempotency_key)
-        return
+def process_request(graph: Any, request: ReviewRequest) -> ReviewOutcome:
+    """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
+
+    Publicar y reencolar no pueden convivir en la misma pasada: `graph.invoke`
+    ya corre el nodo `publish`, asi que un reencolado tras una excepcion de
+    Teams duplicaria los comentarios. El reintento se decide con la excepcion.
+
+    El grafo se invoca con `thread_id` (= `review_key`): si el mensaje se
+    reentrega, el checkpointer devuelve el estado ya terminado y no se vuelve a
+    publicar. Un `pipeline_id` nuevo sobre el mismo commit si es una review nueva
+    (hilo distinto), y por eso el `publish` comprueba ademas el token de dedupe.
+    """
+    logger.info("Procesando review %s (intento %d)", request.review_key, request.attempts + 1)
+    config = {"configurable": {"thread_id": request.thread_id}}
+    resumed = _completed_snapshot(graph, config)
+    if resumed is not None:
+        logger.info(
+            "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
+            request.review_key,
+        )
+        return outcome_from_state(cast("ReviewState", resumed))
+    result = graph.invoke({"request": request, "findings": []}, config=config)
     outcome = outcome_from_state(result)
     if outcome.complete:
-        logger.info("Review completada %s", request.idempotency_key)
+        logger.info("Review completada %s", request.review_key)
     else:
-        # No se hizo el analisis declarado: no es una review completada.
+        # No se hizo el analisis declarado: no es una review completada. No se
+        # reencola: la ingesta diferida ya espero al artefacto (barrera/TTL), asi
+        # que reintentar aqui solo duplicaria la publicacion.
         logger.warning(
             "Review INCOMPLETA %s; sin cobertura de: %s",
-            request.idempotency_key,
+            request.review_key,
             ", ".join(
-                f"{name}={status.value}"
-                for name, status in outcome.unavailable_sources.items()
+                f"{name}={status.value}" for name, status in outcome.unavailable_sources.items()
             ),
         )
+    return outcome
+
+
+def _completed_snapshot(graph: Any, config: dict[str, Any]) -> dict[str, Any] | None:
+    """Estado guardado del hilo si esa ejecucion ya termino, o `None`.
+
+    `invoke(input)` sobre un hilo existente re-ejecuta el grafo desde `START`
+    (duplicando la publicacion). Antes de invocar se consulta el checkpointer:
+    un hilo con estado y sin nodos pendientes (`snapshot.next` vacio) ya corrio
+    entero y no se repite. Un hilo pausado (Fase 2, `interrupt`) tiene `next`
+    pendiente y se deja pasar para reanudarlo. Sin checkpointer no hay hilo que
+    consultar y se procesa siempre.
+    """
+    if getattr(graph, "checkpointer", None) is None:
+        return None
+    try:
+        snapshot = graph.get_state(config)
+    except Exception:  # pragma: no cover - base caida
+        logger.exception("No se pudo leer el estado del hilo %s", config)
+        return None
+    if getattr(snapshot, "next", None):
+        return None
+    values = getattr(snapshot, "values", None)
+    return values if values else None
+
+
+def _consume(queue: ReviewQueue, graph, request: ReviewRequest, *, max_attempts: int) -> None:
+    """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
+    try:
+        process_request(graph, request)
+    except Exception:
+        logger.exception("Fallo procesando %s", request.review_key)
+        _requeue_or_drop(queue, request, max_attempts=max_attempts)
+
+
+def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
+    if request.attempts + 1 >= max_attempts:
+        # Job descartado a proposito tras fallos persistentes: el `review_key`
+        # queda en el log para reencolarlo a mano (no hay DLQ todavia, B2).
+        logger.error(
+            "Review %s agoto los %d intentos; se descarta",
+            request.review_key,
+            max_attempts,
+        )
+        return
+    retry = request.model_copy(update={"attempts": request.attempts + 1})
+    queue.enqueue(retry)
+    logger.warning(
+        "Review %s reencolada para el intento %d/%d",
+        retry.review_key,
+        retry.attempts + 1,
+        max_attempts,
+    )
 
 
 def sweep_pending(
@@ -205,7 +278,7 @@ def run_forever(
     while True:
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
-            process_request(graph, request)
+            _consume(queue, graph, request, max_attempts=settings.max_review_attempts)
             continue
         # La cola esta vacia: es el momento de aplicar los TTL de ingesta.
         if time.monotonic() - last_sweep >= sweep_s:

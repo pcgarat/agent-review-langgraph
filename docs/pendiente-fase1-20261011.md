@@ -24,24 +24,31 @@ el `ToolingReviewer` (estática), la persona LLM `correctness`, el publish
 inline+resumen+Teams con tope y prioridad, y la retirada del webhook de PR. 113
 tests verdes, `ruff` limpio.
 
-Lo que **falta**: un cambio que vive **fuera de este repo** (que el CI suba el
-artefacto), la verificación con `twg` real (smoke Nivel 2), y una capa de
+Lo que **falta**: la verificación con `twg` real (smoke Nivel 2), y una capa de
 robustez/dedupe que hoy no existe. Hay además tres piezas de código muerto
 (Postgres, `get_diffstat`, `max_files_per_pr`) y dos fuentes de verdad que pueden
 divergir (`expected_tools`).
 
-> **La verdad incómoda:** con el CI actual de `emotivoo-v2`, el agente **no recibe
-> artefactos**, así que toda review sale degradada por TTL. Hoy el sistema es
-> correcto pero **mudo en la práctica** hasta que el `POST` del CI esté desplegado.
+> **La verdad incómoda:** con el CI actual de `emotivoo-v2` el agente **no recibe
+> artefactos**, así que toda review sale degradada por TTL. Pero eso ya **no**
+> invalida la Fase 1 (`docs/ingesta-vs-ejecucion-20261011.md`): es un puente, y el
+> valor real está en las personas LLM y los checks que no corren en CI.
 
 ---
 
 ## A. Bloqueantes (P0)
 
-### A1. El CI del repo revisado debe hacer `POST /webhook/tooling`
+> **Revisión 2026-10-11:** A1 **ya no es un bloqueante de la Fase 1**. La decisión
+> está en `docs/ingesta-vs-ejecucion-20261011.md`: el artefacto del CI es un puente
+> desechable, y con `make stan`/`make deptrac` bloqueantes y en verde aporta cero
+> señal nueva. Si el `POST` del CI llega, se usa; si no, la Fase 1 sigue entregando
+> valor vía personas LLM y checks que no corren en CI.
 
-Es *el* interruptor de la Fase 1 y el único trabajo que no vive en este repo.
-Detalle en `docs/ingesta-diferida-ci-20261011.md` §7.1.
+### A1. El CI del repo revisado debe hacer `POST /webhook/tooling` — *nice to have*
+
+Mejora el modo «artefacto», no lo habilita: sin él, la review sale degradada por
+TTL y se pierde la anotación inline de un pipeline rojo. Detalle en
+`docs/ingesta-diferida-ci-20261011.md` §7.1.
 
 - [ ] El step de PHPStan de `emotivoo-v2` envía el JSON crudo al agente (firmado
       con `X-Reviews-Signature`), además de (o en vez de) subirlo a Bitbucket.
@@ -258,7 +265,8 @@ Solo firma HMAC. Si el secreto está en `change-me`, la firma se **omite**
 
 ## Orden recomendado para cerrar
 
-1. **A1 + A2** (habilitan que ocurra algo real) → **A3** (ver que ocurre bien).
+1. **A2** (arranque reproducible) → **A3** (smoke con `twg` real). A1 pasa a
+   opcional: sin él se pierde la anotación de un pipeline rojo, no la Fase 1.
 2. **B1** (dedupe re-push) antes de invitar a más gente: el ruido de duplicados es
    lo que mata la confianza en un bot de review.
 3. **B7 + B2** (que no se muera y que no pierda jobs en silencio).
@@ -271,8 +279,9 @@ Solo firma HMAC. Si el secreto está en `change-me`, la firma se **omite**
 - Hallazgos **anclados inline** en el diff + resumen en el PR + teaser en Teams.
 - **Cero** escritura de código en el repo del PR (sin push/commit/branch).
 - Ninguna `Decision.action` es `fix_*`.
-- Una review real, disparada por el `POST` del CI, publicada y **revisada por una
-  persona** que diga «esto lo leería».
+- Una review real, disparada por el `POST` del CI (o por el puente equivalente),
+  publicada y **revisada por una persona** que diga «esto lo leería».
 
-Con A1–A3 y C1 en verde se puede declarar la Fase 1 hecha y pasar a decidir la
-Fase 2 (HITL, Opción B).
+Con A2–A3 y C1 en verde se puede declarar la Fase 1 hecha y pasar a decidir la
+Fase 2 (HITL, Opción B). A1 suma, pero no bloquea: ver
+`docs/ingesta-vs-ejecucion-20261011.md`.

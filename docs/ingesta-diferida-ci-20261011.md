@@ -290,6 +290,13 @@ Detalles que condicionan la integración:
 > acoplaría la disponibilidad de Bitbucket a la del agente — justo lo que el diseño
 > quiere evitar.
 
+> **Naturaleza (2026-10-11):** todo lo de esta sección es un **puente desechable**.
+> El artefacto del CI suple lo que la Fase 1 no se permite aún (ejecutar código); con
+> `stan`/`deptrac` bloqueantes y verdes, su salida aporta cero señal nueva. Al abrir
+> el puerto `CheckRunner` (Fase 3) el disparo vuelve a ser el PR. No endurecer esta
+> ingesta ni depender de ella para la definición de hecho. Ver
+> `docs/ingesta-vs-ejecucion-20261011.md`.
+
 **Mientras este cambio no esté desplegado, la Fase 1 no produce reviews reales**:
 el endpoint existe y está probado, pero nadie lo llama. Es el punto 6 de las
 decisiones abiertas (§10) y el único trabajo que vive fuera de este repo.

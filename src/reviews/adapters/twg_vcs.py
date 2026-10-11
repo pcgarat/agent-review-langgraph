@@ -4,7 +4,7 @@ import json
 import subprocess
 from collections.abc import Sequence
 
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
 class TwgError(RuntimeError):
@@ -145,6 +145,29 @@ class TwgVcsAdapter:
     def post_comment(self, repo: str, pr_id: int, body: str) -> None:
         del repo
         self._run(["prs", "comment", "create", "--pull-request", str(pr_id), "--text", body])
+
+    def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
+        """Comentarios que el agente ya publico (general + inline) en el PR.
+
+        `content.raw` trae el texto markdown; ahi va el token de dedupe. Se
+        devuelven todos para que el publish filtre por su token.
+        """
+        del repo
+        data = self._run_json(["prs", "comment", "query", str(pr_id), "-n", "200"])
+        if not isinstance(data, list):
+            return []
+        markers: list[ReviewMarker] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            body = ""
+            if isinstance(content, dict):
+                body = str(content.get("raw", "") or "")
+            elif isinstance(content, str):
+                body = content
+            markers.append(ReviewMarker(id=str(item.get("id", "")), body=body))
+        return markers
 
     def post_task(self, repo: str, pr_id: int, body: str) -> None:
         del repo

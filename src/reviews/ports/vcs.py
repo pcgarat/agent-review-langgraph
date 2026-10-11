@@ -26,6 +26,17 @@ class InlineAnchor(BaseModel):
     from_line: int | None = Field(default=None, ge=1)
 
 
+class ReviewMarker(BaseModel):
+    """Marca que el agente ya publico el resultado de esta review.
+
+    `body` incluye el token de dedupe, asi que el `publish` puede reconocer un
+    resultado propio aunque no guarde los ids de los comentarios.
+    """
+
+    id: str
+    body: str = ""
+
+
 @runtime_checkable
 class VcsPort(Protocol):
     """Adaptador de VCS. Bitbucket via twg hoy; GitHub manana, sin tocar el grafo."""
@@ -38,6 +49,14 @@ class VcsPort(Protocol):
 
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         """(fichero, lineas anadidas, lineas borradas) por fichero."""
+        ...
+
+    def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
+        """Comentarios del agente ya publicados en el PR.
+
+        Se usan para no re-publicar el resultado de una review ya hecha (un
+        `pipeline_id` nuevo sobre el mismo commit, o un reintento del worker).
+        """
         ...
 
     def resolve_inline_anchor(

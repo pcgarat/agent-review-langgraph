@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
+
 from reviews.adapters.teams_webhook import TeamsWebhookAdapter
 from reviews.domain.models import (
     AutofixClass,
     Finding,
     Owner,
     ReviewerResult,
+    ReviewRequest,
     Severity,
     ToolingSourceStatus,
 )
@@ -13,7 +16,7 @@ from reviews.graph.build import build_graph, outcome_from_state
 from reviews.idempotency import InMemoryIdempotencyStore
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.reviewer import ReviewerPort
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
 class FakeVcs:
@@ -21,6 +24,9 @@ class FakeVcs:
         self.comments: list[tuple[str, int, str]] = []
         self.inlines: list[tuple[str, int, str, int, str]] = []
         self._anchors = anchors or {}
+        # El PR recuerda lo publicado, como haria Bitbucket: el publish lo lee
+        # para no duplicar el resultado de una review ya hecha.
+        self.markers: list[ReviewMarker] = []
 
     def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
         return PullRequestInfo(
@@ -33,6 +39,10 @@ class FakeVcs:
             head_sha="abc",
             url=f"https://bitbucket.org/{repo}/pull-requests/{pr_id}",
         )
+
+    def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
+        del repo, pr_id
+        return list(self.markers)
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
@@ -60,9 +70,12 @@ class FakeVcs:
     ) -> None:
         del from_line
         self.inlines.append((repo, pr_id, path, line, body))
+        # Bitbucket conserva el comentario: el siguiente publish lo vera.
+        self.markers.append(ReviewMarker(id=f"i{len(self.markers)}", body=body))
 
     def post_comment(self, repo: str, pr_id: int, body: str) -> None:
         self.comments.append((repo, pr_id, body))
+        self.markers.append(ReviewMarker(id=f"c{len(self.markers)}", body=body))
 
     def post_task(self, repo: str, pr_id: int, body: str) -> None:  # pragma: no cover
         del repo, pr_id, body
@@ -80,9 +93,7 @@ class StaticReviewer:
         self._findings = findings
         self._status = status
 
-    def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""
-    ) -> ReviewerResult:
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(findings=list(self._findings), tooling_status=self._status)
 
@@ -109,9 +120,7 @@ def make_finding(
 
 
 def test_grafo_de_duplica_hallazgos_de_dos_personas() -> None:
-    vcs = FakeVcs(
-        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
-    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     reviewers: list[ReviewerPort] = [
         StaticReviewer("correctness", [make_finding()]),
         StaticReviewer("tests", [make_finding()]),
@@ -152,16 +161,13 @@ def test_publish_sin_ancla_cae_al_resumen() -> None:
 
 def test_publish_respeta_max_inline_comments() -> None:
     findings = [
-        make_finding(title=f"H{i}", file=f"src/f{i}.py", severity=Severity.P3)
-        for i in range(3)
+        make_finding(title=f"H{i}", file=f"src/f{i}.py", severity=Severity.P3) for i in range(3)
     ]
     # ids unicos
     for i, finding in enumerate(findings):
         findings[i] = finding.model_copy(update={"id": f"f{i}"})
 
-    anchors = {
-        f"src/f{i}.py": InlineAnchor(path=f"src/f{i}.py", line=3) for i in range(3)
-    }
+    anchors = {f"src/f{i}.py": InlineAnchor(path=f"src/f{i}.py", line=3) for i in range(3)}
     vcs = FakeVcs(anchors=anchors)
     reviewers: list[ReviewerPort] = [StaticReviewer("correctness", findings)]
     policy = PolicyEngine(
@@ -185,9 +191,7 @@ def test_publish_respeta_max_inline_comments() -> None:
 
 
 def test_fase1_report_only_no_deja_pending() -> None:
-    vcs = FakeVcs(
-        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
-    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
@@ -205,9 +209,7 @@ def test_fase1_report_only_no_deja_pending() -> None:
 
 
 def test_pending_approvals_deriva_de_decisions() -> None:
-    vcs = FakeVcs(
-        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
-    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
     policy = PolicyEngine(
         {
@@ -237,9 +239,7 @@ def test_pending_approvals_deriva_de_decisions() -> None:
 
 
 def test_decision_tiene_regla_y_version() -> None:
-    vcs = FakeVcs(
-        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
-    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
@@ -298,9 +298,7 @@ def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
 
 
 def test_grafo_con_hallazgos_anota_fuente_ausente_en_el_resumen() -> None:
-    vcs = FakeVcs(
-        anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
-    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     reviewers: list[ReviewerPort] = [
         StaticReviewer("correctness", [make_finding()]),
         StaticReviewer("standards", [], status=ToolingSourceStatus.UNREADABLE),
@@ -348,3 +346,150 @@ def test_idempotencia_con_store_en_memoria() -> None:
     store = InMemoryIdempotencyStore()
     assert store.claim("k") is True
     assert store.claim("k") is False
+
+
+def _run(vcs: FakeVcs, *, pipeline_id: str = "") -> dict:
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    return graph.invoke(
+        {
+            "request": {
+                "repo": "cqm/emotivoo-v2",
+                "pr_id": 7,
+                "head_sha": "abc",
+                "pipeline_id": pipeline_id,
+            },
+            "findings": [],
+        }
+    )
+
+
+def test_publish_no_duplica_si_ya_publico_para_el_commit() -> None:
+    # Un `pipeline_id` nuevo sobre el mismo commit (hilo distinto) no debe
+    # re-publicar: la marca de publicacion embebida lo delata.
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    _run(vcs, pipeline_id="7")
+    inlines_primera = len(vcs.inlines)
+    comments_primera = len(vcs.comments)
+    assert inlines_primera == 1
+
+    _run(vcs, pipeline_id="8")
+    assert len(vcs.inlines) == inlines_primera, "no debe repetir el inline"
+    assert len(vcs.comments) == comments_primera, "no debe repetir el resumen"
+
+
+def test_marca_de_publicacion_lleva_el_token_del_commit() -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    result = _run(vcs)
+    token = ReviewRequest.model_validate(result["request"]).dedupe_token
+    assert token.startswith("reviews:")
+    # El resumen identifica la review y su completitud.
+    for _repo, _pr, body in vcs.comments:
+        assert f"<!-- {token}:ok -->" in body
+    # Cada inline lleva su marca con el id del hallazgo (no solo el cuerpo).
+    for _repo, _pr, _path, _line, body in vcs.inlines:
+        assert f"<!-- {token}:inline:" in body
+
+
+def test_inlines_con_mismo_titulo_en_ficheros_distintos_no_se_confunden() -> None:
+    title = "Falta test"
+    findings = [
+        make_finding(title=title, file="src/a.py").model_copy(update={"id": "a"}),
+        make_finding(title=title, file="src/b.py").model_copy(update={"id": "b"}),
+    ]
+    anchors = {
+        "src/a.py": InlineAnchor(path="src/a.py", line=3),
+        "src/b.py": InlineAnchor(path="src/b.py", line=3),
+    }
+    vcs = FakeVcs(anchors=anchors)
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", findings)]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    graph.invoke(
+        {
+            "request": ReviewRequest(repo="r", pr_id=1, head_sha="abc"),
+            "findings": [],
+        }
+    )
+    # Mismo titulo y mismo why => mismos cuerpos; sin la marca por id, el segundo
+    # inline se perderia. Deben publicarse los dos.
+    assert len(vcs.inlines) == 2
+    tokens = {body.rsplit("<!-- ", 1)[1] for _r, _p, _path, _line, body in vcs.inlines}
+    assert len(tokens) == 2, "cada inline lleva una marca distinta"
+
+
+def test_review_degradada_no_bloquea_una_completa_posterior() -> None:
+    # Primera pasada sin artefacto (degradada): se publica con aviso y marca :partial.
+    vcs = FakeVcs()
+    degraded_reviewers: list[ReviewerPort] = [
+        StaticReviewer("standards", [], status=ToolingSourceStatus.MISSING)
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=degraded_reviewers, policy=policy).compile()
+    request = {
+        "repo": "cqm/emotivoo-v2",
+        "pr_id": 7,
+        "head_sha": "abc",
+        "pipeline_id": "7",
+    }
+    graph.invoke({"request": request, "findings": []})
+    assert len(vcs.comments) == 1
+    assert ":partial -->" in vcs.comments[0][2]
+
+    # Segunda pasada con datos completos (pipeline nuevo): la marca :partial no
+    # debe bloquear; ahora la review sustituye a la degradada.
+    clean_reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", [make_finding()], status=ToolingSourceStatus.PRESENT)
+    ]
+    graph2 = build_graph(vcs=vcs, reviewers=clean_reviewers, policy=policy).compile()
+    graph2.invoke({"request": {**request, "pipeline_id": "8"}, "findings": []})
+    assert len(vcs.comments) == 2, "la completa no debe quedar bloqueada por la degradada"
+    assert ":ok -->" in vcs.comments[-1][2]
+
+
+def test_dedupe_token_depende_del_commit_no_del_pipeline() -> None:
+    base = dict(repo="r", pr_id=1, head_sha="abc")
+    a = ReviewRequest(**base, pipeline_id="7")
+    b = ReviewRequest(**base, pipeline_id="8")
+    c = ReviewRequest(repo="r", pr_id=1, head_sha="def", pipeline_id="7")
+    assert a.dedupe_token == b.dedupe_token
+    assert a.dedupe_token != c.dedupe_token
+    assert a.thread_id != b.thread_id, "un pipeline nuevo es un hilo nuevo"
+
+
+class _FailingSummaryVcs(FakeVcs):
+    """Falla al publicar el resumen la primera vez, como Teams/twg caidos."""
+
+    def __init__(self) -> None:
+        anchors = {"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)}
+        super().__init__(anchors=anchors)
+        self.fail_next_summary = True
+
+    def post_comment(self, repo: str, pr_id: int, body: str) -> None:
+        if self.fail_next_summary:
+            self.fail_next_summary = False
+            raise RuntimeError("resumen caido")
+        super().post_comment(repo, pr_id, body)
+
+
+def test_reintento_tras_fallo_del_resumen_no_duplica_el_inline() -> None:
+    # Si el inline salio pero el resumen fallo, el reintento (gracia del
+    # checkpointer) no debe repetir el inline ya publicado, y si escribir el
+    # resumen que faltaba.
+    vcs = _FailingSummaryVcs()
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+
+    request = {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc", "pipeline_id": "7"}
+    with contextlib.suppress(RuntimeError):
+        # El fallo del resumen propaga; el worker lo reencola.
+        graph.invoke({"request": request, "findings": []})
+
+    assert len(vcs.inlines) == 1
+    assert vcs.comments == []
+
+    graph.invoke({"request": request, "findings": []})
+    assert len(vcs.inlines) == 1, "no debe duplicar el inline ya publicado"
+    assert len(vcs.comments) == 1, "debe completar el resumen que faltaba"
