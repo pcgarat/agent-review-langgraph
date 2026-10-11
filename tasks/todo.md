@@ -45,7 +45,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md` y en
 ## Fase 2 (HITL) — tareas
 
 Especificación completa en `docs/fase2-hitl-20261011.md`. Orden por dependencia;
-checkpoints tras T4 y tras T9. Estado: **T1–T7 cerradas** (220 tests en verde).
+checkpoints tras T4 y tras T9. Estado: **T1–T8 cerradas** (225 tests en verde).
 
 ### Fundación
 
@@ -95,11 +95,17 @@ checkpoints tras T4 y tras T9. Estado: **T1–T7 cerradas** (220 tests en verde)
     `render_pause_notice` (el endpoint de PR de Fase 2 difiere su uso). El barrido de
     vencidas vive en `worker.sweep_expired` y se integra en `run_forever`.
 
-- [ ] **T8** — Poda de checkpoints + estado en la API
+- [x] **T8** — Poda de checkpoints + estado en la API
   - Aceptación: se podan hilos **completados** por retención; un hilo pausado
-    **nunca** se poda; `/pending` (o `/reviews/{key}`) muestra `PAUSED`.
-  - Verifica: `tests/test_checkpointer.py`, `tests/test_api.py`.
-  - Ficheros: `src/reviews/checkpointer.py`, `src/reviews/api/main.py`.
+    **nunca** se poda; `/pending` (o `/reviews/{key}`) muestra `PAUSED`. ✅
+    (`test_prune_poda_completados_y_respeta_pausados`,
+    `test_prune_nunca_poda_un_pausado_aunque_no_se_le_pase`,
+    `test_estado_de_review_pausada`)
+  - Verifica: `tests/test_checkpointer.py`, `tests/test_api.py`. ✅
+  - Ficheros: `src/reviews/checkpointer.py`, `src/reviews/api/main.py`,
+    `src/reviews/worker/main.py`, `src/reviews/settings.py`.
+  - Nota: la API no habla con el checkpointer; `/reviews/{key}` responde `PAUSED`
+    desde el inbox (404 si no consta pausada).
 
 - [ ] **T9** — E2E de pausa → decisión → reanudación → publish
   - Aceptación: inline + resumen sin duplicar; marcas de dedupe correctas.

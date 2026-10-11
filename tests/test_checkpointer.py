@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from reviews.checkpointer import build_checkpointer, build_serde
 from reviews.domain.models import (
     AutofixClass,
+    DecisionOutcome,
     Finding,
+    FindingDecision,
+    HitlDecision,
     Owner,
     ReviewerResult,
     ReviewRequest,
@@ -155,6 +160,81 @@ def test_hilo_pausado_serializa_sin_avisos(caplog) -> None:
     assert not resumed.paused
     avisos = [r.message for r in caplog.records if "unregistered" in r.message]
     assert avisos == [], f"tipos HITL sin registrar en el serde: {avisos}"
+
+
+def test_prune_poda_completados_y_respeta_pausados() -> None:
+    from reviews.checkpointer import prune_completed_threads
+
+    saver = build_checkpointer("")  # memoria
+    vcs = _MemoryVcs()
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[_OneFinding()],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                "max_autonomy": "fix_with_approval",
+                "default_action": "escalate",
+                "rules": [],
+            }
+        ),
+    ).compile(checkpointer=saver)
+
+    completed = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="done")
+    paused_req = ReviewRequest(repo="r", pr_id=2, head_sha="def", pipeline_id="paused")
+    assert process_request(graph, completed).paused
+    process_request(
+        graph,
+        completed.model_copy(
+            update={
+                "decision": HitlDecision(
+                    review_key=completed.review_key,
+                    actor="alice",
+                    items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+                )
+            }
+        ),
+    )
+    assert process_request(graph, paused_req).paused
+
+    # Retencion 0 dias no poda nada (evita borrar todo en un arranque mal configurado).
+    assert prune_completed_threads(saver, older_than_days=0, paused_threads=[]) == []
+
+    # Un reloj futuro hace "antiguos" a los completados; el pausado se respeta por
+    # estar en `paused_threads`, aunque supere la retencion.
+    future = datetime.now(UTC) + timedelta(days=60)
+    pruned = prune_completed_threads(
+        saver, older_than_days=30, paused_threads=[paused_req.review_key], now=future
+    )
+    assert completed.review_key in pruned
+    assert paused_req.review_key not in pruned
+
+
+def test_prune_nunca_poda_un_pausado_aunque_no_se_le_pase() -> None:
+    from reviews.checkpointer import prune_completed_threads
+
+    saver = build_checkpointer("")
+    vcs = _MemoryVcs()
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[_OneFinding()],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                "max_autonomy": "fix_with_approval",
+                "default_action": "escalate",
+                "rules": [],
+            }
+        ),
+    ).compile(checkpointer=saver)
+    request = ReviewRequest(repo="r", pr_id=3, head_sha="xyz", pipeline_id="p")
+    assert process_request(graph, request).paused
+
+    # Sin `paused_threads`, la deteccion de `__interrupt__` en `pending_writes`
+    # ya lo protege: un hilo con interrupt pendiente nunca es "completado".
+    future = datetime.now(UTC) + timedelta(days=60)
+    pruned = prune_completed_threads(saver, older_than_days=30, now=future)
+    assert request.review_key not in pruned
 
 
 def test_reentrega_del_mismo_thread_no_republica() -> None:

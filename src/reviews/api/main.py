@@ -242,6 +242,28 @@ def list_paused() -> dict[str, object]:
     }
 
 
+@app.get("/reviews/{review_key:path}")
+def get_review_state(review_key: str) -> dict[str, object]:
+    """Estado de una review segun el inbox: `PAUSED` o desconocido.
+
+    El API no habla con el checkpointer (spec §4.9): la verdad durable vive en
+    Postgres y su indice de descubrimiento es el inbox. Por eso solo se puede
+    afirmar `PAUSED` (esta en el inbox) o `UNKNOWN` (no consta pausada; puede estar
+    completada o ser ajena). Devuelve 404 si no consta pausada.
+    """
+    settings = _settings()
+    paused = build_paused(settings).get(review_key)
+    if paused is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"{review_key} no consta como pausada")
+    return {
+        "review_key": paused.review_key,
+        "state": "PAUSED",
+        "created_at": paused.created_at.isoformat(),
+        "pending": [item.model_dump(mode="json") for item in paused.approval.pending],
+        "command_hint": paused.approval.command_hint,
+    }
+
+
 @app.post("/reviews/{review_key:path}/decision")
 async def post_decision(
     review_key: str,
