@@ -457,6 +457,7 @@ def run_forever(
     paused: PausedStore | None = None,
     poll_s: float = 5.0,
     sweep_s: float = 30.0,
+    prune_s: float = 3600.0,
 ) -> None:
     settings = settings or get_settings()
     require_production_secrets(settings)
@@ -470,6 +471,7 @@ def run_forever(
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
+    last_prune = time.monotonic()
     start_heartbeat()
     while True:
         request = queue.dequeue(timeout_s=poll_s)
@@ -483,18 +485,21 @@ def run_forever(
                 chat=chat,
             )
             continue
-        # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision)
-        # y podar los checkpoints de hilos completados.
-        if time.monotonic() - last_sweep >= sweep_s:
+        # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
+        now = time.monotonic()
+        if now - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
             sweep_expired(paused_store, queue)
-            if saver is not None:
-                prune_completed_threads(
-                    saver,
-                    older_than_days=settings.checkpoint_retention_days,
-                    paused_threads=[review.review_key for review in paused_store.all()],
-                )
-            last_sweep = time.monotonic()
+            last_sweep = now
+        # La poda lista todos los hilos (escaneo caro en Postgres): va con su propio
+        # intervalo, mucho mas largo que los TTL.
+        if saver is not None and now - last_prune >= prune_s:
+            prune_completed_threads(
+                saver,
+                older_than_days=settings.checkpoint_retention_days,
+                paused_threads=[review.review_key for review in paused_store.all()],
+            )
+            last_prune = now
 
 
 def start_heartbeat(path: str = HEARTBEAT_PATH, interval_s: float = 10.0) -> None:
