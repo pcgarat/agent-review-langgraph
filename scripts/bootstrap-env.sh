@@ -86,6 +86,19 @@ check_twg() {
     printf '              dejalo con: cp ~/.local/bin/twg %s\n' "bin/twg"
     printf '              detalles en bin/README.md\n'
   fi
+
+  # La credencial de twg viaja por entorno (TWG_BBC_TOKEN), no como fichero: el
+  # contenedor no monta el ~/.config/twg del host. Sin ella twg arranca pero no
+  # puede hablar con Bitbucket/Jira; mejor avisar aqui que en la primera review.
+  local twg_token
+  twg_token="$(env_value TWG_BBC_TOKEN)"
+  if [ -n "$twg_token" ] && [ "$twg_token" != "change-me" ]; then
+    ok "credencial de twg presente en .env (TWG_BBC_TOKEN)"
+  else
+    warn "TWG_BBC_TOKEN vacio en .env: el worker no podra leer el diff"
+    printf '              crea un API token scoped de un actor de servicio y ponlo en .env\n'
+    printf '              (ver .env.example)\n'
+  fi
 }
 
 printf '\n== bootstrap-env: arranque local de reviews ==\n\n'
@@ -99,6 +112,14 @@ elif [ ! -f "$ENV_EXAMPLE" ]; then
 else
   cp "$ENV_EXAMPLE" "$ENV_FILE"
   ok "creado .env a partir de .env.example"
+fi
+# Los secretos no deben ser legibles por otros usuarios del host.
+if [ -f "$ENV_FILE" ]; then
+  if chmod 600 "$ENV_FILE" 2>/dev/null; then
+    ok ".env solo legible por su dueno (chmod 600)"
+  else
+    warn "no se pudieron restringir los permisos de .env (chmod 600)"
+  fi
 fi
 
 printf -- '\n-- dependencias --\n'

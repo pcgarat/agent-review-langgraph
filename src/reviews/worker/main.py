@@ -146,7 +146,9 @@ def build_runtime(
         repo=settings.bitbucket_repo,
         twg_bin=settings.twg_bin,
     )
-    chat = chat if chat is not None else TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
+    # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
+    if chat is None and settings.teams_webhook_url.strip():
+        chat = TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
     reviewers = reviewers if reviewers is not None else build_reviewers(settings)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override

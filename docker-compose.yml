@@ -7,7 +7,7 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://reviews:reviews@postgres:5432/reviews
+      DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
       REDIS_URL: redis://redis:6379/0
     volumes:
       # La API deposita aqui los artefactos que el worker lee (Fase 1).
@@ -33,18 +33,17 @@ services:
     command: python -m reviews.worker.main
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://reviews:reviews@postgres:5432/reviews
+      DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
       REDIS_URL: redis://redis:6379/0
       # El worker necesita invocar twg dentro del contenedor.
       TWG_BIN: twg
+      # Credencial de servicio de twg (Bitbucket/Jira). Llega por `env_file: .env`
+      # como TWG_BBC_TOKEN/TWG_SITE/TWG_USER/TWG_TOKEN: no hay fichero de auth en
+      # el contenedor ni montaje del ~/.config/twg del host.
     volumes:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
-      # La autenticacion de twg vive en el host, no en la imagen (solo se copia
-      # el binario). Descomenta para que el worker la vea sin copiarla a mano;
-      # `scripts/smoke-nivel2.sh` la inyecta automaticamente como alternativa.
-      # - ${HOME}/.config/twg:/root/.config/twg:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +65,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: reviews
-      POSTGRES_PASSWORD: reviews
+      # Contrasena parametrizable: en local vale el default; en un despliegue se
+      # inyecta POSTGRES_PASSWORD por entorno (p. ej. desde los secretos).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reviews}
       POSTGRES_DB: reviews
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U reviews"]

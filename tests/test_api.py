@@ -153,7 +153,32 @@ def test_arranque_en_produccion_con_secreto_de_ejemplo_falla(monkeypatch) -> Non
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
     monkeypatch.setattr(settings, "tooling_webhook_secret", "change-me")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
     with pytest.raises(RuntimeError, match="TOOLING_WEBHOOK_SECRET"):
+        require_production_secrets(settings)
+
+
+def test_arranque_en_produccion_sin_credencial_de_twg_falla(monkeypatch) -> None:
+    from reviews.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "")
+    with pytest.raises(RuntimeError, match="TWG_BBC_TOKEN"):
+        require_production_secrets(settings)
+
+
+def test_arranque_en_produccion_con_teams_habilitado_sin_url_falla(monkeypatch) -> None:
+    from reviews.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    monkeypatch.setattr(settings, "teams_enabled", True)
+    monkeypatch.setattr(settings, "teams_webhook_url", "")
+    with pytest.raises(RuntimeError, match="TEAMS_WEBHOOK_URL"):
         require_production_secrets(settings)
 
 
@@ -163,5 +188,6 @@ def test_arranque_en_produccion_con_secreto_real_pasa(monkeypatch) -> None:
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
     monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
-    monkeypatch.setattr(settings, "bitbucket_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    monkeypatch.setattr(settings, "teams_enabled", False)
     require_production_secrets(settings)
