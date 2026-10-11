@@ -84,6 +84,69 @@ def _merge_status(
     return {**(left or {}), **(right or {})}
 
 
+def build_approval(state: ReviewState) -> ApprovalRequest | None:
+    """Carga del HITL si hay decisiones pendientes; `None` si no las hay.
+
+    Nivel de modulo (no dentro de `build_graph`) porque el worker tambien lo
+    necesita: al pausar, es lo que guarda en el inbox y publica en el aviso (§4.4).
+    """
+    request = ReviewRequest.model_validate(state["request"])
+    by_id = {d.finding_id: d for d in state.get("decisions", [])}
+    pending: list[PendingDecision] = []
+    for finding in _merged(state):
+        decision = by_id.get(_finding_id(finding))
+        if decision is None or decision.action.value not in PENDING_ACTIONS:
+            continue
+        pending.append(
+            PendingDecision(
+                finding_id=decision.finding_id,
+                proposed_action=decision.action,
+                reason=decision.reason,
+                matched_rule=decision.matched_rule,
+                policy_version=decision.policy_version,
+                title=finding.title,
+                file=finding.file,
+                line=finding.line,
+                severity=finding.severity,
+            )
+        )
+    if not pending:
+        return None
+    return ApprovalRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pending=pending,
+        command_hint=(
+            f"reviews decide {request.review_key} --actor <tu-nombre> --approve <finding_id>"
+        ),
+    )
+
+
+def render_pause_notice(approval: ApprovalRequest) -> str:
+    """Cuerpo del aviso de pausa en el PR. **Sin** marca de dedupe (spec §4.5).
+
+    Llevar el token de dedupe lo haria leer como review publicada y el `publish`
+    tras decidir no publicaria nada. El aviso es informativo: que quedo pausada,
+    por que, y como decidir.
+    """
+    lines = [
+        f"Review pausada: {len(approval.pending)} hallazgo(s) esperan una decision humana.",
+        "",
+    ]
+    for item in approval.pending:
+        lines.append(
+            f"- `{item.finding_id}` [{item.severity.value}] {item.proposed_action.value}: "
+            f"{item.title} ({item.file}:{item.line})"
+        )
+        if item.reason.strip():
+            lines.append(f"  _{item.reason.strip()}_")
+    lines.append("")
+    lines.append(f"Para decidir: `{approval.command_hint}`")
+    return "\n".join(lines)
+
+
 def _unavailable_sources(state: ReviewState) -> list[tuple[str, ToolingSourceStatus]]:
     return [
         (name, status)
@@ -217,41 +280,6 @@ def build_graph(
                 )
             )
         return {"decisions": decisions}
-
-    def build_approval(state: ReviewState) -> ApprovalRequest | None:
-        """Carga del HITL si hay decisiones pendientes; `None` si no las hay."""
-        request = ReviewRequest.model_validate(state["request"])
-        by_id = {d.finding_id: d for d in state.get("decisions", [])}
-        pending: list[PendingDecision] = []
-        for finding in _merged(state):
-            decision = by_id.get(_finding_id(finding))
-            if decision is None or decision.action.value not in PENDING_ACTIONS:
-                continue
-            pending.append(
-                PendingDecision(
-                    finding_id=decision.finding_id,
-                    proposed_action=decision.action,
-                    reason=decision.reason,
-                    matched_rule=decision.matched_rule,
-                    policy_version=decision.policy_version,
-                    title=finding.title,
-                    file=finding.file,
-                    line=finding.line,
-                    severity=finding.severity,
-                )
-            )
-        if not pending:
-            return None
-        return ApprovalRequest(
-            review_key=request.review_key,
-            repo=request.repo,
-            pr_id=request.pr_id,
-            head_sha=request.head_sha,
-            pending=pending,
-            command_hint=(
-                f"reviews decide {request.review_key} --actor <tu-nombre> --approve <finding_id>"
-            ),
-        )
 
     def hitl(state: ReviewState) -> ReviewState:
         """Pausa durable si hay decisiones pendientes; si no, sigue a publish.

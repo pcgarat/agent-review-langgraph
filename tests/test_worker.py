@@ -20,7 +20,8 @@ from reviews.domain.models import (
     Severity,
 )
 from reviews.domain.pending import InMemoryPendingStore
-from reviews.graph.build import build_graph
+from reviews.graph.build import build_approval as graph_build_approval
+from reviews.graph.build import build_graph, render_pause_notice
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
 from reviews.profile import expected_tools
@@ -32,6 +33,7 @@ from reviews.worker.main import (
     build_reviewers,
     process_request,
     start_heartbeat,
+    sweep_expired,
     sweep_pending,
 )
 
@@ -500,3 +502,119 @@ def test_worker_doble_decision_es_noop() -> None:
     assert not repeated.paused
     assert (len(vcs.inlines), len(vcs.comments)) == published, "no se republica"
     assert reviewer.calls == 1
+
+
+class _RecordingChat:
+    def __init__(self) -> None:
+        self.pending: list[tuple[str, str, str | None]] = []
+        self.notices: list[str] = []
+
+    def notify(self, *, title: str, body: str, link: str | None = None) -> None:
+        self.notices.append(title)
+
+    def notify_decision_pending(self, *, title: str, body: str, link: str | None = None) -> None:
+        self.pending.append((title, body, link))
+
+
+def test_pausa_escribe_el_inbox_y_avisa_sin_publicar() -> None:
+    from reviews.paused_store import InMemoryPausedStore
+
+    reviewer = _CountingReviewer(_escalating_finding())
+    vcs = FakeVcs()
+    chat = _RecordingChat()
+    paused_store = InMemoryPausedStore()
+    graph = _hitl_graph(vcs, reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    outcome = process_request(graph, request, paused=paused_store, chat=chat)
+
+    assert outcome.paused
+    assert vcs.inlines == [] and vcs.comments == [], "la pausa no publica los hallazgos"
+    recorded = paused_store.get(request.review_key)
+    assert recorded is not None and recorded.approval.pending[0].finding_id == "w1"
+    assert len(chat.pending) == 1
+    title, body, _link = chat.pending[0]
+    assert "Decision pendiente" in title or "Review pausada" in body
+    assert "decide" in body
+
+
+def test_resume_borra_la_pausa_del_inbox() -> None:
+    from reviews.paused_store import InMemoryPausedStore
+
+    reviewer = _CountingReviewer(_escalating_finding())
+    paused_store = InMemoryPausedStore()
+    graph = _hitl_graph(FakeVcs(), reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request, paused=paused_store)
+    assert paused_store.get(request.review_key) is not None
+
+    decision = HitlDecision(
+        review_key=request.review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id="w1", outcome=DecisionOutcome.APPROVED)],
+    )
+    process_request(graph, request.model_copy(update={"decision": decision}), paused=paused_store)
+
+    assert paused_store.get(request.review_key) is None, "al decidir, el inbox se limpia"
+
+
+def test_aviso_de_pausa_sin_marca_de_dedupe() -> None:
+    # Si el aviso llevara el token de dedupe, el `publish` tras decidir lo leeria
+    # como review ya publicada y no publicaria nada (spec §4.5).
+    reviewer = _CountingReviewer(_escalating_finding())
+    vcs = FakeVcs()
+    graph = _hitl_graph(vcs, reviewer)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request)
+
+    config = {"configurable": {"thread_id": request.thread_id}}
+    approval = graph_build_approval(graph.get_state(config).values)
+    assert approval is not None
+    notice = render_pause_notice(approval)
+    assert request.dedupe_token not in notice
+    assert ":ok" not in notice and ":partial" not in notice
+
+
+def test_sweep_expired_reencola_sin_decision() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from reviews.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
+    from reviews.paused_store import InMemoryPausedStore
+
+    paused = InMemoryPausedStore(ttl_s=60.0)
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    approval = ApprovalRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pending=[
+            PendingDecision(
+                finding_id="w1",
+                proposed_action=FindingAction.ESCALATE,
+                reason="Tema protegido",
+                matched_rule="default",
+                policy_version="1",
+                title="T",
+                file="a.php",
+                line=1,
+                severity=Severity.P1,
+            )
+        ],
+    )
+    paused.pause(request, approval)
+
+    # Recien creada: nada que expirar.
+    assert sweep_expired(paused, queue) == []
+    assert len(queue) == 0
+
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    enqueued = sweep_expired(paused, queue, now=future)
+
+    assert [r.review_key for r in enqueued] == [request.review_key]
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.actor == "system:ttl"
+    assert job.decision.items[0].outcome is DecisionOutcome.EXPIRED
+    assert paused.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
