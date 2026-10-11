@@ -22,6 +22,9 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+# El contrato de hallazgo se valida en runtime (`domain/contracts.py`): sin esta
+# copia, la primera review dentro del contenedor falla al validar un `Finding`.
+COPY contracts ./contracts
 RUN pip install --upgrade pip && pip install .
 
 CMD ["python", "-m", "reviews.worker.main"]

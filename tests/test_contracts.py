@@ -68,3 +68,18 @@ def test_rechaza_campo_faltante_del_contrato() -> None:
 def test_esquema_del_repo_es_json_valido() -> None:
     path = Path(__file__).resolve().parents[1] / "contracts" / "findings-schema.json"
     assert json.loads(path.read_text(encoding="utf-8"))["title"] == "ReviewFinding"
+
+
+def test_la_ruta_del_contrato_no_depende_del_paquete_instalado(monkeypatch, tmp_path) -> None:
+    """El contrato debe resolverse fuera de site-packages (p. ej. en la imagen).
+
+    Se empaqueta solo `src/`, asi que `parents[3]` apunta a site-packages dentro
+    del contenedor. La resolucion prueba candidatos y admite override.
+    """
+    from reviews.domain import contracts
+
+    copia = tmp_path / "findings-schema.json"
+    copia.write_text(json.dumps(load_findings_schema()), encoding="utf-8")
+    monkeypatch.setenv("REVIEWS_CONTRACT_PATH", str(copia))
+    assert contracts.default_contract_path() == copia
+    assert contracts.validate_finding(_valid()).file == "a.php"
