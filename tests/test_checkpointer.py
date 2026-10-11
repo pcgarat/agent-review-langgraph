@@ -116,6 +116,47 @@ def test_thread_id_estable_por_ejecucion() -> None:
     assert request.thread_id == retry.thread_id == "r:1:abc:7"
 
 
+def _hitl_graph(vcs: _MemoryVcs):
+    saver = build_checkpointer("")
+    policy = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "fix_with_approval",
+            "default_action": "escalate",
+            "rules": [],
+        }
+    )
+    return build_graph(vcs=vcs, reviewers=[_OneFinding()], policy=policy).compile(
+        checkpointer=saver
+    )
+
+
+def test_hilo_pausado_serializa_sin_avisos(caplog) -> None:
+    # El estado pausado lleva `ApprovalRequest`/`HitlDecision`: deben estar en la
+    # allowlist del serde, o el roundtrip (lectura del hilo pausado, reanudacion)
+    # avisa hoy y bloqueara en versiones futuras de LangGraph.
+    import logging
+
+    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+
+    vcs = _MemoryVcs()
+    graph = _hitl_graph(vcs)
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    decision = HitlDecision(
+        review_key=request.review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="langgraph.checkpoint.serde.jsonplus"):
+        assert process_request(graph, request).paused
+        resumed = process_request(graph, request.model_copy(update={"decision": decision}))
+
+    assert not resumed.paused
+    avisos = [r.message for r in caplog.records if "unregistered" in r.message]
+    assert avisos == [], f"tipos HITL sin registrar en el serde: {avisos}"
+
+
 def test_reentrega_del_mismo_thread_no_republica() -> None:
     vcs = _MemoryVcs()
     graph = _graph(vcs)

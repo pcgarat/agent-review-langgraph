@@ -9,6 +9,7 @@ from typing import Any, cast
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
@@ -173,29 +174,63 @@ def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome
 
     El grafo se invoca con `thread_id` (= `review_key`): si el mensaje se
     reentrega, el checkpointer devuelve el estado ya terminado y no se vuelve a
-    publicar. Un `pipeline_id` nuevo sobre el mismo commit si es una review nueva
-    (hilo distinto), y por eso el `publish` comprueba ademas el token de dedupe.
+    publicar. Tres estados del hilo (ver docs/fase2-hitl-20261011.md §4.3):
+
+    - **Pausado** (`interrupt` pendiente): con decision -> `Command(resume=...)`;
+      sin decision -> no-op (no se re-ejecuta `scope` ni las personas).
+    - **Completado** (`next` vacio): no-op.
+    - **A medias** (`next` no vacio, sin `interrupt`): se re-invoca (dedupe por
+      marcas).
     """
     logger.info("Procesando review %s (intento %d)", request.review_key, request.attempts + 1)
     config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
-    resumed = _completed_snapshot(graph, config)
-    if resumed is not None:
+    snapshot = _thread_snapshot(graph, config)
+    if snapshot is not None and snapshot.interrupts:
+        return _resume_paused(graph, request, config=config, paused_state=snapshot)
+    if snapshot is not None and not snapshot.next:
         logger.info(
             "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
             request.review_key,
         )
-        return outcome_from_state(cast("ReviewState", resumed))
+        return outcome_from_state(cast("ReviewState", snapshot.values))
     result = cast("ReviewState", graph.invoke({"request": request, "findings": []}, config=config))
+    return _log_outcome(result)
+
+
+def _resume_paused(
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    config: RunnableConfig,
+    paused_state: Any,
+) -> ReviewOutcome:
+    """Reanuda un hilo pausado. Sin decision es no-op: no repite el trabajo."""
+    if request.decision is None:
+        logger.info(
+            "Review %s esta pausada esperando decision; la reentrega no la re-ejecuta",
+            request.review_key,
+        )
+        return outcome_from_state(cast("ReviewState", paused_state.values), paused=True)
+    result = cast("ReviewState", graph.invoke(Command(resume=request.decision), config=config))
+    logger.info(
+        "Review %s reanudada con decision de %s", request.review_key, request.decision.actor
+    )
+    return _log_outcome(result)
+
+
+def _log_outcome(result: ReviewState) -> ReviewOutcome:
     outcome = outcome_from_state(result)
-    if outcome.complete:
-        logger.info("Review completada %s", request.review_key)
+    if outcome.paused:
+        logger.info("Review PAUSADA %s; esperando decision humana", outcome.request.review_key)
+    elif outcome.complete:
+        logger.info("Review completada %s", outcome.request.review_key)
     else:
         # No se hizo el analisis declarado: no es una review completada. No se
         # reencola: la ingesta diferida ya espero al artefacto (barrera/TTL), asi
         # que reintentar aqui solo duplicaria la publicacion.
         logger.warning(
             "Review INCOMPLETA %s; sin cobertura de: %s",
-            request.review_key,
+            outcome.request.review_key,
             ", ".join(
                 f"{name}={status.value}" for name, status in outcome.unavailable_sources.items()
             ),
@@ -203,15 +238,13 @@ def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome
     return outcome
 
 
-def _completed_snapshot(graph: ReviewGraph, config: RunnableConfig) -> dict[str, Any] | None:
-    """Estado guardado del hilo si esa ejecucion ya termino, o `None`.
+def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
+    """Snapshot del hilo (pausado o completado), o `None` si no hay.
 
     `invoke(input)` sobre un hilo existente re-ejecuta el grafo desde `START`
-    (duplicando la publicacion). Antes de invocar se consulta el checkpointer:
-    un hilo con estado y sin nodos pendientes (`snapshot.next` vacio) ya corrio
-    entero y no se repite. Un hilo pausado (Fase 2, `interrupt`) tiene `next`
-    pendiente y se deja pasar para reanudarlo. Sin checkpointer no hay hilo que
-    consultar y se procesa siempre.
+    (duplicando la publicacion). Antes de invocar se consulta el checkpointer y
+    se decide: pausado (hay `interrupts`), completado (`next` vacio) o a medias.
+    Sin checkpointer no hay hilo que consultar y se procesa siempre.
     """
     if getattr(graph, "checkpointer", None) is None:
         return None
@@ -220,10 +253,10 @@ def _completed_snapshot(graph: ReviewGraph, config: RunnableConfig) -> dict[str,
     except Exception:  # pragma: no cover - base caida
         logger.exception("No se pudo leer el estado del hilo %s", config)
         return None
-    if getattr(snapshot, "next", None):
-        return None
     values = getattr(snapshot, "values", None)
-    return values if values else None
+    if not values:
+        return None
+    return snapshot
 
 
 def _consume(
