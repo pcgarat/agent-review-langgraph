@@ -12,9 +12,23 @@ class Settings(BaseSettings):
 
     bitbucket_workspace: str = ""
     bitbucket_repo: str = ""
-    bitbucket_webhook_secret: str = "change-me"
+    # Credencial de servicio de twg para `twg bb` (Bitbucket). Es un API token
+    # scoped de un actor de servicio, no el OAuth de una persona: no caduca cada
+    # hora y se revoca sin tocar a nadie. twg lo lee de `TWG_BBC_TOKEN`
+    # (verificado: no necesita auth.conf si esta la variable).
+    twg_bbc_token: str = ""
+    # Site y usuario del actor de servicio; los consume twg directamente.
+    twg_site: str = ""
+    twg_user: str = ""
+    # API token de Atlassian (Jira/Confluence). Solo necesario si se usa
+    # `twg jira` (escalado a workitem); twg lo lee de `TWG_TOKEN`.
+    twg_token: str = ""
 
     teams_webhook_url: str = ""
+    # Declara que el canal de Teams es parte del despliegue. Con `true`, en
+    # produccion el arranque falla si falta la URL (evita perder el teaser en
+    # silencio). La URL en si es una capacidad: quien la tiene, publica.
+    teams_enabled: bool = False
 
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://reviews:reviews@localhost:5432/reviews"
@@ -73,16 +87,30 @@ def get_settings() -> Settings:
 
 # Valores de ejemplo que no deben llegar a produccion: con ellos la firma del
 # webhook se omite y cualquiera podria inyectar artefactos.
-_INSECURE_DEFAULTS = {"change-me", "", "changeme"}
+_INSECURE_DEFAULTS = {"change-me", "changeme"}
+
+
+def _is_unset(value: str) -> bool:
+    return value.strip() in _INSECURE_DEFAULTS
 
 
 def insecure_secrets(settings: Settings) -> list[str]:
-    """Nombres de secretos que siguen en su valor de ejemplo (D4)."""
+    """Nombres de secretos que siguen en su valor de ejemplo o sin rellenar (D4).
+
+    Cubre el contrato completo, no solo la firma del webhook: un despliegue en
+    produccion sin credencial de Bitbucket arranca pero falla en la primera
+    review, que es exactamente el fallo silencioso que se quiere evitar.
+    """
     insecure: list[str] = []
-    if settings.tooling_webhook_secret.strip() in _INSECURE_DEFAULTS:
+    if _is_unset(settings.tooling_webhook_secret):
         insecure.append("TOOLING_WEBHOOK_SECRET")
-    if settings.bitbucket_webhook_secret.strip() in _INSECURE_DEFAULTS:
-        insecure.append("BITBUCKET_WEBHOOK_SECRET")
+    # La credencial de twg es obligatoria: sin ella no hay diff ni comentarios.
+    if not settings.twg_bbc_token.strip():
+        insecure.append("TWG_BBC_TOKEN")
+    if settings.teams_enabled and not settings.teams_webhook_url.strip():
+        insecure.append("TEAMS_WEBHOOK_URL")
+    if settings.llm_reviewer_enabled and not settings.llm_api_key.strip():
+        insecure.append("LLM_API_KEY")
     return insecure
 
 

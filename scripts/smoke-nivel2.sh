@@ -99,19 +99,13 @@ else
   warn "la API no respondio a /healthz en 30s; revisa 'docker compose logs api'"
 fi
 
-info "inyectando la config de twg en el worker (auth de Bitbucket)"
-# El contenedor solo recibe el binario; su autenticacion vive en el host.
-# Sin esto, `twg prs diff` falla con 77 y la review va a la DLQ.
-if [ -d "${HOME}/.config/twg" ]; then
-  compose_cmd exec -T worker mkdir -p /root/.config/twg
-  for conf in auth.conf auth_oauth.conf; do
-    if [ -f "${HOME}/.config/twg/${conf}" ]; then
-      compose_cmd cp "${HOME}/.config/twg/${conf}" worker:/root/.config/twg/"${conf}"
-      printf '  [ok]    %s\n' "$conf"
-    fi
-  done
+info "comprobando la credencial de twg del worker"
+# La credencial viaja por `.env` (TWG_BBC_TOKEN) -> `env_file`, no como fichero:
+# no hay nada que copiar al contenedor. Solo se valida que este puesta.
+if [ -n "${TWG_BBC_TOKEN:-}" ] && [ "${TWG_BBC_TOKEN}" != "change-me" ]; then
+  printf '  [ok]    TWG_BBC_TOKEN presente en el entorno del worker\n'
 else
-  warn "no hay ~/.config/twg en el host; el worker no podra leer el diff"
+  warn "TWG_BBC_TOKEN vacio o placeholder: el worker no podra leer el diff"
 fi
 
 info "resolviendo HEAD_SHA del PR $PR_ID con twg"
