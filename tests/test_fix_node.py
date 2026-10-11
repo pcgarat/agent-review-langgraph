@@ -60,12 +60,15 @@ class _Fixer:
 
 
 class _Sandbox:
-    def __init__(self, *, passed: bool = True) -> None:
+    def __init__(self, *, passed: bool = True, error: Exception | None = None) -> None:
         self.passed = passed
+        self.error = error
         self.requests: list[str] = []
 
     def verify(self, request):  # noqa: ANN001 - fake
         self.requests.append(request.run_key)
+        if self.error is not None:
+            raise self.error
         result = CommandResult(
             recipe="typecheck",
             argv=["make", "stan"],
@@ -190,6 +193,29 @@ def test_escalate_aprobado_no_genera_fix() -> None:
 def test_sin_fixer_es_no_verificable() -> None:
     results = _run(fixer=None, sandbox=_Sandbox())
     assert results["f1"].status is FixStatus.NOT_VERIFIABLE
+
+
+def test_sandbox_rechaza_el_parche_es_no_verificable() -> None:
+    """Un fallo permanente del runner (perfil sin digest, targets invalidos) no es
+    `FAILED`: la verificacion no llego a ejecutarse, es `NOT_VERIFIABLE`."""
+    from agent_review.adapters.http_sandbox import SandboxError
+
+    results = _run(
+        fixer=_Fixer(),
+        sandbox=_Sandbox(error=SandboxError("el runner rechazo el parche")),
+    )
+    assert results["f1"].status is FixStatus.NOT_VERIFIABLE
+    assert "rechazo" in results["f1"].reason
+
+
+def test_sandbox_no_disponible_es_transitorio_y_sube() -> None:
+    """Un runner caido (red, 5xx) se reintenta en el nodo, no se marca como fallo."""
+    import pytest
+
+    from agent_review.adapters.http_sandbox import SandboxUnavailable
+
+    with pytest.raises(SandboxUnavailable):
+        _run(fixer=_Fixer(), sandbox=_Sandbox(error=SandboxUnavailable("runner caido")))
 
 
 def test_tope_de_fixes_marca_skipped() -> None:

@@ -155,6 +155,15 @@ else
   printf '  (LLM opcional: se activa con LLM_REVIEWER_ENABLED=true)\n'
 fi
 
+if [ "$(env_value SANDBOX_ENABLED)" = "true" ]; then
+  printf '  (sandbox de fix habilitado: SANDBOX_ENABLED=true)\n'
+  report_var SANDBOX_RUNNER_URL   "URL interna del servicio sandbox-runner"
+  report_var SANDBOX_RUNNER_TOKEN "Bearer compartido worker<->runner"
+  report_var SANDBOX_GIT_TOKEN    "token de Bitbucket de SOLO lectura para el clone"
+else
+  printf '  (sandbox de fix opcional: se activa con SANDBOX_ENABLED=true)\n'
+fi
+
 printf -- '\n-- resumen --\n'
 if [ "$MISSING_REQUIRED" -gt 0 ]; then
   miss "${MISSING_REQUIRED} dependencia(s) obligatoria(s) sin resolver"

@@ -53,20 +53,30 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 
 ## Bloque 2 — Runner (depende de Q1 —resuelta— y de P6 —precondición—)
 
-- [ ] **F7** `VerifyRequest`/`VerifyReport`/`SandboxPort.verify` + `HttpSandboxAdapter`
-  - `run_key` idempotente; sondeo de `GET /runs/{id}` hasta `sandbox.timeout_s`.
-  - Verifica: `tests/test_http_sandbox.py`.
-- [ ] **F8** Servicio `sandbox_runner` (FastAPI interno)
-  - Clon → `git apply --check`/`apply` → `setup` (red, `--no-scripts`) → checks
-    (`--network none`) → destruir en `finally`. Sin `docker.sock`, sin privilegios.
-  - Verifica: `tests/test_sandbox_runner.py` (fake de Docker contando creations/destructions).
-- [ ] **F9** `ci_image_digest`, `checks.targeted` en el runner, y validación de `{targets}`
+- [x] **F7** `VerifyRequest`/`VerifyReport`/`SandboxPort.verify` + `HttpSandboxAdapter`
+  - **Contrato síncrono (2026-10-11):** `POST /verify` bloqueante con `run_key`
+    idempotente. Se descarta `POST /runs` + sondeo `GET /runs/{id}` del spec §5.3:
+    el worker es secuencial, así que el sondeo no desacopla nada y solo añade
+    estado de runs. Ver §5.3 (enmienda).
+  - `build_sandbox` conecta el adaptador (`sandbox_enabled` + `sandbox_runner_url`);
+    sin ellos el nodo `fix` queda `NOT_VERIFIABLE`.
+  - Verifica: `tests/test_http_sandbox.py` ✅
+- [x] **F8** Servicio `sandbox_runner` (FastAPI interno)
+  - Clon → `git apply --check`/`apply` → setup → checks → destruir en `finally`.
+    Sin `docker.sock`, sin privilegios. Puertos inyectables (`ContainerRuntime`,
+    `WorkspacePort`, `ProfileSource`) para testear sin Docker.
+  - Verifica: `tests/test_sandbox_runner.py` (fake de Docker contando creations/destructions) ✅
+- [x] **F9** `ci_image_digest`, `checks.targeted` en el runner, y validación de `{targets}`
   - Hecho: `checks.targeted = "bin/phpunit {targets}"` (Q2); `verify` en el perfil y
     `profile.fix_recipes` como fuente única del orden (targeted antes de typecheck);
     contrato del perfil validado al cargar (`validate_profile` + `tests/test_profile.py`).
-  - Falta: `ci_image_digest` y que el runner sustituya/valide `{targets}` (F8).
-- [ ] **F10** compose + settings + secretos (`SANDBOX_GIT_TOKEN`,
+  - Hecho: `ci_image_digest` (solo `sha256:`, tag mutable → `NOT_VERIFIABLE`) y
+    validación/expansión de `{targets}` en el runner (`sandbox_runner/recipes.py`).
+- [x] **F10** compose + settings + secretos (`SANDBOX_GIT_TOKEN`,
   `SANDBOX_REGISTRY_*` al runner, `SANDBOX_RUNNER_TOKEN`)
+  - Hecho; verificado con `tests/test_compose.py` (worker sin socket, runner sin
+    puertos, secretos declarados) y los fail-closed de `tests/test_api.py`.
+  - Smoke real del runner pendiente de P6 (rootless en el host del runner).
 
 ## Bloque 3 — Cierre
 
@@ -76,9 +86,9 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 
 ## Precondiciones externas
 
-- [ ] **P6** (Q4) revisar la heurística de tema protegido con seguridad — **bloquea F8**
+- [ ] **P6** (Q4) revisar la heurística de tema protegido con seguridad — **precondición del runner**: el smoke real no se ejecuta sin cerrarla
 - [x] **Q2** comando de tests dirigidos de `emotivoo-v2` — `bin/phpunit {targets}` ✅
-- [ ] **Q3** token de Bitbucket de solo lectura del runner — bloquea F10
+- [x] **Q3** token de Bitbucket de solo lectura del runner — recibido (2026-10-11); falta rotarlo en el `.env` del host del runner
 - [ ] Credencial de prueba para el spike R1 (F11)
 
 ## Notas / límites conocidos
@@ -87,5 +97,9 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
   formatter de fallback.
 - Un fix de un solo fichero puede chocar con reglas de PHPStan que exigen tocar el
   test (`ApplicationServiceMustHaveTestRule`): candidato a Fase 4 (multi-fichero).
-- No hay `run_id` para el cliente: F5b es notablemente más simple contra un runner
-  **síncrono** (un `POST /verify` bloqueante con `run_key` idempotente).
+- Runner **síncrono**: un `POST /verify` bloqueante con `run_key` idempotente (sin
+  `run_id`, sin sondeo). Ver F7.
+- **E7 (desacople fuerte) sigue pendiente.** El `POST` síncrono no saca la
+  verificación de la ruta de la review: como el worker es secuencial, sigue
+  ocupado ~20 min por fix. El desacople real (cola/consumidor de fixes aparte) es
+  un diseño en sí mismo y no se finge con el adaptador síncrono.

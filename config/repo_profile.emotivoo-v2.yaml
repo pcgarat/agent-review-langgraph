@@ -8,14 +8,24 @@ language: php 8.4
 framework: symfony 7.4
 package_manager: composer
 ci_image: crg.apkg.io/cqm/emotivoo-v2/emotivoo-ci:latest
+# Digest inmutable de `ci_image` (sha256:...), obligatorio para verificar un fix.
+# Un tag mutable (`:latest`) permitiria que la verificacion corriera con una
+# imagen distinta de la declarada (R3). Lo fija ops a mano (o por un job) cuando
+# cambia `Dockerfile.ci`; vacio = verificacion deshabilitada (NOT_VERIFIABLE).
+ci_image_digest: ""
 source: bitbucket-pipelines.yml
 
 env:
   EXEC_PHP: ""
   APP_ENV: test
 
-setup:
-  - composer install --no-interaction --prefer-dist --optimize-autoloader --no-progress
+setup: []
+# `setup_network`: los comandos de `setup` que necesitan red y SI pueden ejecutar
+# codigo del PR (p. ej. `composer install`). El resto de `setup`, y todos los
+# checks, corren con `--network none`. Aqui solo van los que requieren descargar
+# dependencias; `cache:clear`/`assets:install` van en `setup` (sin red).
+setup_network:
+  - composer install --no-interaction --prefer-dist --optimize-autoloader --no-progress --no-scripts
   - bin/console cache:clear -n
   - bin/console assets:install -n
   - bin/console importmap:install -n
@@ -55,5 +65,7 @@ caches:
 
 sandbox:
   base_image: crg.apkg.io/cqm/emotivoo-v2/emotivoo-ci:latest
+  # El digest es lo unico que se acepta para verificar (R3): el tag de al lado es
+  # informativo. `ci_image_digest` vacio en la cabecera = verificacion deshabilitada.
   network: allowlist
   timeout_s: 1200

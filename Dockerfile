@@ -4,8 +4,15 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+# `SANDBOX_RUNNER=true` construye la imagen del runner: ademas de git, necesita el
+# CLI de Docker para hablar con su demonio rootless (los contenedores del PR que
+# crea NO llevan el socket). La imagen del worker no lo lleva: menos superficie.
+ARG SANDBOX_RUNNER=false
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
+    && if [ "$SANDBOX_RUNNER" = "true" ]; then \
+         apt-get install -y --no-install-recommends docker.io; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
 # El CLI twg se usa como adaptador de Bitbucket y Jira.

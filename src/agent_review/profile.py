@@ -28,8 +28,8 @@ _FLAT_KEYS = {
     "source",
 }
 _MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox"}
-_LIST_KEYS = {"setup", "verify", "expected_tools"}
-_LIST_OF_STR_KEYS = {"setup", "verify", "expected_tools"}
+_LIST_KEYS = {"setup", "setup_network", "verify", "expected_tools"}
+_LIST_OF_STR_KEYS = {"setup", "setup_network", "verify", "expected_tools"}
 
 
 def validate_profile(profile: dict[str, Any]) -> list[str]:
@@ -126,3 +126,53 @@ def fix_recipes(
     if isinstance(declared, list) and declared:
         return [str(item) for item in declared]
     return settings.fix_recipes_list
+
+
+def sandbox_timeout_s(settings: Settings, profile: dict[str, Any] | None = None) -> float:
+    """Techo de una verificacion en el sandbox, del perfil (`sandbox.timeout_s`).
+
+    Vive en el perfil porque el coste del CI varia por repo (aqui ~20 min). El
+    cliente HTTP lo usa como deadline del `POST /verify` bloqueante; el fake de
+    settings es el fallback si no hay perfil.
+    """
+    if profile is None:
+        profile = load_profile(settings)
+    sandbox = profile.get("sandbox")
+    if isinstance(sandbox, dict):
+        declared = sandbox.get("timeout_s")
+        if isinstance(declared, (int, float)) and declared > 0:
+            return float(declared)
+    return settings.sandbox_timeout_s
+
+
+def ci_image_digest(profile: dict[str, Any]) -> str:
+    """Digest inmutable de la imagen del CI, o cadena vacia si no es valido.
+
+    Solo se acepta un `sha256:...`. Un tag mutable (`:latest`) permitiria que la
+    verificacion corriera con una imagen distinta de la que el perfil declara, que
+    es justo lo que `ci_image_digest` existe para evitar (spec §5.4, riesgo R3).
+    """
+    digest = str(profile.get("ci_image_digest", "")).strip()
+    if digest.startswith("sha256:") and len(digest) > len("sha256:"):
+        return digest
+    return ""
+
+
+def resolve_ci_image(profile: dict[str, Any]) -> str | None:
+    """Referencia `repo@sha256:...` para el runner, o `None` si falta el digest.
+
+    El perfil declara `ci_image` (con tag) y `ci_image_digest` (solo el sha256);
+    el runner necesita la referencia pinada, que se compone quitando el tag
+    mutable a `ci_image` y anclando el digest.
+    """
+    digest = ci_image_digest(profile)
+    if not digest:
+        return None
+    reference = str(profile.get("ci_image", "")).strip()
+    if not reference:
+        return None
+    # Se quita el tag solo si lo lleva el ultimo segmento (el de la imagen): un
+    # `host:puerto/...` tiene dos puntos y el primero no es un tag.
+    last_segment = reference.rsplit("/", 1)[-1]
+    repo = reference.rsplit(":", 1)[0] if ":" in last_segment else reference
+    return f"{repo}@{digest}"

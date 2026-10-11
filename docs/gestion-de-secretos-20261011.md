@@ -30,6 +30,8 @@ Mezclar estas dos cosas es lo que hace que la gestión de secretos parezca un l�
 | `LLM_API_KEY` | clave del proveedor LLM | Si `LLM_REVIEWER_ENABLED=true` | 2 | Agente |
 | `POSTGRES_PASSWORD` | credencial de Postgres | En producción | 1 | Infra |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen de CI | Al ejecutar tests | 3 | Infra |
+| `SANDBOX_GIT_TOKEN` | token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED=true` | 3 | Agente |
+| `SANDBOX_RUNNER_TOKEN` | Bearer compartido worker↔runner | Si `SANDBOX_ENABLED=true` | 3 | Agente |
 
 `require_production_secrets` (en `agent_review.settings`) hace **fail-closed**: con
 `ENVIRONMENT=production` el arranque falla si falta la credencial del proveedor de
@@ -57,6 +59,16 @@ Por qué no el OAuth de una persona con `~/.config/twg` montado:
 
 **Scopes mínimos:** Fase 1 → `read` y `write` de pull requests (leer diff,
 comentar). Fase 3 (push de fixes) → añade escritura de ramas. Jira → `write:jira-work`.
+
+### 3.1 Segundo token: clonado del runner (Fase 3)
+
+El runner necesita clonar el repo del PR, pero **no** debe reutilizar el token del
+worker: `TWG_BBC_TOKEN` escribe comentarios (y en el futuro ramas), y el runner
+ejecuta **código de PRs de terceros** en un contenedor. Un token separado,
+`SANDBOX_GIT_TOKEN`, con scope de **solo lectura** (`repository:read`), acota el
+radio de daño: aunque el código del PR lograra exfiltrarlo, no permite escribir ni
+comentar. El runner lo recibe por entorno y lo usa en el remoto **efímero** del
+clon (nunca en el `.git/config` que queda en el workspace, que se borra al acabar).
 
 ## 4. Entrega de secretos (`.env` en el host)
 
@@ -101,6 +113,8 @@ Guardrails concretos por tipo de credencial:
 | `TOOLING_WEBHOOK_SECRET` | 90 días | **Debe rotarse a la vez en el agente y en el CI**: secretos simétricos compartidos, no hay rotación sin coordinar los dos lados |
 | `TEAMS_WEBHOOK_URL` | Al revocar el conector | Regenerar el Incoming Webhook en Teams → actualizar secreto |
 | `LLM_API_KEY` | Según proveedor | Rotar en el proveedor → actualizar secreto |
+| `SANDBOX_RUNNER_TOKEN` | 90 días | **Rotarse a la vez en worker y runner** (secreto simétrico compartido, como el de tooling) |
+| `SANDBOX_GIT_TOKEN` | 90 días o ante sospecha | Nuevo access token de Bitbucket con scope **solo lectura** → actualizar en el runner. Distinto del de `twg` del worker: aunque un PR lo viera, no da push |
 | `POSTGRES_PASSWORD` | 180 días | `ALTER ROLE` + actualizar secreto + recrear contenedores |
 
 La rotación es **manual y documentada** en v1. Automatizarla (vía gestor externo)

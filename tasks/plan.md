@@ -172,6 +172,14 @@ La especificación completa vive en `docs/fase3-fix-verificacion-20261011.md`
   del parche, `LlmFixer`, selección de candidatos, nodo `fix` con el seam de
   entrega, y render/dedupe. **320 tests** en verde; camino pausa → decisión → fix →
   sugerencia verificada cubierto con fakes (`tests/test_fix_e2e.py`).
-- **Pendiente (Bloque 2, runner):** `F7`–`F10` (adaptador HTTP, servicio
-  `sandbox_runner`, perfil con `ci_image_digest`, compose/secretos). Bloqueado por
-  **P6** (precondición) y **Q2** (comando de tests dirigidos).
+- **Cerrado (Bloque 2, runner):** `F7`–`F10`. **Enmienda de contrato (2026-10-11):**
+  el runner es **síncrono** (`POST /verify` bloqueante con `run_key` idempotente),
+  no `POST /runs` + sondeo. El adaptador HTTP, el servicio `sandbox_runner`
+  (FastAPI interno, sin `docker.sock`, con runtime/workspace inyectables), la
+  validación de `{targets}`, el `ci_image_digest` y el compose/secretos están
+  hechos. Ver `tests/test_http_sandbox.py`, `tests/test_sandbox_runner.py`,
+  `tests/test_compose.py`.
+- **Pendiente (Bloque 3 + precondiciones):** `F11`–`F13` (spike R1 real, smoke
+  real, docs) y el desacople **fuerte** de E7 (cola/consumidor de fixes aparte):
+  el adaptador síncrono **no** lo cumple, solo lo simplifica. Smoke real del runner
+  bloqueado por **P6** (precondición de seguridad).

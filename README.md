@@ -62,6 +62,7 @@ flowchart LR
 |---|---|
 | `api` | FastAPI. Valida la firma del CI, deposita el artefacto, mantiene la idempotencia y encola la review. Expone el canal de decisión (`/reviews/.../decision`). |
 | `worker` | Consume la cola y ejecuta el grafo con checkpointer durable. Reintenta fallos transitorios y aplica los TTL (ingesta y decisión). |
+| `sandbox-runner` | Fase 3. Verifica el parche de un fix con la imagen del CI **por digest** (`POST /verify` bloqueante con `run_key` idempotente). Clona, aplica el parche, corre `setup`+checks sin red y destruye. Aislado: sin `docker.sock`, sin puertos publicados, habla con su propio demonio rootless. |
 | `postgres` | Checkpointer de LangGraph: estado de cada ejecución, base del `interrupt` (HITL) y de la no-repetición. |
 | `redis` | Cola de jobs, claves de idempotencia, registro de ingesta y *inbox* de reviews pausadas. |
 | `twg` | Adaptador de Bitbucket/Jira (CLI). Obtiene diff, publica comentarios inline/resumen y resuelve anclas. |
@@ -211,11 +212,14 @@ inline** (+ resumen en el PR + Teams). Política en `max_autonomy: report`: cero
 escritura de código en el repo del PR. La **Fase 2 (HITL)** permite pausar y
 reanudar con una decisión humana.
 
-**Fase 3 (fix + verificación) en curso.** La base pura está cerrada (`F1`–`F6`):
-un hallazgo aprobado con acción `fix_*` produce un parche, se valida localmente y
-se verifica en el sandbox; solo si pasa se publica como sugerencia inline. Sigue
-**sin escribir** el repo. Falta el servicio `sandbox-runner` (`F7`–`F10`), que
-depende de P6 (revisión de seguridad) y de Q2 (comando de tests dirigidos).
+**Fase 3 (fix + verificación) en curso.** La base pura (`F1`–`F6`) y el **runner**
+(`F7`–`F10`) están cerrados: un hallazgo aprobado con acción `fix_*` produce un
+parche, se valida localmente y se verifica en el servicio `sandbox-runner` con la
+imagen del CI por digest; solo si pasa se publica como sugerencia inline. Sigue
+**sin escribir** el repo. El runner es **síncrono** (`POST /verify` bloqueante con
+`run_key` idempotente). Falta el cierre (`F11`–`F13`: spike R1 real, smoke real,
+docs) y el desacople fuerte de E7. El smoke real depende de **P6** (revisión de
+seguridad), precondición para ejecutar código de PRs de terceros.
 
 ## Fix verificado (Fase 3, base pura)
 
@@ -229,6 +233,16 @@ depende de P6 (revisión de seguridad) y de Q2 (comando de tests dirigidos).
 - **Sin sandbox no hay `VERIFIED`:** sin fixer o sin runner, el fix queda
   `NOT_VERIFIABLE` y el inline lo dice. Un fallo tras los intentos queda `FAILED`
   con el `stderr_tail` acotado. Ver `docs/fase3-fix-verificacion-20261011.md`.
+
+### Servicio `sandbox-runner`
+
+El worker nunca ejecuta código del PR: delega en este servicio interno, aislado
+(sin `docker.sock`, sin puertos publicados, demonio rootless propio). El ciclo —
+clonar, aplicar el parche, `setup` con red donde haga falta (`composer install
+--no-scripts`), checks con `--network none`, y destruir **siempre**— vive entero
+en el runner. El `run_key` lo hace idempotente: una reentrega tras una caída no
+lanza una segunda ejecución. La imagen se fija **por digest** (`ci_image_digest`
+del perfil); un tag mutable o su ausencia → `NOT_VERIFIABLE` sin ejecutar nada.
 
 ## Smoke real contra Bitbucket
 

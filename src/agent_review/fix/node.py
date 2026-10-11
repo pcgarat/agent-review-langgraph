@@ -196,16 +196,33 @@ def _fix_one(
             )
             continue
 
-        report = sandbox.verify(
-            VerifyRequest(
-                run_key=f"{request.review_key}:{finding.id}:{attempts}",
-                repo=request.repo,
-                head_sha=request.head_sha,
-                patch=patch.diff,
-                recipes=recipes,
-                targets=targets,
+        try:
+            report = sandbox.verify(
+                VerifyRequest(
+                    run_key=f"{request.review_key}:{finding.id}:{attempts}",
+                    repo=request.repo,
+                    head_sha=request.head_sha,
+                    patch=patch.diff,
+                    recipes=recipes,
+                    targets=targets,
+                )
             )
-        )
+        except Exception as exc:
+            # Un fallo transitorio (runner caido, red) se reintenta en el nodo.
+            if is_transient(exc):
+                raise
+            # Un fallo permanente del runner (perfil sin digest, targets invalidos,
+            # peticion rechazada) no se arregla reintentando: el parche es correcto
+            # pero no se puede verificar. Se marca `NOT_VERIFIABLE` con la razon,
+            # nunca `FAILED` (que implicaria que la verificacion se ejecuto).
+            logger.warning("Fase 3: sandbox no verificable para %s (%s)", finding.id, exc)
+            return FixResult(
+                finding_id=finding.id,
+                status=FixStatus.NOT_VERIFIABLE,
+                attempts=attempts,
+                patch=patch,
+                reason=str(exc),
+            )
         if report.passed:
             return FixResult(
                 finding_id=finding.id,

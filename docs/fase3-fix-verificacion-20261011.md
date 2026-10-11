@@ -215,10 +215,15 @@ class SandboxPort(Protocol):
     def verify(self, request: VerifyRequest) -> VerifyReport: ...
 ```
 
-- `HttpSandboxAdapter` (worker): `POST /runs` → `run_id`; sondea `GET /runs/{id}`
-  hasta terminar o `sandbox.timeout_s`. Un `POST` con un `run_key` ya visto
-  devuelve el run existente: si el worker cae a mitad, al reanudar **no** se lanza
-  una segunda ejecución.
+- `HttpSandboxAdapter` (worker): `POST /verify` **bloqueante** con un `run_key`
+  idempotente; el timeout del POST es `sandbox.timeout_s` más una holgura. Un
+  `POST` con un `run_key` ya visto devuelve el informe existente: si el worker cae
+  a mitad, al reanudar **no** se lanza una segunda ejecución (R8).
+  **Enmienda (2026-10-11):** se descarta `POST /runs` + sondeo `GET /runs/{id}`
+  (que decía esta sección). El worker es secuencial, así que el sondeo no saca la
+  verificación de la ruta de la review: solo añade estado de runs y GC. El
+  desacople *fuerte* (E7) es otra cosa —una cola/consumidor de fixes aparte— y
+  sigue pendiente; el adaptador síncrono no lo finge.
 - **Runner** (`src/agent_review/sandbox_runner/`, FastAPI interno, sin puerto publicado):
   1. Rechaza un perfil sin `ci_image_digest` o con tag mutable.
   2. Clona `repo@head_sha` (token de solo lectura) en un directorio efímero.
@@ -229,15 +234,28 @@ class SandboxPort(Protocol):
      sin `docker.sock`, sin privilegios, usuario no root.
   6. **Siempre** destruye contenedor y workspace (`finally`).
 - Cachés `vendor/` y `var/tailwind` por hash de su clave (§15.5), montadas de solo
-  lectura y copiadas al workspace.
+  lectura y copiadas al workspace. **Pendiente (v1):** se ejecuta `composer install`
+  en cada verificación; el montaje de cachés llega cuando el coste lo pida.
 - Concurrencia 1 en v1.
+
+#### Piezas del servicio (F8)
+
+La orquestación se separa en puertos para poder verificar **sin Docker** en `make ci`:
+
+| Pieza | Rol |
+|---|---|
+| `sandbox_runner/main.py` | FastAPI: `POST /verify` (bloqueante, idempotente por `run_key`) y `GET /healthz`. Bearer compartido worker↔runner. |
+| `sandbox_runner/verifier.py` | Orquesta el ciclo (imagen → clon → parche → setup → checks → destruir). Rechaza perfil sin digest, valida `targets`, cachea por `run_key` y rechaza un run en curso. |
+| `sandbox_runner/workspace.py` | `GitWorkspace`: clona `@head_sha` con el token de solo lectura y aplica el parche (`--check` primero). `WorkspacePort` permite un fake en tests. |
+| `sandbox_runner/runtime.py` | `ContainerRuntime`: `create`/`start`/`remove` explícitos (no un `run --rm` opaco) para destruir siempre en `finally` y contar creaciones/destrucciones. `ContainerSpec` fija imagen por digest, red, `--cap-drop ALL`, `no-new-privileges`, usuario no root y límites. |
+| `sandbox_runner/recipes.py` | Expansión de recipes y allowlist de `targets`; `argv` sin shell (`shlex.split`, nunca `shell=True`). |
 
 ### 5.4 Recipes y perfil
 
 `config/repo_profile.emotivoo-v2.yaml` gana:
 
 ```yaml
-ci_image_digest: "sha256:…"          # obligatorio para verificar
+ci_image_digest: "sha256:…"          # obligatorio para verificar (solo sha256)
 verify:                               # el perfil es la fuente unica del orden
   - targeted                          # tests dirigidos (bin/phpunit {targets})
   - typecheck                         # make stan (tras cache:clear del setup)
@@ -246,6 +264,12 @@ verify:                               # el perfil es la fuente unica del orden
   - tests                             # make test
 checks:
   targeted: "bin/phpunit {targets}"   # Q2: rutas de test; autodescubre phpunit.dist.xml
+setup_network:                        # los setup con red (pueden bajar dependencias)
+  - composer install … --no-scripts
+setup:                                # el resto del setup, sin red
+  - bin/console cache:clear -n
+  - bin/console assets:install -n
+  - bin/console importmap:install -n
 ```
 
 `targeted` va **antes** de `typecheck`: es la señal más barata y local (tests del
@@ -254,8 +278,13 @@ exigen el test que el fix ya debería traer. `fix_recipes` en `settings.py` deja
 ser una segunda fuente de verdad: pasa a fallback para entornos sin perfil, y el
 worker lee el orden del `verify` del perfil (`profile.fix_recipes`).
 
+`setup` se parte en dos listas por la red: `setup_network` corre con red (es donde
+`composer install` baja dependencias, siempre `--no-scripts` para no ejecutar
+código del PR) y `setup`, junto con todos los checks, con `--network none` (R5).
+
 Una recipe nueva es una decisión humana (§9.4): el runner solo ejecuta nombres del
-perfil, y los `targets` se validan (`tests/**.php`, existentes, sin `..`).
+perfil, y los `targets` se validan contra una allowlist (`tests/**.php`, sin `..`,
+sin rutas absolutas) antes de montar el contenedor.
 
 ### 5.5 Publicación
 

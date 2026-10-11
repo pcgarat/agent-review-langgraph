@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
 from agent_review.adapters.github_vcs import GithubVcsAdapter
+from agent_review.adapters.http_sandbox import HttpSandboxAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.null_reviewer import NullReviewer
@@ -58,7 +59,7 @@ from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.sandbox import SandboxPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
-from agent_review.profile import expected_tools, fix_recipes, load_profile
+from agent_review.profile import expected_tools, fix_recipes, load_profile, sandbox_timeout_s
 from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, is_production, require_production_secrets
 
@@ -246,9 +247,11 @@ def build_sandbox(settings: Settings) -> SandboxPort | None:
     en ese caso el nodo `fix` marca `NOT_VERIFIABLE` y no se ejecuta nada (F7)."""
     if not settings.sandbox_enabled or not settings.sandbox_runner_url.strip():
         return None
-    # Import local: el adaptador HTTP llega con el runner (F7); hasta entonces el
-    # worker arranca sin sandbox y el fix queda `NOT_VERIFIABLE`.
-    return None
+    return HttpSandboxAdapter(
+        base_url=settings.sandbox_runner_url,
+        token=settings.sandbox_runner_token,
+        timeout_s=sandbox_timeout_s(settings),
+    )
 
 
 def build_runtime(

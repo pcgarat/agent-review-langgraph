@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_review.profile import fix_recipes, load_profile, validate_profile
+from agent_review.profile import (
+    ci_image_digest,
+    fix_recipes,
+    load_profile,
+    sandbox_timeout_s,
+    validate_profile,
+)
 from agent_review.settings import Settings
 
 _PROFILE = Path("config/repo_profile.emotivoo-v2.yaml")
@@ -76,3 +82,37 @@ def test_fix_recipes_prioriza_la_inyeccion_explicita(tmp_path: Path) -> None:
     profile.write_text("repo: r\nverify: [targeted]\n", encoding="utf-8")
     settings = Settings(repo_profile_config=str(profile))
     assert fix_recipes(settings, names=["typecheck"]) == ["typecheck"]
+
+
+def test_ci_image_digest_solo_acepta_sha256() -> None:
+    assert ci_image_digest({"ci_image_digest": "sha256:deadbeef"}) == "sha256:deadbeef"
+    # Un tag mutable no es un digest: verificar con el seria ejecutar otra imagen.
+    assert ci_image_digest({"ci_image_digest": "latest"}) == ""
+    assert ci_image_digest({"ci_image_digest": "sha256:"}) == ""
+    assert ci_image_digest({}) == ""
+
+
+def test_resolve_ci_image_compone_la_referencia_pinada() -> None:
+    from agent_review.profile import resolve_ci_image
+
+    profile = {"ci_image": "reg.io/x/ci:latest", "ci_image_digest": "sha256:abc"}
+    assert resolve_ci_image(profile) == "reg.io/x/ci@sha256:abc"
+    # El puerto del host no es un tag: no se recorta.
+    profile = {"ci_image": "reg.io:5000/x/ci:1.2", "ci_image_digest": "sha256:abc"}
+    assert resolve_ci_image(profile) == "reg.io:5000/x/ci@sha256:abc"
+    assert resolve_ci_image({"ci_image": "reg.io/x/ci:latest"}) is None
+    assert resolve_ci_image({"ci_image_digest": "sha256:abc"}) is None
+
+
+def test_sandbox_timeout_manda_el_perfil(tmp_path: Path) -> None:
+    profile = tmp_path / "p.yaml"
+    profile.write_text("repo: r\nsandbox:\n  timeout_s: 42\n", encoding="utf-8")
+    settings = Settings(repo_profile_config=str(profile), sandbox_timeout_s=1200.0)
+    assert sandbox_timeout_s(settings) == 42.0
+
+
+def test_sandbox_timeout_cae_al_env_sin_perfil(tmp_path: Path) -> None:
+    settings = Settings(
+        repo_profile_config=str(tmp_path / "no-existe.yaml"), sandbox_timeout_s=99.0
+    )
+    assert sandbox_timeout_s(settings) == 99.0

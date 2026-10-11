@@ -57,10 +57,18 @@ class Settings(BaseSettings):
     sandbox_enabled: bool = False
     sandbox_registry_user: str = ""
     sandbox_registry_token: str = ""
+    # Token de Bitbucket de SOLO LECTURA que usa el runner para clonar. Distinto
+    # del de `twg` del worker: aunque un PR malicioso lo viera, no da push (Q3).
+    sandbox_git_token: str = ""
+    # Binario de Docker del runner (rootless en el host del runner).
+    sandbox_docker_bin: str = "docker"
     # URL interna del `sandbox-runner` (Fase 3). Con `SANDBOX_ENABLED=true` y esta
     # URL, el nodo `fix` puede verificar parches; sin ellas, queda `NOT_VERIFIABLE`.
     sandbox_runner_url: str = ""
     sandbox_runner_token: str = ""
+    # Techo de una verificacion en el sandbox, si el perfil no lo declara. Vive en
+    # el perfil (`sandbox.timeout_s`); esto es el fallback sin perfil.
+    sandbox_timeout_s: float = 1200.0
     # Formato de entrega del parche verificado: `diff` (fallback seguro) o
     # `suggestion` (si Bitbucket lo renderiza). E6.
     fix_delivery: str = "diff"
@@ -189,6 +197,14 @@ def insecure_secrets(settings: Settings) -> list[str]:
         insecure.append("TEAMS_WEBHOOK_URL")
     if settings.llm_reviewer_enabled and not settings.llm_api_key.strip():
         insecure.append("LLM_API_KEY")
+    # Con el sandbox activo hay dos superficies nuevas: el token compartido
+    # worker<->runner y el token de clonado de solo lectura del runner. Sin ellos
+    # el worker no puede pedir la verificacion o el runner no puede clonar.
+    if settings.sandbox_enabled:
+        if _is_unset(settings.sandbox_runner_token):
+            insecure.append("SANDBOX_RUNNER_TOKEN")
+        if not settings.sandbox_git_token.strip():
+            insecure.append("SANDBOX_GIT_TOKEN")
     return insecure
 
 

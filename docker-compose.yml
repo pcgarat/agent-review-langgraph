@@ -60,6 +60,37 @@ services:
     networks:
       - reviews
 
+  # Fase 3: verifica el parche de un fix con la imagen del CI por digest. Executa
+  # codigo de PRs de terceros, asi que vive AISLADO: no monta ningun socket de
+  # Docker del host (habla con su propio demonio rootless via el CLI `docker`),
+  # no publica puertos y solo es alcanzable por el worker en la red interna.
+  sandbox-runner:
+    build:
+      context: .
+      args:
+        SANDBOX_RUNNER: "true"
+    restart: unless-stopped
+    command: python -m agent_review.sandbox_runner.main
+    env_file: .env
+    environment:
+      # El runner no revisa nada: no necesita las credenciales de Bitbucket del
+      # worker (TWG_*). Solo clona con su token de solo lectura y ejecuta la imagen.
+      TWG_BBC_TOKEN: ""
+    volumes:
+      - ./config:/app/config:ro
+      # El socket del demonio DEDICADO del runner (rootless), en el path por
+      # defecto del CLI. Nunca el del worker ni el del host con privilegios.
+      - /run/user/1000/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

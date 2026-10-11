@@ -27,10 +27,18 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def _artifacts_in_tmp(tmp_path: Path, monkeypatch) -> None:
     """Los artefactos se escriben en un directorio temporal, no en el repo."""
-    monkeypatch.setattr(main._settings(), "tooling_output_root", str(tmp_path))
+    settings = main._settings()
+    monkeypatch.setattr(settings, "tooling_output_root", str(tmp_path))
     # Los tests no deben depender de un `.env` real: con el secreto relajado, los
     # casos sin firma se comportan como hasta ahora (los de firma lo restauran).
-    monkeypatch.setattr(main._settings(), "tooling_webhook_secret", "change-me")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "change-me")
+    # `get_settings()` lee el `.env` del host (gitignored), asi que un despliegue
+    # local con `VCS_PROVIDER=github` cambiaria el repo que `_verify_repo` admite y
+    # tumbaria la suite. Se fija el proveedor y la identidad al repo de los tests;
+    # los casos que prueban GitHub los sobrescriben a proposito.
+    monkeypatch.setattr(settings, "vcs_provider", "twg")
+    monkeypatch.setattr(settings, "bitbucket_workspace", "cqm")
+    monkeypatch.setattr(settings, "bitbucket_repo", "emotivoo-v2")
 
 
 def _reset_fallbacks(expected_tools: list[str] | None = None) -> None:
@@ -213,6 +221,49 @@ def test_arranque_en_produccion_sin_token_de_decision_falla(monkeypatch) -> None
     monkeypatch.setattr(settings, "reviews_decision_token", "change-me")
     with pytest.raises(RuntimeError, match="REVIEWS_DECISION_TOKEN"):
         require_production_secrets(settings)
+
+
+def _secure_settings(monkeypatch) -> object:
+    """Settings de produccion con todo el contrato base ya relleno."""
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "reviews_decision_token", "token-decision-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    monkeypatch.setattr(settings, "teams_enabled", False)
+    return settings
+
+
+def test_arranque_con_sandbox_sin_token_de_runner_falla(monkeypatch) -> None:
+    from agent_review.settings import require_production_secrets
+
+    settings = _secure_settings(monkeypatch)
+    monkeypatch.setattr(settings, "sandbox_enabled", True)
+    monkeypatch.setattr(settings, "sandbox_runner_token", "change-me")
+    monkeypatch.setattr(settings, "sandbox_git_token", "token-lectura-real")
+    with pytest.raises(RuntimeError, match="SANDBOX_RUNNER_TOKEN"):
+        require_production_secrets(settings)
+
+
+def test_arranque_con_sandbox_sin_token_de_clonado_falla(monkeypatch) -> None:
+    from agent_review.settings import require_production_secrets
+
+    settings = _secure_settings(monkeypatch)
+    monkeypatch.setattr(settings, "sandbox_enabled", True)
+    monkeypatch.setattr(settings, "sandbox_runner_token", "token-runner-real")
+    monkeypatch.setattr(settings, "sandbox_git_token", "")
+    with pytest.raises(RuntimeError, match="SANDBOX_GIT_TOKEN"):
+        require_production_secrets(settings)
+
+
+def test_arranque_con_sandbox_desactivado_no_exige_sus_secretos(monkeypatch) -> None:
+    from agent_review.settings import require_production_secrets
+
+    settings = _secure_settings(monkeypatch)
+    monkeypatch.setattr(settings, "sandbox_enabled", False)
+    monkeypatch.setattr(settings, "sandbox_runner_token", "change-me")
+    monkeypatch.setattr(settings, "sandbox_git_token", "")
+    require_production_secrets(settings)
 
 
 def _paused_request() -> ReviewRequest:
