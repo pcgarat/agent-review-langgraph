@@ -6,8 +6,8 @@ from typing import Protocol, runtime_checkable
 
 import redis
 
-from agent_review.domain.models import ApprovalRequest, ReviewRequest
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.models import ApprovalRequest, FixWaitRequest, ReviewRequest
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.redis_utils import build_redis_client
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,9 @@ class PausedStore(Protocol):
     def pause(
         self,
         request: ReviewRequest,
-        approval: ApprovalRequest,
+        approval: ApprovalRequest | FixWaitRequest,
         *,
+        kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
     ) -> PausedReview: ...
 
@@ -106,13 +107,16 @@ class RedisPausedStore:
     def pause(
         self,
         request: ReviewRequest,
-        approval: ApprovalRequest,
+        approval: ApprovalRequest | FixWaitRequest,
         *,
+        kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
     ) -> PausedReview:
         if not self.available():
-            return self._fallback.pause(request, approval, created_at=created_at)
-        review = PausedReview(review_key=request.review_key, request=request, approval=approval)
+            return self._fallback.pause(request, approval, kind=kind, created_at=created_at)
+        review = PausedReview(
+            review_key=request.review_key, request=request, kind=kind, approval=approval
+        )
         if created_at is not None:
             # Re-registro de una pausa perdida: el TTL cuenta desde la pausa real.
             review.created_at = created_at
@@ -187,11 +191,14 @@ class InMemoryPausedStore:
     def pause(
         self,
         request: ReviewRequest,
-        approval: ApprovalRequest,
+        approval: ApprovalRequest | FixWaitRequest,
         *,
+        kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
     ) -> PausedReview:
-        review = PausedReview(review_key=request.review_key, request=request, approval=approval)
+        review = PausedReview(
+            review_key=request.review_key, request=request, kind=kind, approval=approval
+        )
         if created_at is not None:
             review.created_at = created_at
         if self._ttl_s is not None:

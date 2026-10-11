@@ -42,7 +42,7 @@ def build_decision(
     if paused.review_key != reviewed_key:
         raise DecisionError(f"La review pausada es {paused.review_key}, no {reviewed_key}")
 
-    pending_ids = {pending.finding_id for pending in paused.approval.pending}
+    pending_ids = {pending.finding_id for pending in paused.human_request.pending}
     unknown = [item.finding_id for item in collected if item.finding_id not in pending_ids]
     if unknown:
         raise DecisionError("finding_id ajeno a la review pausada: " + ", ".join(sorted(unknown)))

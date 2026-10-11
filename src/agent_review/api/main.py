@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from agent_review.adapters.tooling_source import FileToolingOutputSource, validate_tooling_template
 from agent_review.decision import build_decision
 from agent_review.domain.models import FindingDecision, ReviewRequest
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
 from agent_review.idempotency import (
     IdempotencyStore,
@@ -295,42 +296,47 @@ def list_pending() -> dict[str, object]:
 
 @app.get("/reviews/paused")
 def list_paused() -> dict[str, object]:
-    """Reviews pausadas esperando decision, con sus hallazgos pendientes."""
+    """Reviews pausadas: humanas (esperan decision) o de fix (esperan verificacion)."""
     settings = _settings()
     paused = build_paused(settings).all()
-    return {
-        "paused": [
-            {
-                "review_key": review.review_key,
-                "created_at": review.created_at.isoformat(),
-                "pending": [item.model_dump(mode="json") for item in review.approval.pending],
-                "command_hint": review.approval.command_hint,
-            }
-            for review in paused
-        ]
+    return {"paused": [_paused_payload(review) for review in paused]}
+
+
+def _paused_payload(review: PausedReview) -> dict[str, object]:
+    """Forma comun por kind: `human` expone pendientes; `fix`, la wave en curso."""
+    payload: dict[str, object] = {
+        "review_key": review.review_key,
+        "kind": review.kind.value,
+        "created_at": review.created_at.isoformat(),
     }
+    if review.kind is PauseKind.HUMAN:
+        approval = review.human_request
+        payload["state"] = "PAUSED"
+        payload["pending"] = [item.model_dump(mode="json") for item in approval.pending]
+        payload["command_hint"] = approval.command_hint
+    else:
+        wave = review.fix_request
+        payload["state"] = "VERIFYING"
+        payload["jobs"] = [
+            {"run_key": job.run_key, "finding_id": job.finding_id} for job in wave.jobs
+        ]
+    return payload
 
 
 @app.get("/reviews/{review_key:path}")
 def get_review_state(review_key: str) -> dict[str, object]:
-    """Estado de una review segun el inbox: `PAUSED` o desconocido.
+    """Estado de una review segun el inbox: `PAUSED`, `VERIFYING` o desconocido.
 
     El API no habla con el checkpointer (spec §4.9): la verdad durable vive en
     Postgres y su indice de descubrimiento es el inbox. Por eso solo se puede
-    afirmar `PAUSED` (esta en el inbox) o `UNKNOWN` (no consta pausada; puede estar
-    completada o ser ajena). Devuelve 404 si no consta pausada.
+    afirmar `PAUSED`/`VERIFYING` (esta en el inbox) o `UNKNOWN` (no consta pausada;
+    puede estar completada o ser ajena). Devuelve 404 si no consta pausada.
     """
     settings = _settings()
     paused = build_paused(settings).get(review_key)
     if paused is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"{review_key} no consta como pausada")
-    return {
-        "review_key": paused.review_key,
-        "state": "PAUSED",
-        "created_at": paused.created_at.isoformat(),
-        "pending": [item.model_dump(mode="json") for item in paused.approval.pending],
-        "command_hint": paused.approval.command_hint,
-    }
+    return _paused_payload(paused)
 
 
 @app.post("/reviews/{review_key:path}/decision")

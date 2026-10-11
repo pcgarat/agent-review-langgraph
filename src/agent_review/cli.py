@@ -36,12 +36,12 @@ def _cmd_list(settings: Settings) -> int:
         return 0
     for review in sorted(paused, key=lambda r: r.created_at):
         print(f"{review.review_key}  (pausada {_fmt_created(review)})")
-        for pending in review.approval.pending:
+        for pending in review.human_request.pending:
             print(
                 f"  - {pending.finding_id} [{pending.severity.value}] "
                 f"{pending.proposed_action.value}: {pending.title} ({pending.file}:{pending.line})"
             )
-        print(f"  decide: {review.approval.command_hint}")
+        print(f"  decide: {review.human_request.command_hint}")
     return 0
 
 

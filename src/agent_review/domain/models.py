@@ -178,12 +178,65 @@ class PendingDecision(BaseModel):
 class ApprovalRequest(BaseModel):
     """Carga del `interrupt`: lo que se muestra en el aviso y en el CLI."""
 
+    # Discriminante de la pausa (Fase 3-E7): una pausa humana frente a la pausa
+    # del fix (`FixWaitRequest`). Simetrico con `FixWaitRequest.kind`.
+    kind: Literal["human"] = "human"
     review_key: str
     repo: str
     pr_id: int
     head_sha: str
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
+
+
+class VerifyJob(BaseModel):
+    """Una verificacion pendiente en el sandbox (un hallazgo, un intento).
+
+    Es la unidad que consume el worker de fixes: lleva todo lo necesario para un
+    `VerifyRequest` (E7) sin que ese proceso conozca el grafo ni el VCS.
+    """
+
+    run_key: str  # review_key:finding_id:attempt — idempotencia
+    finding_id: str
+    attempt: int = Field(ge=1)
+    repo: str
+    head_sha: str
+    patch: str
+    recipes: list[str] = Field(default_factory=list)
+    targets: list[str] = Field(default_factory=list)
+
+
+class FixWaitRequest(BaseModel):
+    """Carga del `interrupt` del nodo `fix_wait`: la wave de verificaciones.
+
+    Espejo de `ApprovalRequest`. El worker de reviews la registra en el inbox y
+    la encola en la cola de fixes; el worker de fixes la resuelve entera.
+    """
+
+    kind: Literal["fix"] = "fix"
+    review_key: str
+    repo: str
+    pr_id: int
+    head_sha: str
+    jobs: list[VerifyJob] = Field(default_factory=list)
+
+
+class FixResolution(BaseModel):
+    """Resultado de una verificacion, producido por el worker de fixes."""
+
+    run_key: str
+    # `error` es un fallo del runner/peticion (no un check rojo): el fix queda
+    # `NOT_VERIFIABLE`, nunca `FAILED` (que implicaria que la verificacion corrio).
+    outcome: Literal["passed", "failed", "error"]
+    checks: list[CommandResult] = Field(default_factory=list)
+    image_digest: str | None = None
+    error: str = ""
+
+
+class FixResolutions(BaseModel):
+    """Valor del `Command(resume=...)` de `fix_wait`: una wave resuelta de una vez."""
+
+    items: list[FixResolution] = Field(default_factory=list)
 
 
 class ReviewRequest(BaseModel):
@@ -205,6 +258,11 @@ class ReviewRequest(BaseModel):
     # hilo pausado, no una review nueva. La identidad (review_key/thread_id) no
     # cambia: la reanudacion reutiliza el hilo de la review.
     decision: HitlDecision | None = None
+
+    # Fase 3-E7: reanudacion de una pausa de fix. La wave la resolvio el worker de
+    # fixes y la aplica el worker de reviews, por la misma cola que la decision.
+    # `None` en una review normal: el campo no cambia su forma.
+    fix_resolution: FixResolutions | None = None
 
     # Pasada degradada: la encola el barrido de ingesta cuando vence la espera sin
     # todos los artefactos. Tiene su propio hilo (`thread_id`) para que, si el
@@ -320,6 +378,10 @@ class FixStatus(StrEnum):
     # Bloqueo de seguridad: ruta nunca-auto o tema protegido. Ni con aprobacion
     # humana se arregla: la proteccion manda sobre la decision (D3 invertida).
     BLOCKED = "blocked"
+    # E7: parche valido, verificacion **despachada** al worker de fixes y aun sin
+    # resolver. Es el unico estado que `fix_dispatch` no puede cerrar por si mismo:
+    # la wave se resuelve en otro proceso y el grafo reanuda en `fix_wait`.
+    PENDING = "pending_verification"
 
 
 class ProposedPatch(BaseModel):

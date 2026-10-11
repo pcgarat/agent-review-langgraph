@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from agent_review.domain.models import ApprovalRequest, ReviewRequest
+from agent_review.domain.models import ApprovalRequest, FixWaitRequest, ReviewRequest
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +16,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_DECISION_TTL_S = 7 * 24 * 3600.0
 
 
+class PauseKind(StrEnum):
+    """Que espera una review pausada: una decision humana o una verificacion."""
+
+    HUMAN = "human"
+    FIX = "fix"
+
+
 class PausedReview(BaseModel):
-    """Review pausada esperando una decision humana.
+    """Review pausada. Hoy espera una decision humana o una wave de fix (E7).
 
     Espejo de `PendingReview`: el estado durable vive en el checkpoint de
     Postgres; esto es el indice que descubren la API y el CLI.
+
+    `kind` desambigua la carga y es tambien el discriminante de `approval`.
     """
 
     review_key: str
     request: ReviewRequest
-    approval: ApprovalRequest
+    kind: PauseKind = PauseKind.HUMAN
+    # Se elige por `kind`, no por forma: un `ApprovalRequest` (pending) o un
+    # `FixWaitRequest` (jobs). El default `human` hace legibles las entradas
+    # antiguas de Redis (Fase 2), que no traen `kind`.
+    approval: Annotated[ApprovalRequest | FixWaitRequest, Field(discriminator="kind")]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     ttl_s: float = DEFAULT_DECISION_TTL_S
     # Cuando el barrido ya encolo la reanudacion `expired`. Sin esta marca, una
@@ -34,9 +49,40 @@ class PausedReview(BaseModel):
     # de una reanudacion perdida (ver `paused_store._is_due`).
     expired_enqueues: int = 0
 
+    @field_validator("approval", mode="before")
+    @classmethod
+    def _infer_kind_from_payload(cls, value: object) -> object:
+        """Una entrada sin `kind` (Fase 2) con `pending` es humana.
+
+        El discriminante de pydantic lo pone `kind` en la envoltura, pero una
+        entrada de Redis escrita por la Fase 2 no lo trae. Se rellena aqui para
+        que la lectura siga siendo tolerante; una pausa de fix siempre lo lleva.
+        """
+        if isinstance(value, dict) and "kind" not in value and "pending" in value:
+            return {**value, "kind": PauseKind.HUMAN.value}
+        return value
+
     @property
     def key(self) -> str:
         return self.review_key
+
+    @property
+    def human_request(self) -> ApprovalRequest:
+        """La carga humana. Uso: el canal de decision, que solo actua sobre `human`.
+
+        Falla ruidoso si la pausa es de fix: quien llama debe haber distinguido por
+        `kind`; un mixup silencioso reanudaria una review de fix con una decision.
+        """
+        if not isinstance(self.approval, ApprovalRequest):
+            raise TypeError(f"La pausa {self.review_key} es de fix, no humana")
+        return self.approval
+
+    @property
+    def fix_request(self) -> FixWaitRequest:
+        """La wave de verificaciones. Uso: registro/encolado de una pausa de fix."""
+        if not isinstance(self.approval, FixWaitRequest):
+            raise TypeError(f"La pausa {self.review_key} no es de fix")
+        return self.approval
 
     def is_expired(self, *, now: datetime | None = None) -> bool:
         age_s = ((now or datetime.now(UTC)) - self.created_at).total_seconds()

@@ -18,8 +18,11 @@ from agent_review.domain.models import (
     Finding,
     FindingAction,
     FindingDecision,
+    FixResolution,
+    FixResolutions,
     FixResult,
     FixStatus,
+    FixWaitRequest,
     HitlDecision,
     Owner,
     PendingDecision,
@@ -27,6 +30,7 @@ from agent_review.domain.models import (
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
+    VerifyJob,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +58,12 @@ _STATE_TYPES: tuple[type, ...] = (
     ProposedPatch,
     CommandResult,
     FixResult,
+    # E7: el handoff del fix viaja por el estado (la wave en `fix_wait` y su
+    # resolucion en el resume), asi que deben pasar la allowlist.
+    VerifyJob,
+    FixWaitRequest,
+    FixResolution,
+    FixResolutions,
 )
 
 

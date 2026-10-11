@@ -38,7 +38,7 @@ from agent_review.domain.models import (
     ReviewOutcome,
     ReviewRequest,
 )
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
 from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter, DiffFormatter, SuggestionFormatter
@@ -601,12 +601,16 @@ def sweep_expired(
     """
     enqueued: list[ReviewRequest] = []
     for review in paused.sweep(now=now):
+        # El barrido `expired` es del HITL: una pausa de fix vence por su propio
+        # TTL (`FIX_VERIFY_TTL_S`, F20), no se reanuda como "sin decision".
+        if review.kind is not PauseKind.HUMAN:
+            continue
         expired = HitlDecision(
             review_key=review.review_key,
             actor="system:ttl",
             items=[
                 FindingDecision(finding_id=item.finding_id, outcome=DecisionOutcome.EXPIRED)
-                for item in review.approval.pending
+                for item in review.human_request.pending
             ],
         )
         request = review.request.model_copy(update={"decision": expired})
