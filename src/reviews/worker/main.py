@@ -22,7 +22,7 @@ from reviews.adapters.tooling_source import (
     validate_tooling_template as validate_tooling_template_source,
 )
 from reviews.adapters.twg_vcs import TwgVcsAdapter, check_twg
-from reviews.checkpointer import build_checkpointer
+from reviews.checkpointer import build_checkpointer, prune_completed_threads
 from reviews.domain.models import (
     DecisionOutcome,
     FindingDecision,
@@ -466,6 +466,7 @@ def run_forever(
     graph = graph or build_runtime(settings, chat=chat)
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
+    saver = getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
@@ -482,10 +483,17 @@ def run_forever(
                 chat=chat,
             )
             continue
-        # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
+        # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision)
+        # y podar los checkpoints de hilos completados.
         if time.monotonic() - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
             sweep_expired(paused_store, queue)
+            if saver is not None:
+                prune_completed_threads(
+                    saver,
+                    older_than_days=settings.checkpoint_retention_days,
+                    paused_threads=[review.review_key for review in paused_store.all()],
+                )
             last_sweep = time.monotonic()
 
 

@@ -314,3 +314,28 @@ def test_decision_exige_bearer_cuando_hay_token(monkeypatch) -> None:
     assert client.post(url, json=body, headers={"Authorization": "Bearer malo"}).status_code == 401
     ok = client.post(url, json=body, headers={"Authorization": "Bearer secreto-decision"})
     assert ok.status_code == 202
+
+
+def test_estado_de_review_pausada() -> None:
+    _reset_fallbacks()
+    _pause()
+    response = client.get("/reviews/cqm/emotivoo-v2:42:abc123:7")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "PAUSED"
+    assert body["pending"][0]["finding_id"] == "f1"
+
+
+def test_estado_de_review_desconocida_es_404() -> None:
+    _reset_fallbacks()
+    assert client.get("/reviews/cqm/emotivoo-v2:42:abc123:7").status_code == 404
+
+
+def test_reviews_paused_no_lo_traga_la_ruta_comodin() -> None:
+    # `/reviews/paused` y `/reviews/{review_key:path}` conviven: el literal debe
+    # seguir ganando para no confundir el listado con una review llamada "paused".
+    _reset_fallbacks()
+    _pause()
+    response = client.get("/reviews/paused")
+    assert response.status_code == 200
+    assert "paused" in response.json()
