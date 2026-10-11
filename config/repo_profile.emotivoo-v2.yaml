@@ -24,16 +24,19 @@ checks:
   lint: make cs-check
   typecheck: make stan
   arch: make deptrac
+  # Tests dirigidos por rutas (Q2, ver abajo). `bin/phpunit` autodescubre
+  # `phpunit.dist.xml` (PHPUnit 10.1+), asi que hereda failOnDeprecation/Notice/
+  # Warning, el bootstrap y APP_ENV=test sin pasar `-c`. `{targets}` se sustituye
+  # por rutas de test validadas por el runner; si vienen vacias, la recipe se salta.
+  targeted: "bin/phpunit {targets}"
   tests: make test
+
+# Orden de verificacion del pre-commit (§15.3) ampliado con lo que solo corre en CI.
+verify: [typecheck, arch, lint, targeted, tests]
 
 # Herramientas cuya salida espera la review antes de ejecutarse (barrera de ingesta).
 expected_tools:
   - phpstan
-
-targeted_tests:
-  unit: make test-unit
-  functional: make test-functional
-  integration: make test-integration
 
 extra_checks:
   rector: make rector-check

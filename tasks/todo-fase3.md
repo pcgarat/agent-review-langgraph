@@ -26,8 +26,10 @@ R2); P6 recategorizada como precondición del runner (Q4).
   - Verifica: `tests/test_llm_fixer.py` ✅
 - [x] **F4** Guards y selección de candidatos
   - `max_fixes_per_pr: 3`, `max_fix_lines: 30` en `autonomy.yaml`. Candidatos:
-    `APPROVED` + `fix_*`; `escalate` nunca.
-  - Verifica: `tests/test_fix_selection.py` ✅
+    `APPROVED` + `fix_*`; `escalate` nunca. **D3 invertida (2026-10-11):** un
+    hallazgo en `never_auto_paths` o con `protected_subject` se marca `BLOCKED`
+    y **no** gasta fixer ni sandbox, aunque una persona lo apruebe.
+  - Verifica: `tests/test_fix_selection.py`, `tests/test_fix_node.py` ✅
 - [x] **F5** Nodo `fix` + seam de entrega (E6)
   - `fix` entre `hitl` y `publish`; no-op sin candidatos. `SuggestionFormatter` /
     `DiffFormatter`, elegido por `FIX_DELIVERY` (por defecto `diff`).
@@ -42,9 +44,10 @@ R2); P6 recategorizada como precondición del runner (Q4).
     acotado; sección "Fixes" en el resumen; marca de dedupe por hallazgo intacta.
   - Verifica: `tests/test_fix_render.py` ✅
 
-**Checkpoint (2026-10-11):** `make ci` en verde (lint, formato, mypy strict, **320
+**Checkpoint (2026-10-11):** `make ci` en verde (lint, formato, mypy strict, **323
 tests**). El camino pausa → decisión → fix → sugerencia verificada está cubierto
-end-to-end con fakes (`tests/test_fix_e2e.py`), sin Docker ni red.
+end-to-end con fakes (`tests/test_fix_e2e.py`), sin Docker ni red. Incluye el gate
+duro de seguridad (D3 invertida): `never_auto_paths`/`protected_subject` → `BLOCKED`.
 
 ## Bloque 2 — Runner (depende de Q1 —resuelta— y de P6 —precondición—)
 
@@ -55,7 +58,9 @@ end-to-end con fakes (`tests/test_fix_e2e.py`), sin Docker ni red.
   - Clon → `git apply --check`/`apply` → `setup` (red, `--no-scripts`) → checks
     (`--network none`) → destruir en `finally`. Sin `docker.sock`, sin privilegios.
   - Verifica: `tests/test_sandbox_runner.py` (fake de Docker contando creations/destructions).
-- [ ] **F9** Perfil: `ci_image_digest`, recipes `verify`, `targeted_tests.files` (Q2)
+- [ ] **F9** Perfil: `ci_image_digest`, recipes `verify`, `checks.targeted` (Q2)
+  - Q2 **resuelto**: `checks.targeted = "bin/phpunit {targets}"`. Ya aplicado al
+    perfil; falta `ci_image_digest` y que el runner sustituya `{targets}`.
 - [ ] **F10** compose + settings + secretos (`SANDBOX_GIT_TOKEN`,
   `SANDBOX_REGISTRY_*` al runner, `SANDBOX_RUNNER_TOKEN`)
 
@@ -68,7 +73,7 @@ end-to-end con fakes (`tests/test_fix_e2e.py`), sin Docker ni red.
 ## Precondiciones externas
 
 - [ ] **P6** (Q4) revisar la heurística de tema protegido con seguridad — **bloquea F8**
-- [ ] **Q2** comando de tests dirigidos de `emotivoo-v2` — bloquea F9
+- [x] **Q2** comando de tests dirigidos de `emotivoo-v2` — `bin/phpunit {targets}` ✅
 - [ ] **Q3** token de Bitbucket de solo lectura del runner — bloquea F10
 - [ ] Credencial de prueba para el spike R1 (F11)
 

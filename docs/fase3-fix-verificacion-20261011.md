@@ -53,7 +53,7 @@ Usuario: el autor/revisor del PR que ya aprobó el hallazgo con `reviews decide`
 | E2 | Generación del parche | **Fixer LLM → diff unificado**, validado antes de ejecutar | `suggested_fix` (texto libre) pasa a ser una pista, no el parche |
 | E3 | Aislamiento | **Servicio `sandbox-runner` separado** con Docker rootless/Podman | El worker **nunca** toca un socket de Docker; habla HTTP interno |
 | E4 | Verificación | **Dirigida + suite completa** | ~20 min por fix en el peor caso; fiel a §9.5 y §13 |
-| E5 | Autoridad humana | D3 de Fase 2 **se mantiene**: la aprobación basta, incluido `never_auto_paths` | Mitigado por E1: una persona aplica la sugerencia (§2.1) |
+| E5 | Autoridad humana | **D3 invertida (2026-10-11)**: la protección de seguridad manda sobre la aprobación. `never_auto_paths` y `protected_subject` **bloquean** el fix aunque una persona marque `APPROVED` | El humano decide qué *puede* hacer el agente, no amplía lo que tiene *prohibido*; lo bloqueado se publica como `BLOCKED` con su razón (§2.1) |
 | E6 | Entrega: **seam** de formato | El nodo `fix` produce un `FixResult` verificado; un `DeliveryFormatter` (Strategy) lo emite como ` ```suggestion ` o ` ```diff ` | R1 deja de ser bloqueante: solo elige el adaptador, no el diseño |
 | E7 | Verificación **desacoplada** de la review | La verificación no bloquea la publicación de otras reviews (R2) | La latencia del sandbox sale de la ruta caliente de la cola |
 
@@ -74,13 +74,17 @@ demás reviews del worker único. E7 la separa: el trabajo del sandbox se despac
 y la publicación de las demás reviews no espera a que termine. Es una propiedad
 de arquitectura, no una optimización, y por eso entra en v1 (revisión de R2).
 
-### 2.1 D3 con E1: por qué el riesgo asumido se acota
+### 2.1 D3 invertida: la protección manda sobre la aprobación
 
-D3 dice que un único actor puede autorizar un fix en rutas nunca-auto. Con E1 el
-agente no tiene token de escritura: la sugerencia es **texto en un comentario**, y
-aplicarla requiere un segundo gesto humano en Bitbucket con los permisos de esa
-persona. El riesgo residual es **ejecutar** un parche sobre esas rutas dentro del
-sandbox, que está aislado (§5). Se revisa D3 antes de cualquier modo con push.
+D3 decía que un único actor podía autorizar un fix en rutas nunca-auto. **Se invierte
+(2026-10-11)**: `never_auto_paths` y `protected_subject` son un **bloqueo duro**, no un
+gate que la aprobación humana pueda saltar. Aunque una persona marque `APPROVED`, un
+hallazgo en esas rutas o temas **no** produce parche ni toca el sandbox: se publica como
+`BLOCKED` con su razón (§5.5). El humano decide qué *puede* hacer el agente dentro de lo
+permitido; no amplía lo que la política tiene *prohibido*. Es coherente con §8 del diseño
+("`protected_subject` bloquea el autofix siempre") y con E1: el agente no tiene token de
+escritura, pero la ejecución del parche en el sandbox (código de terceros) es justo lo
+que no se delega a la aprobación.
 
 ---
 
@@ -99,9 +103,11 @@ sandbox, que está aislado (§5). Se revisa D3 antes de cualquier modo con push.
 5. **El digest de `emotivoo-ci` se fija en el perfil** y se actualiza a mano (o por
    un job) cuando cambia `Dockerfile.ci`. Un PR que toca `docker/php/Dockerfile.ci`
    **no se verifica**: el fix escala con razón "imagen del CI cambiada por el PR".
-6. **Tests dirigidos por convención** `src/<Ruta>/<Clase>.php` →
-   `tests/**/<Clase>Test.php`. Si no existe test, se salta al `make test`. Falta
-   confirmar el comando que acepta ficheros (ver §10, Q2).
+6. Tests dirigidos por convención `src/<Ruta>/<Clase>.php` →
+   `tests/**/<Clase>Test.php`. Si no existe test, se salta al `make test`.
+   **Resuelto (Q2, 2026-10-11):** el comando es `bin/phpunit {targets}`; `bin/phpunit`
+   autodescubre `phpunit.dist.xml` (PHPUnit ≥10.1), así que respeta `failOnDeprecation`,
+   el bootstrap y `APP_ENV=test` sin `-c`.
 
 ---
 
@@ -238,8 +244,8 @@ verify:                               # orden del pre-commit (§15.3)
   - lint                              # make cs-check
   - targeted                          # tests dirigidos (si hay targets)
   - tests                             # make test
-targeted_tests:
-  files: "<comando que acepta rutas>" # ver §10, Q2
+checks:
+  targeted: "bin/phpunit {targets}"   # Q2: rutas de test; autodescubre phpunit.dist.xml
 ```
 
 Una recipe nueva es una decisión humana (§9.4): el runner solo ejecuta nombres del
@@ -262,6 +268,8 @@ El resto no cambia:
   verificado" con el check que falló y su `stderr_tail` (acotado), y aviso a Teams.
   **No** se vuelve a pausar (evita bucles de decisión).
 - `SKIPPED` → inline normal con la razón.
+- `BLOCKED` → inline normal con "bloqueado por seguridad: <ruta nunca-auto|tema
+  protegido>". Nunca hay parche ni ejecución, ni con `APPROVED` (§2.1).
 - El resumen gana una sección "Fixes" con el recuento por estado.
 
 ---
@@ -344,8 +352,14 @@ Credenciales nuevas (entran en `docs/gestion-de-secretos-20261011.md`):
   `dockerd-rootless-setuptool.sh` presentes, `unprivileged_userns_clone=1`,
   `max_user_namespaces=116222`. El demonio actual **no** es rootless (sin
   `Security Options`), así que el runner usa su propio demonio. No hay Podman.
-- **Q2** ¿Qué comando de `emotivoo-v2` ejecuta tests por fichero respetando
-  `failOnDeprecation` y el bootstrap? (`vendor/bin/phpunit <rutas>` vs un target `make`)
+- **Q2 — resuelto (2026-10-11).** El comando es `bin/phpunit <rutas…>` (sin `make`),
+  con `EXEC_PHP=""` desde el sandbox. `bin/phpunit` **autodescubre `phpunit.dist.xml`**
+  (PHPUnit ≥ 10.1; el repo usa 12.5), así que hereda `failOnDeprecation`/`Notice`/
+  `Warning`, el `bootstrap` y `APP_ENV=test` sin pasar `-c`. Acepta ficheros o
+  directorios (`vendor/bin/phpunit tests/Foo/BarTest.php`); con varias rutas, una por
+  argumento. No se usa `make test-unit` (filtra por `--group`, no por fichero) ni
+  `paratest` (el objetivo es un test dirigido determinista, no el reparto en procesos).
+  En el perfil queda como `checks.targeted: "bin/phpunit {targets}"`.
 - **Q3** ¿Quién emite el token de Bitbucket de solo lectura para el runner, y con qué
   rotación?
 - **Q4 — resuelto (2026-10-11).** P6 (revisar la heurística de tema protegido con
