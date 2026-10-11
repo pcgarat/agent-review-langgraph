@@ -18,5 +18,7 @@ var/
 # Binario local de twg (se copia a mano; ver bin/README.md)
 bin/twg
 
-# Preferencias locales de Claude Code (no se comparten)
-.claude/settings.local.json
+# Enlazado local de skills y preferencias de Claude Code. Los symlinks apuntan a
+# ~/.agents/skills (fuera del repo), asi que no son portables; el contenido real
+# se versiona en .agents/skills + skills-lock.json.
+.claude/
