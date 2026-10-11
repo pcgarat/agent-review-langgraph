@@ -12,6 +12,15 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _PLACEHOLDERS = ("tool", "slug", "pr_id", "head_sha")
 
 
+def validate_tooling_template(*, template: str, root: str | Path = ".") -> None:
+    """Construye la fuente sin leer nada: falla ruidoso si la plantilla no resuelve.
+
+    Pensado para el arranque (D2): un cambio en el CI que rompa la ruta del
+    artefacto debe fallar al levantar el servicio, no al procesar el primer PR.
+    """
+    FileToolingOutputSource(template=template, root=root)
+
+
 def safe_segment(value: object, *, default: str = "unknown") -> str:
     """Convierte un valor en un segmento de ruta sin traversal ni separadores."""
     cleaned = _clean(value)

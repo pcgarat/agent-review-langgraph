@@ -11,6 +11,33 @@ class TwgError(RuntimeError):
     pass
 
 
+def check_twg(twg_bin: str = "twg", *, required: bool = True) -> str | None:
+    """Comprueba que el binario de `twg` existe y responde, en el arranque.
+
+    El contenedor se construye copiando `bin/twg` *si existe*: sin este chequeo,
+    un `twg` ausente solo se descubre al procesar la primera review, y esa review
+    falla como si fuera un problema del PR. Falla ruidoso (A2) en vez de eso.
+    Devuelve el identificador de version, o `None` si `required=False` y no esta.
+    """
+    try:
+        completed = subprocess.run(
+            [twg_bin, "--version"], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:
+        if required:
+            raise TwgError(
+                f"No se encontro el binario '{twg_bin}'. Copia twg en bin/ (ver bin/README.md) "
+                "o instalalo de forma reproducible antes de arrancar."
+            ) from None
+        return None
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip()
+        if required:
+            raise TwgError(f"'{twg_bin} --version' fallo ({completed.returncode}): {message}")
+        return None
+    return (completed.stdout or completed.stderr).strip() or "twg"
+
+
 class TwgVcsAdapter:
     """Adaptador de Bitbucket via el CLI twg (>= 1.3).
 

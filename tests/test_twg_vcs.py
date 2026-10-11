@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from reviews.adapters.twg_vcs import TwgVcsAdapter
+import pytest
+
+from reviews.adapters.twg_vcs import TwgError, TwgVcsAdapter, check_twg
 
 
 def test_run_usa_json_puro(monkeypatch) -> None:
@@ -136,3 +138,34 @@ def test_list_review_markers_ignora_payload_inesperado(monkeypatch) -> None:
     adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
     monkeypatch.setattr(adapter, "_run", lambda *a, **k: json.dumps({"no": "lista"}))
     assert adapter.list_review_markers("r", 1) == []
+
+
+def test_check_twg_ok(monkeypatch) -> None:
+    class Result:
+        returncode = 0
+        stdout = "twg 1.3.5"
+        stderr = ""
+
+    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
+    assert check_twg("twg") == "twg 1.3.5"
+
+
+def test_check_twg_ausente_falla_ruidoso(monkeypatch) -> None:
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN003
+        raise FileNotFoundError
+
+    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", boom)
+    with pytest.raises(TwgError, match="No se encontro"):
+        check_twg("twg")
+    assert check_twg("twg", required=False) is None
+
+
+def test_check_twg_version_rota_falla(monkeypatch) -> None:
+    class Result:
+        returncode = 127
+        stdout = ""
+        stderr = "command not found"
+
+    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
+    with pytest.raises(TwgError, match="fallo"):
+        check_twg("twg")

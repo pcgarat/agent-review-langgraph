@@ -9,11 +9,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # El CLI twg se usa como adaptador de Bitbucket y Jira.
-# Su instalacion no es reproducible todavia: se copia el binario desde bin/ si
-# esta presente (ver README) y, si no, el contenedor arranca sin el.
-# Nunca se descarga desde una URL no verificada.
+# Se copia el binario desde bin/ si esta presente. Nunca se descarga desde una
+# URL no verificada. El worker valida `twg --version` en el arranque (A2): con
+# REQUIRE_TWG=true, la imagen falla al construir si falta el binario, de modo que
+# el fallo se ve en el build y no en la primera review.
+ARG REQUIRE_TWG=false
 COPY bin/ /opt/twg/
-RUN if [ -x /opt/twg/twg ]; then ln -sf /opt/twg/twg /usr/local/bin/twg; fi
+RUN if [ -x /opt/twg/twg ]; then ln -sf /opt/twg/twg /usr/local/bin/twg; fi \
+    && if [ "$REQUIRE_TWG" = "true" ]; then twg --version; fi
 
 WORKDIR /app
 

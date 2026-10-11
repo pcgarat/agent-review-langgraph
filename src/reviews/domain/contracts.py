@@ -14,7 +14,8 @@ class ContractError(RuntimeError):
 
 
 def load_findings_schema(path: Path | None = None) -> dict[str, Any]:
-    return json.loads((path or _CONTRACT_PATH).read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads((path or _CONTRACT_PATH).read_text(encoding="utf-8"))
+    return data
 
 
 def validate_finding(payload: dict[str, Any]) -> Finding:
