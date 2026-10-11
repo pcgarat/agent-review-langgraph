@@ -241,3 +241,47 @@ def test_endpoint_verify_exige_token_si_esta_configurado(monkeypatch) -> None:
 
     response = TestClient(runner_main.app).post("/verify", json=_REQUEST.model_dump(mode="json"))
     assert response.status_code == 401
+
+
+def test_discover_targets_por_convencion_de_clase(tmp_path) -> None:
+    from agent_review.sandbox_runner.recipes import discover_targets
+
+    (tmp_path / "tests/Unit/Billing").mkdir(parents=True)
+    (tmp_path / "tests/Unit/Billing/InvoiceTest.php").write_text("<?php")
+    (tmp_path / "tests/Unit/Other").mkdir(parents=True)
+    (tmp_path / "tests/Unit/Other/UserTest.php").write_text("<?php")
+
+    changed = ["src/Billing/Invoice.php", "tests/Unit/Other/UserTest.php", "README.md"]
+    assert discover_targets(tmp_path, changed) == [
+        "tests/Unit/Billing/InvoiceTest.php",
+        "tests/Unit/Other/UserTest.php",
+    ]
+
+
+def test_discover_targets_sin_coincidencias_devuelve_vacio(tmp_path) -> None:
+    from agent_review.sandbox_runner.recipes import discover_targets
+
+    assert discover_targets(tmp_path, ["src/Foo.php"]) == []
+
+
+def test_sin_targets_explicitos_el_runner_los_deriva_del_parche(tmp_path) -> None:
+    (tmp_path / "tests/Unit").mkdir(parents=True)
+    (tmp_path / "tests/Unit/FooTest.php").write_text("<?php")
+
+    class _TmpWorkspace(_Workspace):
+        def prepare(self, *, repo: str, head_sha: str, patch: str) -> str:
+            super().prepare(repo=repo, head_sha=head_sha, patch=patch)
+            return str(tmp_path)
+
+    runtime = _Runtime()
+    request = _REQUEST.model_copy(
+        update={
+            "targets": [],
+            "patch": (
+                "diff --git a/src/Foo.php b/src/Foo.php\n--- a/src/Foo.php\n+++ b/src/Foo.php\n"
+            ),
+        }
+    )
+    _verifier(runtime, _TmpWorkspace()).verify(request)
+    targeted = next(spec for spec in runtime.created if spec.argv[:1] == ["bin/phpunit"])
+    assert targeted.argv == ["bin/phpunit", "tests/Unit/FooTest.php"]

@@ -4,6 +4,7 @@ import logging
 import threading
 from typing import Any, Protocol, runtime_checkable
 
+from agent_review.adapters.diff_parser import parse_unified_diff
 from agent_review.domain.models import CommandResult
 from agent_review.errors import PermanentError
 from agent_review.ports.sandbox import VerifyReport, VerifyRequest
@@ -11,6 +12,7 @@ from agent_review.profile import resolve_ci_image
 from agent_review.sandbox_runner.recipes import (
     RecipeError,
     declared_checks,
+    discover_targets,
     expand_check,
     expand_setup,
     validate_targets,
@@ -118,6 +120,10 @@ class Verifier:
         workspace = self._workspace.prepare(
             repo=request.repo, head_sha=request.head_sha, patch=request.patch
         )
+        if not targets:
+            # Sin targets explicitos, los tests dirigidos salen del fichero que toca
+            # el parche; se buscan en el workspace clonado, que es quien los conoce.
+            targets = discover_targets(workspace, list(parse_unified_diff(request.patch)))
         results: list[CommandResult] = []
         try:
             if not self._image_already_pulled:

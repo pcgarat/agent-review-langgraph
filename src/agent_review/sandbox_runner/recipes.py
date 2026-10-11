@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from pathlib import Path
 from typing import Any
 
 from agent_review.errors import PermanentError
@@ -38,6 +39,34 @@ def validate_targets(targets: list[str]) -> list[str]:
             raise InvalidTarget(f"ruta de test fuera de la allowlist (tests/**.php): {raw!r}")
         clean.append(target)
     return clean
+
+
+def discover_targets(workspace: str | Path, changed: list[str]) -> list[str]:
+    """Tests dirigidos del area que toca el parche, buscados en el workspace clonado.
+
+    Convencion de `emotivoo-v2`: `src/<Ruta>/<Clase>.php` se prueba en
+    `tests/**/<Clase>Test.php`. Un fichero que ya es un test se ejecuta tal cual. Sin
+    coincidencias devuelve `[]` y la recipe dirigida se salta; la suite completa
+    (`tests`, ultima del `verify`) sigue siendo quien da el fix por bueno.
+    """
+    root = Path(workspace)
+    found: dict[str, None] = {}
+    for path in changed:
+        if _TARGET_RE.fullmatch(path):
+            if (root / path).is_file():
+                found.setdefault(path, None)
+            continue
+        if not path.endswith(".php"):
+            continue
+        stem = Path(path).stem
+        tests_dir = root / "tests"
+        if not tests_dir.is_dir():
+            continue
+        for match in sorted(tests_dir.rglob(f"{stem}Test.php")):
+            relative = match.relative_to(root).as_posix()
+            if _TARGET_RE.fullmatch(relative):
+                found.setdefault(relative, None)
+    return validate_targets(list(found))
 
 
 def _split(command: str) -> list[str]:
