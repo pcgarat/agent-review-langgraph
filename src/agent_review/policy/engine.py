@@ -172,15 +172,6 @@ class PolicyEngine:
         return any(path_matches(file, pattern) for pattern in patterns)
 
     def decide(self, finding: Finding) -> PolicyResult:
-        # Los guardas preceden a las reglas: son el freno de seguridad.
-        if self.is_never_auto(finding.file):
-            return PolicyResult(
-                action=self._cap(FindingAction.FIX_WITH_APPROVAL),
-                reason=f"Ruta protegida ({finding.file}): requiere aprobacion",
-                matched_rule="guard:never_auto_paths",
-                policy_version=self._version,
-            )
-
         action = self._default
         reason = "Sin regla aplicable"
         matched = "default"
@@ -190,6 +181,18 @@ class PolicyEngine:
                 reason = rule.reason or "Regla de politica"
                 matched = f"rule:{rule.index}"
                 break
+
+        # La guarda de rutas nunca-auto frena cualquier arreglo, pero no rebaja un
+        # escalado: un P0 o un tema protegido en `migrations/**` debe llegar a una
+        # persona como escalado, no como "¿lo arreglo?" sobre algo que el nodo `fix`
+        # bloquearia siempre (ADR-0009).
+        if self.is_never_auto(finding.file) and action is not FindingAction.ESCALATE:
+            return PolicyResult(
+                action=self._cap(FindingAction.FIX_WITH_APPROVAL),
+                reason=f"Ruta protegida ({finding.file}): requiere aprobacion",
+                matched_rule="guard:never_auto_paths",
+                policy_version=self._version,
+            )
 
         return PolicyResult(
             action=self._cap(action),

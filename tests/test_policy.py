@@ -117,6 +117,22 @@ def test_ruta_nunca_auto_se_frena_y_en_fase1_es_report(policy: PolicyEngine) -> 
     assert policy.is_never_auto(".cursor/rules/foo.mdc")
 
 
+def test_escalado_en_ruta_nunca_auto_sigue_siendo_escalado() -> None:
+    engine = _engine(max_autonomy="fix_with_approval")
+    critical = make_finding(severity=Severity.P0, file=".cursor/rules/x.mdc")
+    result = engine.decide(critical)
+    assert result.action is FindingAction.ESCALATE
+    assert result.matched_rule.startswith("rule:")
+
+
+def test_no_escalado_en_ruta_nunca_auto_pide_aprobacion() -> None:
+    engine = _engine(max_autonomy="fix_with_approval")
+    minor = make_finding(severity=Severity.P3, confidence=100, file=".cursor/rules/x.mdc")
+    result = engine.decide(minor)
+    assert result.action is FindingAction.FIX_WITH_APPROVAL
+    assert result.matched_rule == "guard:never_auto_paths"
+
+
 def test_techo_global_limita_autofix() -> None:
     capped = _engine(max_autonomy="report")
     result = capped.decide(make_finding(severity=Severity.P3, confidence=75))
