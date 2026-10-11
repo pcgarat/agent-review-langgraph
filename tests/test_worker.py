@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from reviews.worker.main import (
     build_llm,
     build_reviewers,
     process_request,
+    start_heartbeat,
     sweep_pending,
 )
 
@@ -371,3 +373,19 @@ def test_expected_tools_api_y_worker_coinciden(tmp_path: Path) -> None:
     )
     settings = Settings(repo_profile_config=str(profile))
     assert expected_tools(settings) == ["phpstan", "rector"]
+
+
+def test_heartbeat_refresca_el_fichero_desde_un_hilo(tmp_path: Path) -> None:
+    # B7: el latido debe seguir refrescandose mientras el worker esta ocupado en
+    # una review larga (B3 es secuencial), no solo entre polls.
+    path = tmp_path / "heartbeat"
+    start_heartbeat(str(path), interval_s=0.01)
+    deadline = time.monotonic() + 2.0
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert path.exists(), "el hilo de latido debe crear el fichero sin intervencion del bucle"
+    first = path.read_text(encoding="utf-8")
+    deadline = time.monotonic() + 2.0
+    while path.read_text(encoding="utf-8") == first and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert path.read_text(encoding="utf-8") != first, "el latido debe refrescarse periodicamente"

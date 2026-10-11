@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -297,10 +298,9 @@ def run_forever(
     logger.info("Worker de reviews arrancado (Fase 1)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
-    _touch_heartbeat()
+    start_heartbeat()
     while True:
         request = queue.dequeue(timeout_s=poll_s)
-        _touch_heartbeat()
         if request is not None:
             _consume(queue, graph, request, max_attempts=settings.max_review_attempts)
             continue
@@ -308,6 +308,23 @@ def run_forever(
         if time.monotonic() - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
             last_sweep = time.monotonic()
+
+
+def start_heartbeat(path: str = HEARTBEAT_PATH, interval_s: float = 10.0) -> None:
+    """Lanza el latido en un hilo aparte y devuelve el control.
+
+    Refrescar el latido solo entre polls lo ataria a la duracion de la review: una
+    review larga (B3 es secuencial) dejaria el fichero viejo y el healthcheck
+    reiniciaria un worker que esta trabajando. Con un hilo independiente el latido
+    mide "el proceso sigue vivo", no "el bucle esta en reposo".
+    """
+
+    def _loop() -> None:
+        while True:
+            _touch_heartbeat(path)
+            time.sleep(interval_s)
+
+    threading.Thread(target=_loop, name="reviews-heartbeat", daemon=True).start()
 
 
 def _touch_heartbeat(path: str = HEARTBEAT_PATH) -> None:

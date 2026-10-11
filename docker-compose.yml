@@ -47,8 +47,8 @@ services:
       redis:
         condition: service_started
     healthcheck:
-      # El worker no escucha: su salud es que el bucle sigue refrescando el
-      # latido. Un fichero viejo o ausente = proceso colgado o muerto.
+      # El worker no escucha: un hilo de latido refresca este fichero cada pocos
+      # segundos. Un fichero viejo o ausente = proceso vivo pero colgado (o muerto).
       test: ["CMD", "python", "-c", "import os, time, sys; p='/tmp/reviews-worker-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 else 1)"]
       interval: 30s
       timeout: 5s
