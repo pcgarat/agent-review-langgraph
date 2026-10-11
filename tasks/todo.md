@@ -19,10 +19,12 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md`.
 
 - [ ] **P1** (opcional) El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado —
       sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1
-- [ ] **P2** Nivel 2 del smoke contra Bitbucket real (`scripts/smoke-nivel2.sh <pr_id>`)
+- [ ] **P2** Nivel 2 del smoke contra Bitbucket real — ✅ ejecutado con el PR 430
+      (`docs/smoke-fase1-20261011.md` §5)
 - [ ] **P3** Formato inline revisado por humano (`docs/decisiones-publish-inline-20261011.md`)
 - [ ] **P4** Decisión go/no-go para Fase 2 (HITL Opción B)
-- [ ] **P5** Medir la latencia real de una review (la cola es secuencial)
+- [ ] **P5** Medir la latencia real de una review (la cola es secuencial) — medición
+      orientativa hecha (~15 s); falta carga real
 - [ ] **P6** Revisar la heurística de tema protegido con seguridad (Fase 3)
 
 ## Preguntas abiertas
