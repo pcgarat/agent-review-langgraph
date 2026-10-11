@@ -445,23 +445,36 @@ def _run(vcs: FakeVcs, *, pipeline_id: str = "") -> dict:
     )
 
 
-def test_publish_no_duplica_si_ya_publico_para_el_commit() -> None:
-    # Un `pipeline_id` nuevo sobre el mismo commit (hilo distinto) no debe
-    # re-publicar: la marca de publicacion embebida lo delata.
+def test_publish_no_repite_la_misma_ejecucion() -> None:
+    # El reintento de la MISMA ejecucion (mismo `pipeline_id`) no re-publica: la
+    # marca de publicacion embebida lo delata.
     vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     _run(vcs, pipeline_id="7")
     inlines_primera = len(vcs.inlines)
     comments_primera = len(vcs.comments)
     assert inlines_primera == 1
 
-    _run(vcs, pipeline_id="8")
+    _run(vcs, pipeline_id="7")
     assert len(vcs.inlines) == inlines_primera, "no debe repetir el inline"
     assert len(vcs.comments) == comments_primera, "no debe repetir el resumen"
 
 
-def test_marca_de_publicacion_lleva_el_token_del_commit() -> None:
+def test_pipeline_nuevo_sobre_el_mismo_commit_publica_su_review() -> None:
+    # Un `pipeline_id` nuevo sobre el mismo `sha` es una review nueva: se desea
+    # que publique (corrige el "gana la primera marca por commit"). El commit
+    # anterior no bloquea a la nueva ejecucion.
     vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
-    result = _run(vcs)
+    _run(vcs, pipeline_id="7")
+    assert len(vcs.inlines) == 1 and len(vcs.comments) == 1
+
+    _run(vcs, pipeline_id="8")
+    assert len(vcs.inlines) == 2, "el pipeline nuevo publica su propio inline"
+    assert len(vcs.comments) == 2, "y su propio resumen"
+
+
+def test_marca_de_publicacion_lleva_el_token_de_la_ejecucion() -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    result = _run(vcs, pipeline_id="7")
     token = ReviewRequest.model_validate(result["request"]).dedupe_token
     assert token.startswith("reviews:")
     # El resumen identifica la review y su completitud.
@@ -528,13 +541,73 @@ def test_review_degradada_no_bloquea_una_completa_posterior() -> None:
     assert ":ok -->" in vcs.comments[-1][2]
 
 
-def test_dedupe_token_depende_del_commit_no_del_pipeline() -> None:
+def test_reintento_de_la_misma_ejecucion_degradada_no_repite_el_aviso() -> None:
+    # Misma ejecucion, dos veces degradada: el segundo intento no vuelve a
+    # escribir el resumen con aviso (marca :partial identica).
+    vcs = FakeVcs()
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("standards", [], status=ToolingSourceStatus.MISSING)
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    request = {
+        "repo": "cqm/emotivoo-v2",
+        "pr_id": 7,
+        "head_sha": "abc",
+        "pipeline_id": "7",
+    }
+    graph.invoke({"request": request, "findings": []})
+    graph.invoke({"request": request, "findings": []})
+    assert len(vcs.comments) == 1, "el reintento degradado no duplica el aviso"
+
+
+def test_una_ejecucion_degradada_no_bloquea_su_completa_con_mismo_pipeline() -> None:
+    # Carrera real: el pipeline publica el aviso (:partial) y, al llegar el
+    # artefacto, la MISMA ejecucion produce la review completa. Como :ok no esta
+    # en el PR, la completa si se publica y sustituye al aviso.
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    request = {
+        "repo": "cqm/emotivoo-v2",
+        "pr_id": 7,
+        "head_sha": "abc",
+        "pipeline_id": "7",
+    }
+    degraded = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("standards", [], status=ToolingSourceStatus.MISSING)],
+        policy=policy,
+    ).compile()
+    degraded.invoke({"request": request, "findings": []})
+    assert ":partial -->" in vcs.comments[0][2]
+
+    complete = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding()])],
+        policy=policy,
+    ).compile()
+    complete.invoke({"request": request, "findings": []})
+    assert len(vcs.comments) == 2, "la completa sustituye al aviso degradado"
+    assert ":ok -->" in vcs.comments[-1][2]
+
+    # Y un tercer reintento de la ejecucion ya completa no re-publica.
+    complete.invoke({"request": request, "findings": []})
+    assert len(vcs.comments) == 2, "la ejecucion completa ya publicada no se repite"
+
+
+def test_dedupe_token_se_ancla_a_la_ejecucion_no_al_commit() -> None:
     base = dict(repo="r", pr_id=1, head_sha="abc")
     a = ReviewRequest(**base, pipeline_id="7")
     b = ReviewRequest(**base, pipeline_id="8")
     c = ReviewRequest(repo="r", pr_id=1, head_sha="def", pipeline_id="7")
-    assert a.dedupe_token == b.dedupe_token
+    # Mismo pipeline sobre el mismo sha => misma marca (reintento no re-publica).
+    assert a.dedupe_token == ReviewRequest(**base, pipeline_id="7").dedupe_token
+    # Pipeline nuevo sobre el mismo sha => marca nueva (review nueva, si publica).
+    assert a.dedupe_token != b.dedupe_token
+    # Commit distinto => marca distinta (el sha sigue dentro de la clave).
     assert a.dedupe_token != c.dedupe_token
+    # El token coincide con el hilo: una ejecucion, una marca.
+    assert a.dedupe_token != a.thread_id
     assert a.thread_id != b.thread_id, "un pipeline nuevo es un hilo nuevo"
 
 

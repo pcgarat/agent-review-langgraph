@@ -13,7 +13,7 @@ Checklist rápida. El detalle y las tareas viven en `tasks/plan.md`.
 - [x] Scope sin ruido + `max_files_per_pr`
 - [x] Arranque reproducible (`scripts/bootstrap-env.sh` + validación de `twg`/secretos)
 - [x] CI propio (`.github/workflows/ci.yml`) + `make ci`: `ruff` lint y formato,
-      `mypy` strict, 167 tests en verde
+      `mypy` strict, 182 tests en verde
 
 ## Pendiente (humano / externo, no es código)
 

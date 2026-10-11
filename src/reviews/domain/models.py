@@ -153,13 +153,17 @@ class ReviewRequest(BaseModel):
 
     @property
     def dedupe_token(self) -> str:
-        """Marca estable de esta review, embebida en lo que publica.
+        """Marca de esta *ejecucion* de review, embebida en lo que publica.
 
-        Es la clave de commit (`idempotency_key`), no la de ejecucion: si un
-        `pipeline_id` nuevo re-corre el mismo `sha`, el token coincide y el
-        publish reconoce que ya publico sobre ese commit.
+        Se ancla a la clave de ejecucion (`review_key`), no solo al commit: un
+        reintento del mismo `pipeline_id` reutiliza el token y el publish
+        reconoce que ya publico, mientras que un `pipeline_id` nuevo sobre el
+        mismo `sha` es una review nueva (intencional) y publica la suya. Asi el
+        dedupe coincide con `thread_id` y deja de regir "gana la primera marca
+        por commit". El `sha` va dentro, de modo que commits distintos nunca
+        colisionan.
         """
-        digest = hashlib.sha256(self.idempotency_key.encode()).hexdigest()[:12]
+        digest = hashlib.sha256(self.review_key.encode()).hexdigest()[:12]
         return f"reviews:{digest}"
 
     def ingest_key(self, tool: str) -> str:

@@ -18,7 +18,7 @@ cómo se cerró; el estado vivo está en `tasks/plan.md`.
 | Punto | Qué era | Cómo se resolvió |
 |---|---|---|
 | **A2** | El contenedor podía arrancar sin `twg`; no había forma de preparar `.env` | `scripts/bootstrap-env.sh` (idempotente) + validación de `twg --version` en el arranque (`check_twg`, `REQUIRE_TWG` en build) |
-| **B1** | El publish no miraba lo ya publicado: un re-push duplicaba inlines | Marcas `<!-- reviews:<hash>:inline:<id> -->` y `:ok/partial`; lectura previa con `list_review_markers` |
+| **B1** | El publish no miraba lo ya publicado: un re-push duplicaba inlines | Marcas `<!-- reviews:<hash-ejecucion>:i:<id> -->` y `:ok/partial`, ancladas a la **ejecución** (no al commit; ver §Q1 de `docs/decisiones-publish-inline-20261011.md`); lectura previa con `list_review_markers` |
 | **B2** | Un fallo transitorio perdía el job (solo log) | Reintento con contador + **DLQ** (`reviews:jobs:dead`) |
 | **B4** | `expected_tools` podía divergir entre perfil y env | `reviews.profile` como fuente única: manda el perfil, el env solo lo sobreescribe explícito |
 | **B5** | `max_files_per_pr` declarado pero no aplicado; `get_diffstat` sin usar | `scope` filtra ruido y recorta por churn con `get_diffstat` |
@@ -43,7 +43,7 @@ Detalle y porqués de cada uno están en el código y en el commit que lo introd
   **Opcional**: sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1
   (`docs/ingesta-diferida-ci-20261011.md` §3–4).
 - **A3 / P2** — **Ejecutado (2026-10-11, PR 430).** `scripts/smoke-nivel2.sh`
-  contra `cqm/emotivoo-v2#430`: 4 inline anclados + resumen + dedupe por commit;
+  contra `cqm/emotivoo-v2#430`: 4 inline anclados + resumen + dedupe por ejecución;
   el detalle y los dos fallos de arranque que destapo (worker en crash-loop y
   contrato fuera de la imagen) estan en `docs/smoke-fase1-20261011.md` §5.
 - **C1 / P3** — Revisión humana del formato inline

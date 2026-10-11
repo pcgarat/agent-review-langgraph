@@ -27,7 +27,7 @@ El orden es deliberado y no se cambia:
    proceso muere entre el paso 1 y el 2, el resumen no llegó a escribir la marca,
    así que el reintento ve la review como **no publicada** y:
    - no repite los inlines ya escritos (los reconoce por su marca por hallazgo
-     `<!-- <token>:inline:<id> -->` leída del PR), y
+     `<!-- <token>:i:<8 base32> -->` leída del PR), y
    - escribe el resumen que faltaba.
 
 Esto se fija con tests (`test_reintento_tras_fallo_del_resumen_no_duplica_el_inline`
@@ -126,3 +126,59 @@ Reglas de ruido que ya aplica el render:
 Cuando este ejemplo te valga, marca **P3** de `tasks/todo.md` («Formato inline
 revisado por humano»); si quieres cambiar algo (idioma, mención al autor, tono),
 se ajusta `_render_inline` / `_render_summary` en `src/reviews/graph/build.py`.
+
+---
+
+## Q1 — Qué marca una review ya publicada: la ejecución, no el commit
+
+**El problema.** El dedupe tenía dos llaves que no coincidían:
+
+- El hilo del checkpointer (`thread_id`) era la **ejecución** (`review_key = commit
+  + pipeline_id`), con el docstring explícito de que «un `pipeline_id` nuevo sobre
+  el mismo `sha` es una review nueva (intencional)».
+- La marca embebida (`dedupe_token`) se derivaba del **commit** (`idempotency_key`).
+
+Consecuencia: la primera review que tocaba un commit dejaba `:ok` y **toda** review
+posterior de un pipeline nuevo sobre ese mismo `sha` quedaba muda («ya hay una
+review completa publicada para este commit»). La intención de «review nueva»
+chocaba con «gana la primera marca». Además, una ejecución que publicaba un aviso
+`:partial` **bloqueaba** su propia review completa posterior: la segunda pasada veía
+la marca `:partial` y el early-return solo miraba `:ok`… sin llegar a escribir el
+`:ok` (la marca del resumen se decidía con el `complete` de esa pasada, pero el
+camino quedaba emponzoñado por el aviso ya escrito).
+
+**Decisión: la marca se ancla a la ejecución (`review_key`), igual que el hilo.**
+
+- `dedupe_token = reviews:<sha256(review_key)[:12]>`. El `sha` sigue dentro de la
+  clave, así que commits distintos no colisionan; añadir el `pipeline_id` solo
+  separa re-ejecuciones sobre el mismo commit.
+- El `publish` se salta la publicación **solo si esta misma ejecución** ya dejó su
+  marca con la **misma completitud** (o una completa, que no se degrada). No hay
+  herencia entre ejecuciones distintas: cada `pipeline_id` publica la suya.
+
+**Consecuencias (todas cubiertas por tests):**
+
+| Escenario | Antes | Ahora |
+|---|---|---|
+| Reintento del mismo `pipeline_id` | no re-publica | no re-publica (idempotente) |
+| `pipeline_id` nuevo, mismo `sha` | **no** publicaba | **publica** su review |
+| Ejecución degradada (`:partial`) → completa con el **mismo** `pipeline_id` | quedaba bloqueada en silencio | publica y **sustituye** el aviso |
+| Reintento de la **misma** ejecución degradada | volvía a escribir el aviso | no lo repite (`:partial` idéntico) |
+| Commit distinto | marca distinta | marca distinta |
+
+Tests: `test_publish_no_repite_la_misma_ejecucion`,
+`test_pipeline_nuevo_sobre_el_mismo_commit_publica_su_review`,
+`test_reintento_de_la_misma_ejecucion_degradada_no_repite_el_aviso`,
+`test_una_ejecucion_degradada_no_bloquea_su_completa_con_mismo_pipeline`,
+`test_dedupe_token_se_ancla_a_la_ejecucion_no_al_commit` (`tests/test_graph.py`).
+
+**Riesgo que se acepta.** Un re-push **sin** `pipeline_id` (misma clave que la
+ejecución anterior) no se distingue de un reintento: es el precio de que «una
+ejecución = una marca». Hoy el `pipeline_id` siempre viaja (`BITBUCKET_BUILD_NUMBER`
+en el `POST`), así que el caso es teórico; si algún día falta, el peor efecto es no
+re-publicar, nunca duplicar.
+
+> **Nota para Fase 2:** al abrir el `interrupt` del HITL, la reanudación llega desde
+> otro proceso sobre el **mismo** `thread_id`, que es justo la ejecución dueña de la
+> marca. Esa coherencia (hilo == marca) es la que evita re-evaluar y re-publicar al
+> reanudar.

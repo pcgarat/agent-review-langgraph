@@ -3,7 +3,7 @@
 # Plan de implementación — Fase 1 (report-only)
 
 > **Estado: entregado (2026-10-11).** Las Tasks 1–10 están cerradas, `make ci` en
-> verde (`ruff` lint + formato, `mypy` strict, 167 tests). El código de las 10 tareas
+> verde (`ruff` lint + formato, `mypy` strict, 182 tests). El código de las 10 tareas
 > vive en git; este documento ya no repite su histórico. Lo que queda abierto son
 > **verificaciones humanas o externas**, no código (ver "Pendiente").
 
@@ -100,7 +100,7 @@ Decisiones de implementación no obvias, documentadas aparte:
 | Falla transitoria pierde la review | Reintento con contador + DLQ | ✅ Resuelto |
 | Worker no sobrevive a una cola vacia | Redis sin deadline de socket + `dequeue` tolerante | ✅ Resuelto (smoke 2026-10-11) |
 | Contrato fuera de la imagen | Ruta con candidatos + `contracts/` copiado al Dockerfile | ✅ Resuelto (smoke 2026-10-11) |
-| Re-push duplica inlines | Checkpointer por hilo + marca de publicación por commit | ✅ Resuelto |
+| Re-push duplica inlines | Checkpointer por hilo + marca de publicación por **ejecución** (coherente con el hilo) | ✅ Resuelto |
 | Review sin datos del CI (carrera) | Ingesta diferida: encolar solo con el artefacto presente | ✅ Resuelto |
 | Review larga reinicia el worker | Latido en hilo independiente | ✅ Resuelto |
 | Ejecutar PHPStan sin sandbox | En Fase 1 solo artefacto; sandbox = Fase 3 | ✅ Fuera de alcance |
@@ -128,3 +128,5 @@ Decisiones de implementación no obvias, documentadas aparte:
 - **Checkpointer acoplado a Postgres:** abrir el puerto es el primer trabajo de Fase 2.
 - **Dedupe por token:** si un humano copiase el pie `<!-- reviews:… -->` a otro commit,
   el publish lo leería como ya publicado. Riesgo bajo, pero no asumirlo en Fase 2.
+  Desde Q1 la marca es de la **ejecución** (hilo); al reanudar el HITL sobre el mismo
+  `thread_id`, la coherencia hilo == marca evita re-publicar.

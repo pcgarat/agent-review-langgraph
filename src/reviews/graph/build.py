@@ -220,12 +220,26 @@ def build_graph(
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
 
+        complete = not unavailable
         published = _published_markers(vcs, request)
-        if _has_marker(published, _summary_token(request.dedupe_token, complete=True)):
+        # Solo se salta si ESTA ejecucion ya dejo su marca con la misma
+        # completitud (o una completa, que no se degrada). Un reintento
+        # degradado no repite el aviso; uno completo posterior si publica y
+        # sustituye al degradado. La marca es de la ejecucion, no del commit:
+        # un `pipeline_id` nuevo sobre el mismo `sha` es una review nueva.
+        already_complete = _has_marker(
+            published, _summary_token(request.dedupe_token, complete=True)
+        )
+        already_same = _has_marker(
+            published, _summary_token(request.dedupe_token, complete=complete)
+        )
+        if already_complete or already_same:
             logger.info(
-                "PR %s#%s: ya hay una review completa publicada para este commit; no se re-publica",
+                "PR %s#%s: esta ejecucion (%s) ya publico una review (%s); no se re-publica",
                 request.repo,
                 request.pr_id,
+                request.thread_id,
+                "completa" if complete else "degradada",
             )
             return {}
         if unavailable:
@@ -241,7 +255,6 @@ def build_graph(
         by_id = {d.finding_id: d for d in decisions}
         max_inline = int(policy.guards.get("max_inline_comments", 20))
         ordered = sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
-        complete = not unavailable
 
         inlined: list[Finding] = []
         summary_only: list[Finding] = []
