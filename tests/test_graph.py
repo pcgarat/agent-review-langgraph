@@ -467,9 +467,9 @@ def test_marca_de_publicacion_lleva_el_token_del_commit() -> None:
     # El resumen identifica la review y su completitud.
     for _repo, _pr, body in vcs.comments:
         assert f"<!-- {token}:ok -->" in body
-    # Cada inline lleva su marca con el id del hallazgo (no solo el cuerpo).
+    # Cada inline lleva su marca, corta y por hallazgo (no solo el cuerpo).
     for _repo, _pr, _path, _line, body in vcs.inlines:
-        assert f"<!-- {token}:inline:" in body
+        assert f"<!-- {token}:i:" in body
 
 
 def test_inlines_con_mismo_titulo_en_ficheros_distintos_no_se_confunden() -> None:
@@ -573,3 +573,88 @@ def test_reintento_tras_fallo_del_resumen_no_duplica_el_inline() -> None:
     graph.invoke({"request": request, "findings": []})
     assert len(vcs.inlines) == 1, "no debe duplicar el inline ya publicado"
     assert len(vcs.comments) == 1, "debe completar el resumen que faltaba"
+
+
+def _inline_body(vcs: FakeVcs) -> str:
+    return vcs.inlines[0][4]
+
+
+def test_inline_no_repite_el_titulo_en_el_cuerpo() -> None:
+    # La persona estatica propaga el mensaje crudo de la herramienta como titulo
+    # y como `why_it_matters`: no debe imprimirse dos veces.
+    texto = "Cannot call method withdraw() on Balance|null."
+    finding = make_finding(title=texto).model_copy(update={"why_it_matters": texto})
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    body = _inline_body(vcs)
+    assert body.count(texto) == 1, "el cuerpo no debe repetir el titulo"
+    assert "**Sugerencia:**" not in body
+
+
+def test_inline_omite_la_politica_cuando_la_razon_es_generica() -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding()])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    body = _inline_body(vcs)
+    assert "_Politica:" not in body
+    assert "_Accion: report_" in body
+
+
+def test_inline_conserva_la_politica_cuando_aporta() -> None:
+    # Un guard como `never_auto_paths` si da una razon que el revisor debe ver.
+    path = ".github/workflows/ci.yml"
+    finding = make_finding(file=path)
+    vcs = FakeVcs(anchors={path: InlineAnchor(path=path, line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    body = _inline_body(vcs)
+    assert "Ruta protegida" in body
+
+
+def test_la_marca_del_inline_es_corta_y_por_hallazgo() -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding()])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    body = _inline_body(vcs)
+    marca = body.rsplit("<!-- ", 1)[1].removesuffix(" -->")
+    # `reviews:<12 hex>:i:<8 base32>`: el id largo del hallazgo no llega al PR.
+    assert marca.startswith("reviews:")
+    assert ":i:" in marca
+    assert len(marca) <= 40, f"marca demasiado larga: {marca}"
+    assert "standards-" not in marca
+
+
+def test_resumen_no_repite_el_detalle_de_los_inline() -> None:
+    anclado = make_finding(title="Anclado", file="tests/FooTest.php")
+    solo_resumen = make_finding(title="Sin ancla", file="tests/OtherTest.php")
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [anclado, solo_resumen])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    resumen = vcs.comments[0][2]
+    lineas = resumen.splitlines()
+    idx_anclado = next(i for i, ln in enumerate(lineas) if "`tests/FooTest.php:3`" in ln)
+    idx_resumen = next(i for i, ln in enumerate(lineas) if "`tests/OtherTest.php:3`" in ln)
+    # El anclado no arrastra su detalle; el que solo va al resumen si.
+    assert "No cubre el caso borde" not in lineas[idx_anclado + 1]
+    assert "No cubre el caso borde" in lineas[idx_resumen + 1]
