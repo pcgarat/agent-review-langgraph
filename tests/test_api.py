@@ -20,6 +20,9 @@ client = TestClient(app)
 def _artifacts_in_tmp(tmp_path: Path, monkeypatch) -> None:
     """Los artefactos se escriben en un directorio temporal, no en el repo."""
     monkeypatch.setattr(main._settings(), "tooling_output_root", str(tmp_path))
+    # Los tests no deben depender de un `.env` real: con el secreto relajado, los
+    # casos sin firma se comportan como hasta ahora (los de firma lo restauran).
+    monkeypatch.setattr(main._settings(), "tooling_webhook_secret", "change-me")
 
 
 def _reset_fallbacks(expected_tools: list[str] | None = None) -> None:

@@ -14,3 +14,6 @@ __pycache__/
 
 # Runtime
 var/
+
+# Binario local de twg (se copia a mano; ver bin/README.md)
+bin/twg
