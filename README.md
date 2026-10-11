@@ -11,11 +11,13 @@ Documentación de fondo:
 | `docs/diseno-agente-code-review-20261010.md` | Diseño completo: arquitectura, autonomía, HITL, fases, perfil de `emotivoo-v2` |
 | `docs/ingesta-diferida-ci-20261011.md` | Por qué la review espera al CI y por qué el artefacto es un puente desechable |
 | `docs/fase2-hitl-20261011.md` | Pausa durable, decisión humana y reanudación |
+| `docs/fase3-fix-verificacion-20261011.md` | Fix aprobado: parche, verificación en sandbox y entrega como sugerencia |
 | `docs/decisiones-publish-inline-20261011.md` | Formato inline, orden de publicación y borrados |
 | `docs/reintento-de-nodo-20261011.md` | `RetryPolicy` por nodo, clasificación de errores y DLQ |
 | `docs/smoke-fase1-20261011.md` | Smoke E2E (Nivel 1 local y Nivel 2 contra Bitbucket) |
 | `docs/edu/` | Serie didáctica sobre LangGraph aplicada a este repo |
 | `tasks/plan.md` | Estado del plan: tareas cerradas y pendientes humanos |
+| `tasks/todo-fase3.md` | Checklist de la Fase 3 (fix + verificación) |
 
 ## Arquitectura
 
@@ -85,7 +87,8 @@ flowchart TD
     persona["persona ×N<br/>reviewers en paralelo"] --> merge
     merge["merge<br/>dedupe + evidencia"] --> policy
     policy["policy<br/>autonomy.yaml"] --> hitl
-    hitl -->|"sin pendientes"| publish
+    hitl -->|"sin pendientes"| fix
+    fix["fix<br/>Fase 3: propone + verifica"] --> publish
     hitl -.->|"interrupt: hay pendientes"| PAUSE(["pausa durable<br/>(Postgres)"])
     PAUSE -.->|"Command(resume)"| hitl
     publish["publish<br/>inline + resumen"] --> notify
@@ -99,7 +102,8 @@ flowchart TD
 | `merge` | Deduplica por `(fichero, línea, título)` y fusiona el mismo problema visto por dos personas con anclas cercanas; conserva la evidencia más rica. |
 | `policy` | Aplica `autonomy.yaml` y emite una `Decision` por hallazgo (con `matched_rule` y `policy_version`). |
 | `hitl` | Pausa durable con `interrupt` si hay decisiones pendientes; se reanuda con la decisión humana. |
-| `publish` | Publica un comentario inline por hallazgo (hasta `max_inline_comments`) y un resumen general, con resolución segura de anclas. |
+| `fix` | Fase 3. Para cada hallazgo **aprobado** con acción `fix_*`: lee el fichero al `head_sha`, pide un parche, lo valida y lo **verifica** en el sandbox. No-op si no hay candidatos. |
+| `publish` | Publica un comentario inline por hallazgo (hasta `max_inline_comments`) y un resumen general, con resolución segura de anclas. Si hubo fix verificado, el inline lleva el bloque de sugerencia. |
 | `notify` | Aviso en Teams. Nodo aparte para que un fallo del canal no repita `publish`. |
 
 ## Flujo
@@ -197,8 +201,26 @@ supera. Las decisiones de publicación están fijadas en
 completarse el artefacto del CI, el worker ejecuta el grafo y publica **comentarios
 inline** (+ resumen en el PR + Teams). Política en `max_autonomy: report`: cero
 escritura de código en el repo del PR. La **Fase 2 (HITL)** permite pausar y
-reanudar con una decisión humana. Lo pendiente es verificación humana
-(`tasks/plan.md`).
+reanudar con una decisión humana.
+
+**Fase 3 (fix + verificación) en curso.** La base pura está cerrada (`F1`–`F6`):
+un hallazgo aprobado con acción `fix_*` produce un parche, se valida localmente y
+se verifica en el sandbox; solo si pasa se publica como sugerencia inline. Sigue
+**sin escribir** el repo. Falta el servicio `sandbox-runner` (`F7`–`F10`), que
+depende de P6 (revisión de seguridad) y de Q2 (comando de tests dirigidos).
+
+## Fix verificado (Fase 3, base pura)
+
+- **Un parche, un fichero, un hunk.** La validación local rechaza lo que no encaje
+  antes de gastar un segundo de sandbox: otro fichero, varios hunks, más de
+  `max_fix_lines` o un rango fuera de las líneas **añadidas** del diff.
+- **El diff se deriva del fichero real** al `head_sha`, no del que devuelva el
+  modelo, para que `git apply` no falle por un header inventado.
+- **Entrega tras un *seam*.** `FIX_DELIVERY=diff` (por defecto) o `suggestion`
+  eligen el formato del bloque; Bitbucket no tiene *suggested changes* como GitHub.
+- **Sin sandbox no hay `VERIFIED`:** sin fixer o sin runner, el fix queda
+  `NOT_VERIFIABLE` y el inline lo dice. Un fallo tras los intentos queda `FAILED`
+  con el `stderr_tail` acotado. Ver `docs/fase3-fix-verificacion-20261011.md`.
 
 ## Smoke real contra Bitbucket
 

@@ -146,3 +146,32 @@ Tareas en `tasks/todo.md` (T1–T9 + **T10**) y riesgos en el spec §7.
 
 Estado: **T1–T10 cerradas** (228 tests en verde). Fase 2 completa; queda el smoke
 contra infra real (Redis/Postgres/Bitbucket) y la validación P3 del formato inline.
+
+---
+
+## Fase 3 (fix + verificación) — especificada y en curso (2026-10-11)
+
+La especificación completa vive en `docs/fase3-fix-verificacion-20261011.md`
+(aprobada con enmiendas) y las tareas en `tasks/todo-fase3.md`.
+
+- **Objetivo:** un hallazgo `fix_with_approval` **aprobado** produce un parche, se
+  verifica en un sandbox con la imagen del CI **por digest** y, solo si pasa, se
+  publica como sugerencia inline. Si no pasa, no deja rastro y escala con el log.
+  El agente **sigue sin escribir** el repo.
+- **Enmiendas de arranque:**
+  - **E6 (seam de entrega):** el formato (```` ```suggestion ```` vs ```` ```diff ````)
+    vive tras un `DeliveryFormatter`; R1 (¿Bitbucket renderiza `suggestion`?)
+    deja de bloquear. Verificado que `twg` no expone ningún concepto de `suggestion`.
+  - **E7 (verificación desacoplada):** separar la verificación de la ruta de la
+    review es requisito de v1, no optimización (revisión de R2).
+  - **Q1:** runner rootless **en esta máquina** (herramienta rootless y user
+    namespaces verificados; el demonio actual no es rootless).
+  - **Q4:** P6 pasa a ser **precondición del runner** (ejecuta código de PRs de
+    terceros), no "ya no bloquea".
+- **Cerrado (Bloque 1, base pura):** `F1`–`F6`. Contrato de fix, validación local
+  del parche, `LlmFixer`, selección de candidatos, nodo `fix` con el seam de
+  entrega, y render/dedupe. **320 tests** en verde; camino pausa → decisión → fix →
+  sugerencia verificada cubierto con fakes (`tests/test_fix_e2e.py`).
+- **Pendiente (Bloque 2, runner):** `F7`–`F10` (adaptador HTTP, servicio
+  `sandbox_runner`, perfil con `ci_image_digest`, compose/secretos). Bloqueado por
+  **P6** (precondición) y **Q2** (comando de tests dirigidos).
