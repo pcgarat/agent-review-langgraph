@@ -271,6 +271,86 @@ def test_grafo_sin_hallazgos_no_publica() -> None:
     assert vcs.inlines == []
 
 
+def test_scope_filtra_ruido_antes_de_las_personas() -> None:
+    # B5: un lockfile en el diff no debe llegar a las personas ni al publish.
+    class DiffVcs(FakeVcs):
+        def get_diff(self, repo: str, pr_id: int) -> str:
+            del repo, pr_id
+            return (
+                "diff --git a/composer.lock b/composer.lock\n"
+                "--- a/composer.lock\n+++ b/composer.lock\n@@ -1 +1 @@\n-old\n+new\n"
+                "diff --git a/src/foo.py b/src/foo.py\n"
+                "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+
+    captured: dict[str, str] = {}
+
+    class CaptureReviewer:
+        name = "correctness"
+
+        def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""):
+            del repo, pr_id, head_sha
+            captured["diff"] = diff
+            return ReviewerResult()
+
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=DiffVcs(), reviewers=[CaptureReviewer()], policy=policy).compile()
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert "composer.lock" not in captured["diff"]
+    assert "src/foo.py" in captured["diff"]
+
+
+def test_scope_aplica_max_files_per_pr() -> None:
+    class DiffVcs(FakeVcs):
+        def get_diff(self, repo: str, pr_id: int) -> str:
+            del repo, pr_id
+            return (
+                "diff --git a/src/a.py b/src/a.py\n"
+                "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+b\n"
+                "diff --git a/src/b.py b/src/b.py\n"
+                "--- a/src/b.py\n+++ b/src/b.py\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+
+        def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
+            del repo, pr_id
+            return [("src/a.py", 1, 0), ("src/b.py", 100, 0)]
+
+    captured: dict[str, str] = {}
+
+    class CaptureReviewer:
+        name = "correctness"
+
+        def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""):
+            del repo, pr_id, head_sha
+            captured["diff"] = diff
+            return ReviewerResult()
+
+    policy = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "report",
+            "default_action": "report",
+            "rules": [],
+            "guards": {"max_files_per_pr": 1},
+        }
+    )
+    graph = build_graph(vcs=DiffVcs(), reviewers=[CaptureReviewer()], policy=policy).compile()
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    # Se conserva el fichero con mas churn (src/b.py) y se descarta el otro.
+    assert "src/b.py" in captured["diff"]
+    assert "src/a.py" not in captured["diff"]
+
+
 def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
     # 0 hallazgos con fuente declarada ausente NO es "sin hallazgos": el PR
     # recibe un aviso de review incompleta y el outcome no esta completo.

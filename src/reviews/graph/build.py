@@ -5,6 +5,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from reviews.domain.models import (
     PENDING_ACTIONS,
@@ -20,6 +21,7 @@ from reviews.ports.chat import ChatPort
 from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.sandbox import SandboxPort
 from reviews.ports.vcs import ReviewMarker, VcsPort
+from reviews.scope import filter_diff, limit_files, merge_ignore_patterns
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,8 @@ class ReviewIntegrityError(RuntimeError):
 class ReviewState(TypedDict, total=False):
     request: ReviewRequest
     diff: str
+    # Persona asignada a esta rama del fan-out (la escribe cada `Send`).
+    reviewer: str
     # Las personas escriben aqui en paralelo; el reducer acumula.
     findings: Annotated[list[Finding], operator.add]
     # Estado de las fuentes estaticas por reviewer. Sin reducer: se sustituye, y
@@ -110,7 +114,8 @@ def build_graph(
     policy: PolicyEngine,
     chat: ChatPort | None = None,
     sandbox: SandboxPort | None = None,
-):
+    scope_ignore: str = "",
+) -> StateGraph[ReviewState]:
     """Construye el grafo de review.
 
     Fase 1: scope -> fan-out -> merge -> policy -> publish (inline + resumen).
@@ -121,12 +126,29 @@ def build_graph(
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
         diff = vcs.get_diff(request.repo, request.pr_id)
+        # Ruido fuera (lockfiles, generados, vendor) y, si se declara, tope de
+        # ficheros por PR. Ambas cosas acotan lo que ven las personas.
+        allowed: list[str] | None = None
+        max_files = int(policy.guards.get("max_files_per_pr", 0) or 0)
+        if max_files > 0:
+            diffstat = vcs.get_diffstat(request.repo, request.pr_id)
+            if diffstat:
+                kept, truncated = limit_files(diffstat, max_files)
+                if truncated:
+                    logger.warning(
+                        "PR %s#%s: %d ficheros superan max_files_per_pr=%d; se revisan %d",
+                        request.repo,
+                        request.pr_id,
+                        len(diffstat),
+                        max_files,
+                        len(kept),
+                    )
+                allowed = kept
+        diff = filter_diff(diff, merge_ignore_patterns(scope_ignore), allowed=allowed)
         return {"request": request, "diff": diff, "findings": [], "source_status": {}}
 
-    def dispatch(state: ReviewState) -> list:
+    def dispatch(state: ReviewState) -> list[Send]:
         """Fan-out: una rama por persona, sobre el mismo diff."""
-        from langgraph.types import Send
-
         request = ReviewRequest.model_validate(state["request"])
         return [
             Send(
@@ -137,7 +159,7 @@ def build_graph(
         ]
 
     def persona(state: ReviewState) -> ReviewState:
-        name = state.get("reviewer", "")  # type: ignore[typeddict-item]
+        name = state["reviewer"]
         reviewer = next((r for r in reviewers if r.name == name), None)
         if reviewer is None:
             return {"findings": []}
