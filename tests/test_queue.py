@@ -16,3 +16,14 @@ def test_cola_en_memoria_fifo() -> None:
     assert first is not None and first.pr_id == 1
     assert second is not None and second.pr_id == 2
     assert queue.dequeue() is None
+
+
+def test_dead_letter_guarda_el_job_descartado() -> None:
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7", attempts=2)
+    queue.dead_letter(request, reason="intentos agotados (3)")
+    assert queue.dead_letter_count == 1
+    entry = queue.dead_letters()[0]
+    assert entry["review_key"] == request.review_key
+    assert entry["reason"] == "intentos agotados (3)"
+    assert entry["request"]["pipeline_id"] == "7"

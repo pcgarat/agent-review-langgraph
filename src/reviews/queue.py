@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Protocol, runtime_checkable
 
@@ -11,6 +12,9 @@ from reviews.domain.models import ReviewRequest
 logger = logging.getLogger(__name__)
 
 QUEUE_KEY = "reviews:jobs"
+# Cola de descartes: los jobs que agotan los reintentos no se pierden en el log,
+# quedan aqui para reinyectarlos a mano o inspeccionarlos.
+DEAD_LETTER_KEY = "reviews:jobs:dead"
 
 
 @runtime_checkable
@@ -21,11 +25,22 @@ class ReviewQueue(Protocol):
         """Saca el siguiente trabajo o None si no hay nada en el timeout."""
         ...
 
+    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
+        """Registra un job descartado tras agotar los intentos."""
+        ...
+
+    def dead_letters(self) -> list[dict[str, object]]:
+        """Jobs descartados, para inspeccion o reinyeccion manual."""
+        ...
+
 
 class RedisReviewQueue:
-    def __init__(self, *, url: str, key: str = QUEUE_KEY) -> None:
+    def __init__(
+        self, *, url: str, key: str = QUEUE_KEY, dead_letter_key: str = DEAD_LETTER_KEY
+    ) -> None:
         self._client = redis.Redis.from_url(url, decode_responses=True)
         self._key = key
+        self._dead_key = dead_letter_key
 
     def available(self) -> bool:
         try:
@@ -43,12 +58,31 @@ class RedisReviewQueue:
         _, payload = item
         return ReviewRequest.model_validate_json(payload)
 
+    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
+        self._client.rpush(self._dead_key, _dead_letter_payload(request, reason=reason))
+
+    def dead_letters(self) -> list[dict[str, object]]:
+        import json
+
+        raw = self._client.lrange(self._dead_key, 0, -1)
+        parsed: list[dict[str, object]] = []
+        for item in raw:
+            try:
+                entry = json.loads(item)
+            except ValueError:
+                logger.warning("Entrada ilegible en la DLQ: %s", item)
+                continue
+            if isinstance(entry, dict):
+                parsed.append(entry)
+        return parsed
+
 
 class InMemoryReviewQueue:
     """Cola compartible en tests y fallback sin Redis."""
 
     def __init__(self) -> None:
         self._items: deque[str] = deque()
+        self._dead: list[str] = []
 
     def enqueue(self, request: ReviewRequest) -> None:
         self._items.append(request.model_dump_json())
@@ -59,5 +93,31 @@ class InMemoryReviewQueue:
             return None
         return ReviewRequest.model_validate_json(self._items.popleft())
 
+    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
+        self._dead.append(_dead_letter_payload(request, reason=reason))
+
+    def dead_letters(self) -> list[dict[str, object]]:
+        import json
+
+        return [json.loads(item) for item in self._dead]
+
     def __len__(self) -> int:
         return len(self._items)
+
+    @property
+    def dead_letter_count(self) -> int:
+        return len(self._dead)
+
+
+def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:
+    import json
+
+    return json.dumps(
+        {
+            "review_key": request.review_key,
+            "attempts": request.attempts,
+            "reason": reason,
+            "discarded_at": time.time(),
+            "request": request.model_dump(),
+        }
+    )

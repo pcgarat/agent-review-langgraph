@@ -5,8 +5,9 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-import yaml
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph.state import CompiledStateGraph
 
 from reviews.adapters.llm_reviewer import LlmReviewer
 from reviews.adapters.null_reviewer import NullReviewer
@@ -14,7 +15,10 @@ from reviews.adapters.openai_llm import OpenAiCompatibleLlm
 from reviews.adapters.teams_webhook import TeamsWebhookAdapter
 from reviews.adapters.tooling_reviewer import ToolingReviewer
 from reviews.adapters.tooling_source import FileToolingOutputSource
-from reviews.adapters.twg_vcs import TwgVcsAdapter
+from reviews.adapters.tooling_source import (
+    validate_tooling_template as validate_tooling_template_source,
+)
+from reviews.adapters.twg_vcs import TwgVcsAdapter, check_twg
 from reviews.checkpointer import build_checkpointer
 from reviews.domain.models import ReviewOutcome, ReviewRequest
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
@@ -26,27 +30,31 @@ from reviews.ports.llm import LlmPort
 from reviews.ports.reviewer import ReviewerPort
 from reviews.ports.tooling import ToolingOutputSource
 from reviews.ports.vcs import VcsPort
+from reviews.profile import expected_tools, load_profile
 from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
-from reviews.settings import Settings, get_settings
+from reviews.settings import Settings, get_settings, require_production_secrets
 
 logger = logging.getLogger(__name__)
 
+# Grafo de review ya compilado (lo que consume el worker).
+ReviewGraph = CompiledStateGraph[ReviewState]
 
-def _expected_tools(settings: Settings) -> list[str]:
-    return [tool.strip() for tool in settings.expected_tools.split(",") if tool.strip()]
+# Fichero de latido que refleja que el worker sigue vivo (healthcheck de compose).
+HEARTBEAT_PATH = "/tmp/reviews-worker-heartbeat"
 
 
-def build_pending(settings: Settings):
+def build_pending(settings: Settings) -> PendingStore:
     """Registro de ingesta: que artefactos han llegado por review."""
+    tools = expected_tools(settings)
     store = RedisPendingStore(
         url=settings.redis_url,
-        expected_tools=_expected_tools(settings),
+        expected_tools=tools,
         ttl_ready_s=settings.ingest_ttl_ready_s,
         ttl_pending_s=settings.ingest_ttl_pending_s,
     )
     if store.available():
         return store
-    return InMemoryPendingStore(expected_tools=_expected_tools(settings))
+    return InMemoryPendingStore(expected_tools=tools)
 
 
 def build_queue(settings: Settings) -> ReviewQueue:
@@ -57,20 +65,16 @@ def build_queue(settings: Settings) -> ReviewQueue:
     return InMemoryReviewQueue()
 
 
-def _load_profile(settings: Settings) -> dict[str, Any]:
-    path = Path(settings.repo_profile_config)
-    try:
-        profile = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except OSError:
-        logger.warning("Sin perfil de repo en %s; se omite la persona estatica", path)
-        return {}
-    except yaml.YAMLError as exc:
-        logger.error("Perfil de repo invalido en %s (%s); se omite la persona estatica", path, exc)
-        return {}
-    if not isinstance(profile, dict):
-        logger.warning("Perfil de repo en %s no es un mapa; se omite la persona estatica", path)
-        return {}
-    return profile
+def validate_tooling_template(settings: Settings) -> None:
+    """Valida la plantilla del artefacto en el arranque, no en la primera review.
+
+    La ruta la publica el CI "por convencion": si la plantilla es irresoluble o
+    incompatible con los placeholders, conviene fallar al arrancar (D2) en vez de
+    descubrirlo cuando el primer PR necesita leer su salida.
+    """
+    validate_tooling_template_source(
+        template=settings.tooling_output_template, root=settings.tooling_output_root
+    )
 
 
 def build_llm(settings: Settings) -> LlmPort | None:
@@ -98,7 +102,7 @@ def build_reviewers(
     PHPStan (eso es el sandbox de Fase 3).
     """
     reviewers: list[ReviewerPort] = []
-    profile = _load_profile(settings)
+    profile = load_profile(settings)
     checks = profile.get("checks", {}) or {}
     if isinstance(checks, dict) and checks.get("typecheck"):
         source = tooling_source or FileToolingOutputSource(
@@ -130,6 +134,12 @@ def build_runtime(
     policy: PolicyEngine | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ) -> Any:
+    validate_tooling_template(settings)
+    # A2: fallar ruidoso en el arranque si twg no esta, en vez de descubrirlo al
+    # procesar la primera review (que pareceria un fallo del PR revisado).
+    if vcs is None:
+        version = check_twg(settings.twg_bin)
+        logger.info("Adaptador VCS: twg %s", version)
     vcs = vcs or TwgVcsAdapter(
         workspace=settings.bitbucket_workspace,
         repo=settings.bitbucket_repo,
@@ -137,13 +147,21 @@ def build_runtime(
     )
     chat = chat if chat is not None else TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
     reviewers = reviewers if reviewers is not None else build_reviewers(settings)
-    policy = policy or PolicyEngine.from_file(settings.autonomy_config)
+    policy = policy or PolicyEngine.from_file(
+        settings.autonomy_config, cap_override=settings.max_autonomy_override
+    )
     saver = checkpointer or build_checkpointer(settings.database_url)
-    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy, chat=chat)
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=reviewers,
+        policy=policy,
+        chat=chat,
+        scope_ignore=settings.scope_ignore,
+    )
     return graph.compile(checkpointer=saver)
 
 
-def process_request(graph: Any, request: ReviewRequest) -> ReviewOutcome:
+def process_request(graph: ReviewGraph, request: ReviewRequest) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
     Publicar y reencolar no pueden convivir en la misma pasada: `graph.invoke`
@@ -156,7 +174,7 @@ def process_request(graph: Any, request: ReviewRequest) -> ReviewOutcome:
     (hilo distinto), y por eso el `publish` comprueba ademas el token de dedupe.
     """
     logger.info("Procesando review %s (intento %d)", request.review_key, request.attempts + 1)
-    config = {"configurable": {"thread_id": request.thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
     resumed = _completed_snapshot(graph, config)
     if resumed is not None:
         logger.info(
@@ -164,7 +182,7 @@ def process_request(graph: Any, request: ReviewRequest) -> ReviewOutcome:
             request.review_key,
         )
         return outcome_from_state(cast("ReviewState", resumed))
-    result = graph.invoke({"request": request, "findings": []}, config=config)
+    result = cast("ReviewState", graph.invoke({"request": request, "findings": []}, config=config))
     outcome = outcome_from_state(result)
     if outcome.complete:
         logger.info("Review completada %s", request.review_key)
@@ -182,7 +200,7 @@ def process_request(graph: Any, request: ReviewRequest) -> ReviewOutcome:
     return outcome
 
 
-def _completed_snapshot(graph: Any, config: dict[str, Any]) -> dict[str, Any] | None:
+def _completed_snapshot(graph: ReviewGraph, config: RunnableConfig) -> dict[str, Any] | None:
     """Estado guardado del hilo si esa ejecucion ya termino, o `None`.
 
     `invoke(input)` sobre un hilo existente re-ejecuta el grafo desde `START`
@@ -205,7 +223,9 @@ def _completed_snapshot(graph: Any, config: dict[str, Any]) -> dict[str, Any] | 
     return values if values else None
 
 
-def _consume(queue: ReviewQueue, graph, request: ReviewRequest, *, max_attempts: int) -> None:
+def _consume(
+    queue: ReviewQueue, graph: ReviewGraph, request: ReviewRequest, *, max_attempts: int
+) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
     try:
         process_request(graph, request)
@@ -216,13 +236,14 @@ def _consume(queue: ReviewQueue, graph, request: ReviewRequest, *, max_attempts:
 
 def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
     if request.attempts + 1 >= max_attempts:
-        # Job descartado a proposito tras fallos persistentes: el `review_key`
-        # queda en el log para reencolarlo a mano (no hay DLQ todavia, B2).
+        # Job descartado a proposito tras fallos persistentes: no desaparece en el
+        # log, va a la DLQ para poder reinyectarlo o inspeccionarlo (B2).
         logger.error(
-            "Review %s agoto los %d intentos; se descarta",
+            "Review %s agoto los %d intentos; se manda a la DLQ",
             request.review_key,
             max_attempts,
         )
+        queue.dead_letter(request, reason=f"intentos agotados ({max_attempts})")
         return
     retry = request.model_copy(update={"attempts": request.attempts + 1})
     queue.enqueue(retry)
@@ -262,12 +283,13 @@ def run_forever(
     *,
     settings: Settings | None = None,
     queue: ReviewQueue | None = None,
-    graph=None,
+    graph: ReviewGraph | None = None,
     pending: PendingStore | None = None,
     poll_s: float = 5.0,
     sweep_s: float = 30.0,
 ) -> None:
     settings = settings or get_settings()
+    require_production_secrets(settings)
     logging.basicConfig(level=settings.log_level)
     queue = queue or build_queue(settings)
     graph = graph or build_runtime(settings)
@@ -275,8 +297,10 @@ def run_forever(
     logger.info("Worker de reviews arrancado (Fase 1)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
+    _touch_heartbeat()
     while True:
         request = queue.dequeue(timeout_s=poll_s)
+        _touch_heartbeat()
         if request is not None:
             _consume(queue, graph, request, max_attempts=settings.max_review_attempts)
             continue
@@ -284,6 +308,19 @@ def run_forever(
         if time.monotonic() - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
             last_sweep = time.monotonic()
+
+
+def _touch_heartbeat(path: str = HEARTBEAT_PATH) -> None:
+    """Refresca el latido que usa el healthcheck para saber que el worker vive.
+
+    El proceso puede morir sin que nadie lo note (hoy no hay watchdog): el latido
+    convierte "el contenedor sigue arriba" en "el bucle sigue corriendo". Si el
+    fichero se queda viejo, `restart: unless-stopped` lo re-arranca.
+    """
+    try:
+        Path(path).write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        logger.debug("No se pudo escribir el latido del worker en %s", path)
 
 
 def main() -> None:

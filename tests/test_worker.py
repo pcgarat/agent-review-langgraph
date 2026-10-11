@@ -19,6 +19,7 @@ from reviews.domain.pending import InMemoryPendingStore
 from reviews.graph.build import build_graph
 from reviews.policy.engine import PolicyEngine
 from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from reviews.profile import expected_tools
 from reviews.queue import InMemoryReviewQueue
 from reviews.settings import Settings
 from reviews.worker.main import (
@@ -339,3 +340,34 @@ def test_consume_descarta_el_job_al_agotar_intentos() -> None:
     request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7", attempts=2)
     _consume(queue, _FailingGraph(), request, max_attempts=3)
     assert queue.dequeue() is None, "agotado el tope, el job se descarta"
+    dead = queue.dead_letters()
+    assert len(dead) == 1, "el job descartado queda en la DLQ, no solo en el log"
+    assert dead[0]["review_key"] == request.review_key
+
+
+def test_expected_tools_perfil_distinto_del_env_es_intencional(tmp_path: Path) -> None:
+    # B4: el perfil manda. Con el `.env` en su valor por defecto, un perfil que
+    # declara `expected_tools` no debe quedar tapado por el env.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: cqm/emotivoo-v2\nexpected_tools:\n  - phpstan\n  - rector\n", encoding="utf-8"
+    )
+    settings = Settings(repo_profile_config=str(profile))
+    assert expected_tools(settings) == ["phpstan", "rector"]
+
+
+def test_expected_tools_env_explicito_manda_sobre_el_perfil(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("repo: r\nexpected_tools:\n  - phpstan\n", encoding="utf-8")
+    settings = Settings(repo_profile_config=str(profile), expected_tools="psalm")
+    assert expected_tools(settings) == ["psalm"]
+
+
+def test_expected_tools_api_y_worker_coinciden(tmp_path: Path) -> None:
+    # La barrera de la API y la del worker deben ver el mismo conjunto (B4).
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(
+        "repo: r\nexpected_tools:\n  - phpstan\n  - rector\n", encoding="utf-8"
+    )
+    settings = Settings(repo_profile_config=str(profile))
+    assert expected_tools(settings) == ["phpstan", "rector"]
