@@ -85,3 +85,20 @@ def best_line(added: dict[int, str], hint: int | None, needle: str | None) -> in
     if hint is not None:
         return min(added, key=lambda line_no: abs(line_no - hint))
     return sorted(added)[0]
+
+
+def resolve_added_line(added: dict[int, str], text: str) -> int | None:
+    """Linea del lado nuevo que contiene `text`, o `None`.
+
+    Es la resolucion de ancla *en cliente*: mismo criterio para todo adaptador
+    (Bitbucket la delega al servidor como `prs diff-line`, GitHub la calcula
+    aqui). Sin coincidencia no hay ancla: el publish manda el hallazgo al resumen
+    en vez de colocar el comentario en una linea inventada.
+    """
+    needle = (text or "").strip()
+    if not needle:
+        return None
+    for line_no, line in added.items():
+        if needle in line:
+            return line_no
+    return None

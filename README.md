@@ -14,6 +14,7 @@ Documentación de fondo:
 | `docs/fase3-fix-verificacion-20261011.md` | Fix aprobado: parche, verificación en sandbox y entrega como sugerencia |
 | `docs/decisiones-publish-inline-20261011.md` | Formato inline, orden de publicación y borrados |
 | `docs/reintento-de-nodo-20261011.md` | `RetryPolicy` por nodo, clasificación de errores y DLQ |
+| `docs/proveedor-github-20261011.md` | Adaptador de GitHub: contrato del puerto, ancla en cliente y configuración |
 | `docs/smoke-fase1-20261011.md` | Smoke E2E (Nivel 1 local y Nivel 2 contra Bitbucket) |
 | `docs/edu/` | Serie didáctica sobre LangGraph aplicada a este repo |
 | `tasks/plan.md` | Estado del plan: tareas cerradas y pendientes humanos |
@@ -64,6 +65,7 @@ flowchart LR
 | `postgres` | Checkpointer de LangGraph: estado de cada ejecución, base del `interrupt` (HITL) y de la no-repetición. |
 | `redis` | Cola de jobs, claves de idempotencia, registro de ingesta y *inbox* de reviews pausadas. |
 | `twg` | Adaptador de Bitbucket/Jira (CLI). Obtiene diff, publica comentarios inline/resumen y resuelve anclas. |
+| `github` | Adaptador de GitHub (API REST, `VcsPort`). Sustituye a `twg` con `VCS_PROVIDER=github`; el grafo no cambia. |
 | `var/` | Artefactos del CI (salida de PHPStan) que lee la persona estática. Solo lectura en el worker. |
 | `config/` | `autonomy.yaml` (política) y `repo_profile.*.yaml` (perfil del repo: checks, herramientas esperadas). |
 
@@ -153,13 +155,19 @@ docker compose up --build
 ```
 
 `bootstrap-env.sh` es idempotente: no sobrescribe un `.env` existente, lo deja con
-permisos `600` y resume qué secretos faltan sin imprimir valores. El worker valida
-`twg --version` en el arranque y falla ruidoso si falta.
+permisos `600` y resume qué secretos faltan sin imprimir valores. Con el proveedor
+`twg`, el worker valida `twg --version` en el arranque y falla ruidoso si falta;
+con `VCS_PROVIDER=github` no necesita `twg` y exige `GITHUB_TOKEN`.
 
 **Credencial de `twg` (cuenta de servicio).** El agente usa un **API token scoped
 de un actor de servicio** por entorno (`TWG_BBC_TOKEN`, más `TWG_SITE`/`TWG_USER`),
 vía `.env`: no caduca cada hora como el OAuth y se revoca sin tocar a nadie. El
 contenedor **no monta** `~/.config/twg`.
+
+**Proveedor de GitHub.** Con `VCS_PROVIDER=github`, `GITHUB_OWNER`/`GITHUB_REPO` y
+un PAT fine-grained (`GITHUB_TOKEN`) sustituyen a `twg`: el worker instala el
+adaptador de la API REST y ya no requiere el binario. Ver
+`docs/proveedor-github-20261011.md`.
 
 `api` y `worker` arrancan con `restart: unless-stopped` y healthcheck (el del
 worker es un latido en `/tmp/reviews-worker-heartbeat`).

@@ -399,3 +399,38 @@ def test_b6_rechaza_un_repo_distinto_del_configurado(monkeypatch) -> None:
 
     same = client.post("/webhook/tooling", json=_payload(repo="cqm/emotivoo-v2"))
     assert same.status_code == 202
+
+
+def test_verify_repo_usa_la_identidad_del_proveedor_activo(monkeypatch) -> None:
+    from agent_review.api.main import _expected_repo
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "vcs_provider", "github")
+    monkeypatch.setattr(settings, "github_owner", "cqm")
+    monkeypatch.setattr(settings, "github_repo", "reviews")
+    assert _expected_repo(settings) == "cqm/reviews"
+
+    monkeypatch.setattr(settings, "vcs_provider", "twg")
+    monkeypatch.setattr(settings, "bitbucket_workspace", "cqm")
+    monkeypatch.setattr(settings, "bitbucket_repo", "emotivoo-v2")
+    assert _expected_repo(settings) == "cqm/emotivoo-v2"
+
+
+def test_vcs_provider_desconocido_falla_al_construir_settings() -> None:
+    from agent_review.settings import Settings
+
+    with pytest.raises(ValueError, match="VCS_PROVIDER"):
+        Settings(vcs_provider="gitlab")
+
+
+def test_arranque_en_produccion_con_github_exige_github_token(monkeypatch) -> None:
+    from agent_review.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "reviews_decision_token", "secreto-decision")
+    monkeypatch.setattr(settings, "vcs_provider", "github")
+    monkeypatch.setattr(settings, "github_token", "")
+    with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
+        require_production_secrets(settings)

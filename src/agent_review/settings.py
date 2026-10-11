@@ -2,13 +2,23 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Proveedores de VCS soportados. Un valor distinto es un error de configuracion:
+# falla al construir `Settings` (arranque), no en la primera review.
+_VCS_PROVIDERS = {"twg", "github"}
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     twg_bin: str = "twg"
+
+    # Proveedor de VCS del despliegue: `twg` (Bitbucket via el CLI de Atlassian)
+    # o `github` (API REST). El grafo no lo conoce; solo el `build_vcs` del worker
+    # y la verificacion de repo de la API leen esta clave.
+    vcs_provider: str = "twg"
 
     bitbucket_workspace: str = ""
     bitbucket_repo: str = ""
@@ -23,6 +33,15 @@ class Settings(BaseSettings):
     # API token de Atlassian (Jira/Confluence). Solo necesario si se usa
     # `twg jira` (escalado a workitem); twg lo lee de `TWG_TOKEN`.
     twg_token: str = ""
+
+    # GitHub (VCS_PROVIDER=github). `github_owner`/`github_repo` son la identidad
+    # del repo revisado (equivalente a BITBUCKET_WORKSPACE/BITBUCKET_REPO). El
+    # token es un PAT fine-grained con `pull_requests: write` + `contents: read`.
+    github_owner: str = ""
+    github_repo: str = ""
+    github_token: str = ""
+    # Base de la API. Se cambia para GitHub Enterprise Server.
+    github_api_url: str = "https://api.github.com"
 
     teams_webhook_url: str = ""
     # Declara que el canal de Teams es parte del despliegue. Con `true`, en
@@ -116,6 +135,20 @@ class Settings(BaseSettings):
     def fix_recipes_list(self) -> list[str]:
         return [item.strip() for item in self.fix_recipes.split(",") if item.strip()]
 
+    @field_validator("vcs_provider", mode="before")
+    @classmethod
+    def _normalize_vcs_provider(cls, value: object) -> object:
+        """Normaliza y valida el proveedor. Un valor desconocido es un error de
+        configuracion que debe fallar en el arranque, no en la primera review."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in _VCS_PROVIDERS:
+                raise ValueError(
+                    f"VCS_PROVIDER debe ser uno de {sorted(_VCS_PROVIDERS)}, no {value!r}"
+                )
+            return normalized
+        return value
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -145,8 +178,12 @@ def insecure_secrets(settings: Settings) -> list[str]:
     # sera la llave del repo (spec §2.1). No puede quedarse en el valor de ejemplo.
     if _is_unset(settings.reviews_decision_token):
         insecure.append("REVIEWS_DECISION_TOKEN")
-    # La credencial de twg es obligatoria: sin ella no hay diff ni comentarios.
-    if not settings.twg_bbc_token.strip():
+    # La credencial del proveedor de VCS es obligatoria: sin ella no hay diff ni
+    # comentarios. Se exige la del proveedor activo, no siempre la de Bitbucket.
+    if settings.vcs_provider == "github":
+        if not settings.github_token.strip():
+            insecure.append("GITHUB_TOKEN")
+    elif not settings.twg_bbc_token.strip():
         insecure.append("TWG_BBC_TOKEN")
     if settings.teams_enabled and not settings.teams_webhook_url.strip():
         insecure.append("TEAMS_WEBHOOK_URL")
