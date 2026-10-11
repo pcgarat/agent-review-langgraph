@@ -26,17 +26,15 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def _artifacts_in_tmp(tmp_path: Path, monkeypatch) -> None:
-    """Los artefactos se escriben en un directorio temporal, no en el repo."""
+    """Aisla el estado por proceso de la API entre tests.
+
+    Los artefactos van a un directorio temporal (no al repo) y se fija la
+    identidad del repo revisado que asume el payload; los casos que prueban otro
+    proveedor lo sobrescriben a proposito. El `.env` y el entorno del host ya los
+    neutraliza el `conftest.py` raiz.
+    """
     settings = main._settings()
     monkeypatch.setattr(settings, "tooling_output_root", str(tmp_path))
-    # Los tests no deben depender de un `.env` real: con el secreto relajado, los
-    # casos sin firma se comportan como hasta ahora (los de firma lo restauran).
-    monkeypatch.setattr(settings, "tooling_webhook_secret", "change-me")
-    # `get_settings()` lee el `.env` del host (gitignored), asi que un despliegue
-    # local con `VCS_PROVIDER=github` cambiaria el repo que `_verify_repo` admite y
-    # tumbaria la suite. Se fija el proveedor y la identidad al repo de los tests;
-    # los casos que prueban GitHub los sobrescriben a proposito.
-    monkeypatch.setattr(settings, "vcs_provider", "twg")
     monkeypatch.setattr(settings, "bitbucket_workspace", "cqm")
     monkeypatch.setattr(settings, "bitbucket_repo", "emotivoo-v2")
 
