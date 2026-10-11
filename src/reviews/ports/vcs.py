@@ -51,6 +51,11 @@ class VcsPort(Protocol):
         """(fichero, lineas anadidas, lineas borradas) por fichero."""
         ...
 
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        """Contenido de un fichero en un `ref` (commit/branch). Fase 3: leer el
+        fichero al `head_sha` para que el fixer proponga sobre codigo real."""
+        ...
+
     def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
         """Comentarios del agente ya publicados en el PR.
 

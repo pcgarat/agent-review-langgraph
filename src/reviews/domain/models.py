@@ -270,6 +270,8 @@ class ReviewOutcome(BaseModel):
     human_decisions: HitlDecision | None = None
     # El grafo quedo pausado esperando a una persona (no publico los hallazgos).
     paused: bool = False
+    # Fase 3: resultado del fix por hallazgo, indexado por `finding_id`.
+    fixes: dict[str, FixResult] = Field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -282,3 +284,67 @@ class ReviewOutcome(BaseModel):
 
 
 ActionLiteral = Literal["report", "escalate", "fix_with_approval", "fix_auto"]
+
+
+# ---------------------------------------------------------------------------
+# Ejecucion de recipes (sandbox). El resultado de un comando es un valor de
+# dominio: lo produce el sandbox, lo consume el fix y lo expone el outcome.
+# ---------------------------------------------------------------------------
+
+
+class CommandResult(BaseModel):
+    recipe: str
+    argv: list[str]
+    exit_code: int
+    duration_s: float
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Fase 3: fix verificado. El agente propone un parche, lo verifica en el
+# sandbox y, solo si pasa, lo entrega como sugerencia. Nunca escribe el repo.
+# ---------------------------------------------------------------------------
+
+
+class FixStatus(StrEnum):
+    VERIFIED = "verified"  # pasa todo; se publica como sugerencia
+    FAILED = "failed"  # agota intentos; escala con log
+    INVALID_PATCH = "invalid_patch"  # no pasa la validacion local
+    NOT_VERIFIABLE = "not_verifiable"  # imagen cambiada, sin digest, runner caido
+    SKIPPED = "skipped"  # tope max_fixes_per_pr o presupuesto
+
+
+class ProposedPatch(BaseModel):
+    """Parche propuesto por el fixer: reemplaza un rango de un solo fichero.
+
+    El `diff` es unificado (un hunk, un fichero), pero lo que se publica es el
+    rango `start_line..end_line` con `replacement`: una sugerencia inline
+    reemplaza lineas del lado nuevo del diff, no aplica un parche.
+    """
+
+    finding_id: str
+    file: str
+    diff: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    replacement: str
+
+
+class FixResult(BaseModel):
+    finding_id: str
+    status: FixStatus
+    attempts: int = Field(default=0, ge=0)
+    patch: ProposedPatch | None = None
+    # Tails de los checks ejecutados, nunca el log completo.
+    checks: list[CommandResult] = Field(default_factory=list)
+    image_digest: str | None = None
+    reason: str = ""
+
+    @property
+    def verified(self) -> bool:
+        return self.status is FixStatus.VERIFIED

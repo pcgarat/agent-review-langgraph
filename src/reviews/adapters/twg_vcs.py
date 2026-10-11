@@ -118,6 +118,10 @@ class TwgVcsAdapter:
         del repo
         return self._run(["prs", "diff", str(pr_id)], json_output=False)
 
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo
+        return self._run(["repo", "file", path, "--ref", ref], json_output=False)
+
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         del repo
         entries = self._run_json(["prs", "diffstat", str(pr_id)])

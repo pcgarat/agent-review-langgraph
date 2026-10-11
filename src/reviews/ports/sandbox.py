@@ -2,28 +2,41 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from reviews.domain.models import CommandResult
 
 
-class CommandResult(BaseModel):
-    recipe: str
-    argv: list[str]
-    exit_code: int
-    duration_s: float
-    stdout_tail: str = ""
-    stderr_tail: str = ""
+class VerifyRequest(BaseModel):
+    """Peticion de verificacion al sandbox. El ciclo de vida del workspace vive
+    entero en el runner: el worker solo pide "aplica este parche y verifica"."""
 
-    @property
-    def ok(self) -> bool:
-        return self.exit_code == 0
+    # `review_key:finding_id:intento`: idempotencia del runner. Un POST repetido
+    # con el mismo `run_key` devuelve el run existente (spec §5.3).
+    run_key: str
+    repo: str
+    head_sha: str
+    patch: str
+    # Nombres de recipe del perfil, en orden; para al primer fallo.
+    recipes: list[str] = Field(default_factory=list)
+    # Rutas de test para la recipe dirigida (validadas por el runner).
+    targets: list[str] = Field(default_factory=list)
+
+
+class VerifyReport(BaseModel):
+    run_key: str
+    image_digest: str
+    results: list[CommandResult] = Field(default_factory=list)
+    passed: bool
 
 
 @runtime_checkable
 class SandboxPort(Protocol):
-    """Ejecuta recipes declaradas dentro de un entorno reproducible.
+    """Verifica un parche en un entorno reproducible (imagen del CI por digest).
 
-    Nunca recibe una linea de shell arbitraria: recibe un nombre de recipe del
-    repo_profile y sus parametros. Ver docs, apartado 9.4.
+    No recibe una linea de shell arbitraria: recibe un parche y nombres de recipe
+    del `repo_profile`. La validacion local y la seleccion de recipes son del
+    nodo `fix`; el runner solo ejecuta lo declarado. Ver docs, apartado 9.
     """
 
-    def run(self, recipe: str, *args: str) -> CommandResult: ...
+    def verify(self, request: VerifyRequest) -> VerifyReport: ...

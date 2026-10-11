@@ -12,14 +12,18 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from reviews.domain.models import (
     ApprovalRequest,
     AutofixClass,
+    CommandResult,
     Decision,
     DecisionOutcome,
     Finding,
     FindingAction,
     FindingDecision,
+    FixResult,
+    FixStatus,
     HitlDecision,
     Owner,
     PendingDecision,
+    ProposedPatch,
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
@@ -29,8 +33,9 @@ logger = logging.getLogger(__name__)
 
 # Tipos del dominio que viajan por el estado del grafo. Allowlist explicita para
 # que el serializer no dependa del msgpack permisivo (que avisa hoy y bloqueara
-# los tipos no registrados en versiones futuras). Incluye los HITL (Fase 2): el
-# `ApprovalRequest` del `interrupt` y la `HitlDecision` de la reanudacion.
+# los tipos no registrados en versiones futuras). Incluye los HITL (Fase 2) y los
+# del fix (Fase 3): `FixResult` viaja en el estado y debe poder deserializarse al
+# reanudar un hilo.
 _STATE_TYPES: tuple[type, ...] = (
     ReviewRequest,
     Finding,
@@ -45,6 +50,10 @@ _STATE_TYPES: tuple[type, ...] = (
     FindingDecision,
     HitlDecision,
     DecisionOutcome,
+    FixStatus,
+    ProposedPatch,
+    CommandResult,
+    FixResult,
 )
 
 
