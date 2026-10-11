@@ -267,9 +267,9 @@ indicador de completitud.
 
 ## 5. Dónde aparece en `reviews`
 
-La definición de las dos claves y la marca, en `src/reviews/domain/models.py`:
+La definición de las dos claves y la marca, en `src/agent_review/domain/models.py`:
 
-```startLine:209:246:src/reviews/domain/models.py
+```startLine:209:246:src/agent_review/domain/models.py
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"
@@ -311,9 +311,9 @@ La definición de las dos claves y la marca, en `src/reviews/domain/models.py`:
         return f"{self.idempotency_key}:{tool}"
 ```
 
-La **verificación previa** y las marcas del `publish`, en `src/reviews/graph/build.py`:
+La **verificación previa** y las marcas del `publish`, en `src/agent_review/graph/build.py`:
 
-```startLine:284:303:src/reviews/graph/build.py
+```startLine:284:303:src/agent_review/graph/build.py
         complete = not unavailable
         published = _published_markers(vcs, request)
         # Solo se salta si ESTA ejecucion ya dejo su marca con la misma
@@ -340,7 +340,7 @@ La **verificación previa** y las marcas del `publish`, en `src/reviews/graph/bu
 
 El formato de las marcas (concentrado en helpers, como recomienda §4.5):
 
-```startLine:436:448:src/reviews/graph/build.py
+```startLine:436:448:src/agent_review/graph/build.py
 def _summary_token(token: str, complete: bool) -> str:
     suffix = ":ok" if complete else ":partial"
     return f"<!-- {token}{suffix} -->"

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from reviews.domain.models import ReviewRequest
-from reviews.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
+from agent_review.domain.models import ReviewRequest
+from agent_review.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
 
 
 def _request(sha: str = "abc") -> ReviewRequest:

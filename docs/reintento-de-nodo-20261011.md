@@ -58,11 +58,11 @@ Dos consecuencias directas:
 2. Un `429` (rate limit) tampoco se reintenta, que es justo el caso que sí se resuelve
    esperando.
 
-Por eso el grafo usa su propia política: `reviews.errors.is_transient`.
+Por eso el grafo usa su propia política: `agent_review.errors.is_transient`.
 
 ## 3. Clasificación: el tipo del error es la política
 
-`src/reviews/errors.py` define la taxonomía y `is_transient`, el predicado único que
+`src/agent_review/errors.py` define la taxonomía y `is_transient`, el predicado único que
 se pasa como `retry_on`. **No** es un `try/except` en cada adaptador: es una decisión
 sobre el *tipo*.
 

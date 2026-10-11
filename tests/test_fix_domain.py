@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     CommandResult,
     FixResult,
     FixStatus,
@@ -57,7 +57,7 @@ def test_fix_result_se_serializa_en_el_serde_de_produccion() -> None:
     Sin esto, reanudar un hilo con fixes registrados fallaria al deserializar el
     checkpoint (los tipos no allowlisted avisan hoy y bloquean mas adelante).
     """
-    from reviews.checkpointer import build_serde
+    from agent_review.checkpointer import build_serde
 
     serde = build_serde()
     result = FixResult(

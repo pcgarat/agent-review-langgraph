@@ -246,9 +246,9 @@ compilado (el `compile()` es lo caro de construir, no de invocar).
 
 ## 5. Dónde aparece en `reviews`
 
-`src/reviews/graph/build.py` es el corazón. La construcción del grafo:
+`src/agent_review/graph/build.py` es el corazón. La construcción del grafo:
 
-```startLine:393:409:src/reviews/graph/build.py
+```startLine:393:409:src/agent_review/graph/build.py
     graph = StateGraph(ReviewState)
     graph.add_node("scope", scope)
     graph.add_node("persona", persona)
@@ -268,9 +268,9 @@ compilado (el `compile()` es lo caro de construir, no de invocar).
     return graph
 ```
 
-Y el esquema, en `src/reviews/graph/build.py`:
+Y el esquema, en `src/agent_review/graph/build.py`:
 
-```startLine:59:79:src/reviews/graph/build.py
+```startLine:59:79:src/agent_review/graph/build.py
 class ReviewState(TypedDict, total=False):
     request: ReviewRequest
     diff: str
@@ -292,9 +292,9 @@ class ReviewState(TypedDict, total=False):
     human_decisions: HitlDecision | None
 ```
 
-La **compilación** con checkpointer, en `src/reviews/worker/main.py`:
+La **compilación** con checkpointer, en `src/agent_review/worker/main.py`:
 
-```startLine:155:162:src/reviews/worker/main.py
+```startLine:155:162:src/agent_review/worker/main.py
     saver = checkpointer or build_checkpointer(settings.database_url)
     graph = build_graph(
         vcs=vcs,
@@ -308,7 +308,7 @@ La **compilación** con checkpointer, en `src/reviews/worker/main.py`:
 
 Y el tipo del grafo compilado que consume el worker:
 
-```startLine:40:41:src/reviews/worker/main.py
+```startLine:40:41:src/agent_review/worker/main.py
 # Grafo de review ya compilado (lo que consume el worker).
 ReviewGraph = CompiledStateGraph[ReviewState]
 ```
@@ -327,7 +327,7 @@ ReviewGraph = CompiledStateGraph[ReviewState]
 
 ## 6. Experimento propuesto
 
-1. Abre `src/reviews/graph/build.py`, comenta `graph.add_node("hitl", hitl)` y su
+1. Abre `src/agent_review/graph/build.py`, comenta `graph.add_node("hitl", hitl)` y su
    arista `policy -> hitl`, y conecta `policy -> publish`. Ejecuta un test:
    `make test` (o `.venv/bin/pytest tests/test_graph.py -q`). Observa que la mayoría
    siguen pasando: el grafo simplemente tiene otra topología.

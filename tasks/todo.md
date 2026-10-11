@@ -71,14 +71,14 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
   - Verifica: `tests/test_worker.py`, `tests/test_checkpointer.py`. ✅
     (`test_worker_reentrega_pausada_no_reejecuta_*`, `test_worker_resume_*`,
     `test_worker_doble_decision_es_noop`, `test_hilo_pausado_serializa_sin_avisos`)
-  - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`,
-    `src/reviews/checkpointer.py` (allowlist del serde con los tipos HITL).
+  - Ficheros: `src/agent_review/worker/main.py`, `src/agent_review/graph/build.py`,
+    `src/agent_review/checkpointer.py` (allowlist del serde con los tipos HITL).
 
 - [x] **T6** — Canal CLI + `POST /reviews/{key}/decision`
   - Aceptación: CLI construye y encola la decisión con `actor`; el endpoint
     valida contra el inbox (`409` si no pausada o `finding_id` ajeno). ✅
     (`tests/test_cli.py`, `tests/test_api.py::test_decision_*`)
-  - Ficheros: `src/reviews/cli.py`, `src/reviews/api/main.py`, `src/reviews/settings.py`,
+  - Ficheros: `src/agent_review/cli.py`, `src/agent_review/api/main.py`, `src/agent_review/settings.py`,
     `pyproject.toml`.
   - Nota: el endpoint usa `{review_key:path}` porque la clave lleva `/`
     (`cqm/emotivoo-v2:42:sha:7`); `REVIEWS_DECISION_TOKEN` entra en el contrato de
@@ -90,7 +90,7 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
     (`test_pausa_escribe_el_inbox_y_avisa_sin_publicar`,
     `test_aviso_de_pausa_sin_marca_de_dedupe`, `test_sweep_expired_reencola_sin_decision`,
     `test_resume_borra_la_pausa_del_inbox`)
-  - Ficheros: `src/reviews/worker/main.py`, `src/reviews/graph/build.py`.
+  - Ficheros: `src/agent_review/worker/main.py`, `src/agent_review/graph/build.py`.
   - Nota: el aviso va por Teams; el comentario de PR sin marca queda disponible vía
     `render_pause_notice` (el endpoint de PR de Fase 2 difiere su uso). El barrido de
     vencidas vive en `worker.sweep_expired` y se integra en `run_forever`.
@@ -102,8 +102,8 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
     `test_prune_nunca_poda_un_pausado_aunque_no_se_le_pase`,
     `test_estado_de_review_pausada`)
   - Verifica: `tests/test_checkpointer.py`, `tests/test_api.py`. ✅
-  - Ficheros: `src/reviews/checkpointer.py`, `src/reviews/api/main.py`,
-    `src/reviews/worker/main.py`, `src/reviews/settings.py`.
+  - Ficheros: `src/agent_review/checkpointer.py`, `src/agent_review/api/main.py`,
+    `src/agent_review/worker/main.py`, `src/agent_review/settings.py`.
   - Nota: la API no habla con el checkpointer; `/reviews/{key}` responde `PAUSED`
     desde el inbox (404 si no consta pausada).
 
@@ -138,7 +138,7 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
     puede cambiar), **no** el `CheckpointerPort` que retiró el spec §4.9: sigue sin
     haber un segundo cliente.
   - Verifica: `tests/test_checkpointer.py` ✅ (los tres tests de T8 siguen verdes).
-  - Ficheros: `src/reviews/checkpointer.py`, `tests/test_checkpointer.py`.
+  - Ficheros: `src/agent_review/checkpointer.py`, `tests/test_checkpointer.py`.
 
 ### Resiliencia de nodo (deuda cerrada)
 
@@ -148,9 +148,9 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
   `reviews/errors.py` (`is_transient`), porque el `default_retry_on` de LangGraph
   **no** reintenta `RuntimeError` (nuestros adaptadores) ni `429` ni `TimeoutError`.
   - Verifica: `tests/test_retry.py` (9 tests) ✅
-  - Ficheros: `src/reviews/errors.py`, `src/reviews/graph/build.py`,
-    `src/reviews/adapters/twg_vcs.py`, `src/reviews/ports/llm.py`,
-    `src/reviews/worker/main.py`, `src/reviews/settings.py`.
+  - Ficheros: `src/agent_review/errors.py`, `src/agent_review/graph/build.py`,
+    `src/agent_review/adapters/twg_vcs.py`, `src/agent_review/ports/llm.py`,
+    `src/agent_review/worker/main.py`, `src/agent_review/settings.py`.
   - Detalle: `docs/reintento-de-nodo-20261011.md`.
 - [x] **`twg` sin `timeout` (B8 de la revisión)** — `RetryPolicy` no puede con un
   proceso colgado (nunca lanza); `add_node(timeout=...)` solo aplica a nodos async,
@@ -181,9 +181,9 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
 - [x] **Decisión tardía visible** — warning con el actor cuando su decisión llega a
   un hilo completado o inexistente (carrera con el `expired` del TTL). ✅
   - Verifica: `tests/test_hitl_persistence.py` (13 tests); suite: 266 en verde.
-  - Ficheros: `src/reviews/decision.py`, `src/reviews/graph/build.py`,
-    `src/reviews/checkpointer.py`, `src/reviews/worker/main.py`,
-    `src/reviews/paused_store.py`, `src/reviews/settings.py`.
+  - Ficheros: `src/agent_review/decision.py`, `src/agent_review/graph/build.py`,
+    `src/agent_review/checkpointer.py`, `src/agent_review/worker/main.py`,
+    `src/agent_review/paused_store.py`, `src/agent_review/settings.py`.
 - [ ] **Smoke del checkpointer contra Postgres real** — el pool y el fallo de
   arranque en producción solo están probados sin base (no había Postgres local).
 

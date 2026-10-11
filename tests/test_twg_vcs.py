@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from reviews.adapters.twg_vcs import TwgError, TwgVcsAdapter, check_twg
+from agent_review.adapters.twg_vcs import TwgError, TwgVcsAdapter, check_twg
 
 
 def test_run_usa_json_puro(monkeypatch) -> None:
@@ -21,7 +21,7 @@ def test_run_usa_json_puro(monkeypatch) -> None:
 
         return Result()
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", fake_subprocess)
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", fake_subprocess)
     adapter._run_json(["prs", "get", "1"])
     assert "--output" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--output") + 1] == "json"
@@ -146,7 +146,7 @@ def test_check_twg_ok(monkeypatch) -> None:
         stdout = "twg 1.3.5"
         stderr = ""
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
     assert check_twg("twg") == "twg 1.3.5"
 
 
@@ -154,7 +154,7 @@ def test_check_twg_ausente_falla_ruidoso(monkeypatch) -> None:
     def boom(*args, **kwargs):  # noqa: ANN001, ANN003
         raise FileNotFoundError
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", boom)
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", boom)
     with pytest.raises(TwgError, match="No se encontro"):
         check_twg("twg")
     assert check_twg("twg", required=False) is None
@@ -166,6 +166,6 @@ def test_check_twg_version_rota_falla(monkeypatch) -> None:
         stdout = ""
         stderr = "command not found"
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", lambda *a, **k: Result())
     with pytest.raises(TwgError, match="fallo"):
         check_twg("twg")

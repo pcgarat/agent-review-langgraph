@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pcgarat/reviews/contracts/findings-schema.json",
+  "$id": "https://github.com/pcgarat/agent-review-langgraph/contracts/findings-schema.json",
   "title": "ReviewFinding",
   "description": "Contrato de hallazgo reutilizado de ce-code-review (contrato, no runtime).",
   "type": "object",

@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from reviews.checkpointer import build_checkpointer, build_serde
-from reviews.domain.models import (
+from agent_review.checkpointer import build_checkpointer, build_serde
+from agent_review.domain.models import (
     AutofixClass,
     DecisionOutcome,
     Finding,
@@ -16,10 +16,10 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.graph.build import build_graph
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
-from reviews.worker.main import process_request
+from agent_review.graph.build import build_graph
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.worker.main import process_request
 
 
 class _MemoryVcs:
@@ -142,7 +142,7 @@ def test_hilo_pausado_serializa_sin_avisos(caplog) -> None:
     # avisa hoy y bloqueara en versiones futuras de LangGraph.
     import logging
 
-    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+    from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
 
     vcs = _MemoryVcs()
     graph = _hitl_graph(vcs)
@@ -163,7 +163,7 @@ def test_hilo_pausado_serializa_sin_avisos(caplog) -> None:
 
 
 def test_prune_poda_completados_y_respeta_pausados() -> None:
-    from reviews.checkpointer import prune_completed_threads
+    from agent_review.checkpointer import prune_completed_threads
 
     saver = build_checkpointer("")  # memoria
     vcs = _MemoryVcs()
@@ -211,7 +211,7 @@ def test_prune_poda_completados_y_respeta_pausados() -> None:
 
 
 def test_prune_nunca_poda_un_pausado_aunque_no_se_le_pase() -> None:
-    from reviews.checkpointer import prune_completed_threads
+    from agent_review.checkpointer import prune_completed_threads
 
     saver = build_checkpointer("")
     vcs = _MemoryVcs()
@@ -241,7 +241,7 @@ def test_prune_threads_aplica_la_politica_inyectada() -> None:
     # T10: el motor de poda acepta cualquier `RetentionPolicy`. Una politica falsa
     # decide que borrar sin mirar la antiguedad, y el motor la obedece: es el
     # desacople que permite cambiar de criterio (o de backend) sin tocar el scan.
-    from reviews.checkpointer import prune_threads
+    from agent_review.checkpointer import prune_threads
 
     saver = build_checkpointer("")
     vcs = _MemoryVcs()

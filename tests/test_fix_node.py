@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     CommandResult,
     Decision,
@@ -17,10 +17,10 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.fix.delivery import DiffFormatter, SuggestionFormatter
-from reviews.fix.node import run_fixes
-from reviews.fix.patch import build_patch
-from reviews.policy.engine import PolicyEngine
+from agent_review.fix.delivery import DiffFormatter, SuggestionFormatter
+from agent_review.fix.node import run_fixes
+from agent_review.fix.patch import build_patch
+from agent_review.policy.engine import PolicyEngine
 
 
 class _Vcs:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.scope import (
+from agent_review.scope import (
     DEFAULT_IGNORE_PATTERNS,
     changed_files,
     filter_diff,

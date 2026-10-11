@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
-from reviews.adapters.tooling_reviewer import ToolingReviewer
-from reviews.adapters.tooling_source import FileToolingOutputSource
-from reviews.domain.models import (
+from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from agent_review.adapters.tooling_reviewer import ToolingReviewer
+from agent_review.adapters.tooling_source import FileToolingOutputSource
+from agent_review.domain.models import (
     AutofixClass,
     DecisionOutcome,
     Finding,
@@ -19,15 +19,15 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.domain.pending import InMemoryPendingStore
-from reviews.graph.build import build_approval as graph_build_approval
-from reviews.graph.build import build_graph, render_pause_notice
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
-from reviews.profile import expected_tools
-from reviews.queue import InMemoryReviewQueue
-from reviews.settings import Settings
-from reviews.worker.main import (
+from agent_review.domain.pending import InMemoryPendingStore
+from agent_review.graph.build import build_approval as graph_build_approval
+from agent_review.graph.build import build_graph, render_pause_notice
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
+from agent_review.profile import expected_tools
+from agent_review.queue import InMemoryReviewQueue
+from agent_review.settings import Settings
+from agent_review.worker.main import (
     _consume,
     build_llm,
     build_reviewers,
@@ -517,7 +517,7 @@ class _RecordingChat:
 
 
 def test_pausa_escribe_el_inbox_y_avisa_sin_publicar() -> None:
-    from reviews.paused_store import InMemoryPausedStore
+    from agent_review.paused_store import InMemoryPausedStore
 
     reviewer = _CountingReviewer(_escalating_finding())
     vcs = FakeVcs()
@@ -539,7 +539,7 @@ def test_pausa_escribe_el_inbox_y_avisa_sin_publicar() -> None:
 
 
 def test_resume_borra_la_pausa_del_inbox() -> None:
-    from reviews.paused_store import InMemoryPausedStore
+    from agent_review.paused_store import InMemoryPausedStore
 
     reviewer = _CountingReviewer(_escalating_finding())
     paused_store = InMemoryPausedStore()
@@ -578,8 +578,8 @@ def test_aviso_de_pausa_sin_marca_de_dedupe() -> None:
 def test_sweep_expired_reencola_sin_decision() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from reviews.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
-    from reviews.paused_store import InMemoryPausedStore
+    from agent_review.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
+    from agent_review.paused_store import InMemoryPausedStore
 
     paused = InMemoryPausedStore(ttl_s=60.0)
     queue = InMemoryReviewQueue()

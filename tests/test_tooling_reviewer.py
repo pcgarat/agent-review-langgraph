@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
-from reviews.adapters.tooling_reviewer import ToolingReviewer
-from reviews.adapters.tooling_source import StaticToolingOutputSource
-from reviews.domain.models import ToolingSourceStatus
+from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from agent_review.adapters.tooling_reviewer import ToolingReviewer
+from agent_review.adapters.tooling_source import StaticToolingOutputSource
+from agent_review.domain.models import ToolingSourceStatus
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")

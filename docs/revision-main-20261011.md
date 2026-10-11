@@ -25,12 +25,12 @@ documento se pueden convertir en tests casi tal cual.
 
 | Id | Gravedad | Resumen | Dónde |
 |---|---|---|---|
-| B1 🔬 | Alta | Mandar a la DLQ un job con decisión tumba el worker | `src/reviews/queue.py` (`_dead_letter_payload`) |
-| B2 🔬 | Alta | Un reintento re-ejecuta el grafo desde `START` | `src/reviews/worker/main.py` (`process_request`) |
-| B3 🔬 | Alta | Una pausa vencida cuyo resume falla esquiva la DLQ para siempre | `src/reviews/paused_store.py` (`sweep`), `worker/main.py` |
+| B1 🔬 | Alta | Mandar a la DLQ un job con decisión tumba el worker | `src/agent_review/queue.py` (`_dead_letter_payload`) |
+| B2 🔬 | Alta | Un reintento re-ejecuta el grafo desde `START` | `src/agent_review/worker/main.py` (`process_request`) |
+| B3 🔬 | Alta | Una pausa vencida cuyo resume falla esquiva la DLQ para siempre | `src/agent_review/paused_store.py` (`sweep`), `worker/main.py` |
 | B4 🔬 | Media | Un artefacto tardío en la misma ejecución nunca publica la review completa | `worker/main.py` (rama «ya completada») |
-| B5 🔬 | Media | El merge por `(file, title)` se come hallazgos | `src/reviews/graph/build.py` (`_merge_key`) |
-| B6 | Media | El webhook acepta cualquier `repo` y revisa el PR del repo configurado | `src/reviews/api/main.py`, `adapters/twg_vcs.py` |
+| B5 🔬 | Media | El merge por `(file, title)` se come hallazgos | `src/agent_review/graph/build.py` (`_merge_key`) |
+| B6 | Media | El webhook acepta cualquier `repo` y revisa el PR del repo configurado | `src/agent_review/api/main.py`, `adapters/twg_vcs.py` |
 | B7 | Media | La idempotencia se reclama antes de hacer el trabajo | `api/main.py` (`tooling_webhook`) |
 | B8 | Media | `twg` se lanza sin `timeout` | `adapters/twg_vcs.py` (`_run`, `check_twg`) |
 | B9 | Baja | Un fallo de Teams cuenta como fallo de la review y la notificación se pierde | `graph/build.py` (`publish`) |

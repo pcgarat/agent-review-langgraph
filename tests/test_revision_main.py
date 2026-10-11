@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from test_worker import FakeVcs, _CountingReviewer, _escalating_finding, _hitl_graph
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     DecisionOutcome,
     FindingDecision,
     HitlDecision,
@@ -19,9 +19,9 @@ from reviews.domain.models import (
     ReviewRequest,
     ToolingSourceStatus,
 )
-from reviews.ports.vcs import ReviewMarker
-from reviews.queue import InMemoryReviewQueue
-from reviews.worker.main import _consume, process_request
+from agent_review.ports.vcs import ReviewMarker
+from agent_review.queue import InMemoryReviewQueue
+from agent_review.worker.main import _consume, process_request
 
 REPO = "cqm/emotivoo-v2"
 
@@ -103,8 +103,8 @@ def _state(graph, request: ReviewRequest) -> dict:
 def test_b2_reintento_tras_fallo_en_publish_continua_desde_el_checkpoint() -> None:
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from reviews.graph.build import build_graph
-    from reviews.policy.engine import PolicyEngine
+    from agent_review.graph.build import build_graph
+    from agent_review.policy.engine import PolicyEngine
 
     reviewer = _CountingReviewer(_escalating_finding())
     vcs = _FlakySummaryVcs()
@@ -168,8 +168,8 @@ def _graph_with_chat(vcs: FakeVcs, chat: _FlakyChat):
     from langgraph.types import RetryPolicy
     from test_worker import OneShotReviewer
 
-    from reviews.graph.build import build_graph
-    from reviews.policy.engine import PolicyEngine
+    from agent_review.graph.build import build_graph
+    from agent_review.policy.engine import PolicyEngine
 
     return build_graph(
         vcs=vcs,
@@ -217,8 +217,8 @@ def _drain(queue: InMemoryReviewQueue, graph, paused) -> None:
 def test_b3_pausa_vencida_cuyo_resume_falla_acaba_en_la_dlq_una_vez() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from reviews.paused_store import InMemoryPausedStore
-    from reviews.worker.main import sweep_expired
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.worker.main import sweep_expired
 
     vcs = _FlakySummaryVcs(fail_times=10**6)
     graph = _hitl_graph(vcs, _CountingReviewer(_escalating_finding()))
@@ -237,7 +237,7 @@ def test_b3_pausa_vencida_cuyo_resume_falla_acaba_en_la_dlq_una_vez() -> None:
 
 
 def test_b3_rama_ya_completada_limpia_el_inbox() -> None:
-    from reviews.paused_store import InMemoryPausedStore
+    from agent_review.paused_store import InMemoryPausedStore
 
     vcs = FakeVcs()
     graph = _hitl_graph(vcs, _CountingReviewer(_escalating_finding()))
@@ -277,11 +277,11 @@ def test_b4_artefacto_tardio_en_la_misma_ejecucion_publica_la_review_completa(
 ) -> None:
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from reviews.domain.pending import InMemoryPendingStore
-    from reviews.graph.build import build_graph
-    from reviews.policy.engine import PolicyEngine
-    from reviews.settings import Settings
-    from reviews.worker.main import sweep_pending
+    from agent_review.domain.pending import InMemoryPendingStore
+    from agent_review.graph.build import build_graph
+    from agent_review.policy.engine import PolicyEngine
+    from agent_review.settings import Settings
+    from agent_review.worker.main import sweep_pending
 
     vcs = _MarkersVcs()
     reviewer = _ToolingReviewer()
@@ -343,8 +343,8 @@ class _SameTitleReviewer:
 
 @pytest.mark.parametrize("with_ids", [True, False])
 def test_b5_mismo_titulo_en_lineas_distintas_no_se_fusiona(with_ids: bool) -> None:
-    from reviews.graph.build import build_graph
-    from reviews.policy.engine import PolicyEngine
+    from agent_review.graph.build import build_graph
+    from agent_review.policy.engine import PolicyEngine
 
     vcs = _MarkersVcs()
     graph = build_graph(
@@ -365,7 +365,7 @@ def test_b5_mismo_titulo_en_lineas_distintas_no_se_fusiona(with_ids: bool) -> No
 def test_b8_check_twg_no_se_cuelga(monkeypatch) -> None:
     import subprocess
 
-    from reviews.adapters.twg_vcs import TwgError, check_twg
+    from agent_review.adapters.twg_vcs import TwgError, check_twg
 
     captured: dict[str, object] = {}
 

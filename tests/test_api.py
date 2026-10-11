@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from reviews.api import main
-from reviews.api.main import app
-from reviews.domain.models import (
+from agent_review.api import main
+from agent_review.api.main import app
+from agent_review.domain.models import (
     ApprovalRequest,
     FindingAction,
     PendingDecision,
     ReviewRequest,
     Severity,
 )
-from reviews.domain.pending import InMemoryPendingStore
-from reviews.idempotency import InMemoryIdempotencyStore
-from reviews.paused_store import InMemoryPausedStore
-from reviews.queue import InMemoryReviewQueue
+from agent_review.domain.pending import InMemoryPendingStore
+from agent_review.idempotency import InMemoryIdempotencyStore
+from agent_review.paused_store import InMemoryPausedStore
+from agent_review.queue import InMemoryReviewQueue
 
 client = TestClient(app)
 
@@ -157,7 +157,7 @@ def test_tooling_rechaza_payload_demasiado_grande(monkeypatch) -> None:
 
 
 def test_arranque_en_produccion_con_secreto_de_ejemplo_falla(monkeypatch) -> None:
-    from reviews.settings import require_production_secrets
+    from agent_review.settings import require_production_secrets
 
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
@@ -168,7 +168,7 @@ def test_arranque_en_produccion_con_secreto_de_ejemplo_falla(monkeypatch) -> Non
 
 
 def test_arranque_en_produccion_sin_credencial_de_twg_falla(monkeypatch) -> None:
-    from reviews.settings import require_production_secrets
+    from agent_review.settings import require_production_secrets
 
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
@@ -179,7 +179,7 @@ def test_arranque_en_produccion_sin_credencial_de_twg_falla(monkeypatch) -> None
 
 
 def test_arranque_en_produccion_con_teams_habilitado_sin_url_falla(monkeypatch) -> None:
-    from reviews.settings import require_production_secrets
+    from agent_review.settings import require_production_secrets
 
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
@@ -192,7 +192,7 @@ def test_arranque_en_produccion_con_teams_habilitado_sin_url_falla(monkeypatch) 
 
 
 def test_arranque_en_produccion_con_secreto_real_pasa(monkeypatch) -> None:
-    from reviews.settings import require_production_secrets
+    from agent_review.settings import require_production_secrets
 
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
@@ -204,7 +204,7 @@ def test_arranque_en_produccion_con_secreto_real_pasa(monkeypatch) -> None:
 
 
 def test_arranque_en_produccion_sin_token_de_decision_falla(monkeypatch) -> None:
-    from reviews.settings import require_production_secrets
+    from agent_review.settings import require_production_secrets
 
     settings = main._settings()
     monkeypatch.setattr(settings, "environment", "production")
@@ -239,7 +239,7 @@ def _pause(review_key: str = "cqm/emotivoo-v2:42:abc123:7") -> None:
                 severity=Severity.P1,
             )
         ],
-        command_hint=f"reviews decide {review_key} --actor alice --approve f1",
+        command_hint=f"agent_review decide {review_key} --actor alice --approve f1",
     )
     assert main._fallback_paused is not None
     main._fallback_paused.pause(request, approval)

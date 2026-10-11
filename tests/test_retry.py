@@ -6,20 +6,20 @@ import httpx
 import pytest
 from langgraph.types import RetryPolicy
 
-from reviews.adapters.llm_reviewer import LlmReviewer
-from reviews.adapters.twg_vcs import TwgError, TwgVcsAdapter
-from reviews.domain.models import (
+from agent_review.adapters.llm_reviewer import LlmReviewer
+from agent_review.adapters.twg_vcs import TwgError, TwgVcsAdapter
+from agent_review.domain.models import (
     AutofixClass,
     Finding,
     Owner,
     ReviewerResult,
     Severity,
 )
-from reviews.errors import PermanentError, TransientError, is_transient
-from reviews.graph.build import build_graph
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.llm import LlmError, LlmTransientError
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from agent_review.errors import PermanentError, TransientError, is_transient
+from agent_review.graph.build import build_graph
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.llm import LlmError, LlmTransientError
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 
 # ---------------------------------------------------------------------------
 # Clasificacion de errores
@@ -85,7 +85,7 @@ def test_twg_pasa_timeout_al_subprocess(monkeypatch) -> None:
         captured.update(kwargs)
         return Result()
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", fake_run)
     adapter.get_diff("cqm/r", 1)
     assert captured["timeout"] == 7.5
 
@@ -96,7 +96,7 @@ def test_twg_colgado_es_un_fallo_transitorio(monkeypatch) -> None:
     def boom(cmd, **kwargs):  # noqa: ANN001
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
 
-    monkeypatch.setattr("reviews.adapters.twg_vcs.subprocess.run", boom)
+    monkeypatch.setattr("agent_review.adapters.twg_vcs.subprocess.run", boom)
     with pytest.raises(TwgError, match="excedio"):
         adapter.get_diff("cqm/r", 1)
     assert is_transient(TwgError("x")) is True

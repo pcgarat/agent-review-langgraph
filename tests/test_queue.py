@@ -4,9 +4,9 @@ import pytest
 import redis
 from redis.connection import DEFAULT_SOCKET_TIMEOUT
 
-from reviews.domain.models import ReviewRequest
-from reviews.queue import InMemoryReviewQueue, RedisReviewQueue
-from reviews.redis_utils import build_redis_client
+from agent_review.domain.models import ReviewRequest
+from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue
+from agent_review.redis_utils import build_redis_client
 
 
 def test_cola_en_memoria_fifo() -> None:

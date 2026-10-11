@@ -1,4 +1,4 @@
-# reviews
+# Agent Review LangGraph
 
 Agente autónomo de code review sobre LangGraph. Recibe del CI la salida de las
 herramientas estáticas, revisa el diff de un PR, decide por hallazgo (informar,
@@ -72,7 +72,7 @@ flowchart LR
 - **Ports & Adapters.** `VcsPort`, `ChatPort`, `ReviewerPort`, `ToolingOutputSource`,
   `LlmPort`, `SandboxPort`. Cambiar de Bitbucket a GitHub es otro adaptador.
 - **Máquina de estados (LangGraph).** El estado es explícito y tipado; cada nodo
-  lee y escribe su parte. Ver `src/reviews/graph/build.py`.
+  lee y escribe su parte. Ver `src/agent_review/graph/build.py`.
 - **Policy-as-data.** La autonomía por hallazgo sale de `autonomy.yaml`, auditable
   y modificable sin desplegar.
 - **Ejecución durable.** El checkpointer permite que un `interrupt` sobreviva a un
@@ -123,7 +123,7 @@ flowchart TD
 
 ### Personas de review
 
-Puerto `reviews.ports.reviewer`:
+Puerto `agent_review.ports.reviewer`:
 
 - `ToolingReviewer` (`standards`): convierte la salida de PHPStan en hallazgos y
   los ancla a líneas reales del diff. No ejecuta la herramienta. Activa por

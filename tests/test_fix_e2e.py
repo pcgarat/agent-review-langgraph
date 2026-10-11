@@ -3,7 +3,7 @@ from __future__ import annotations
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     CommandResult,
     DecisionOutcome,
@@ -17,12 +17,12 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.fix.delivery import DiffFormatter
-from reviews.fix.patch import build_patch
-from reviews.graph.build import build_graph
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
-from reviews.worker.main import process_request
+from agent_review.fix.delivery import DiffFormatter
+from agent_review.fix.patch import build_patch
+from agent_review.graph.build import build_graph
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.worker.main import process_request
 
 
 class _Vcs:

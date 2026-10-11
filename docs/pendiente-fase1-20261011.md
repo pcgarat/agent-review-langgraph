@@ -20,7 +20,7 @@ cómo se cerró; el estado vivo está en `tasks/plan.md`.
 | **A2** | El contenedor podía arrancar sin `twg`; no había forma de preparar `.env` | `scripts/bootstrap-env.sh` (idempotente) + validación de `twg --version` en el arranque (`check_twg`, `REQUIRE_TWG` en build) |
 | **B1** | El publish no miraba lo ya publicado: un re-push duplicaba inlines | Marcas `<!-- reviews:<hash-ejecucion>:i:<id> -->` y `:ok/partial`, ancladas a la **ejecución** (no al commit; ver §Q1 de `docs/decisiones-publish-inline-20261011.md`); lectura previa con `list_review_markers` |
 | **B2** | Un fallo transitorio perdía el job (solo log) | Reintento con contador + **DLQ** (`reviews:jobs:dead`) |
-| **B4** | `expected_tools` podía divergir entre perfil y env | `reviews.profile` como fuente única: manda el perfil, el env solo lo sobreescribe explícito |
+| **B4** | `expected_tools` podía divergir entre perfil y env | `agent_review.profile` como fuente única: manda el perfil, el env solo lo sobreescribe explícito |
 | **B5** | `max_files_per_pr` declarado pero no aplicado; `get_diffstat` sin usar | `scope` filtra ruido y recorta por churn con `get_diffstat` |
 | **B6** | Publicación no atómica | Orden y compensación fijados en `docs/decisiones-publish-inline-20261011.md` |
 | **B7** | Sin watchdog: si el worker moría, se quedaba muerto | `restart: unless-stopped` + healthchecks + latido en hilo independiente |

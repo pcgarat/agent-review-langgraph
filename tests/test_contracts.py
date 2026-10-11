@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from reviews.domain.contracts import (
+from agent_review.domain.contracts import (
     ContractError,
     load_findings_schema,
     schema_matches_domain,
@@ -76,7 +76,7 @@ def test_la_ruta_del_contrato_no_depende_del_paquete_instalado(monkeypatch, tmp_
     Se empaqueta solo `src/`, asi que `parents[3]` apunta a site-packages dentro
     del contenedor. La resolucion prueba candidatos y admite override.
     """
-    from reviews.domain import contracts
+    from agent_review.domain import contracts
 
     copia = tmp_path / "findings-schema.json"
     copia.write_text(json.dumps(load_findings_schema()), encoding="utf-8")

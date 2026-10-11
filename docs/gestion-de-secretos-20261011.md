@@ -30,7 +30,7 @@ Mezclar estas dos cosas es lo que hace que la gestión de secretos parezca un l�
 | `POSTGRES_PASSWORD` | credencial de Postgres | En producción | 1 | Infra |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen de CI | Al ejecutar tests | 3 | Infra |
 
-`require_production_secrets` (en `reviews.settings`) hace **fail-closed**: con
+`require_production_secrets` (en `agent_review.settings`) hace **fail-closed**: con
 `ENVIRONMENT=production` el arranque falla si falta `TWG_BBC_TOKEN`, si
 `TOOLING_WEBHOOK_SECRET` sigue en `change-me`, o si se activaron Teams/LLM sin su
 credencial. Un despliegue no puede arrancar medio configurado.

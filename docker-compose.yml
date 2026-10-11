@@ -2,7 +2,7 @@ services:
   api:
     build: .
     restart: unless-stopped
-    command: uvicorn reviews.api.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn agent_review.api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     env_file: .env
@@ -30,7 +30,7 @@ services:
   worker:
     build: .
     restart: unless-stopped
-    command: python -m reviews.worker.main
+    command: python -m agent_review.worker.main
     env_file: .env
     environment:
       DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews

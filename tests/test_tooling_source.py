@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from reviews.adapters.tooling_source import (
+from agent_review.adapters.tooling_source import (
     FileToolingOutputSource,
     StaticToolingOutputSource,
     safe_segment,
 )
-from reviews.domain.models import ToolingSourceStatus
+from agent_review.domain.models import ToolingSourceStatus
 
 
 def test_file_source_renderiza_la_plantilla_por_review(tmp_path: Path) -> None:

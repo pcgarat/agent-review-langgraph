@@ -253,10 +253,10 @@ de `a`. Si no lo indicas, LangGraph infiere el último nodo; mejor ser explícit
 
 ## 5. Dónde aparece en `reviews`
 
-El corazón del asunto está en `src/reviews/worker/main.py`. Primero, la consulta previa
+El corazón del asunto está en `src/agent_review/worker/main.py`. Primero, la consulta previa
 que lee el estado del hilo antes de invocar:
 
-```startLine:533:551:src/reviews/worker/main.py
+```startLine:533:551:src/agent_review/worker/main.py
 def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
     """Snapshot del hilo (pausado o completado), o `None` si no hay.
 
@@ -280,7 +280,7 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
 
 Y su uso en `process_request`, que elige **cómo** invocar según el estado del hilo:
 
-```startLine:261:301:src/reviews/worker/main.py
+```startLine:261:301:src/agent_review/worker/main.py
     snapshot = _thread_snapshot(graph, config)
     if snapshot is not None and snapshot.interrupts:
         return _resume_paused(

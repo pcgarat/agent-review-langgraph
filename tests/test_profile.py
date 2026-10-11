@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reviews.profile import fix_recipes, load_profile, validate_profile
-from reviews.settings import Settings
+from agent_review.profile import fix_recipes, load_profile, validate_profile
+from agent_review.settings import Settings
 
 _PROFILE = Path("config/repo_profile.emotivoo-v2.yaml")
 

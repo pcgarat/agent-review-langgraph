@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     ApprovalRequest,
     FindingAction,
     PendingDecision,
     ReviewRequest,
     Severity,
 )
-from reviews.paused_store import InMemoryPausedStore
+from agent_review.paused_store import InMemoryPausedStore
 
 
 def _approval(review_key: str) -> ApprovalRequest:
@@ -31,7 +31,7 @@ def _approval(review_key: str) -> ApprovalRequest:
                 severity=Severity.P1,
             )
         ],
-        command_hint="reviews decide r:1:abc ...",
+        command_hint="agent_review decide r:1:abc ...",
     )
 
 

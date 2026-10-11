@@ -83,7 +83,7 @@ RetryPolicy(
 y los errores de transporte de `httpx`/`requests`, y **no** reintenta errores de
 programación (`ValueError`, `TypeError`…). Ojo con lo que también descarta:
 `RuntimeError` (y sus hijas), cualquier `OSError` (incluido `TimeoutError`) y el `429`.
-Por eso este repo usa su propio predicado, `reviews.errors.is_transient` (ver
+Por eso este repo usa su propio predicado, `agent_review.errors.is_transient` (ver
 `docs/reintento-de-nodo-20261011.md` §2). Puedes pasar:
 
 - **Una excepción**: `retry_on=TimeoutError`.
@@ -262,9 +262,9 @@ solo duplicaría la publicación.
 
 ## 5. Dónde aparece en `reviews`
 
-El bucle de reintento de job, en `src/reviews/worker/main.py`:
+El bucle de reintento de job, en `src/agent_review/worker/main.py`:
 
-```startLine:554:609:src/reviews/worker/main.py
+```startLine:554:609:src/agent_review/worker/main.py
 def _consume(
     queue: ReviewQueue,
     graph: ReviewGraph,
@@ -335,17 +335,17 @@ Dos detalles que salieron de la revisión de `main`:
   05). Por eso el aviso de Teams vive en un nodo `notify` propio: si falla, el
   reintento retoma solo el aviso, no la publicación (B2, B9).
 
-El umbral, en `src/reviews/settings.py`:
+El umbral, en `src/agent_review/settings.py`:
 
-```startLine:66:68:src/reviews/settings.py
+```startLine:66:68:src/agent_review/settings.py
     # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
     # el job se descarta con el `review_key` en el log para reencolarlo a mano.
     max_review_attempts: int = 3
 ```
 
-La DLQ, en `src/reviews/queue.py`:
+La DLQ, en `src/agent_review/queue.py`:
 
-```startLine:14:17:src/reviews/queue.py
+```startLine:14:17:src/agent_review/queue.py
 QUEUE_KEY = "reviews:jobs"
 # Cola de descartes: los jobs que agotan los reintentos no se pierden en el log,
 # quedan aqui para reinyectarlos a mano o inspeccionarlos.
@@ -356,7 +356,7 @@ Y un detalle fino de la lectura de cola: `dequeue` **no** propaga un Redis caíd
 que devuelve `None` para reintentar en el próximo poll; así un problema transitorio no
 tumba el worker:
 
-```startLine:56:70:src/reviews/queue.py
+```startLine:56:70:src/agent_review/queue.py
     def dequeue(self, *, timeout_s: float = 5.0) -> ReviewRequest | None:
         """Siguiente trabajo, o `None` en el timeout. No deja morir al worker.
 
@@ -382,7 +382,7 @@ decisión, reintento que continúa desde el checkpoint, fallo de Teams) están e
 
 Y el "latido" (`heartbeat` en un hilo aparte) es un mecanismo de resiliencia de procesos:
 si el worker muere, el fichero se queda viejo y Docker lo reinicia
-(`restart: unless-stopped`). Ver `start_heartbeat` en `src/reviews/worker/main.py:315`.
+(`restart: unless-stopped`). Ver `start_heartbeat` en `src/agent_review/worker/main.py:315`.
 
 ---
 
@@ -399,7 +399,7 @@ si el worker muere, el fichero se queda viejo y Docker lo reinicia
    intentos. Cambia `initial_interval`/`backoff_factor` y observa la progresión.
 4. **Discute el no-reintento de la review degradada.** Lee el comentario de
    `process_request` sobre por qué una review incompleta **no** se reencola
-   (`src/reviews/worker/main.py:192`). Escribe un escenario donde sí querrías
+   (`src/agent_review/worker/main.py:192`). Escribe un escenario donde sí querrías
    reintentarla y cómo lo harías sin duplicar.
 
 ---

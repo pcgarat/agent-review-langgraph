@@ -15,27 +15,27 @@ import httpx
 import pytest
 from test_worker import FakeVcs, _CountingReviewer, _escalating_finding, _hitl_graph
 
-from reviews.adapters.openai_llm import OpenAiCompatibleLlm
-from reviews.api.main import _release_quietly
-from reviews.checkpointer import (
+from agent_review.adapters.openai_llm import OpenAiCompatibleLlm
+from agent_review.api.main import _release_quietly
+from agent_review.checkpointer import (
     build_checkpointer,
     latest_checkpoints,
     paused_thread_ids,
     prune_completed_threads,
 )
-from reviews.domain.models import Finding, ReviewRequest
-from reviews.errors import is_transient
-from reviews.graph.build import _merge_findings
-from reviews.idempotency import InMemoryIdempotencyStore
-from reviews.paused_store import (
+from agent_review.domain.models import Finding, ReviewRequest
+from agent_review.errors import is_transient
+from agent_review.graph.build import _merge_findings
+from agent_review.idempotency import InMemoryIdempotencyStore
+from agent_review.paused_store import (
     EXPIRED_REQUEUE_AFTER_S,
     MAX_EXPIRED_ENQUEUES,
     InMemoryPausedStore,
 )
-from reviews.ports.llm import LlmError, LlmTransientError
-from reviews.queue import InMemoryReviewQueue
-from reviews.settings import Settings
-from reviews.worker.main import (
+from agent_review.ports.llm import LlmError, LlmTransientError
+from agent_review.queue import InMemoryReviewQueue
+from agent_review.settings import Settings
+from agent_review.worker.main import (
     node_retry_policy,
     process_request,
     reconcile_paused,
@@ -173,7 +173,7 @@ def test_fallback_a_memoria_cierra_el_pool(monkeypatch) -> None:
 def test_resume_ilegible_vuelve_a_pausar() -> None:
     from langgraph.types import Command
 
-    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+    from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
 
     vcs = FakeVcs()
     graph = _hitl_graph(vcs, _CountingReviewer(_escalating_finding()))

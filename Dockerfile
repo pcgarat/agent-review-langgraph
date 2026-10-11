@@ -27,4 +27,4 @@ COPY src ./src
 COPY contracts ./contracts
 RUN pip install --upgrade pip && pip install .
 
-CMD ["python", "-m", "reviews.worker.main"]
+CMD ["python", "-m", "agent_review.worker.main"]

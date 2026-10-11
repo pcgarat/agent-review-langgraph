@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reviews.adapters.diff_parser import best_line, file_key, parse_unified_diff
-from reviews.adapters.llm_reviewer import LlmReviewer
-from reviews.adapters.tooling_reviewer import ToolingReviewer
-from reviews.domain.models import ReviewRequest
-from reviews.graph.build import build_graph
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo
+from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from agent_review.adapters.llm_reviewer import LlmReviewer
+from agent_review.adapters.tooling_reviewer import ToolingReviewer
+from agent_review.domain.models import ReviewRequest
+from agent_review.graph.build import build_graph
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")

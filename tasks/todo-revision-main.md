@@ -8,28 +8,28 @@ de regresión. Orden: el de la prioridad recomendada del documento.
 - [x] **B1** (Alta) DLQ de un job con decisión tumba el worker
   - Arreglo: `model_dump(mode="json")` en `_dead_letter_payload`; `_consume` no deja
     escapar una excepción del propio reencolado/DLQ.
-  - Ficheros: `src/reviews/queue.py`, `src/reviews/worker/main.py`.
+  - Ficheros: `src/agent_review/queue.py`, `src/agent_review/worker/main.py`.
 - [x] **B2** (Alta) Un reintento re-ejecuta el grafo desde `START`
   - Arreglo: hilo a medias (`next` no vacío, sin `interrupts`) →
     `graph.invoke(None, config)`, que continúa desde el último checkpoint.
-  - Ficheros: `src/reviews/worker/main.py`.
+  - Ficheros: `src/agent_review/worker/main.py`.
 - [x] **B9** (Baja, va con B2) Un fallo de Teams cuenta como fallo de la review
   - Arreglo: la notificación pasa a un nodo `notify` propio tras `publish`. Un fallo
     de Teams ya no repite `publish` y, con B2, el reintento continúa en `notify`.
-  - Ficheros: `src/reviews/graph/build.py`.
+  - Ficheros: `src/agent_review/graph/build.py`.
 - [x] **B3** (Alta) Pausa vencida cuyo resume falla esquiva la DLQ para siempre
   - Arreglo: el barrido marca la entrada del inbox (`expired_enqueued_at`) y no la
     vuelve a encolar; la rama «ya completada» también limpia el inbox.
-  - Ficheros: `src/reviews/domain/paused.py`, `src/reviews/paused_store.py`,
-    `src/reviews/worker/main.py`.
+  - Ficheros: `src/agent_review/domain/paused.py`, `src/agent_review/paused_store.py`,
+    `src/agent_review/worker/main.py`.
 - [x] **B7** (Media) La idempotencia se reclama antes de hacer el trabajo
   - Arreglo: `IdempotencyStore.release`; la API libera la clave si falla el paso
     que protege.
-  - Ficheros: `src/reviews/idempotency.py`, `src/reviews/api/main.py`.
+  - Ficheros: `src/agent_review/idempotency.py`, `src/agent_review/api/main.py`.
 - [x] **B4** (Media) Un artefacto tardío en la misma ejecución nunca publica la completa
   - Decisión: se mantiene lo que promete el README (la completa se publica). La
     pasada degradada usa su propio hilo (`thread_id` con sufijo `:partial`).
-  - Ficheros: `src/reviews/domain/models.py`, `src/reviews/worker/main.py`.
+  - Ficheros: `src/agent_review/domain/models.py`, `src/agent_review/worker/main.py`.
 - [x] **B5** (Media) El merge por `(file, title)` se come hallazgos
   - Arreglo: la línea entra en la clave de merge; el token inline usa
     `_finding_id` (el mismo que la comprobación de `publish`).
@@ -37,22 +37,22 @@ de regresión. Orden: el de la prioridad recomendada del documento.
     líneas, `test_e2e_estatica_y_llm_conviven_y_el_merge_deduplica`), el estado
     guarda la procedencia (`finding_sources`) y el merge fusiona anclas a ≤5
     líneas solo si vienen de personas distintas. `Finding` no cambia (contrato).
-  - Ficheros: `src/reviews/graph/build.py`.
+  - Ficheros: `src/agent_review/graph/build.py`.
 - [x] **B6** (Media) El webhook acepta cualquier `repo`
   - Arreglo: la API rechaza (400) un `repo` distinto de `{workspace}/{repo}`
     configurado. Sin `BITBUCKET_WORKSPACE`/`BITBUCKET_REPO` no se filtra.
-  - Ficheros: `src/reviews/api/main.py`.
+  - Ficheros: `src/agent_review/api/main.py`.
 - [x] **B8** (Media) `twg` se lanza sin `timeout`
   - Arreglo: `timeout` en `_run` (ya estaba a medias en el árbol) y en `check_twg`;
     `TimeoutExpired` → `TwgError`.
-  - Ficheros: `src/reviews/adapters/twg_vcs.py`, `src/reviews/worker/main.py`
+  - Ficheros: `src/agent_review/adapters/twg_vcs.py`, `src/agent_review/worker/main.py`
     (`build_vcs`).
   - Pendiente (no es el fallo en sí): que el heartbeat refleje el progreso del
     bucle. Con el timeout, un `twg` colgado ya no bloquea indefinidamente.
 - [x] **B10** (Baja) El aviso de pausa nunca lleva enlace al PR
   - Arreglo: el worker pasa el `VcsPort` a `process_request`/`_on_paused`.
     Implementado por una sesión en paralelo (`build_vcs`); aquí solo el test.
-  - Ficheros: `src/reviews/worker/main.py`.
+  - Ficheros: `src/agent_review/worker/main.py`.
 
 ## Cierre
 

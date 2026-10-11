@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     Finding,
     FixResult,
@@ -9,8 +9,8 @@ from reviews.domain.models import (
     ProposedPatch,
     Severity,
 )
-from reviews.fix.patch import build_patch
-from reviews.fix.validation import validate_patch
+from agent_review.fix.patch import build_patch
+from agent_review.fix.validation import validate_patch
 
 _PR_DIFF = (
     "diff --git a/src/Foo.php b/src/Foo.php\n"

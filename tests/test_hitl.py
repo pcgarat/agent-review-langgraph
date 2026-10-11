@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     DecisionOutcome,
     FindingAction,
     FindingDecision,

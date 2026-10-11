@@ -6,16 +6,16 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from test_worker import FakeVcs, _CountingReviewer, _escalating_finding, _hitl_graph, _RecordingChat
 
-from reviews.checkpointer import build_checkpointer, paused_thread_ids
-from reviews.decision import DecisionError, build_decision
-from reviews.domain.models import (
+from agent_review.checkpointer import build_checkpointer, paused_thread_ids
+from agent_review.decision import DecisionError, build_decision
+from agent_review.domain.models import (
     DecisionOutcome,
     FindingDecision,
     HitlDecision,
     ReviewRequest,
 )
-from reviews.paused_store import InMemoryPausedStore
-from reviews.worker.main import process_request, reconcile_paused
+from agent_review.paused_store import InMemoryPausedStore
+from agent_review.worker.main import process_request, reconcile_paused
 
 REQUEST = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
 

@@ -211,13 +211,13 @@ estado.
 Hoy el repo **no** usa `stream`: su interfaz es un worker que no necesita progreso en
 vivo. La observabilidad se hace con:
 
-- **Logging por nodo**: cada nodo de `src/reviews/graph/build.py` registra lo relevante
+- **Logging por nodo**: cada nodo de `src/agent_review/graph/build.py` registra lo relevante
   (merge de duplicados, publicaciones, fuentes ausentes).
-- **Un worker que registra cada review procesada** (`src/reviews/worker/main.py`).
+- **Un worker que registra cada review procesada** (`src/agent_review/worker/main.py`).
 
 Ejemplo representativo de logging en el nodo `merge`:
 
-```startLine:195:199:src/reviews/graph/build.py
+```startLine:195:199:src/agent_review/graph/build.py
         merged = list(seen.values())
         deduped = len(state.get("findings", [])) - len(merged)
         if deduped:
@@ -227,7 +227,7 @@ Ejemplo representativo de logging en el nodo `merge`:
 
 Y el punto de entrada del worker, donde se resumen los resultados:
 
-```startLine:179:205:src/reviews/worker/main.py
+```startLine:179:205:src/agent_review/worker/main.py
     config: RunnableConfig = {"configurable": {"thread_id": request.thread_id}}
     resumed = _completed_snapshot(graph, config)
     if resumed is not None:

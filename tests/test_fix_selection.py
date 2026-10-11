@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     Decision,
     DecisionOutcome,
@@ -11,7 +11,7 @@ from reviews.domain.models import (
     Owner,
     Severity,
 )
-from reviews.fix.selection import select_candidates
+from agent_review.fix.selection import select_candidates
 
 
 def _finding(fid: str, *, line: int = 1) -> Finding:

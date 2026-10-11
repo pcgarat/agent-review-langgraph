@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from reviews.adapters.openai_llm import OpenAiCompatibleLlm
-from reviews.ports.llm import LlmError
+from agent_review.adapters.openai_llm import OpenAiCompatibleLlm
+from agent_review.ports.llm import LlmError
 
 
 def _client(handler) -> httpx.Client:

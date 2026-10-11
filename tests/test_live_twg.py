@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from reviews.adapters.diff_parser import parse_unified_diff
-from reviews.adapters.twg_vcs import TwgVcsAdapter
+from agent_review.adapters.diff_parser import parse_unified_diff
+from agent_review.adapters.twg_vcs import TwgVcsAdapter
 
 pytestmark = pytest.mark.live
 

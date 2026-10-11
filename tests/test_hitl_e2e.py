@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from reviews import cli
-from reviews.domain.models import (
+from agent_review import cli
+from agent_review.domain.models import (
     AutofixClass,
     Finding,
     Owner,
@@ -9,12 +9,12 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.graph.build import build_graph
-from reviews.paused_store import InMemoryPausedStore
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
-from reviews.queue import InMemoryReviewQueue
-from reviews.worker.main import process_request
+from agent_review.graph.build import build_graph
+from agent_review.paused_store import InMemoryPausedStore
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.queue import InMemoryReviewQueue
+from agent_review.worker.main import process_request
 
 
 class _Vcs:

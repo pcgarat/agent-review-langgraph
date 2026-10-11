@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from reviews.adapters.teams_webhook import TeamsAdaptiveCardPayload, TeamsWebhookAdapter
+from agent_review.adapters.teams_webhook import TeamsAdaptiveCardPayload, TeamsWebhookAdapter
 
 
 def test_tarjeta_incluye_accion_al_pr() -> None:

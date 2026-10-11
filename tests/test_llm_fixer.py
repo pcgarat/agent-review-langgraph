@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from reviews.adapters.llm_fixer import FixBudgetExceeded, FixNotProposed, LlmFixer
-from reviews.domain.models import (
+from agent_review.adapters.llm_fixer import FixBudgetExceeded, FixNotProposed, LlmFixer
+from agent_review.domain.models import (
     AutofixClass,
     CommandResult,
     Finding,

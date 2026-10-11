@@ -8,7 +8,7 @@ agente contra él.
 
 ## `findings-schema.json`
 
-Espejo del modelo `reviews.domain.models.Finding`. Si cambia el modelo Pydantic, el
+Espejo del modelo `agent_review.domain.models.Finding`. Si cambia el modelo Pydantic, el
 esquema debe cambiar en el mismo commit (hay un test que compara ambos).
 
 Anclas importantes del contrato:
@@ -25,7 +25,7 @@ La política (`config/autonomy.yaml`) se apoya en estos campos, no en prosa libr
 ## Regenerar
 
 ```bash
-uv run python -c "import json; from reviews.domain.models import Finding; \
+uv run python -c "import json; from agent_review.domain.models import Finding; \
   print(json.dumps(Finding.model_json_schema(), indent=2, ensure_ascii=False))"
 ```
 

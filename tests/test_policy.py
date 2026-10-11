@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     Finding,
     FindingAction,
@@ -10,7 +10,7 @@ from reviews.domain.models import (
     ProtectedSubject,
     Severity,
 )
-from reviews.policy.engine import PolicyEngine
+from agent_review.policy.engine import PolicyEngine
 
 
 @pytest.fixture

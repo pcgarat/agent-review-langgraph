@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reviews.domain.models import (
+from agent_review.domain.models import (
     AutofixClass,
     CommandResult,
     Decision,
@@ -15,8 +15,8 @@ from reviews.domain.models import (
     ProposedPatch,
     Severity,
 )
-from reviews.fix.delivery import DiffFormatter
-from reviews.graph.build import _render_inline, _render_summary
+from agent_review.fix.delivery import DiffFormatter
+from agent_review.graph.build import _render_inline, _render_summary
 
 
 def _finding() -> Finding:

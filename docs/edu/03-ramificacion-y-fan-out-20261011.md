@@ -218,7 +218,7 @@ flowchart LR
 
 Por eso `dispatch` copia explícitamente `request` y `diff` en el `arg` de cada `Send`.
 
-```startLine:159:168:src/reviews/graph/build.py
+```startLine:159:168:src/agent_review/graph/build.py
     def dispatch(state: ReviewState) -> list[Send]:
         """Fan-out: una rama por persona, sobre el mismo diff."""
         request = ReviewRequest.model_validate(state["request"])
@@ -303,11 +303,11 @@ lógica de reducción.
 
 ## 5. Dónde aparece en `reviews`
 
-- **Router del fan-out**: `dispatch` en `src/reviews/graph/build.py:159` (arriba).
+- **Router del fan-out**: `dispatch` en `src/agent_review/graph/build.py:159` (arriba).
 - **Nodo de fan-out**: `persona`, que resuelve su persona por el campo de rama
   `reviewer`:
 
-```startLine:315:333:src/reviews/graph/build.py
+```startLine:315:333:src/agent_review/graph/build.py
     def persona(state: ReviewState) -> ReviewState:
         name = state["reviewer"]
         reviewer = next((r for r in reviewers if r.name == name), None)
@@ -331,7 +331,7 @@ lógica de reducción.
 
 - **Fan-in (reducción)**: `merge`, que deduplica con `_merge_findings`:
 
-```startLine:335:341:src/reviews/graph/build.py
+```startLine:335:341:src/agent_review/graph/build.py
     def merge(state: ReviewState) -> ReviewState:
         """Deduplica (ver `_merge_findings`) y conserva la evidencia mas rica."""
         merged = _merge_findings(state.get("findings", []), state.get("finding_sources", {}))
@@ -347,7 +347,7 @@ y título con anclas cercanas **y vienen de personas distintas**: es el mismo
 problema visto por la estática y por el LLM. Dos hallazgos de la misma persona en
 líneas distintas nunca se fusionan (dos errores iguales de PHPStan son dos errores):
 
-```startLine:195:227:src/reviews/graph/build.py
+```startLine:195:227:src/agent_review/graph/build.py
 def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Finding]:
     """Deduplica y conserva la evidencia mas rica de cada grupo.
 
@@ -392,7 +392,7 @@ del diccionario.
 reducer: cada rama escribe solo las claves de sus hallazgos y el merge lee la
 procedencia sin que `Finding` tenga que llevarla.
 
-Y el cableado de la arista condicional, en `src/reviews/graph/build.py:405`:
+Y el cableado de la arista condicional, en `src/agent_review/graph/build.py:405`:
 
 ```python
 graph.add_conditional_edges("scope", dispatch, ["persona"])

@@ -257,9 +257,9 @@ HITL se pueda probar sin base de datos.
 
 ## 5. Dónde aparece en `reviews`
 
-La fábrica del checkpointer, `src/reviews/checkpointer.py`:
+La fábrica del checkpointer, `src/agent_review/checkpointer.py`:
 
-```startLine:38:64:src/reviews/checkpointer.py
+```startLine:38:64:src/agent_review/checkpointer.py
 def build_serde() -> JsonPlusSerializer:
     return JsonPlusSerializer(allowed_msgpack_modules=_STATE_TYPES)
 
@@ -294,7 +294,7 @@ def build_checkpointer(database_url: str) -> BaseCheckpointSaver[Any]:
 
 La allowlist de tipos (`_STATE_TYPES`) es el §4.3:
 
-```startLine:23:35:src/reviews/checkpointer.py
+```startLine:23:35:src/agent_review/checkpointer.py
 # Tipos del dominio que viajan por el estado del grafo. Allowlist explicita para
 # que el serializer no dependa del msgpack permisivo (que avisa hoy y bloqueara
 # los tipos no registrados en versiones futuras).
@@ -322,9 +322,9 @@ def test_serde_no_depende_del_msgpack_permisivo() -> None:
     assert serde.loads_typed(payload) == request
 ```
 
-La identidad del hilo, en `src/reviews/domain/models.py`:
+La identidad del hilo, en `src/agent_review/domain/models.py`:
 
-```startLine:220:229:src/reviews/domain/models.py
+```startLine:220:229:src/agent_review/domain/models.py
     @property
     def thread_id(self) -> str:
         """Hilo del checkpointer: una review re-ejecutada no duplica comentarios.

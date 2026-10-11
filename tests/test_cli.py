@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from reviews import cli
-from reviews.decision import DecisionError, build_decision
-from reviews.domain.models import (
+from agent_review import cli
+from agent_review.decision import DecisionError, build_decision
+from agent_review.domain.models import (
     ApprovalRequest,
     DecisionOutcome,
     FindingAction,
@@ -13,8 +13,8 @@ from reviews.domain.models import (
     ReviewRequest,
     Severity,
 )
-from reviews.paused_store import InMemoryPausedStore
-from reviews.queue import InMemoryReviewQueue
+from agent_review.paused_store import InMemoryPausedStore
+from agent_review.queue import InMemoryReviewQueue
 
 REVIEW_KEY = "cqm/emotivoo-v2:42:abc123:7"
 
@@ -42,7 +42,7 @@ def _approval() -> ApprovalRequest:
                 severity=Severity.P1,
             )
         ],
-        command_hint=f"reviews decide {REVIEW_KEY} --actor alice --approve f1",
+        command_hint=f"agent_review decide {REVIEW_KEY} --actor alice --approve f1",
     )
 
 

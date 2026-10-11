@@ -125,7 +125,7 @@ Reglas de ruido que ya aplica el render:
 
 Cuando este ejemplo te valga, marca **P3** de `tasks/todo.md` («Formato inline
 revisado por humano»); si quieres cambiar algo (idioma, mención al autor, tono),
-se ajusta `_render_inline` / `_render_summary` en `src/reviews/graph/build.py`.
+se ajusta `_render_inline` / `_render_summary` en `src/agent_review/graph/build.py`.
 
 ---
 

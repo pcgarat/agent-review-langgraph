@@ -219,7 +219,7 @@ class SandboxPort(Protocol):
   hasta terminar o `sandbox.timeout_s`. Un `POST` con un `run_key` ya visto
   devuelve el run existente: si el worker cae a mitad, al reanudar **no** se lanza
   una segunda ejecución.
-- **Runner** (`src/reviews/sandbox_runner/`, FastAPI interno, sin puerto publicado):
+- **Runner** (`src/agent_review/sandbox_runner/`, FastAPI interno, sin puerto publicado):
   1. Rechaza un perfil sin `ci_image_digest` o con tag mutable.
   2. Clona `repo@head_sha` (token de solo lectura) en un directorio efímero.
   3. `git apply --check` + `git apply` del parche.
@@ -384,7 +384,7 @@ docker compose up -d sandbox-runner       # nuevo servicio (rootless)
 uv run reviews decide <review_key> --actor <quien> --approve <finding_id>   # dispara un fix
 ```
 
-Estructura: `src/reviews/ports/{fixer,sandbox}.py`, `src/reviews/adapters/{llm_fixer,
-http_sandbox}.py`, `src/reviews/fix/` (validación + orquestación del nodo),
-`src/reviews/sandbox_runner/` (servicio), tests en `tests/` con el mismo patrón que
+Estructura: `src/agent_review/ports/{fixer,sandbox}.py`, `src/agent_review/adapters/{llm_fixer,
+http_sandbox}.py`, `src/agent_review/fix/` (validación + orquestación del nodo),
+`src/agent_review/sandbox_runner/` (servicio), tests en `tests/` con el mismo patrón que
 Fase 2 (fakes de puertos, sin red ni Docker en `make ci`).

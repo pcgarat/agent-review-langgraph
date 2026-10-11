@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from reviews.adapters.text_utils import guess_protected_subject, slug
-from reviews.domain.models import ProtectedSubject
+from agent_review.adapters.text_utils import guess_protected_subject, slug
+from agent_review.domain.models import ProtectedSubject
 
 
 @pytest.mark.parametrize(

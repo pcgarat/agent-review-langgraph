@@ -4,8 +4,8 @@ import contextlib
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from reviews.adapters.teams_webhook import TeamsWebhookAdapter
-from reviews.domain.models import (
+from agent_review.adapters.teams_webhook import TeamsWebhookAdapter
+from agent_review.domain.models import (
     AutofixClass,
     Finding,
     Owner,
@@ -14,11 +14,11 @@ from reviews.domain.models import (
     Severity,
     ToolingSourceStatus,
 )
-from reviews.graph.build import build_graph, outcome_from_state
-from reviews.idempotency import InMemoryIdempotencyStore
-from reviews.policy.engine import PolicyEngine
-from reviews.ports.reviewer import ReviewerPort
-from reviews.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.graph.build import build_graph, outcome_from_state
+from agent_review.idempotency import InMemoryIdempotencyStore
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.reviewer import ReviewerPort
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
 class FakeVcs:
@@ -797,7 +797,7 @@ def test_hitl_sin_pendientes_no_pausa() -> None:
 def test_hitl_reanuda_y_publica_con_la_decision() -> None:
     from langgraph.types import Command
 
-    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+    from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
 
     vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     graph = _hitl_graph(vcs, [make_finding()])
@@ -824,7 +824,7 @@ def test_hitl_reanuda_y_publica_con_la_decision() -> None:
 def test_hitl_rechazo_va_al_resumen_sin_inline() -> None:
     from langgraph.types import Command
 
-    from reviews.domain.models import DecisionOutcome, FindingDecision, HitlDecision
+    from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
 
     vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
     graph = _hitl_graph(vcs, [make_finding()])

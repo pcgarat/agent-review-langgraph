@@ -1386,7 +1386,7 @@ wheels = [
 ]
 
 [[package]]
-name = "reviews"
+name = "agent-review-langgraph"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

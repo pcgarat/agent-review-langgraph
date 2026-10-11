@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from reviews.domain.models import Finding, ReviewRequest
-from reviews.idempotency import InMemoryIdempotencyStore
+from agent_review.domain.models import Finding, ReviewRequest
+from agent_review.idempotency import InMemoryIdempotencyStore
 
 
 def test_clave_de_idempotencia() -> None:
@@ -39,7 +39,7 @@ def test_claim_solo_una_vez() -> None:
 def test_finding_exige_evidencia() -> None:
     import pytest
 
-    from reviews.domain.models import AutofixClass, Owner, Severity
+    from agent_review.domain.models import AutofixClass, Owner, Severity
 
     with pytest.raises(ValueError):
         Finding(
