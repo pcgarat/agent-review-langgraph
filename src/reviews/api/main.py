@@ -3,22 +3,39 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from reviews.adapters.tooling_source import FileToolingOutputSource
+from reviews.adapters.tooling_source import FileToolingOutputSource, validate_tooling_template
 from reviews.domain.models import ReviewRequest
 from reviews.domain.pending import InMemoryPendingStore, PendingStatus
 from reviews.idempotency import IdempotencyStore, InMemoryIdempotencyStore, RedisIdempotencyStore
 from reviews.pending_store import RedisPendingStore
+from reviews.profile import expected_tools
 from reviews.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
-from reviews.settings import Settings, get_settings
+from reviews.settings import Settings, get_settings, require_production_secrets
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="reviews", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # En produccion, arrancar con un secreto de ejemplo seria un agujero: la firma
+    # del webhook de tooling se omitiria (D4). La plantilla del artefacto tambien
+    # se valida aqui (D2): un cambio en el CI que la rompa falla al arrancar.
+    settings = get_settings()
+    require_production_secrets(settings)
+    validate_tooling_template(
+        template=settings.tooling_output_template, root=settings.tooling_output_root
+    )
+    yield
+
+
+app = FastAPI(title="reviews", version="0.1.0", lifespan=lifespan)
 
 
 def _settings() -> Settings:
@@ -28,10 +45,6 @@ def _settings() -> Settings:
 _fallback_store: InMemoryIdempotencyStore | None = None
 _fallback_queue: InMemoryReviewQueue | None = None
 _fallback_pending: InMemoryPendingStore | None = None
-
-
-def _expected_tools(settings: Settings) -> list[str]:
-    return [tool.strip() for tool in settings.expected_tools.split(",") if tool.strip()]
 
 
 def build_store(settings: Settings) -> IdempotencyStore:
@@ -61,9 +74,10 @@ def build_queue(settings: Settings) -> ReviewQueue:
 def build_pending(settings: Settings) -> RedisPendingStore | InMemoryPendingStore:
     """Registro de artefactos pendientes por review."""
     global _fallback_pending
+    tools = expected_tools(settings)
     store = RedisPendingStore(
         url=settings.redis_url,
-        expected_tools=_expected_tools(settings),
+        expected_tools=tools,
         ttl_ready_s=settings.ingest_ttl_ready_s,
         ttl_pending_s=settings.ingest_ttl_pending_s,
     )
@@ -71,7 +85,7 @@ def build_pending(settings: Settings) -> RedisPendingStore | InMemoryPendingStor
         return store
     if _fallback_pending is None:
         logger.warning("Redis no disponible; uso registro pending en memoria")
-        _fallback_pending = InMemoryPendingStore(expected_tools=_expected_tools(settings))
+        _fallback_pending = InMemoryPendingStore(expected_tools=tools)
     return _fallback_pending
 
 
@@ -113,6 +127,12 @@ async def tooling_webhook(
     """
     settings = _settings()
     raw = await request.body()
+    max_bytes = settings.max_tooling_payload_bytes
+    if len(raw) > max_bytes:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            f"El payload supera el limite de {max_bytes} bytes",
+        )
     _verify_signature(settings.tooling_webhook_secret, raw, x_reviews_signature)
 
     body = await request.json()

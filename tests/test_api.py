@@ -137,3 +137,30 @@ def test_webhook_de_pr_retirado() -> None:
     # La ingesta diferida sustituye al disparo por PR: el endpoint ya no existe.
     response = client.post("/webhook/bitbucket", json={"pullrequest": {"id": 1}})
     assert response.status_code == 404
+
+
+def test_tooling_rechaza_payload_demasiado_grande(monkeypatch) -> None:
+    _reset_fallbacks()
+    monkeypatch.setattr(main._settings(), "max_tooling_payload_bytes", 16)
+    response = client.post("/webhook/tooling", json=_payload())
+    assert response.status_code == 413
+
+
+def test_arranque_en_produccion_con_secreto_de_ejemplo_falla(monkeypatch) -> None:
+    from reviews.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "change-me")
+    with pytest.raises(RuntimeError, match="TOOLING_WEBHOOK_SECRET"):
+        require_production_secrets(settings)
+
+
+def test_arranque_en_produccion_con_secreto_real_pasa(monkeypatch) -> None:
+    from reviews.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "bitbucket_webhook_secret", "secreto-real")
+    require_production_secrets(settings)
