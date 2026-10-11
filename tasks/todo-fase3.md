@@ -44,10 +44,12 @@ R2); P6 recategorizada como precondición del runner (Q4).
     acotado; sección "Fixes" en el resumen; marca de dedupe por hallazgo intacta.
   - Verifica: `tests/test_fix_render.py` ✅
 
-**Checkpoint (2026-10-11):** `make ci` en verde (lint, formato, mypy strict, **323
+**Checkpoint (2026-10-11):** `make ci` en verde (lint, formato, mypy strict, **333
 tests**). El camino pausa → decisión → fix → sugerencia verificada está cubierto
 end-to-end con fakes (`tests/test_fix_e2e.py`), sin Docker ni red. Incluye el gate
 duro de seguridad (D3 invertida): `never_auto_paths`/`protected_subject` → `BLOCKED`.
+Y el contrato del perfil (`tests/test_profile.py`): claves conocidas y `expected_tools`
+presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 
 ## Bloque 2 — Runner (depende de Q1 —resuelta— y de P6 —precondición—)
 
@@ -58,9 +60,11 @@ duro de seguridad (D3 invertida): `never_auto_paths`/`protected_subject` → `BL
   - Clon → `git apply --check`/`apply` → `setup` (red, `--no-scripts`) → checks
     (`--network none`) → destruir en `finally`. Sin `docker.sock`, sin privilegios.
   - Verifica: `tests/test_sandbox_runner.py` (fake de Docker contando creations/destructions).
-- [ ] **F9** Perfil: `ci_image_digest`, recipes `verify`, `checks.targeted` (Q2)
-  - Q2 **resuelto**: `checks.targeted = "bin/phpunit {targets}"`. Ya aplicado al
-    perfil; falta `ci_image_digest` y que el runner sustituya `{targets}`.
+- [ ] **F9** `ci_image_digest`, `checks.targeted` en el runner, y validación de `{targets}`
+  - Hecho: `checks.targeted = "bin/phpunit {targets}"` (Q2); `verify` en el perfil y
+    `profile.fix_recipes` como fuente única del orden (targeted antes de typecheck);
+    contrato del perfil validado al cargar (`validate_profile` + `tests/test_profile.py`).
+  - Falta: `ci_image_digest` y que el runner sustituya/valide `{targets}` (F8).
 - [ ] **F10** compose + settings + secretos (`SANDBOX_GIT_TOKEN`,
   `SANDBOX_REGISTRY_*` al runner, `SANDBOX_RUNNER_TOKEN`)
 

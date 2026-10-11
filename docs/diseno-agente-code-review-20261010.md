@@ -706,7 +706,12 @@ repo_profile:
 `.githooks/pre-commit` ejecuta, en este orden: **PHPStan → Deptrac → PHP CS Fixer →
 Rector → tests unitarios**. Es literalmente la secuencia de lo que hace una persona antes
 de commitear, y es la plantilla natural del nodo `verify`. Para el agente, el orden
-razonable de verificación es ese, ampliado con los checks que solo corren en CI.
+razonable de verificación es ese, ampliado con los checks que solo corren en CI, **con un
+matiz**: la verificación del fix ejecuta primero los **tests dirigidos** del área tocada
+(`targeted`) y después el resto. Es la señal más barata y local, y las reglas custom de
+PHPStan (`ApplicationServiceMustHaveTestRule`) exigen el test que el fix ya debería traer:
+correr `stan` antes daría un fallo caro y redundante. El orden vive en el `verify` del
+perfil (§5.4 de `docs/fase3-fix-verificacion-20261011.md`).
 
 Dos detalles de los hooks que el agente debe respetar:
 

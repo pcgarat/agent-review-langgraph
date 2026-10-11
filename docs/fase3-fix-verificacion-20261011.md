@@ -238,15 +238,21 @@ class SandboxPort(Protocol):
 
 ```yaml
 ci_image_digest: "sha256:…"          # obligatorio para verificar
-verify:                               # orden del pre-commit (§15.3)
+verify:                               # el perfil es la fuente unica del orden
+  - targeted                          # tests dirigidos (bin/phpunit {targets})
   - typecheck                         # make stan (tras cache:clear del setup)
   - arch                              # make deptrac
   - lint                              # make cs-check
-  - targeted                          # tests dirigidos (si hay targets)
   - tests                             # make test
 checks:
   targeted: "bin/phpunit {targets}"   # Q2: rutas de test; autodescubre phpunit.dist.xml
 ```
+
+`targeted` va **antes** de `typecheck`: es la señal más barata y local (tests del
+área tocada) y las reglas custom de PHPStan (`ApplicationServiceMustHaveTestRule`)
+exigen el test que el fix ya debería traer. `fix_recipes` en `settings.py` deja de
+ser una segunda fuente de verdad: pasa a fallback para entornos sin perfil, y el
+worker lee el orden del `verify` del perfil (`profile.fix_recipes`).
 
 Una recipe nueva es una decisión humana (§9.4): el runner solo ejecuta nombres del
 perfil, y los `targets` se validan (`tests/**.php`, existentes, sin `..`).
@@ -324,7 +330,7 @@ Credenciales nuevas (entran en `docs/gestion-de-secretos-20261011.md`):
 ## 9. Criterios de hecho
 
 1. Un hallazgo `fix_with_approval` aprobado produce un `FixResult` `VERIFIED` cuya
-   verificación ejecutó, en orden, `typecheck → arch → lint → targeted → tests` con la
+   verificación ejecutó, en orden, `targeted → typecheck → arch → lint → tests` con la
    imagen **por digest**, y se publica como sugerencia inline **una sola vez**
    (reentrega = no-op).
 2. Un parche que rompe un check se reintenta **una** vez con el `stderr_tail`; si
