@@ -2,20 +2,21 @@
 
 # Decisiones de publicación: orden, borrados y formato inline
 
-Cierra tres puntos abiertos de `docs/pendiente-fase1-20261011.md` que **no** son
-completables por un agente solo (B6, C2 y C1): son decisiones de producto que hay
-que fijar y dejar por escrito. El formato inline (C1) queda además preparado para
-la revisión humana con un ejemplo renderizado.
+Fija tres decisiones de producto del nodo `publish` que no eran automatizables:
+el orden de publicación y su compensación (B6), el tratamiento de hallazgos en
+líneas borradas (C2) y el formato inline (C1, pendiente de visto bueno humano).
+
+Complementa `docs/diseno-agente-code-review-20261010.md` §6.1.1.
 
 ---
 
 ## B6 — Publicación no atómica: orden y compensación
 
-**Pregunta original:** si `post_comment` (resumen) falla después de publicar los
-inlines, quedan inlines sin resumen. ¿Abortar o continuar?
+Si `post_comment` (resumen) falla después de publicar los inlines, quedan inlines
+sin resumen. ¿Abortar o continuar?
 
-**Decisión: resumen al final, y el reintento completa lo que falta. Ya está
-resuelto por el diseño de marca (`:ok`/`:partial`) más el checkpointer.**
+**Decisión: resumen al final, y el reintento completa lo que falta.** Ya está
+resuelto por el diseño de marca (`:ok`/`:partial`) más el checkpointer.
 
 El orden es deliberado y no se cambia:
 
@@ -43,10 +44,10 @@ reintentos) acaba en la DLQ (B2) y no en silencio.
 
 ## C2 — Borrados puros: sin inline, al resumen
 
-**Pregunta original:** ¿qué hacer con hallazgos en líneas eliminadas?
+¿Qué hacer con hallazgos en líneas eliminadas?
 
-**Decisión: se mantiene como guardrail — un hallazgo en una línea borrada cae al
-resumen, nunca se ancla con `--from-line` de forma automática.**
+**Decisión: un hallazgo en una línea borrada cae al resumen; nunca se ancla con
+`--from-line` de forma automática.**
 
 Motivo: Bitbucket ancla el lado nuevo (`--line`) de forma estable, pero el lado
 viejo (`--from-line`) exige un número de la revisión *anterior* que `twg prs
@@ -69,10 +70,10 @@ aporte más que ruido.
 
 ## C1 — Formato inline: preparado para revisión humana
 
-**Pregunta original:** revisar un hilo inline real y ajustar plantilla y resumen;
-decidir mención a autor, idioma y longitud.
+Revisar un hilo inline real y ajustar plantilla y resumen; decidir mención a
+autor, idioma y longitud.
 
-**Decisión de partida (pendiente de tu visto bueno, que es el checkpoint B):**
+**Decisión de partida (pendiente del visto bueno humano):**
 
 | Aspecto | Propuesta | Motivo |
 |---|---|---|
@@ -111,7 +112,6 @@ Resumen (un comentario general):
 <!-- reviews:ab12cd34ef56:ok -->
 ```
 
-**Checkpoint B:** marca la casilla de `tasks/todo.md` («Formato inline revisado
-por humano») cuando este ejemplo te valga, o dime qué cambiar (idioma, mención al
-autor, tono) y ajusto `_render_inline` / `_render_summary` en
-`src/reviews/graph/build.py`.
+Cuando este ejemplo te valga, marca **P3** de `tasks/todo.md` («Formato inline
+revisado por humano»); si quieres cambiar algo (idioma, mención al autor, tono),
+se ajusta `_render_inline` / `_render_summary` en `src/reviews/graph/build.py`.

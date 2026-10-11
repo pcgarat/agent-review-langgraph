@@ -4,7 +4,16 @@ Agente autonomo de code review sobre LangGraph. Recibe webhooks de Bitbucket, re
 diff de un PR, decide por hallazgo (informar, escalar, arreglar) y publica en Microsoft
 Teams y en el propio PR.
 
-El diseno completo esta en `docs/`. Este README solo cubre como levantarlo.
+Este README cubre como levantarlo y como funciona. La documentacion de fondo:
+
+| Documento | Contenido |
+|---|---|
+| `docs/diseno-agente-code-review-20261010.md` | Diseno completo: arquitectura, autonomia, HITL, fases, perfil de `emotivoo-v2` |
+| `docs/ingesta-diferida-ci-20261011.md` | Por que la review espera al CI y por que el artefacto es un puente desechable |
+| `docs/decisiones-publish-inline-20261011.md` | Formato inline, orden de publicacion y borrados |
+| `docs/smoke-fase1-20261011.md` | Smoke E2E (Nivel 1 local y Nivel 2 contra Bitbucket) |
+| `docs/pendiente-fase1-20261011.md` | Registro de la auditoria de cierre y su resolucion |
+| `tasks/plan.md` | Estado del plan: tareas cerradas y pendientes humanos |
 
 ## Arranque
 
@@ -83,9 +92,11 @@ inline) estan fijadas en `docs/decisiones-publish-inline-20261011.md`.
 
 ## Estado actual
 
-Fase 1 en curso: la ingesta diferida encola en Redis al completarse los artefactos
-del CI, el worker ejecuta el grafo y publica **comentarios inline** (+ resumen en el
-PR + Teams). Politica en `max_autonomy: report`.
+**Fase 1 (report-only) implementada.** La ingesta diferida encola en Redis al
+completarse el artefacto del CI, el worker ejecuta el grafo y publica **comentarios
+inline** (+ resumen en el PR + Teams). Política en `max_autonomy: report`: cero
+escritura de código en el repo del PR. Lo pendiente es verificación humana
+(`tasks/plan.md`).
 
 Personas de review (puerto `reviews.ports.reviewer`):
 
@@ -110,9 +121,10 @@ CI como artefacto y el `ToolingReviewer` la lee a traves del puerto
 plantilla `TOOLING_OUTPUT_TEMPLATE` (por defecto
 `var/tooling/{pr_id}/{head_sha}/{tool}.json`). Cambiar a «ejecutar en sandbox» en
 Fase 3 es otro adaptador, sin tocar reviewer ni grafo: el diseno converge ambos
-casos en un puerto `CheckRunner`/`ExecResult` (`docs/ingesta-vs-ejecucion-20261011.md`).
-El artefacto del CI es un **puente desechable**, no la cimentacion: con PHPStan y
-Deptrac bloqueantes y en verde, su salida aporta cero senal nueva.
+casos en un puerto `CheckRunner`/`ExecResult`
+(`docs/ingesta-diferida-ci-20261011.md` §4). El artefacto del CI es un **puente
+desechable**, no la cimentacion: con PHPStan y Deptrac bloqueantes y en verde, su
+salida aporta cero senal nueva.
 
 La fuente distingue **analisis limpio** de **salida no leida**: `read()` devuelve
 el estado (`present` / `missing` / `unreadable`) junto al contenido, y la persona
@@ -130,10 +142,6 @@ de PHPStan vuelca el JSON a `var/tooling/<pr_id>/<commit>/phpstan.json` y lo sub
 con `capture-on: always` (se publica aunque PHPStan encuentre errores), que es la
 ruta que resuelve la plantilla por defecto. `BITBUCKET_COMMIT` en un build de PR
 es el commit *source* head, el mismo `head_sha` que envia el webhook.
-
-> Nota para el smoke (T9): `twg` no expone descarga de artefactos de pipeline
-> (solo logs). El agente deberia leerlos por la API de Bitbucket; hoy `reviews` los
-> espera ya presentes en disco (`./var`, montado en el worker).
 
 El contrato de hallazgo vive en `contracts/findings-schema.json`.
 

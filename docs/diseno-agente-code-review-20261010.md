@@ -636,17 +636,10 @@ Se construye en el pipeline custom `build-ci-image` desde `docker/php/Dockerfile
 (un `php:8.4-cli-alpine` + `make` + `pcov` + Composer, ver §15.5). Este es exactamente el
 caso dulce de §9.2: **el sandbox usa esta misma imagen**.
 
-> **Pendiente que vive fuera de este repo.** Para la Fase 1, el step de PHPStan del
-> pipeline debe publicar su salida en el agente (`POST /webhook/tooling`, firmado), no
-> solo subirla a Bitbucket. El detalle, el cuerpo exacto y el ejemplo de `curl` están en
-> `docs/ingesta-diferida-ci-20261011.md` (§7.1). Sin ese cambio, el agente no recibe
-> artefactos y toda review sale degradada por TTL.
->
-> **Matiz (2026-10-11):** el artefacto del CI es un **puente desechable**, no la
-> cimentación. Con `stan`/`deptrac` bloqueantes y verdes, ingerir su salida aporta
-> cero señal nueva; el aporte estructural es **ejecutar** (verificación tras fix).
-> Ver `docs/ingesta-vs-ejecucion-20261011.md`. Sin el `POST`, la Fase 1 no se
-> invalida: se pierde la anotación inline de un pipeline rojo.
+> **Estado (2026-10-11):** implementado. El agente recibe el artefacto por
+> `POST /webhook/tooling` firmado y lo espera con barrera y TTL. Detalle del
+> diseño, el contrato del CI y por qué el artefacto es un **puente desechable**
+> (no la cimentación): `docs/ingesta-diferida-ci-20261011.md`.
 
 ### 15.2 Los checks de PR (lo que el agente debe reproducir)
 
