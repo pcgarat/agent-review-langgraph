@@ -23,10 +23,16 @@ cp ~/.local/bin/twg bin/twg       # el contenedor lo usa como adaptador de Bitbu
 docker compose up --build
 ```
 
-`bootstrap-env.sh` es idempotente: no sobreescribe un `.env` existente y resume qué
-secretos faltan por rellenar sin imprimir sus valores. El worker valida `twg
---version` en el arranque y falla ruidoso si falta (en vez de descubrirlo al
-procesar la primera review).
+`bootstrap-env.sh` es idempotente: no sobreescribe un `.env` existente, lo deja con
+permisos `600` y resume qué secretos faltan por rellenar sin imprimir sus valores.
+El worker valida `twg --version` en el arranque y falla ruidoso si falta (en vez de
+descubrirlo al procesar la primera review).
+
+**Credencial de `twg` (cuenta de servicio).** El agente no usa el `auth.conf` de una
+persona: recibe un **API token scoped de un actor de servicio** por entorno
+(`TWG_BBC_TOKEN`, más `TWG_SITE`/`TWG_USER`), vía `.env`. Ventajas: no caduca cada
+hora como el OAuth, su identidad es del bot (no tuya) y se revoca sin tocar a nadie.
+El contenedor **no monta** `~/.config/twg`.
 
 - `api`  — FastAPI, expone `POST /webhook/tooling`, `GET /healthz`, `/pending` y `/profile/{repo}`
 - `worker` — ejecuta el grafo LangGraph con checkpointer durable (Postgres)
@@ -60,13 +66,20 @@ mismo commit no deben duplicar los comentarios del PR. Hay dos capas:
    review_key` (commit + `pipeline_id`). Si el hilo ya tiene estado y no hay nodos
    pendientes, el worker **no vuelve a ejecutar** el grafo. Es tambien la base del
    `interrupt` de la Fase 2 (HITL).
-2. **Marca de publicacion**: el resumen general lleva un pie invisible
-   (`<!-- reviews:<hash-del-commit>:ok -->`, o `:partial` si la review fue
-   incompleta) con el hash del **commit** (no del pipeline). Antes de publicar, el
-   `publish` lee los comentarios del PR y, si ya existe una review *completa* de ese
-   commit, no re-publica. Un inline ya publicado no se repite aunque el resumen
-   hubiera fallado. Una review **degradada** (`:partial`) **no** bloquea a una
-   completa posterior con los datos ya disponibles.
+2. **Marca de publicacion**: el resumen general lleva un pie
+   (`<!-- reviews:<hash-de-la-ejecucion>:ok -->`, o `:partial` si la review fue
+   incompleta) derivado de la **ejecucion** (`review_key = commit + pipeline_id`),
+   no solo del commit. Antes de publicar, el `publish` lee los comentarios del PR:
+   - Si **esta ejecucion** ya dejo su marca con la misma completitud (o una
+     completa), no re-publica. Un reintento del mismo `pipeline_id` es idempotente.
+   - Un `pipeline_id` **nuevo** sobre el mismo `sha` es una review nueva y publica
+     la suya (antes «ganaba la primera marca por commit» y la nueva quedaba en
+     silencio).
+   - Un inline ya publicado no se repite aunque el resumen hubiera fallado. Una
+     review **degradada** (`:partial`) **no** bloquea a una completa posterior
+     (ni de otro pipeline, ni de la misma ejecucion si el artefacto llega tarde).
+
+> Esto alinea el dedupe con el `thread_id` (una ejecucion, una marca) y cierra Q1.
 
 ### Fallos transitorios (reintento y DLQ)
 
@@ -147,7 +160,7 @@ El contrato de hallazgo vive en `contracts/findings-schema.json`.
 
 ## Smoke real contra Bitbucket
 
-Requiere `twg login` y un PR con cambios:
+Requiere una credencial de `twg` valida (`TWG_BBC_TOKEN`) y un PR con cambios:
 
 ```bash
 REVIEWS_LIVE_PR=417 uv run pytest tests/test_live_twg.py -m live
@@ -159,7 +172,7 @@ Para el **Nivel 2** completo (levanta el stack, firma y deposita el artefacto co
 el CI, verifica inline + resumen + Teams):
 
 ```bash
-scripts/smoke-nivel2.sh 417            # PR real; requiere twg autenticado y .env
+scripts/smoke-nivel2.sh 417            # PR real; requiere TWG_BBC_TOKEN y .env
 ```
 
 ## Desarrollo
