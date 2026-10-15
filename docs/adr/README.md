@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-15 | Creado: 2026-10-11
 
 # Registro de decisiones (ADR)
 
@@ -23,6 +23,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0012](0012-vcs-tras-un-puerto.md) | El VCS vive tras un puerto; `twg` con cuenta de servicio y GitHub como alternativa | Aceptado |
 | [0013](0013-secretos-por-entorno-fail-closed.md) | Secretos solo por entorno y arranque *fail-closed* en producción | Aceptado |
 | [0014](0014-criterio-de-merge-entre-personas.md) | Criterio único de dedupe y fusión entre personas | Aceptado |
+| [0015](0015-registro-declarativo-de-modelos.md) | Registro declarativo de modelos por rol, con el `LlmPort` negociando capacidades | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/003-fase3-fix-verificacion/spec.md))

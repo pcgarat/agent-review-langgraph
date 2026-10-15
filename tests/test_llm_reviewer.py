@@ -14,6 +14,7 @@ from agent_review.domain.models import (
 )
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.llm import LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -26,12 +27,23 @@ class FakeLlm:
         self._response = response
         self._raises = raises
         self.calls: list[tuple[str, str, int]] = []
+        self.json_modes: list[str | None] = []
 
-    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode=None,
+        response_schema=None,
+    ) -> LlmReply:
+        del response_schema
         self.calls.append((system, prompt, max_tokens))
+        self.json_modes.append(json_mode)
         if self._raises is not None:
             raise self._raises
-        return self._response
+        return LlmReply(text=self._response)
 
 
 def _response(*findings: dict) -> str:

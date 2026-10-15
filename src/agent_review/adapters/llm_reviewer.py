@@ -12,7 +12,7 @@ from agent_review.adapters.text_utils import guess_protected_subject, shorten_ti
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import Finding, ReviewerResult, Severity
 from agent_review.errors import is_transient
-from agent_review.ports.llm import LlmError, LlmPort
+from agent_review.ports.llm import LlmError, LlmPort, LlmReply
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,11 @@ class LlmReviewer:
         self._max_tokens = max_tokens
         self._budget = budget_tokens_per_pr
         # Tokens estimados de la ultima llamada: se expone para poder medir el
-        # gasto real por review (C3) sin acoplar el puerto al proveedor.
+        # gasto real por review (C3) sin acoplar el puerto al proveedor. `last_usage`
+        # lleva el gasto **real** que reporta el proveedor, que es la fuente de
+        # verdad cuando esta disponible.
         self.last_estimated_tokens = 0
+        self.last_usage: LlmReply | None = None
 
     def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         del repo, pr_id, head_sha
@@ -90,10 +93,10 @@ class LlmReviewer:
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
         # del CI, asi que su ausencia de hallazgos si es un analisis limpio.
-        raw = self._call(diff)
-        if raw is None:
+        reply = self._call(diff)
+        if reply is None:
             return ReviewerResult()
-        entries = self._entries(raw)
+        entries = self._entries(reply.text)
         if entries is None:
             return ReviewerResult()
         files = parse_unified_diff(diff)
@@ -107,7 +110,7 @@ class LlmReviewer:
                 findings.append(finding)
         return ReviewerResult(findings=findings)
 
-    def _call(self, diff: str) -> str | None:
+    def _call(self, diff: str) -> LlmReply | None:
         if len(diff) > _MAX_DIFF_CHARS:
             logger.warning(
                 "correctness: diff truncado de %d a %d chars", len(diff), _MAX_DIFF_CHARS
@@ -116,7 +119,8 @@ class LlmReviewer:
         # Corte real de presupuesto (C3): no basta con loguear. Si el coste
         # estimado de esta review (prompt + respuesta) supera el tope, no se
         # llama al modelo: mejor 0 hallazgos de esta persona que una factura
-        # desbocada. El estimador es ~4 chars/token (conservador).
+        # desbocada. El estimador es ~4 chars/token (conservador) y es solo una
+        # cota previa: el gasto real lo reporta el proveedor en `LlmReply`.
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
         if self._budget is not None and estimated > self._budget:
@@ -128,7 +132,12 @@ class LlmReviewer:
             )
             return None
         try:
-            return self._llm.complete(system=_SYSTEM, prompt=prompt, max_tokens=self._max_tokens)
+            reply = self._llm.complete(
+                system=_SYSTEM,
+                prompt=prompt,
+                max_tokens=self._max_tokens,
+                json_mode="json_object",
+            )
         except Exception as exc:
             # Un fallo transitorio (red, timeout, 5xx, 429) sube para que la
             # `RetryPolicy` del nodo `persona` lo reintente; si se agotan los
@@ -141,6 +150,8 @@ class LlmReviewer:
             else:
                 logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
             return None
+        self.last_usage = reply
+        return reply
 
     def _entries(self, raw: str) -> list[dict[str, Any]] | None:
         data = _parse_json(raw)

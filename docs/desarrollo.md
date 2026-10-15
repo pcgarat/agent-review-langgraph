@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-15 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -32,10 +32,12 @@ valores por defecto. Añadir un campo a `Settings` no obliga a tocar el `conftes
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
+| Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_teams`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
+| Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
-| Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`) |
+| Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
 
 Regla de estilo: ningún test depende de red, de `twg` real ni de Docker. Los puertos
 se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
@@ -61,8 +63,23 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
 2. Valida cada hallazgo con `domain.contracts.validate_finding` y ancla solo en
    líneas **añadidas** del diff.
 3. Si depende de una fuente externa, devuelve `tooling_status`. Si no, `None`.
-4. Regístrala en `worker.build_reviewers`. El merge la tratará como una persona
-   distinta para la fusión ([ADR-0014](adr/0014-criterio-de-merge-entre-personas.md)).
+4. Regístrala en `worker.build_reviewers` y añade su rol a `LLM_REVIEW_ROLES` si es
+   LLM. El merge la tratará como una persona distinta para la fusión
+   ([ADR-0014](adr/0014-criterio-de-merge-entre-personas.md)).
+
+### Un proveedor de modelo nuevo
+
+1. Declara el proveedor y sus modelos en `config/models.yaml`: `protocol`,
+   `base_url`, `api_key` (referencia `${VAR}`) y, por modelo, sus capacidades
+   (`json_mode`, `context_window`).
+2. Añade el campo del secreto a `Settings` y a `.env.example`. El YAML solo
+   resuelve referencias contra campos de `Settings`; no lee el entorno crudo.
+3. Bindealo a los roles que corresponda. El código no conoce nombres de modelo.
+4. Cubre el contrato en `tests/test_live_models.py` (`-m live`): es lo que verifica
+   que las capacidades declaradas se cumplen, cosa que `/v1/models` no publica.
+5. Si el proveedor **no** habla `/chat/completions`, añade un adaptador de
+   `LlmPort` y ramifica el registro por `protocol`
+   ([ADR-0015](adr/0015-registro-declarativo-de-modelos.md)).
 
 ### Una herramienta estática nueva (p. ej. `deptrac`)
 

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Plan: Fase 3-E7 (desacople fuerte de la verificación)
 
@@ -82,5 +82,6 @@ primero y el E2E (F23) antes de tocar docs.
 
 ## Dependencia externa
 
-El smoke real (F24, criterio 9 del spec) sigue bloqueado por **P6** (revisión de
-seguridad del tema protegido), como el resto de la Fase 3.
+El smoke real (criterio 9 del spec) sigue bloqueado por **P6** (revisión de
+seguridad del tema protegido), como el resto de la Fase 3. F24 (docs) ya está
+cerrada: no es el smoke, es el cierre documental del handoff.

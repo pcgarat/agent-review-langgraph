@@ -45,6 +45,10 @@ class _MemoryVcs:
         del repo, pr_id
         return "diff --git a/a.php b/a.php\n+x\n"
 
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo, path, ref
+        return "$x = 0;\n"
+
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         del repo, pr_id
         return [("a.php", 1, 0)]
@@ -334,3 +338,162 @@ def test_reintento_con_checkpointer_completa_sin_duplicar_el_inline() -> None:
     assert len(vcs.comments) == 1, "debe escribir el resumen que faltaba"
     snapshot = graph.get_state({"configurable": {"thread_id": request.thread_id}})
     assert not snapshot.next, "el hilo queda completado"
+
+
+# ---------------------------------------------------------------------------
+# Fase 3-E7 (F21): poda kind-aware. Un hilo pausado en `fix_wait` no espera a
+# nadie (su wave se resolvio o vencio y la review quedo publicada), asi que se
+# poda; una pausa `human` sigue intocable.
+# ---------------------------------------------------------------------------
+
+
+class _FixVcs(_MemoryVcs):
+    """VCS con `a.php` modificable en el diff, para que el parche valide."""
+
+    def get_diff(self, repo: str, pr_id: int) -> str:
+        del repo, pr_id
+        return (
+            "diff --git a/a.php b/a.php\n"
+            "--- a/a.php\n"
+            "+++ b/a.php\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-$x = 0;\n"
+            "+$x = 1;\n"
+        )
+
+
+def _fix_graph(vcs: _MemoryVcs, saver=None):
+    """Grafo con un hallazgo aprobable que pide fix y un fixer que propone parche."""
+    from agent_review.fix.delivery import DiffFormatter
+    from agent_review.fix.patch import build_patch
+
+    class _Fixer:
+        def propose(self, finding: Finding, *, source: str, previous) -> object:
+            del previous
+            return build_patch(
+                finding, source=source, start_line=1, end_line=1, replacement="+use X;"
+            )
+
+    finding = Finding(
+        id="f1",
+        title="T",
+        severity=Severity.P2,
+        file="a.php",
+        line=1,
+        why_it_matters="w",
+        autofix_class=AutofixClass.GATED_AUTO,
+        owner=Owner.HUMAN,
+        requires_verification=True,
+        confidence=75,
+        evidence=["a.php:1 x"],
+    )
+    return build_graph(
+        vcs=vcs,
+        reviewers=[_OneFinder(finding)],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                "max_autonomy": "fix_with_approval",
+                "default_action": "report",
+                "guards": {"max_fixes_per_pr": 3, "max_fix_attempts": 2, "max_fix_lines": 30},
+                "rules": [
+                    {
+                        "when": {"autofix_class": "gated_auto", "severity": ["P1", "P2"]},
+                        "action": "fix_with_approval",
+                        "reason": "fix seguro",
+                    }
+                ],
+            }
+        ),
+        fixer=_Fixer(),
+        delivery=DiffFormatter(),
+        fix_recipes=["typecheck"],
+    ).compile(checkpointer=saver if saver is not None else build_checkpointer(""))
+
+
+class _OneFinder:
+    name = "standards"
+
+    def __init__(self, finding: Finding) -> None:
+        self._finding = finding
+
+    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+        del repo, pr_id, diff, head_sha
+        return ReviewerResult(findings=[self._finding])
+
+
+def _approve(review_key: str, finding_id: str) -> HitlDecision:
+    return HitlDecision(
+        review_key=review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.APPROVED)],
+    )
+
+
+def test_pause_kind_distingue_fix_de_human() -> None:
+    from agent_review.checkpointer import pause_kind_of, paused_thread_kinds
+
+    saver = build_checkpointer("")
+    graph = _fix_graph(_FixVcs(), saver=saver)
+
+    human = ReviewRequest(repo="r", pr_id=1, head_sha="h", pipeline_id="human")
+    fixing = ReviewRequest(repo="r", pr_id=2, head_sha="h", pipeline_id="fix")
+    assert process_request(graph, human).paused  # sin decision: pausa humana
+    # El fix pausa en human y, al aprobar, despacha y pausa en fix.
+    assert process_request(graph, fixing).paused
+    process_request(
+        graph, fixing.model_copy(update={"decision": _approve(fixing.review_key, "f1")})
+    )
+
+    kinds = paused_thread_kinds(saver)
+    assert kinds[human.thread_id] == "human"
+    assert kinds[fixing.thread_id] == "fix"
+
+    from agent_review.checkpointer import latest_checkpoints
+
+    latest = latest_checkpoints(saver)
+    assert latest is not None
+    assert pause_kind_of(latest[human.thread_id]) == "human"
+    assert pause_kind_of(latest[fixing.thread_id]) == "fix"
+
+
+def test_prune_fix_poda_un_fix_vencido_pero_nunca_un_human() -> None:
+    from agent_review.checkpointer import paused_thread_kinds, prune_fix_threads
+
+    saver = build_checkpointer("")
+    graph = _fix_graph(_FixVcs(), saver=saver)
+
+    human = ReviewRequest(repo="r", pr_id=1, head_sha="h", pipeline_id="human")
+    fixing = ReviewRequest(repo="r", pr_id=2, head_sha="h", pipeline_id="fix")
+    assert process_request(graph, human).paused
+    assert process_request(graph, fixing).paused
+    process_request(
+        graph, fixing.model_copy(update={"decision": _approve(fixing.review_key, "f1")})
+    )
+
+    kinds = paused_thread_kinds(saver)
+    assert kinds[fixing.thread_id] == "fix"
+
+    # Con un reloj futuro, el fix supera `max_age_s` y se poda; el human no.
+    future = datetime.now(UTC) + timedelta(days=7)
+    pruned = prune_fix_threads(saver, max_age_s=3600.0, paused_kinds=kinds, now=future)
+    assert fixing.thread_id in pruned
+    assert human.thread_id not in pruned
+    assert "human" in paused_thread_kinds(saver).values(), "la pausa humana sigue viva"
+
+
+def test_prune_fix_no_toca_un_fix_reciente() -> None:
+    from agent_review.checkpointer import paused_thread_kinds, prune_fix_threads
+
+    saver = build_checkpointer("")
+    graph = _fix_graph(_FixVcs(), saver=saver)
+    fixing = ReviewRequest(repo="r", pr_id=2, head_sha="h", pipeline_id="fix")
+    assert process_request(graph, fixing).paused
+    process_request(
+        graph, fixing.model_copy(update={"decision": _approve(fixing.review_key, "f1")})
+    )
+
+    # Retencion `0` (o sin vencer) desactiva la poda: no se borra una wave viva.
+    kinds = paused_thread_kinds(saver)
+    assert prune_fix_threads(saver, max_age_s=0, paused_kinds=kinds) == []
+    assert prune_fix_threads(saver, max_age_s=3600.0, paused_kinds=kinds) == []

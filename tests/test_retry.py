@@ -18,7 +18,7 @@ from agent_review.domain.models import (
 from agent_review.errors import PermanentError, TransientError, is_transient
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
-from agent_review.ports.llm import LlmError, LlmTransientError
+from agent_review.ports.llm import LlmError, LlmReply, LlmTransientError
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 
 # ---------------------------------------------------------------------------
@@ -272,16 +272,16 @@ def test_reintento_de_publish_no_repite_lo_ya_publicado() -> None:
 
 
 def test_solo_los_nodos_puros_o_de_pausa_quedan_sin_politica() -> None:
-    # Invariante: `merge` y `policy` son deterministas y `hitl` no debe reintentar
-    # (re-ejecutaria la pausa). Cualquier otro nodo llama a fuera y la lleva, asi
-    # que anadir un nodo con efectos sin politica rompe este test a proposito.
+    # Invariante: `merge` y `policy` son deterministas y `hitl`/`fix_wait` no deben
+    # reintentar (re-ejecutarian la pausa). Cualquier otro nodo llama a fuera y la
+    # lleva, asi que anadir un nodo con efectos sin politica rompe este test a proposito.
     policy = PolicyEngine.from_file("config/autonomy.yaml")
     builder = build_graph(
         vcs=FlakyVcs(TwgError("x")), reviewers=[CountingReviewer()], policy=policy
     )
 
     sin_politica = {name for name, spec in builder.nodes.items() if spec.retry_policy is None}
-    assert sin_politica == {"merge", "policy", "hitl"}
+    assert sin_politica == {"merge", "policy", "hitl", "fix_wait"}
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +295,20 @@ class _FlakyLlm:
         self._fail = fail_times
         self.calls = 0
 
-    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
-        del system, prompt, max_tokens
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode=None,
+        response_schema=None,
+    ) -> LlmReply:
+        del system, prompt, max_tokens, json_mode, response_schema
         self.calls += 1
         if self.calls <= self._fail:
             raise self._error
-        return '{"findings": []}'
+        return LlmReply(text='{"findings": []}')
 
 
 def _fast_retry() -> RetryPolicy:

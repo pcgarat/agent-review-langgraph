@@ -29,7 +29,7 @@ from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.worker.main import (
     _consume,
-    build_llm,
+    build_registry,
     build_reviewers,
     process_request,
     start_heartbeat,
@@ -66,6 +66,10 @@ class FakeVcs:
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         del repo, pr_id
         return [("a.php", 1, 0)]
+
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo, path, ref
+        return "$x = 1;\n"
 
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
@@ -248,7 +252,7 @@ _PROFILE_WITH_CHECKS = "repo: cqm/emotivoo-v2\nchecks:\n  typecheck: make stan\n
 def test_build_reviewers_llm_desactivado_por_defecto(tmp_path: Path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
-    settings = Settings(repo_profile_config=str(profile), llm_model="gpt-x")
+    settings = Settings(repo_profile_config=str(profile), llm_model="gpt-x", models_config="")
     names = [r.name for r in build_reviewers(settings)]
     assert names == ["standards"]
 
@@ -261,6 +265,7 @@ def test_build_reviewers_anade_correctness_si_se_habilita(tmp_path: Path) -> Non
         llm_reviewer_enabled=True,
         llm_model="gpt-x",
         llm_api_key="k",
+        models_config="",
     )
     names = [r.name for r in build_reviewers(settings)]
     assert names == ["standards", "correctness"]
@@ -269,12 +274,44 @@ def test_build_reviewers_anade_correctness_si_se_habilita(tmp_path: Path) -> Non
 def test_build_reviewers_llm_habilitado_sin_modelo_no_se_crea(tmp_path: Path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
-    settings = Settings(repo_profile_config=str(profile), llm_reviewer_enabled=True)
+    settings = Settings(
+        repo_profile_config=str(profile), llm_reviewer_enabled=True, models_config=""
+    )
     assert [r.name for r in build_reviewers(settings)] == ["standards"]
 
 
-def test_build_llm_sin_habilitar_devuelve_none() -> None:
-    assert build_llm(Settings()) is None
+def test_build_reviewers_bindea_cada_rol_a_su_modelo(tmp_path: Path) -> None:
+    # Con registro declarativo, cada rol usa SU modelo: `correctness` y `security`
+    # pueden correr en modelos distintos. El fan-out los construye a ambos.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "version: 1\n"
+        "providers:\n"
+        "  p:\n"
+        "    base_url: https://example.test/v1\n"
+        "models:\n"
+        "  modelo-a: {provider: p, kind: chat}\n"
+        "  modelo-b: {provider: p, kind: chat, json_mode: json_schema}\n"
+        "bindings:\n"
+        "  correctness: modelo-a\n"
+        "  security: modelo-b\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        repo_profile_config=str(profile),
+        llm_reviewer_enabled=True,
+        models_config=str(config),
+    )
+    names = [r.name for r in build_reviewers(settings)]
+    assert names == ["standards", "correctness", "security"]
+
+
+def test_build_registry_sin_habilitar_no_bindea_roles() -> None:
+    registry = build_registry(Settings())
+    assert registry.port_for("correctness") is None
+    assert registry.config.models == {}
 
 
 def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
@@ -639,3 +676,320 @@ def test_sweep_expired_reencola_sin_decision() -> None:
     assert job.decision.actor == "system:ttl"
     assert job.decision.items[0].outcome is DecisionOutcome.EXPIRED
     assert paused.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
+
+
+# ---------------------------------------------------------------------------
+# Fase 3-E7 (F17): worker kind-aware. La pausa de fix encola la wave y reanuda
+# con el `FixResolutions`; nunca pasa por el HITL.
+# ---------------------------------------------------------------------------
+
+
+def _approve(finding_id: str) -> HitlDecision:
+    return HitlDecision(
+        review_key=ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef").review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.APPROVED)],
+    )
+
+
+class _FixVcs(FakeVcs):
+    """VCS con `a.php:1` en el diff y su contenido, para que el parche valide."""
+
+    def get_diff(self, repo: str, pr_id: int) -> str:
+        del repo, pr_id
+        return (
+            "diff --git a/a.php b/a.php\n"
+            "--- a/a.php\n"
+            "+++ b/a.php\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-$x = 0;\n"
+            "+$x = 1;\n"
+        )
+
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo, path, ref
+        return "$x = 0;\n"
+
+
+def _fix_graph(vcs: FakeVcs):
+    """Grafo con un hallazgo aprobable que pide fix y un fixer que propone parche."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from agent_review.fix.delivery import DiffFormatter
+    from agent_review.fix.patch import build_patch
+
+    class _Fixer:
+        def propose(self, finding: Finding, *, source: str, previous) -> object:
+            return build_patch(
+                finding, source=source, start_line=1, end_line=1, replacement="+use X;"
+            )
+
+    finding = _escalating_finding().model_copy(
+        update={"autofix_class": AutofixClass.GATED_AUTO, "severity": Severity.P2}
+    )
+    reviewer = _CountingReviewer(finding)
+    return build_graph(
+        vcs=vcs,
+        reviewers=[reviewer],
+        policy=PolicyEngine(
+            {
+                "version": 1,
+                "max_autonomy": "fix_with_approval",
+                "default_action": "report",
+                "guards": {"max_fixes_per_pr": 3, "max_fix_attempts": 2, "max_fix_lines": 30},
+                "rules": [
+                    {
+                        "when": {"autofix_class": "gated_auto", "severity": ["P1", "P2"]},
+                        "action": "fix_with_approval",
+                        "reason": "fix seguro",
+                    }
+                ],
+            }
+        ),
+        fixer=_Fixer(),
+        delivery=DiffFormatter(),
+        fix_recipes=["typecheck"],
+    ).compile(checkpointer=InMemorySaver())
+
+
+def test_pausa_de_fix_registra_inbox_y_encola_la_wave() -> None:
+    from agent_review.domain.paused import PauseKind
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.queue import InMemoryFixQueue
+
+    vcs = _FixVcs()
+    graph = _fix_graph(vcs)
+    store = InMemoryPausedStore()
+    fix_queue = InMemoryFixQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    # 1) Sin decision: pausa humana (aun no hay wave).
+    assert process_request(graph, request, paused=store, fix_queue=fix_queue).paused
+    assert len(fix_queue) == 0
+    assert store.get(request.review_key).kind is PauseKind.HUMAN
+
+    # 2) Con aprobacion: el fix se despacha, se publica el resultado y pausa de fix.
+    outcome = process_request(
+        graph,
+        request.model_copy(update={"decision": _approve("w1")}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+
+    assert outcome.paused, "ahora la review espera la wave (pausa de fix)"
+    recorded = store.get(request.review_key)
+    assert recorded is not None
+    assert recorded.kind is PauseKind.FIX
+    assert recorded.fix_request.jobs[0].finding_id == "w1"
+    wave = fix_queue.dequeue()
+    assert wave is not None and wave.review_key == request.review_key
+    assert wave.wave.jobs[0].run_key.endswith(":w1:1")
+
+
+def test_reentrega_pausada_de_fix_no_reejecuta_scope_ni_personas() -> None:
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.queue import InMemoryFixQueue
+
+    graph = _fix_graph(_FixVcs())
+    store = InMemoryPausedStore()
+    fix_queue = InMemoryFixQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request, paused=store, fix_queue=fix_queue)
+    process_request(
+        graph,
+        request.model_copy(update={"decision": _approve("w1")}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+    assert len(fix_queue) == 1
+
+    # Reentrega sin `fix_resolution`: no-op, no re-ejecuta ni re-encola.
+    again = process_request(graph, request, paused=store, fix_queue=fix_queue)
+    assert again.paused
+    assert len(fix_queue) == 1, "la wave no se duplica"
+
+
+def test_resume_de_fix_aplica_la_wave_y_publica_el_seguimiento() -> None:
+    from agent_review.domain.models import CommandResult, FixResolution, FixResolutions
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.queue import InMemoryFixQueue
+
+    vcs = _FixVcs()
+    graph = _fix_graph(vcs)
+    store = InMemoryPausedStore()
+    fix_queue = InMemoryFixQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request, paused=store, fix_queue=fix_queue)
+    process_request(
+        graph,
+        request.model_copy(update={"decision": _approve("w1")}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+    followups_before = [c for c in vcs.comments if ":fix -->" in c]
+    assert followups_before == []
+
+    resolution = FixResolutions(
+        items=[
+            FixResolution(
+                run_key=f"{request.review_key}:w1:1",
+                outcome="passed",
+                checks=[
+                    CommandResult(recipe="typecheck", argv=["make"], exit_code=0, duration_s=1.0)
+                ],
+                image_digest="sha256:abc",
+            )
+        ]
+    )
+    outcome = process_request(
+        graph,
+        request.model_copy(update={"fix_resolution": resolution}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+
+    assert not outcome.paused
+    assert outcome.fixes["w1"].status.value == "verified"
+    followups = [c for c in vcs.comments if ":fix -->" in c]
+    assert len(followups) == 1, "el seguimiento se publica una sola vez"
+    assert store.get(request.review_key) is None, "el inbox se limpia al resolver"
+
+
+def test_reconcile_repone_pausa_de_fix_y_reencola_la_wave() -> None:
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.queue import InMemoryFixQueue
+    from agent_review.worker.main import reconcile_paused
+
+    graph = _fix_graph(_FixVcs())
+    # Pausa de fix sin inbox: el registro se "perdio" (worker caido tras el checkpoint).
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request)
+    process_request(graph, request.model_copy(update={"decision": _approve("w1")}))
+    store = InMemoryPausedStore()
+    fix_queue = InMemoryFixQueue()
+
+    restored = reconcile_paused(graph, store, fix_queue=fix_queue)
+
+    assert restored == [request.thread_id]
+    assert store.get(request.review_key) is not None
+    assert len(fix_queue) == 1, "reponer la pausa de fix re-encola la wave"
+    assert reconcile_paused(graph, store, fix_queue=fix_queue) == [], "idempotente"
+    assert len(fix_queue) == 1, "no se re-encola dos veces"
+    assert store.get(request.review_key).kind.value == "fix"
+
+
+def test_sweep_expired_no_toca_las_pausas_de_fix() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.domain.models import FixWaitRequest
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused = InMemoryPausedStore(ttl_s=60.0)
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    from agent_review.domain.paused import PauseKind
+
+    paused.pause(
+        request,
+        FixWaitRequest(review_key=request.review_key, repo=request.repo, pr_id=9, head_sha="x"),
+        kind=PauseKind.FIX,
+    )
+
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    assert sweep_expired(paused, queue, now=future) == []
+    assert len(queue) == 0, "una pausa de fix no se reanuda como 'sin decision'"
+
+
+# ---------------------------------------------------------------------------
+# Fase 3-E7 (F20): idempotencia y durabilidad del handoff.
+# ---------------------------------------------------------------------------
+
+
+def _paused_fix_setup():
+    from agent_review.paused_store import InMemoryPausedStore
+    from agent_review.queue import InMemoryFixQueue
+
+    vcs = _FixVcs()
+    graph = _fix_graph(vcs)
+    store = InMemoryPausedStore()
+    fix_queue = InMemoryFixQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    process_request(graph, request, paused=store, fix_queue=fix_queue)
+    process_request(
+        graph,
+        request.model_copy(update={"decision": _approve("w1")}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+    return graph, vcs, store, fix_queue, request
+
+
+def test_resume_de_fix_con_run_key_ajeno_es_noop() -> None:
+    """R2: una resolucion que el hilo no espera no se aplica."""
+    from agent_review.domain.models import CommandResult, FixResolution, FixResolutions
+
+    graph, vcs, store, fix_queue, request = _paused_fix_setup()
+    stale = FixResolutions(
+        items=[
+            FixResolution(
+                run_key=f"{request.review_key}:w9:1",  # de otra wave
+                outcome="passed",
+                checks=[CommandResult(recipe="t", argv=["x"], exit_code=0, duration_s=1.0)],
+            )
+        ]
+    )
+
+    outcome = process_request(
+        graph,
+        request.model_copy(update={"fix_resolution": stale}),
+        paused=store,
+        fix_queue=fix_queue,
+    )
+
+    assert outcome.paused, "no-op: el hilo sigue esperando su wave"
+    assert store.get(request.review_key) is not None
+    assert [c for c in vcs.comments if ":fix -->" in c] == []
+
+
+def test_sweep_fix_expired_reanuda_como_no_verificable() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.worker.main import sweep_fix_expired
+
+    _, _, store, _, request = _paused_fix_setup()
+    queue = InMemoryReviewQueue()
+    # La pausa de fix usa `FIX_VERIFY_TTL_S`: se acorta para el test.
+    current = store.get(request.review_key)
+    assert current is not None
+    current.ttl_s = 60.0
+
+    assert sweep_fix_expired(store, queue) == []
+
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    enqueued = sweep_fix_expired(store, queue, now=future)
+
+    assert [r.review_key for r in enqueued] == [request.review_key]
+    job = queue.dequeue()
+    assert job is not None and job.fix_resolution is not None
+    assert job.fix_resolution.items[0].outcome == "error"
+    assert job.fix_resolution.items[0].run_key.endswith(":w1:1")
+    assert store.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
+
+
+def test_sweep_fix_expired_es_idempotente() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.worker.main import sweep_fix_expired
+
+    _, _, store, _, request = _paused_fix_setup()
+    queue = InMemoryReviewQueue()
+    current = store.get(request.review_key)
+    assert current is not None
+    current.ttl_s = 60.0
+    future = datetime.now(UTC) + timedelta(seconds=120)
+
+    first = sweep_fix_expired(store, queue, now=future)
+    second = sweep_fix_expired(store, queue, now=future)
+
+    assert len(first) == 1
+    assert second == [], "ya encolada; no se duplica el barrido"

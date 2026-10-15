@@ -170,6 +170,40 @@ class CompletedOnlyRetention:
         return ts is not None and ts < self._cutoff
 
 
+class FixWaitRetention:
+    """Poda hilos pausados en `fix_wait` vencidos; los `human` siguen intocables (R1, §8.1).
+
+    Un hilo pausado en `fix_wait` tiene `__interrupt__` y, con la politica por
+    defecto, quedaria **protegido para siempre**. Pero esa pausa es distinta de la
+    humana: si la wave vencio, el fix ya quedo `NOT_VERIFIABLE` y publicado, asi
+    que el hilo no espera a nadie. Se poda cuando supero `max_age_s`.
+
+    Un hilo `human` (o uno completado) nunca se poda aqui: puede reusar
+    `CompletedOnlyRetention` para los completados. La dedupe de publicacion vive en
+    las marcas del PR, no en el checkpoint, asi que podar no duplica comentarios.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_age_s: float,
+        paused_kinds: dict[str, str],
+        now: datetime,
+    ) -> None:
+        self._cutoff = now - timedelta(seconds=max_age_s)
+        self._kinds = paused_kinds
+        self._enabled = max_age_s > 0
+
+    def can_prune(self, thread_id: str, latest: CheckpointTuple, now: datetime) -> bool:
+        del now
+        if not self._enabled:
+            return False
+        if self._kinds.get(thread_id) != "fix":
+            return False
+        ts = _checkpoint_ts(latest)
+        return ts is not None and ts < self._cutoff
+
+
 def latest_checkpoints(saver: BaseCheckpointSaver[Any]) -> dict[str, CheckpointTuple] | None:
     """Ultima tupla de cada hilo, o `None` si la base no responde. Nunca lanza.
 
@@ -240,6 +274,20 @@ def prune_completed_threads(
     return prune_threads(saver, policy, now=moment, latest=latest)
 
 
+def prune_fix_threads(
+    saver: BaseCheckpointSaver[Any],
+    *,
+    max_age_s: float,
+    paused_kinds: dict[str, str],
+    now: datetime | None = None,
+    latest: dict[str, CheckpointTuple] | None = None,
+) -> list[str]:
+    """Atajo de `FixWaitRetention`: poda solo los hilos pausados en `fix_wait` vencidos."""
+    moment = now or datetime.now(UTC)
+    policy = FixWaitRetention(max_age_s=max_age_s, paused_kinds=paused_kinds, now=moment)
+    return prune_threads(saver, policy, now=moment, latest=latest)
+
+
 def paused_thread_ids(
     saver: BaseCheckpointSaver[Any],
     *,
@@ -269,6 +317,55 @@ def _is_completed(tup: CheckpointTuple) -> bool:
     """
     keys = {write[1] for write in (tup.pending_writes or [])}
     return "__interrupt__" not in keys
+
+
+def pause_kind_of(tup: CheckpointTuple) -> str | None:
+    """`kind` de la pausa pendiente del checkpoint (`human`/`fix`), o `None`.
+
+    La carga del `interrupt` (un `ApprovalRequest` o un `FixWaitRequest`) lleva su
+    `kind`. Segun el backend y la fase, el value llega como objeto de dominio
+    (`Interrupt.value`) o como diccionario crudo: se cubren ambos. Un hilo sin
+    pausa o con un payload sin `kind` se trata como `human`, el default tolerante
+    de la Fase 2.
+    """
+    for write in tup.pending_writes or []:
+        if write[1] != "__interrupt__":
+            continue
+        payload = write[2]
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            value = getattr(item, "value", item)
+            kind = value.get("kind") if isinstance(value, dict) else getattr(value, "kind", None)
+            if kind == "fix":
+                return "fix"
+            if kind is not None:
+                return str(kind)
+            # Value sin `kind` (payload antiguo de Fase 2): se asume `human`.
+            if isinstance(value, dict) or hasattr(value, "pending"):
+                return "human"
+    return None
+
+
+def paused_thread_kinds(
+    saver: BaseCheckpointSaver[Any],
+    *,
+    latest: dict[str, CheckpointTuple] | None = None,
+) -> dict[str, str]:
+    """`kind` de cada hilo pausado, indexado por `thread_id`. Nunca lanza.
+
+    Alimenta la poda `kind-aware`: un hilo pausado en `fix_wait` si se puede podar
+    (su verificacion pudo vencer y la review quedo publicada); uno `human` no.
+    """
+    if latest is None:
+        latest = latest_checkpoints(saver)
+        if latest is None:
+            return {}
+    kinds: dict[str, str] = {}
+    for thread_id, tup in latest.items():
+        if _is_completed(tup):
+            continue
+        kinds[thread_id] = pause_kind_of(tup) or "human"
+    return kinds
 
 
 def _checkpoint_ts(tup: CheckpointTuple) -> datetime | None:

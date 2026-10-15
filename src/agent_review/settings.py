@@ -102,9 +102,24 @@ class Settings(BaseSettings):
     # TTL de una decision pendiente (Fase 2): pasado, el barrido reanuda la review
     # como `expired` (se publica "sin decision"), nunca se deja colgada.
     decision_ttl_s: float = 7 * 24 * 3600.0
+    # Fase 3-E7: TTL del handoff del fix. Una wave que el worker de fixes no
+    # resuelve en este plazo se reanuda con `outcome="error"` (el fix queda
+    # `NOT_VERIFIABLE`, publicado); nunca se deja colgada esperando al runner.
+    fix_verify_ttl_s: float = 2 * 3600.0
+    # Reintentos del job de fix ante un fallo transitorio del runner antes de
+    # mandarlo a su DLQ. Ortogonal al reintento de nodo del runner.
+    max_fix_attempts_job: int = 3
+    # Cadencia del poll y el barrido del worker de fixes.
+    fix_poll_s: float = 5.0
+    fix_sweep_s: float = 30.0
     # Retencion de checkpoints de hilos COMPLETADOS (Fase 2). Un hilo pausado
     # nunca se poda, aunque supere la retencion.
     checkpoint_retention_days: float = 30.0
+    # Fase 3-E7: retencion de hilos pausados en `fix_wait` (F21). Un hilo en
+    # `fix_wait` no espera a nadie (su wave se resolvio o vencio y la review quedo
+    # publicada), asi que se poda pasado este plazo. Debe ser holgadamente mayor
+    # que `FIX_VERIFY_TTL_S` para no podar una wave aun viva. `0` desactiva.
+    fix_wait_max_age_s: float = 3 * 24 * 3600.0
     # Herramientas cuya salida espera la review antes de ejecutarse.
     expected_tools: str = "phpstan"
     # Patrones extra (coma-separados) de ficheros que el scope ignora, ademas de
@@ -129,10 +144,15 @@ class Settings(BaseSettings):
     # Limite del cuerpo del POST de tooling, para rechazar payloads enormes (413).
     max_tooling_payload_bytes: int = 5 * 1024 * 1024
 
-    # Persona LLM `correctness`. Desactivada por defecto: la Fase 1 arranca solo
-    # con la persona estatica. Al activarla, si no hay proveedor configurado, la
-    # persona no se construye y se registra un aviso.
+    # Persona LLM `correctness` y fixer. Desactivados por defecto: la Fase 1 arranca
+    # solo con la persona estatica. Con `MODELS_CONFIG` presente manda el registro
+    # declarativo (roles -> modelo); sin el, se sintetiza desde `LLM_*` para no
+    # romper un despliegue existente (D7 de la iniciativa 005).
     llm_reviewer_enabled: bool = False
+    # Registro declarativo de proveedores y modelos (`config/models.yaml`). Un
+    # fichero declarado que no existe es un error de arranque (fail-fast); para la
+    # via de compatibilidad por entorno, dejarlo vacio (D7 de la iniciativa 005).
+    models_config: str = "config/models.yaml"
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
@@ -195,8 +215,26 @@ def insecure_secrets(settings: Settings) -> list[str]:
         insecure.append("TWG_BBC_TOKEN")
     if settings.teams_enabled and not settings.teams_webhook_url.strip():
         insecure.append("TEAMS_WEBHOOK_URL")
-    if settings.llm_reviewer_enabled and not settings.llm_api_key.strip():
-        insecure.append("LLM_API_KEY")
+    if settings.llm_reviewer_enabled:
+        # Con registro declarativo, el secreto es el que referencia el YAML. Sin el,
+        # la via de compatibilidad exige `LLM_API_KEY` como antes.
+        if settings.models_config.strip():
+            from agent_review.models_config import (
+                env_for,
+                load_models_config,
+                unresolved_secrets,
+            )
+
+            try:
+                config = load_models_config(settings.models_config)
+            except Exception:
+                # Un registro ilegible ya falla al construir el worker con un error
+                # mas util; aqui no se duplica.
+                config = None
+            if config is not None:
+                insecure.extend(unresolved_secrets(config, env_for(settings)))
+        elif not settings.llm_api_key.strip():
+            insecure.append("LLM_API_KEY")
     # Con el sandbox activo hay dos superficies nuevas: el token compartido
     # worker<->runner y el token de clonado de solo lectura del runner. Sin ellos
     # el worker no puede pedir la verificacion o el runner no puede clonar.

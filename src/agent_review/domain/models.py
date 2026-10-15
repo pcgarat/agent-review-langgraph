@@ -239,6 +239,22 @@ class FixResolutions(BaseModel):
     items: list[FixResolution] = Field(default_factory=list)
 
 
+class FixJob(BaseModel):
+    """Unidad de la cola de fixes: una wave a verificar y su reanudacion.
+
+    Viaja entera por `FixQueue` para que el worker de fixes pueda, sin grafo ni
+    checkpointer, verificar los `jobs` y encolar de vuelta el `request` ya con su
+    `fix_resolution`. `request` conserva la identidad del hilo (`review_key`), que
+    es la clave del resume. `attempts` cuenta las reentregas del job de fix ante
+    un fallo transitorio del runner, igual que `ReviewRequest.attempts`.
+    """
+
+    review_key: str
+    request: ReviewRequest
+    wave: FixWaitRequest
+    attempts: int = Field(default=0, ge=0)
+
+
 class ReviewRequest(BaseModel):
     repo: str
     pr_id: int

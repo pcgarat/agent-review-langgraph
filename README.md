@@ -34,6 +34,7 @@ flowchart LR
     subgraph PLAT["Plataforma (docker compose)"]
         API["api<br/>FastAPI"]
         WORKER["worker<br/>grafo LangGraph"]
+        FIXW["fix-worker<br/>verifica · nunca publica"]
         REDIS[("redis<br/>cola · idempotencia<br/>ingesta · inbox")]
         PG[("postgres<br/>checkpointer durable")]
         VAR[/"var/<br/>artefactos CI"/]
@@ -47,6 +48,10 @@ flowchart LR
     WORKER -->|checkpoint| PG
     WORKER -->|"twg: diff · inline · resumen"| BB
     WORKER -->|teaser| TEAMS
+    WORKER -->|"wave de fix"| REDIS
+    REDIS -->|dequeue| FIXW
+    FIXW -->|verifica parche| RUNNER["sandbox-runner"]
+    FIXW -->|"reanudacion + resolucion"| REDIS
     HUMAN -->|"CLI / HTTP"| API
     API -->|"job de reanudación"| REDIS
     TEAMS -.-> HUMAN
@@ -57,10 +62,11 @@ flowchart LR
 | Componente | Rol |
 |---|---|
 | `api` | FastAPI. Valida la firma del CI, deposita el artefacto, mantiene la idempotencia y encola la review. Expone el canal de decisión (`/reviews/.../decision`). |
-| `worker` | Consume la cola y ejecuta el grafo con checkpointer durable. Reintenta fallos transitorios y aplica los TTL (ingesta y decisión). |
+| `worker` | Consume la cola y ejecuta el grafo con checkpointer durable. Reintenta fallos transitorios y aplica los TTL (ingesta, decisión y handoff del fix). **Nunca** toca el sandbox. |
+| `fix-worker` | Fase 3-E7. Consume la *wave* de verificaciones, llama al `sandbox-runner` por cada `VerifyJob` y encola la reanudación del worker con la resolución. Es el único invocador del sandbox; **no publica ni escribe en el PR**. Aislado: sin `docker.sock`, sin `TWG_*`, sin Postgres, sin token de decisión. |
 | `sandbox-runner` | Fase 3. Verifica el parche de un fix con la imagen del CI **por digest** (`POST /verify` bloqueante con `run_key` idempotente). Clona, aplica el parche, corre `setup`+checks sin red y destruye. Aislado: sin `docker.sock`, sin puertos publicados, habla con su propio demonio rootless. |
 | `postgres` | Checkpointer de LangGraph: estado de cada ejecución, base del `interrupt` (HITL) y de la no-repetición. |
-| `redis` | Cola de jobs, claves de idempotencia, registro de ingesta y *inbox* de reviews pausadas. |
+| `redis` | Cola de jobs, cola de fixes, claves de idempotencia, registro de ingesta y *inbox* de reviews pausadas. |
 | `twg` | Adaptador de Bitbucket/Jira (CLI). Obtiene diff, publica comentarios inline/resumen y resuelve anclas. |
 | `github` | Adaptador de GitHub (API REST, `VcsPort`). Sustituye a `twg` con `VCS_PROVIDER=github`; el grafo no cambia. |
 | `var/` | Artefactos del CI (salida de PHPStan) que lee la persona estática. Solo lectura en el worker. |
@@ -86,11 +92,17 @@ flowchart TD
     persona["persona ×N<br/>reviewers en paralelo"] --> merge
     merge["merge<br/>dedupe + evidencia"] --> policy
     policy["policy<br/>autonomy.yaml"] --> hitl
-    hitl -->|"sin pendientes"| fix
-    fix["fix<br/>Fase 3: propone + verifica"] --> publish
+    hitl -->|"sin pendientes"| fix_dispatch
+    fix_dispatch["fix_dispatch<br/>propone + valida (sin sandbox)"] --> publish
     hitl -.->|"interrupt: hay pendientes"| PAUSE(["pausa durable<br/>(Postgres)"])
     PAUSE -.->|"Command(resume)"| hitl
-    publish["publish<br/>inline + resumen"] --> notify
+    publish["publish<br/>inline + resumen"] --> fix_wait
+    fix_wait{"fix_wait<br/>¿PENDING?"} -->|"no"| publish_fix
+    fix_wait -.->|"sí: interrupt (wave)"| FIXPAUSE(["cola de fixes<br/>(fix-worker)"])
+    FIXPAUSE -.->|"resume: FixResolutions"| fix_wait
+    fix_wait -->|"FAILED con intentos"| fix_dispatch
+    publish_fix["publish_fix<br/>sugerencia verificada"] --> notify_fix
+    notify_fix["notify_fix<br/>Teams (breve)"] --> notify
     notify["notify<br/>Teams"] --> END([END])
 ```
 
@@ -101,8 +113,11 @@ flowchart TD
 | `merge` | Deduplica por `(fichero, línea, título)` y fusiona el mismo problema visto por dos personas con anclas cercanas; conserva la evidencia más rica. |
 | `policy` | Aplica `autonomy.yaml` y emite una `Decision` por hallazgo (con `matched_rule` y `policy_version`). |
 | `hitl` | Pausa durable con `interrupt` si hay decisiones pendientes; se reanuda con la decisión humana. |
-| `fix` | Fase 3. Para cada hallazgo **aprobado** con acción `fix_*`: lee el fichero al `head_sha`, pide un parche, lo valida y lo **verifica** en el sandbox. No-op si no hay candidatos. |
-| `publish` | Publica un comentario inline por hallazgo (hasta `max_inline_comments`) y un resumen general, con resolución segura de anclas. Si hubo fix verificado, el inline lleva el bloque de sugerencia. |
+| `fix_dispatch` | Fase 3-E7. Para cada hallazgo **aprobado** con acción `fix_*`: lee el fichero al `head_sha`, pide un parche y lo **valida localmente**. Deja `PENDING` (con el `VerifyJob`) o terminal — **sin** tocar el sandbox. No-op si no hay candidatos. |
+| `publish` | Publica un comentario inline por hallazgo (hasta `max_inline_comments`) y un resumen general, con resolución segura de anclas. Un `PENDING` se rotula "en verificación". |
+| `fix_wait` | Pausa con `FixWaitRequest` si queda algún `PENDING`; al reanudar aplica la `FixResolutions` (la wave resuelta por el `fix-worker`). Re-propone si un `FAILED` tiene intentos; si no, sigue a `publish_fix`. |
+| `publish_fix` | Publica el resultado terminal del fix en un comentario de seguimiento con marca `:fix` (una sola vez). |
+| `notify_fix` | Aviso breve en Teams del resultado del fix (Q3: nodo propio). |
 | `notify` | Aviso en Teams. Nodo aparte para que un fallo del canal no repita `publish`. |
 
 ## Flujo
@@ -129,7 +144,9 @@ Puerto `agent_review.ports.reviewer`:
   defecto cuando el perfil declara `checks.typecheck`.
 - `LlmReviewer` (`correctness`): propone hallazgos con un modelo y los valida
   contra el contrato; una línea inventada se descarta. **Opt-in**
-  (`LLM_REVIEWER_ENABLED`, `LLM_MODEL`). El proveedor es un puerto (`LlmPort`).
+  (`LLM_REVIEWER_ENABLED`). El proveedor es un puerto (`LlmPort`) y el modelo se
+  elige por **rol** en [`config/models.yaml`](config/models.yaml)
+  ([ADR-0015](docs/adr/0015-registro-declarativo-de-modelos.md)).
   Un fallo transitorio del modelo se reintenta en el nodo; si se agotan los
   intentos, o el fallo es permanente, la persona aporta 0 hallazgos y la review
   sigue.
@@ -211,11 +228,20 @@ reanudar con una decisión humana.
 **Fase 3 (fix + verificación) en curso.** La base pura (`F1`–`F6`) y el **runner**
 (`F7`–`F10`) están cerrados: un hallazgo aprobado con acción `fix_*` produce un
 parche, se valida localmente y se verifica en el servicio `sandbox-runner` con la
-imagen del CI por digest; solo si pasa se publica como sugerencia inline. Sigue
-**sin escribir** el repo. El runner es **síncrono** (`POST /verify` bloqueante con
-`run_key` idempotente). Falta el cierre (`F11`–`F13`: spike R1 real, smoke real,
-docs) y el desacople fuerte de E7. El smoke real depende de **P6** (revisión de
-seguridad), precondición para ejecutar código de PRs de terceros.
+imagen del CI por digest; solo si pasa se publica como sugerencia. Sigue **sin
+escribir** el repo. El runner es **síncrono** (`POST /verify` bloqueante con
+`run_key` idempotente).
+
+El **desacople fuerte (iniciativa `004-fase3-e7-desacople`)** está implementado: la
+verificación ya no vive en el worker de reviews. El worker propone, valida y
+**pausa** (`fix_wait`); un servicio `fix-worker` independiente consume la *wave*,
+llama al `sandbox-runner` y encola la reanudación con la resolución. El worker de
+reviews nunca toca el sandbox — desacople por cola, no por llamada. Ver
+[ADR-0011](docs/adr/0011-sandbox-runner-aislado.md) y `docs/arquitectura.md`.
+
+Falta el cierre (`F11`–`F13`: spike R1 real, smoke real, docs) — el smoke real
+depende de **P6** (revisión de seguridad), precondición para ejecutar código de PRs
+de terceros.
 
 ## Fix verificado (Fase 3, base pura)
 
@@ -239,6 +265,27 @@ clonar, aplicar el parche, `setup` con red donde haga falta (`composer install
 en el runner. El `run_key` lo hace idempotente: una reentrega tras una caída no
 lanza una segunda ejecución. La imagen se fija **por digest** (`ci_image_digest`
 del perfil); un tag mutable o su ausencia → `NOT_VERIFIABLE` sin ejecutar nada.
+
+### Handoff del fix (Fase 3-E7)
+
+Quien espera la verificación ya no es el worker de reviews. El flujo, por cola:
+
+1. `fix_dispatch` propone y **valida localmente** el parche; deja `PENDING` con un
+   `VerifyJob` por candidato (fichero + parche + recetas).
+2. `publish` publica los hallazgos y `fix_wait` **pausa** con la *wave*
+   (`FixWaitRequest`, `kind="fix"`), sin bloquear el worker.
+3. El `fix-worker` consume la wave de `reviews:fixes`, llama al `sandbox-runner`
+   por cada job y encola la reanudación en `reviews:jobs` con la `FixResolutions`.
+4. El worker de reviews reanuda, aplica la resolución y publica el seguimiento
+   (`publish_fix` + `notify_fix`). Un `FAILED` con intentos vuelve a `fix_dispatch`.
+
+**Idempotencia:** cada `run_key` se marca en `reviews:fixes:done` (set en Redis);
+una reentrega no relanza la verificación. El worker de reviews solo aplica una
+resolución cuyo `run_key` está entre los `PENDING` que espera. Si el runner o el
+`fix-worker` no responden, `sweep_fix_expired` reanuda con `outcome="error"` al
+vencer `FIX_VERIFY_TTL_S` (7200 s): el fix queda `NOT_VERIFIABLE` y publicado, nunca
+colgado. La pausa de fix se poda (`FixWaitRetention`, `FIX_WAIT_MAX_AGE_S`) cuando
+la review ya quedó publicada; las pausas `human` siguen intocables.
 
 ## Smoke real contra Bitbucket
 
