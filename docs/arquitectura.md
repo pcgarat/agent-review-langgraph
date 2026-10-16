@@ -98,7 +98,7 @@ src/agent_review/
 │                  read_workspace, runtime, recipes)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
-    paused_store.py checkpointer.py scope.py decision.py
+    paused_store.py checkpointer.py scope.py decision.py trace.py
 ```
 
 Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
@@ -383,7 +383,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D11 | **Worker secuencial** | La verificación de ~20 min ya no bloquea la cola: E7 desacopla por el `fix-worker` y un `interrupt`. Queda secuencial solo el resto del grafo (LLM, publicación). |
 | D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
-| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. La traza por review la aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
+| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. El **recorrido** de una review (nodos, orden y punto de parada) ya se lee del checkpointer con `trace.read_trace` ([019](iniciativas/019-panel-de-operacion/spec.md), peldaño 1); las trazas con prompt/`usage`/latencia por llamada las aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
 | D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |

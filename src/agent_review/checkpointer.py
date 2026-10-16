@@ -123,6 +123,47 @@ def build_checkpointer(
         return InMemorySaver(serde=build_serde())
 
 
+def build_reader_checkpointer(
+    database_url: str, *, connect_timeout_s: float = 10.0
+) -> BaseCheckpointSaver[Any] | None:
+    """Checkpointer de **solo lectura** para un proceso sin worker (OP2).
+
+    El `web` del panel (019) lee los checkpoints que escribe el worker, pero no
+    los crea ni compite por escritura: **sin** `setup()` (nada de DDL) y con un
+    pool minimo de una conexion, que basta para un lector y no abre hilos de mas
+    contra un Postgres que ya atiende al worker. Sin `DATABASE_URL` devuelve
+    `None` (no un saver en memoria): un panel sin la fuente real no inventa un
+    recorrido vacio, avisa de que no tiene datos.
+    """
+    if not database_url.strip():
+        return None
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    # `Any`: el tipo generico del pool no expone utilidad aqui y es el mismo
+    # patron que `build_checkpointer` (evita declarar el `DictRow` por duplicado).
+    pool: Any = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=1,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        check=ConnectionPool.check_connection,
+        timeout=connect_timeout_s,
+        open=True,
+    )
+    try:
+        pool.wait(timeout=connect_timeout_s)
+    except Exception:
+        try:
+            pool.close()
+        except Exception:  # pragma: no cover - cierre best effort
+            logger.debug("No se pudo cerrar el pool de lectura", exc_info=True)
+        raise
+    logger.info("Checkpointer de lectura listo (sin setup)")
+    return PostgresSaver(pool, serde=build_serde())
+
+
 class RetentionPolicy(Protocol):
     """Decide si el ultimo checkpoint de un hilo puede podarse.
 

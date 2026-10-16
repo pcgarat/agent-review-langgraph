@@ -169,6 +169,15 @@ Teams. **Nunca escribe en el repositorio revisado.**
 
 ---
 
+## Operación y lectura del estado (iniciativa 019)
+
+| Término | Definición |
+|---|---|
+| **Recorrido** (`ReviewTrace`) | Read model derivado del checkpointer: los nodos que **corrieron** una review, en su orden real, con el sello de cada uno, más el punto de parada (`next`), el estado del hilo (`completed`/`paused`/`in_progress`) y su `pause_kind`. Se reconstruye con `trace.read_trace(saver, thread_id)` desde la API pública del `BaseCheckpointSaver`, **sin** construir el grafo. No viaja por el estado del grafo. |
+| **Checkpointer de lectura** | `checkpointer.build_reader_checkpointer`: saver de Postgres **solo lectura** (sin `setup()`, pool de una conexión) para el proceso `web` del panel, que lee los checkpoints del worker sin crearlos ni competir por escritura. Sin `DATABASE_URL` devuelve `None`, no un saver en memoria. |
+
+---
+
 ## Fiabilidad
 
 | Término | Definición |

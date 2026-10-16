@@ -11,16 +11,22 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 1 — Recorrido (checkpoint C1)
 
-- [ ] **OP1** Módulo `src/agent_review/trace.py`: `read_trace(saver, thread_id)`
-  - Reconstruye el recorrido desde `get_state_history`: nodos ejecutados, orden real,
+- [x] **OP1** Módulo `src/agent_review/trace.py`: `read_trace(saver, thread_id)`
+  - Reconstruye el recorrido desde el checkpointer: nodos ejecutados, orden real,
     `next` pendiente y `writes` de cada paso.
   - Aceptación: un hilo completado y uno pausado devuelven el recorrido correcto.
-- [ ] **OP2** Checkpointer de **solo lectura** para un proceso sin worker
+  - Enmienda 2026-10-16: no usa `graph.get_state_history` (exigiría el grafo
+    compilado); reproduce su cálculo de `next` sobre la API del `saver`, que es lo
+    que permite leerlo desde el `web` sin construir el grafo (D1 del plan).
+- [x] **OP2** Checkpointer de **solo lectura** para un proceso sin worker
   - `build_reader_checkpointer`, con pool pequeño y **sin** `setup()`: el `web` lee
     los checkpoints que escribe el worker, no crea tablas ni compite por escritura.
-- [ ] **OP3** Modelo de salida del recorrido en el dominio (nodos, orden, punto de
+- [x] **OP3** Modelo de salida del recorrido en el dominio (nodos, orden, punto de
   parada, pausa si la hay), añadido a `checkpointer._STATE_TYPES` si viaja por estado.
-- [ ] **OP4** Test de `read_trace`: hilo completado, hilo pausado y hilo a medias.
+  - Enmienda 2026-10-16: es un **read model** derivado (`domain/trace.py`); no viaja
+    por el estado del grafo, así que **no** entra en `_STATE_TYPES` y `test_trace` fija
+    esa frontera.
+- [x] **OP4** Test de `read_trace`: hilo completado, hilo pausado y hilo a medias.
 
 ## Bloque 2 — Progreso del worker (checkpoint C2)
 

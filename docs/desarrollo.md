@@ -48,6 +48,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Grafo y publicación | `test_graph`, `test_scope`, `test_e2e_tooling` |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver) |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
@@ -118,7 +119,20 @@ Antes de invertir aquí, recuerda que la ingesta es un puente desechable
 ### Un tipo nuevo en el estado del grafo
 
 Añádelo a `checkpointer._STATE_TYPES`. Si no, la reanudación de un hilo pausado
-depende del msgpack permisivo.
+depende del msgpack permisivo. Los **read models** derivados (como el recorrido de
+019, `domain/trace.py`) no van aquí: no viajan por el estado.
+
+### Leer el recorrido de una review (sin grafo)
+
+`trace.read_trace(saver, thread_id)` (`src/agent_review/trace.py`) reconstruye del
+checkpointer qué nodos corrieron, en qué orden y dónde está parada la review. Es
+intencionadamente independiente del grafo compilado (D1 de la iniciativa 019): se
+apoya solo en `BaseCheckpointSaver.list` y en la convención de LangGraph para las
+aristas de salida (`branch:to:<nodo>` y los `Send` del fan-out en `__pregel_tasks`).
+El proceso que lo consume construye su saver con
+`checkpointer.build_reader_checkpointer` (solo lectura, sin `setup()`), nunca con el
+`build_checkpointer` del worker. Si LangGraph cambia esa convención, lo delata
+`tests/test_trace.py::test_recorrido_coincide_con_get_state_history`.
 
 ### Un lector de contexto nuevo
 
