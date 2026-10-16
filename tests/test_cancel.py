@@ -245,6 +245,34 @@ def test_cancelled_borra_el_hilo_no_reencola_y_limpia_el_inbox() -> None:
     assert paused.get(request.review_key) is None, "el inbox queda limpio"
 
 
+def test_un_comando_cancelled_no_reanuda_la_pausa_y_borra_el_hilo() -> None:
+    """OP29/OP30: la marca sola no basta en una pausa; el comando la aborta al desencolar."""
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7")
+    saver = InMemorySaver()
+    _seed_thread(saver, request.thread_id)
+
+    paused = InMemoryPausedStore()
+    paused.pause(request, _approval(request), kind=PauseKind.HUMAN)
+
+    def node(state: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("una review cancelada no debe reanudar el grafo")
+
+    builder: StateGraph[dict[str, object]] = StateGraph(dict[str, object])
+    builder.add_node("scope", node)
+    builder.add_edge(START, "scope")
+    builder.add_edge("scope", END)
+    graph = builder.compile(checkpointer=saver)
+
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue, graph, request.model_copy(update={"cancelled": True}), max_attempts=3, paused=paused
+    )
+
+    assert saver.get_tuple({"configurable": {"thread_id": request.thread_id}}) is None
+    assert paused.get(request.review_key) is None
+    assert queue.dequeue() is None
+
+
 def test_cancelled_retira_la_marca_al_abortar() -> None:
     """El worker consume la marca: sin retirarla, la review quedaría cancelada para siempre."""
     request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7")

@@ -1123,8 +1123,15 @@ def _consume(
     esto es la garantía de que la review no deja una marca colgando.
 
     Una `Cancelled` (019 OP28) no reencola: borra el hilo del checkpointer, limpia el
-    inbox de pausas y, si `cancel` está, retira la marca.
+    inbox de pausas y, si `cancel` está, retira la marca. Una review **ya cancelada**
+    (marca puesta o comando encolado, OP29) se aborta antes de tocar el grafo: la
+    marca sola no basta en una pausa, donde no hay frontera de nodo que la mire.
     """
+    # Cancelacion previa al trabajo: el worker bloqueado en `graph.invoke` no procesa
+    # un job de cancelacion, y una pausa no pasa por ninguna frontera de nodo.
+    if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
+        _on_cancelled(graph, request, paused=paused, cancel=cancel)
+        return
     try:
         process_request(
             graph,
@@ -1135,11 +1142,6 @@ def _consume(
             fix_queue=fix_queue,
             fix_ttl_s=fix_ttl_s,
         )
-        # Frontera de nodo (OP27) o comando encolado para una pausa (OP29): con la
-        # marca o el marcador, la review se aborta sin publicar.
-        if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
-            _on_cancelled(graph, request, paused=paused, cancel=cancel)
-            return
     except Cancelled:
         # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
         # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo

@@ -85,8 +85,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
   bearer compartido.
 - [x] **OP23** Test: con `on_line` el `VerifyReport` es idéntico; el timeout y la
   destrucción del contenedor no cambian.
-- [ ] **OP24** Proxy SSE en el `web` y vista de consola en vivo en la UI.
-- [x] **OP25** Test: `404` si el `run_key` no está en el buffer; un reinicio del
+- [x] **OP24** Proxy SSE en el `web` y vista de consola en vivo en la UI.- [x] **OP25** Test: `404` si el `run_key` no está en el buffer; un reinicio del
   runner pierde el buffer y no altera el informe.
 
 ## Bloque 5 — Comandos (checkpoint C5)
@@ -99,20 +98,20 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
   limpia el inbox y **no** reencola (D5 del plan)
   - Borrar el hilo es la guarda durable: un hilo abortado con `next` no vacío se
     reanudaría en una reentrega.
-  - Nota 2026-10-16: el chequeo de la marca se instala en el *seam* de nodo desde el
-    *composition root* (`set_cancel_check` en `graph/wrapper.py`, llamado por
-    `build_runtime`), porque `build_graph` no conoce Redis. Sin chequeo instalado, la
-    frontera no consulta nada y el sistema se comporta igual que antes.
-- [ ] **OP29** Endpoint `POST /reviews/{key}/cancel` (rol `operador`), que pone la
+  - Nota 2026-10-16: el chequeo de la marca viaja como parámetro (`build_graph(..., cancel=...)`
+    → `node_wrapper(..., cancel=...)`), igual que el puerto de progreso, en vez de un estado
+    global de módulo: `build_graph` no conoce Redis, pero recibe un callable, no infraestructura.
+    Sin chequeo, la frontera no consulta nada y el sistema se comporta igual que antes (W2).
+- [x] **OP29** Endpoint `POST /reviews/{key}/cancel` (rol `operador`), que pone la
   marca y encola el comando.
-- [ ] **OP30** Semántica por estado: antes de publicar → cancelación limpia; después →
+- [x] **OP30** Semántica por estado: antes de publicar → cancelación limpia; después →
   solo «cancelar lo pendiente» (spec §5.4).
-- [ ] **OP31** Endpoint `POST /reviews/{key}/retry`: reencola un descarte de la DLQ
+- [x] **OP31** Endpoint `POST /reviews/{key}/retry`: reencola un descarte de la DLQ
   con `attempts=0`.
-- [ ] **OP32** Endpoint `POST /reviews/{key}/resume`: reencola el `request` de una
+- [x] **OP32** Endpoint `POST /reviews/{key}/resume`: reencola el `request` de una
   pausa (lo que hace una decisión, sin decisión).
 - [x] **OP33** UI de comandos: botones según el estado, con el **actor** auditado.
-- [ ] **OP34** Tests por estado: cancelar antes/después de publicar, reintentar un
+- [x] **OP34** Tests por estado: cancelar antes/después de publicar, reintentar un
   descarte, reanudar, y que `Cancelled` **no** se reintenta.
 - [ ] **OP35** *(Humana)* Decidir y asignar **quién** puede cancelar (Q4 de la spec);
   sin esto el bloque no se cierra.
