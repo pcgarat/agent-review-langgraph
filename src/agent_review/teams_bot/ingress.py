@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_review.domain.models import ApprovalRequest, DecisionOutcome
-from agent_review.domain.paused import PauseKind
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.paused_store import PausedStore
 from agent_review.teams_bot.card_service import DecisionCardService
 from agent_review.teams_bot.cards import (
@@ -99,9 +99,10 @@ class CardIngress:
         return None
 
     def _mark(self, review_key: str, data: dict[str, Any], *, user_id: str) -> CardUpdate:
-        approval = self._human_approval(review_key)
-        if approval is None:
+        paused = self._human_pause(review_key)
+        if paused is None:
             return CardUpdate(notice=_GONE)
+        approval = paused.human_request
         outcome = _outcome(data.get("outcome"))
         if outcome is None:
             logger.warning("Marca sin outcome valido para %s: %s", review_key, data)
@@ -111,13 +112,15 @@ class CardIngress:
             user_id=user_id,
             finding_id=str(data.get("finding_id", "")),
             outcome=outcome,
+            pause=paused.pause_id,
         )
         return CardUpdate(card=card)
 
     async def _submit(self, review_key: str, *, user_id: str, actor: str) -> CardUpdate:
-        approval = self._human_approval(review_key)
-        if approval is None:
+        paused = self._human_pause(review_key)
+        if paused is None:
             return CardUpdate(notice=_GONE)
+        approval = paused.human_request
         outcome = self._submitter.submit(review_key, user_id=user_id, actor=actor)
         if outcome.status is SubmitStatus.ENQUEUED:
             decided = render_decided_card(approval, actor=actor)
@@ -133,7 +136,7 @@ class CardIngress:
         if outcome.status is SubmitStatus.INCOMPLETE:
             # Vuelve la tarjeta con lo marcado y el aviso de que falta algo.
             return CardUpdate(
-                card=self._cards.render(approval, user_id=user_id),
+                card=self._cards.render(approval, user_id=user_id, pause=paused.pause_id),
                 notice=outcome.reason or "Faltan hallazgos por decidir",
             )
         return CardUpdate(
@@ -156,8 +159,8 @@ class CardIngress:
         except Exception as exc:  # noqa: BLE001 - repintar no puede tumbar la decision
             logger.warning("No se pudo editar la tarjeta de %s: %s", review_key, exc)
 
-    def _human_approval(self, review_key: str) -> ApprovalRequest | None:
-        """La `ApprovalRequest` de la pausa, o `None` si no es una pausa humana.
+    def _human_pause(self, review_key: str) -> PausedReview | None:
+        """La pausa humana vigente de `review_key`, o `None` si no la hay.
 
         El bot lee el inbox para **aplicar** la accion (spec §5.2), no para pintar
         la tarjeta (esa la trae el aviso: C12). Un fallo de Redis no se confunde con
@@ -167,7 +170,7 @@ class CardIngress:
         if paused is None or paused.kind is not PauseKind.HUMAN:
             logger.info("Accion sobre %s ignorada: no es una pausa humana vigente", review_key)
             return None
-        return paused.human_request
+        return paused
 
 
 def _outcome(raw: object) -> DecisionOutcome | None:

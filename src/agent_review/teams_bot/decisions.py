@@ -8,10 +8,12 @@ solo es un cliente mas del canal de decision (C4).
 
 La **primera decision es final** (C11) y se sella con `CardStore.close`, cuyo
 `SETNX` en Redis es el mutex: dos personas pulsando Enviar a la vez no encolan dos
-reanudaciones; la que no gana ve la tarjeta ya decidida. Si el encolado falla tras
-ganar el sello, se suelta (`release`) para que la persona pueda reintentar en
-Teams: sin la vuelta atras, un fallo transitorio de Redis dejaria la tarjeta
-cerrada y la decision sin llegar a la cola.
+reanudaciones; la que no gana ve la tarjeta ya decidida. El sello es de **la pausa**
+(`PausedReview.pause_id`), no del `review_key`: la pasada degradada y la completa
+comparten `review_key`, y decidir una no debe cerrar la tarjeta de la siguiente.
+Si el encolado falla tras ganar el sello, se suelta (`release`) para que la
+persona pueda reintentar en Teams: sin la vuelta atras, un fallo transitorio de
+Redis dejaria la tarjeta cerrada y la decision sin llegar a la cola.
 """
 
 from __future__ import annotations
@@ -90,7 +92,8 @@ class DecisionSubmitter:
                 reason="La pausa no admite decision humana (espera verificacion de fixes)",
             )
 
-        decided_by = self._cards.final(review_key)
+        pause = paused.pause_id
+        decided_by = self._cards.final(review_key, pause=pause)
         if decided_by is not None:
             return SubmitOutcome(SubmitStatus.ALREADY_DECIDED, actor=decided_by)
 
@@ -108,15 +111,16 @@ class DecisionSubmitter:
 
         # Sello de C11 *antes* de encolar: si dos personas pulsan a la vez, la
         # primera gana el `SETNX` y solo ella encola.
-        if not self._cards.close(review_key, actor=actor):
+        if not self._cards.close(review_key, actor=actor, pause=pause):
             return SubmitOutcome(
-                SubmitStatus.ALREADY_DECIDED, actor=self._cards.final(review_key) or actor
+                SubmitStatus.ALREADY_DECIDED,
+                actor=self._cards.final(review_key, pause=pause) or actor,
             )
         request = paused.request.model_copy(update={"decision": decision})
         try:
             self._queue.enqueue(request)
         except Exception:
-            self._cards.release(review_key)
+            self._cards.release(review_key, pause=pause)
             raise
         logger.info(
             "Decision encolada desde Teams para %s: %d hallazgo(s), actor=%s",

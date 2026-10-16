@@ -522,6 +522,40 @@ def test_replay_aborta_si_cambia_el_max_findings() -> None:
         llm.complete(system="S", prompt="DIFF:\nx", max_tokens=2048)
 
 
+def test_replay_aborta_si_cambia_el_esquema_de_salida() -> None:
+    """E4: otro `response_schema` cambia lo que el modelo devolveria; no se reutiliza."""
+    case = _case()
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    record_call(
+        recording,
+        role="correctness",
+        system="S",
+        prompt="DIFF:\nx",
+        max_tokens=4096,
+        reply=LlmReply(text='{"findings": []}'),
+        json_mode="json_schema",
+        response_schema={"type": "object", "properties": {"findings": {}}},
+    )
+    llm = ReplayLlm(recording, case, role="correctness")
+
+    with pytest.raises(FingerprintMismatch):
+        llm.complete(
+            system="S",
+            prompt="DIFF:\nx",
+            max_tokens=4096,
+            json_mode="json_schema",
+            response_schema={"type": "object", "properties": {"hallazgos": {}}},
+        )
+
+
+def test_replay_aborta_si_cambia_el_modo_json() -> None:
+    case = _case()
+    llm = ReplayLlm(_recording(case, role="correctness"), case, role="correctness")
+
+    with pytest.raises(FingerprintMismatch):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096, json_mode="json_object")
+
+
 def test_replay_aborta_si_el_caso_es_distinto() -> None:
     case = _case()
     other = Case(

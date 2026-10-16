@@ -6,7 +6,10 @@ estado es por usuario: dos personas marcan en paralelo sin pisarse y cada una ve
 lo suyo. La verdad durable sigue siendo el checkpoint del grafo; esto es estado
 de UI y puede perderse (se cae a "nada marcado", no a un estado corrupto).
 
-Clave: `reviews:teams:card:<review_key>` -> hash `user_id -> outcome`.
+Claves: `reviews:teams:card:<review_key>` -> hash `user_id|finding_id -> outcome`,
+y el sello de C11 en `reviews:teams:card:<review_key>:final[:<pause_id>]`. El sello
+se ancla a la **pausa** (`PausedReview.pause_id`), no solo al `review_key`: varias
+pausas comparten `review_key`, y un sello de la anterior bloquearia la siguiente.
 """
 
 from __future__ import annotations
@@ -39,21 +42,17 @@ class CardStore(Protocol):
         self, review_key: str, *, user_id: str, finding_id: str, outcome: DecisionOutcome
     ) -> None: ...
 
-    def final(self, review_key: str) -> str | None:
-        """Quien decidio primero (C11), o `None` si la decision sigue abierta."""
+    def final(self, review_key: str, *, pause: str = "") -> str | None:
+        """Quien decidio primero esta pausa (C11), o `None` si sigue abierta."""
         ...
 
-    def close(self, review_key: str, *, actor: str) -> bool:
+    def close(self, review_key: str, *, actor: str, pause: str = "") -> bool:
         """Sella la decision. `True` si esta llamada gano (la primera es final, C11)."""
         ...
 
-    def release(self, review_key: str) -> None:
+    def release(self, review_key: str, *, pause: str = "") -> None:
         """Deshace un sello cuyo encolado fallo, para no perder la decision."""
         ...
-
-
-def card_key(review_key: str) -> str:
-    return f"{CARD_KEY_PREFIX}:{review_key}"
 
 
 _FINAL_SUFFIX = ":final"
@@ -86,8 +85,8 @@ class RedisCardStore:
     def _key(self, review_key: str) -> str:
         return f"{self._prefix}:{review_key}"
 
-    def _final_key(self, review_key: str) -> str:
-        return f"{self._key(review_key)}{_FINAL_SUFFIX}"
+    def _final_key(self, review_key: str, pause: str) -> str:
+        return f"{self._key(review_key)}{_FINAL_SUFFIX}{_pause_suffix(pause)}"
 
     def marks(self, review_key: str, *, user_id: str) -> dict[str, DecisionOutcome]:
         raw = self._client.hgetall(self._key(review_key))
@@ -102,21 +101,22 @@ class RedisCardStore:
         pipe.expire(self._key(review_key), self._ttl_s)
         pipe.execute()
 
-    def final(self, review_key: str) -> str | None:
-        raw = self._client.get(self._final_key(review_key))
+    def final(self, review_key: str, *, pause: str = "") -> str | None:
+        raw = self._client.get(self._final_key(review_key, pause))
         if raw is None:
             return None
         return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
-    def close(self, review_key: str, *, actor: str) -> bool:
+    def close(self, review_key: str, *, actor: str, pause: str = "") -> bool:
         """Marca la tarjeta como decidida. `SETNX`: gana la primera decision.
 
         El booleano es la guarda de C11: quien no gana no debe encolar la suya.
         """
-        return bool(self._client.set(self._final_key(review_key), actor, ex=self._ttl_s, nx=True))
+        key = self._final_key(review_key, pause)
+        return bool(self._client.set(key, actor, ex=self._ttl_s, nx=True))
 
-    def release(self, review_key: str) -> None:
-        self._client.delete(self._final_key(review_key))
+    def release(self, review_key: str, *, pause: str = "") -> None:
+        self._client.delete(self._final_key(review_key, pause))
 
 
 class InMemoryCardStore:
@@ -140,17 +140,22 @@ class InMemoryCardStore:
     ) -> None:
         self._marks.setdefault(review_key, {})[f"{user_id}|{finding_id}"] = outcome.value
 
-    def final(self, review_key: str) -> str | None:
-        return self._final.get(review_key)
+    def final(self, review_key: str, *, pause: str = "") -> str | None:
+        return self._final.get(f"{review_key}{_pause_suffix(pause)}")
 
-    def close(self, review_key: str, *, actor: str) -> bool:
-        if review_key in self._final:
+    def close(self, review_key: str, *, actor: str, pause: str = "") -> bool:
+        key = f"{review_key}{_pause_suffix(pause)}"
+        if key in self._final:
             return False
-        self._final[review_key] = actor
+        self._final[key] = actor
         return True
 
-    def release(self, review_key: str) -> None:
-        self._final.pop(review_key, None)
+    def release(self, review_key: str, *, pause: str = "") -> None:
+        self._final.pop(f"{review_key}{_pause_suffix(pause)}", None)
+
+
+def _pause_suffix(pause: str) -> str:
+    return f":{pause}" if pause else ""
 
 
 def _parse_marks(

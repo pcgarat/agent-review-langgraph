@@ -102,7 +102,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
 | Alcance | `SCOPE_IGNORE` (patrones extra, separados por comas) |
 | Política | `AUTONOMY_CONFIG`, `REPO_PROFILE_CONFIG`, `MAX_AUTONOMY_OVERRIDE` (solo puede bajar el techo) |
-| Canal (Teams) | `TEAMS_ENABLED` (declara el canal), `TEAMS_NOTICES_KEY` (`reviews:notices`), `TEAMS_BOT_ID` / `_TENANT_ID` / `_TOKEN` (identidad del bot), `TEAMS_BOT_PORT` (3978), `TEAMS_BOT_SHARED_SECRET` (bearer de `/healthz`), `TEAMS_BOT_POLL_S` (5) |
+| Canal (Teams) | `TEAMS_ENABLED` (declara el canal), `TEAMS_NOTICES_KEY` (`reviews:notices`), `TEAMS_BOT_ID` / `_TENANT_ID` / `_TOKEN` (identidad del bot; el tenant también filtra las acciones de tarjeta, §5), `TEAMS_BOT_PORT` (3978), `TEAMS_BOT_SHARED_SECRET` (bearer de `/healthz`), `TEAMS_BOT_POLL_S` (5) |
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
@@ -250,6 +250,13 @@ Las acciones de la tarjeta (`Action.Execute` / fallback `Action.Submit`) llegan 
 `/api/messages`, se traducen a marcas o a una `HitlDecision` con `build_decision` y
 se **encolan** en `reviews:jobs`. El bot no reanuda el grafo.
 
+Solo se aceptan acciones que vengan del **canal capturado** (`reviews:teams:channel`)
+y, si `TEAMS_BOT_TENANT_ID` está fijado, de ese tenant. Las demás reciben «Esta
+conversación no es el canal de decisión de las reviews.». El canal es la primera
+conversación (no personal) que ve el bot; si el bot está en otra, se registra y se
+ignora. Para mover el canal: `redis-cli DEL reviews:teams:channel` y una actividad
+del bot en el canal nuevo.
+
 ---
 
 ## 6. Verificación
@@ -293,6 +300,8 @@ firma inválida o ausente da `401`.
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
 | No llegan avisos a Teams | `teams-bot` caído, sin canal capturado (C14) o `TEAMS_ENABLED=false` | `docker compose logs -f teams-bot`; `LLEN reviews:notices` (la outbox acumula); instalar el bot en el canal dedicado (T10) |
 | La tarjeta no reanuda y el CLI sí | Acción no llegó al ingress o JWT inválido | Mirar `401` en `/api/messages`; el CLI/HTTP es el respaldo (C9) |
+| La tarjeta responde «no es el canal de decisión» | La acción viene de otra conversación o de otro tenant, o aún no hay canal capturado | Buscar `Accion de tarjeta de … rechazada` en los logs del bot; `GET reviews:teams:channel` dice cuál es el canal. Si está mal, ver §5 (mover el canal) |
+| Aviso perdido en la outbox | Payload ilegible (no valida como `ChatNotice`) | Está en `reviews:notices:dead` con el texto en `raw` |
 
 Fallos históricos que solo afloraron con Docker y ya están corregidos:
 

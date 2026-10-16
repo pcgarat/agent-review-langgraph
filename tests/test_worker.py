@@ -795,6 +795,72 @@ def test_una_outbox_caida_no_tumba_la_pausa() -> None:
     assert paused_store.get(request.review_key) is not None, "la pausa queda registrada igual"
 
 
+class _RaisingChat:
+    """`ChatPort` cuyo aviso de pausa falla con la excepcion dada."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def notify(self, **_kwargs: object) -> None:
+        return None
+
+    def notify_decision_pending(self, **_kwargs: object) -> None:
+        raise self._exc
+
+
+def test_un_fallo_permanente_del_aviso_de_pausa_no_tumba_la_pausa() -> None:
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused_store = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    graph = _hitl_graph(FakeVcs(), _CountingReviewer(_escalating_finding()))
+
+    outcome = process_request(
+        graph, request, paused=paused_store, chat=_RaisingChat(ValueError("payload"))
+    )
+
+    assert outcome.paused
+    assert paused_store.get(request.review_key) is not None
+
+
+def test_un_fallo_transitorio_del_aviso_de_pausa_reintenta_el_job() -> None:
+    from agent_review.errors import TransientError
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused_store = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    graph = _hitl_graph(FakeVcs(), _CountingReviewer(_escalating_finding()))
+
+    with pytest.raises(TransientError):
+        process_request(
+            graph, request, paused=paused_store, chat=_RaisingChat(TransientError("canal"))
+        )
+
+    assert paused_store.get(request.review_key) is not None, "la pausa se registro antes"
+
+
+def test_sin_teams_no_hay_canal() -> None:
+    from agent_review.worker.main import build_chat
+
+    assert build_chat(Settings(teams_enabled=False)) is None
+
+
+@pytest.mark.parametrize("redis_up", [True, False])
+def test_con_teams_la_outbox_es_la_de_redis_aunque_redis_este_caido(
+    monkeypatch: pytest.MonkeyPatch, redis_up: bool
+) -> None:
+    """Una outbox en memoria perderia todos los avisos hasta reiniciar el worker."""
+    from agent_review.chat_outbox import OutboxChatAdapter, RedisChatOutbox
+    from agent_review.worker.main import build_chat
+
+    monkeypatch.setattr(RedisChatOutbox, "available", lambda self: redis_up)
+
+    chat = build_chat(Settings(teams_enabled=True, redis_url="redis://localhost:6399/0"))
+
+    assert isinstance(chat, OutboxChatAdapter)
+    assert isinstance(chat._outbox, RedisChatOutbox)
+
+
 def test_resume_borra_la_pausa_del_inbox() -> None:
     from agent_review.paused_store import InMemoryPausedStore
 

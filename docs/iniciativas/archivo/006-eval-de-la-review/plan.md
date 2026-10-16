@@ -94,5 +94,5 @@ primero, el caso después, la grabación luego, y los docs al final.
 - La corrida real (`eval-live`/`eval-record`) necesita credenciales del proveedor: es
   la única parte que no corre en CI, y es opt-in.
 - La cobertura exacta depende del `ReviewCoverage` de
-  [012](../012-cobertura-de-la-review/spec.md); hasta entonces E11 da la cota fiel de
+  [012](../../012-cobertura-de-la-review/spec.md); hasta entonces E11 da la cota fiel de
   lo que vio el modelo.

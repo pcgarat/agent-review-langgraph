@@ -7,6 +7,12 @@ drenado (C13) y el despacho por `kind`, no el SDK. La outbox es la real
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+
+import pytest
+
 from agent_review.chat_outbox import InMemoryChatOutbox
 from agent_review.domain.models import (
     ApprovalRequest,
@@ -129,7 +135,7 @@ async def test_un_aviso_publicado_deja_el_texto_en_el_hilo() -> None:
         )
     )
 
-    processed = await service.drain()
+    processed, _ = await service.drain()
 
     assert processed == 1
     assert len(client.sends) == 1, "el primer aviso abre el hilo raiz"
@@ -188,7 +194,7 @@ async def test_un_aviso_de_pausa_vencida_se_descarta_sin_publicar() -> None:
     service, outbox, client, _ = _services(paused=InMemoryPausedStore())
     outbox.enqueue(_pause_notice("cqm/emotivoo-v2:7:abc"))
 
-    processed = await service.drain()
+    processed, _ = await service.drain()
 
     assert processed == 1, "el aviso se proceso (descartado), no se reintenta"
     assert client.sends == []
@@ -222,7 +228,7 @@ async def test_sin_canal_capturado_el_aviso_vuelve_a_la_cola() -> None:
     notice = ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, title="t", body="b")
     outbox.enqueue(notice)
 
-    processed = await service.drain()
+    processed, _ = await service.drain()
 
     assert processed == 0
     assert client.sends == []
@@ -261,3 +267,132 @@ async def test_dispatch_devuelve_el_resultado() -> None:
     notice = ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, title="t", body="b")
 
     assert await service.dispatch(notice) is DispatchResult.DEFERRED
+
+
+async def test_sin_canal_el_drenado_se_aplaza_y_conserva_el_orden() -> None:
+    """C14: el aviso vuelve a la **cabeza** de la cola; el bucle espera, no gira."""
+    service, outbox, client, _ = _services(with_channel=False)
+    first = ChatNotice(kind="published", review_key="k1", repo="r", pr_id=1, title="t", body="b")
+    second = ChatNotice(kind="published", review_key="k2", repo="r", pr_id=2, title="t", body="b")
+    outbox.enqueue(first)
+    outbox.enqueue(second)
+
+    processed, deferred = await service.drain()
+
+    assert (processed, deferred) == (0, True)
+    assert client.sends == []
+    head = outbox.dequeue()
+    assert head is not None and head.review_key == "k1", "el aplazado no pierde su turno"
+
+
+async def test_un_aplazado_hace_esperar_poll_s_al_bucle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sin destino, el bucle espera `poll_s` entre vueltas en vez de 100 ms."""
+    service, outbox, _, _ = _services(with_channel=False)
+    outbox.enqueue(
+        ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, title="t", body="b")
+    )
+    sleeps: list[float] = []
+
+    async def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("agent_review.teams_bot.service.asyncio.sleep", _sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await service.run_forever()
+
+    assert sleeps == [0.01], "espera poll_s (0.01 en el harness), no el idle corto"
+    assert len(outbox) == 1
+
+
+async def test_la_espera_del_poll_no_bloquea_el_bucle_de_eventos() -> None:
+    """El `BLPOP` es sincrono: corre en un hilo para no congelar el endpoint."""
+    release = threading.Event()
+
+    class _BlockingOutbox(InMemoryChatOutbox):
+        def dequeue(self, *, timeout_s: float = 5.0) -> ChatNotice | None:
+            release.wait(timeout=2)
+            return None
+
+    channel_store = InMemoryChannelStore()
+    service = TeamsBotService(
+        outbox=_BlockingOutbox(),
+        transport=ChannelTransport(client=FakeChannel(), store=channel_store),
+        paused=InMemoryPausedStore(),
+        poll_s=0.01,
+    )
+    drain = asyncio.create_task(service.drain())
+    started = time.monotonic()
+    await asyncio.sleep(0.05)  # otra corrutina (el endpoint) sigue avanzando
+    elapsed = time.monotonic() - started
+    release.set()
+    await drain
+
+    assert elapsed < 0.5, "el bucle siguio vivo mientras el poll esperaba"
+
+
+class _DownPausedStore(InMemoryPausedStore):
+    """Inbox que no responde: `RedisPausedStore` con Redis caido."""
+
+    def available(self) -> bool:
+        return False
+
+
+async def test_con_el_inbox_caido_una_pausa_se_aplaza_y_no_se_descarta() -> None:
+    """C13 solo descarta lo que *sabe* vencido; un inbox caido no es "no pausada"."""
+    service, outbox, client, _ = _services(paused=_DownPausedStore())
+    outbox.enqueue(_pause_notice("cqm/emotivoo-v2:7:abc"))
+
+    processed, deferred = await service.drain()
+
+    assert (processed, deferred) == (0, True)
+    assert outbox.dead_letter_count == 0, "una tarjeta viva no va a la DLQ"
+    assert len(outbox) == 1
+    assert client.sends == []
+
+
+async def test_un_fallo_inesperado_al_despachar_no_pierde_el_aviso() -> None:
+    service, outbox, _, _ = _services()
+    outbox.enqueue(
+        ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, title="t", body="b")
+    )
+
+    async def _boom(notice: ChatNotice) -> DispatchResult:
+        raise RuntimeError("bug")
+
+    service.dispatch = _boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await service.drain()
+
+    assert len(outbox) == 1, "el aviso sacado vuelve a la cola"
+
+
+def test_un_aviso_ilegible_va_en_crudo_a_la_dlq() -> None:
+    outbox = InMemoryChatOutbox()
+    outbox._items.append('{"kind": "otro"}')
+
+    assert outbox.dequeue() is None
+    assert outbox.dead_letter_count == 1
+    assert outbox.dead_letters()[0]["raw"] == '{"kind": "otro"}'
+
+
+async def test_un_raiz_publicado_sin_id_no_se_vuelve_a_publicar() -> None:
+    """Si el SDK no devuelve el id, el mensaje ya salio: reintentarlo lo duplicaria."""
+
+    class _NoIdChannel(FakeChannel):
+        async def send(  # type: ignore[override]
+            self, conversation_id: str, payload: object, *, service_url: str = ""
+        ) -> str | None:
+            self.sends.append(payload)
+            return None
+
+    service, outbox, client, _ = _services(channel=_NoIdChannel())
+    outbox.enqueue(
+        ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, title="t", body="b")
+    )
+
+    processed, deferred = await service.drain()
+
+    assert (processed, deferred) == (1, False)
+    assert len(client.sends) == 1
+    assert len(outbox) == 0

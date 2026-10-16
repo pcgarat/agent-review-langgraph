@@ -301,7 +301,7 @@ async def test_e2e_tarjeta_reanuda_y_avisa_sin_duplicar() -> None:
     assert len(outbox) == 1
 
     # 2) El bot consume el aviso y publica la tarjeta en el hilo del PR.
-    assert await bot.service.drain() == 1
+    assert await bot.service.drain() == (1, False)
     assert len(bot.channel.sends) == 1
     card = bot.channel.sends[0]
     assert card["type"] == "AdaptiveCard"
@@ -340,7 +340,7 @@ async def test_e2e_tarjeta_reanuda_y_avisa_sin_duplicar() -> None:
     assert len(outbox) == 1, "el aviso de review publicada espera al bot"
 
     # 5) El bot publica el aviso como reply del mismo hilo; una reentrega no duplica.
-    assert await bot.service.drain() == 1
+    assert await bot.service.drain() == (1, False)
     assert len(bot.channel.sends) == 1, "no se abre otro hilo"
     assert len(bot.channel.replies) == 1
     assert "Review de cqm/emotivoo-v2#3" in bot.channel.replies[0]
@@ -364,7 +364,7 @@ async def test_e2e_con_el_bot_caido_el_aviso_se_publica_al_arrancar() -> None:
     assert len(outbox) == 1
     assert bot.channel.sends == [], "el bot aún no ha consumido"
 
-    assert await bot.service.drain() == 1
+    assert await bot.service.drain() == (1, False)
     assert len(bot.channel.sends) == 1
     assert bot.channel.sends[0]["type"] == "AdaptiveCard"
     assert len(outbox) == 0
@@ -393,7 +393,7 @@ async def test_e2e_aviso_de_pausa_vencida_no_genera_tarjeta(monkeypatch) -> None
     assert paused.get(request.review_key) is None
     assert len(outbox) == 2, "queda el aviso de pausa vencido + el de review publicada"
 
-    processed = await bot.service.drain()
+    processed, _ = await bot.service.drain()
     assert processed == 2
     assert outbox.dead_letter_count == 1
     assert "ya no esta vigente" in str(outbox.dead_letters()[0]["reason"])
@@ -434,7 +434,7 @@ async def test_e2e_cli_con_el_bot_caido_reanuda_con_normalidad(monkeypatch) -> N
     assert "Decision: aprobado · bob" in vcs.inlines[0]
 
     # El bot arranca después: descarta la pausa vencida y publica el aviso de review.
-    assert await bot.service.drain() == 2
+    assert await bot.service.drain() == (2, False)
     assert outbox.dead_letter_count == 1
     assert len(bot.channel.sends) == 1
     assert isinstance(bot.channel.sends[0], str)

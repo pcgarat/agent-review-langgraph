@@ -15,7 +15,7 @@
 
 ## 1. Objetivo
 
-La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó **6
+La auditoría del PR #3 ([006 §3.1](../archivo/006-eval-de-la-review/spec.md)) dejó **6
 falsos positivos** de 9 publicados y 1 fallo real descrito **invertido**. El revisor LLM (`LlmReviewer`) recibe solo el diff recortado y aun así afirma sobre
 código que no ve: rellena el hueco con semántica inventada. Dos formas concretas de
 ese defecto son el objetivo directo de este trabajo:
@@ -56,7 +56,7 @@ Se quiere, por tanto:
 - **El contrato de los campos.** `failure_scenario`, `verification` y
   `verification_evidence` los define [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md).
   Esta iniciativa los **consume**; no los rediseña.
-- **La medida.** Precisión y recall se miden con [006 — eval de la review](../006-eval-de-la-review/spec.md);
+- **La medida.** Precisión y recall se miden con [006 — eval de la review](../archivo/006-eval-de-la-review/spec.md);
   aquí solo se exponen los datos que esa medida necesita.
 - **Las capas L0/L1.** El filtro determinista y el contexto del proponente son
   iniciativas previas; L2 presupone que L0/L1 ya pasaron.
@@ -340,7 +340,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 [`desarrollo.md`](../../desarrollo.md) §3, o un hilo pausado no podrá deserializar.
 
 `ReviewOutcome` expone `verifications` para que
-[006 — eval de la review](../006-eval-de-la-review/spec.md) pueda contar
+[006 — eval de la review](../archivo/006-eval-de-la-review/spec.md) pueda contar
 `confirmed`/`refuted`/`unproven` por review sin releer el estado.
 
 ## 6. Riesgos
@@ -414,7 +414,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
   *prompt* de L2: si degradar pierde recall, el verificador debe ser menos
   conservador.
 - **Q7 — ¿Valor de `VERIFIER_MAX_FINDINGS`?** Se propone 5 por review y se ajusta
-  con el coste medido en [006](../006-eval-de-la-review/spec.md).
+  con el coste medido en [006](../archivo/006-eval-de-la-review/spec.md).
 - **Q8 — ¿ADR propio para el workspace de lectura?** *Resuelta (2026-10-16):*
   [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md), que enlaza a [ADR-0011](../../adr/0011-sandbox-runner-aislado.md), con
   las alternativas de §5.4.1. Amplía el alcance del runner de «verifica parches» a

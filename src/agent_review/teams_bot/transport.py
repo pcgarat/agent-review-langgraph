@@ -148,8 +148,11 @@ class ChannelTransport:
             context.conversation_id, payload, service_url=context.service_url
         )
         if message_id is None:
+            # El mensaje **ya esta publicado**: devolver `False` haria que el servicio
+            # lo reintentara y lo duplicara. Sin id no hay hilo que recordar; el
+            # siguiente aviso del PR abrira otro raiz.
             logger.warning("El canal no devolvio el id del mensaje raiz del PR %s#%s", repo, pr_id)
-            return False
+            return True
         self._store.remember_thread(
             repo=repo,
             pr_id=pr_id,

@@ -458,24 +458,38 @@ def _trend(baseline: float | None, current: float | None, *, higher_better: bool
 # ---------------------------------------------------------------------------
 
 # Lo que un caso mide cambia si cambia el prompt (rol + tope de hallazgos), el
-# diff o el scope. El fingerprint cubre los tres: una grabacion vieja con un
-# prompt nuevo aborta en vez de medir el pasado en silencio (E4 de la spec).
-_FINGERPRINT_VERSION = 1
+# contrato de salida estructurada (`json_mode`, `response_schema`), el diff o el
+# scope. El fingerprint los cubre: una grabacion vieja con un prompt o un esquema
+# nuevos aborta en vez de medir el pasado en silencio (E4 de la spec).
+_FINGERPRINT_VERSION = 2
 
 
 class FingerprintMismatch(RuntimeError):
     """La grabacion no corresponde al prompt o al caso: hay que regrabar."""
 
 
-def prompt_fingerprint(*, role: str, system: str, prompt: str, max_tokens: int) -> str:
-    """Huella estable del prompt de un rol: rol + system + prompt + `max_tokens`.
+def prompt_fingerprint(
+    *,
+    role: str,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    json_mode: JsonMode | None = None,
+    response_schema: dict[str, Any] | None = None,
+) -> str:
+    """Huella estable de una llamada de un rol: rol + system + prompt + `max_tokens`
+    + el contrato de salida (`json_mode` y `response_schema` canonico).
 
     El rol forma parte del fingerprint porque dos roles con el mismo diff y tope
     de hallazgos generan el mismo prompt (E4 de la spec): sin el, regrabar un rol
-    invalidaria los demas o pasaria por valido sin serlo.
+    invalidaria los demas o pasaria por valido sin serlo. El esquema entra porque
+    cambiarlo cambia lo que el modelo devolveria: replay de la respuesta vieja
+    mediria el pasado.
     """
+    schema = json.dumps(response_schema, sort_keys=True) if response_schema is not None else ""
+    mode = json_mode or ""
     digest = hashlib.sha256()
-    for part in (_FINGERPRINT_VERSION, role, system, prompt, max_tokens):
+    for part in (_FINGERPRINT_VERSION, role, system, prompt, max_tokens, mode, schema):
         digest.update(str(part).encode("utf-8"))
         digest.update(b"\x00")
     return f"sha256:{digest.hexdigest()}"
@@ -564,9 +578,13 @@ class ReplayLlm:
         json_mode: JsonMode | None = None,
         response_schema: dict[str, Any] | None = None,
     ) -> LlmReply:
-        del json_mode, response_schema
         fingerprint = prompt_fingerprint(
-            role=self._role, system=system, prompt=prompt, max_tokens=max_tokens
+            role=self._role,
+            system=system,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            response_schema=response_schema,
         )
         entry = self._recording.calls.get(fingerprint)
         if entry is None:
@@ -599,13 +617,22 @@ def record_call(
     prompt: str,
     max_tokens: int,
     reply: LlmReply,
+    json_mode: JsonMode | None = None,
+    response_schema: dict[str, Any] | None = None,
 ) -> str:
     """Guarda una respuesta real en `recording` bajo su fingerprint. Devuelve la huella.
 
     Lo usa `make eval-record` (E7): graba cada llamada a medida que ocurre, por
     rol, para que regrabar un rol no invalide los demas.
     """
-    fingerprint = prompt_fingerprint(role=role, system=system, prompt=prompt, max_tokens=max_tokens)
+    fingerprint = prompt_fingerprint(
+        role=role,
+        system=system,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        json_mode=json_mode,
+        response_schema=response_schema,
+    )
     recording.calls[fingerprint] = {
         "role": role,
         "text": reply.text,
@@ -667,6 +694,8 @@ class RecordingLlm:
             prompt=prompt,
             max_tokens=max_tokens,
             reply=reply,
+            json_mode=json_mode,
+            response_schema=response_schema,
         )
         self.total_tokens += reply.total_tokens
         return reply
@@ -754,7 +783,6 @@ class Run:
     """Resultado de una corrida del grafo: lo publicado y el gasto del run."""
 
     published: tuple[Finding, ...]
-    merged: tuple[Finding, ...]
     tokens: int
     inlined: int
     seen_files: tuple[str, ...] = ()
@@ -792,7 +820,6 @@ def run_case(case: Case, *, llm: LlmPort, policy: PolicyEngine, vcs: CaseVcs) ->
     tokens = getattr(llm, "total_tokens", 0)
     return Run(
         published=merged,
-        merged=merged,
         tokens=int(tokens),
         inlined=len(vcs.inlines),
         seen_files=_seen_files(reviewer),

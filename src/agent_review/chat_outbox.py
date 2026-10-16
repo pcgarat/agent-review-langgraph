@@ -26,6 +26,10 @@ class ChatOutbox(Protocol):
 
     def enqueue(self, notice: ChatNotice) -> None: ...
 
+    def requeue(self, notice: ChatNotice) -> None:
+        """Devuelve un aviso ya sacado a la **cabeza** de la cola (no pierde su turno)."""
+        ...
+
     def dequeue(self, *, timeout_s: float = 5.0) -> ChatNotice | None:
         """Saca el siguiente aviso o `None` si no hay nada en el timeout."""
         ...
@@ -63,12 +67,17 @@ class RedisChatOutbox:
     def enqueue(self, notice: ChatNotice) -> None:
         self._client.rpush(self._key, notice.model_dump_json())
 
+    def requeue(self, notice: ChatNotice) -> None:
+        self._client.lpush(self._key, notice.model_dump_json())
+
     def dequeue(self, *, timeout_s: float = 5.0) -> ChatNotice | None:
         """Siguiente aviso, o `None` en el timeout. Mismo trato que las colas.
 
         La espera vencida, un Redis que cae a mitad y un servidor que se reinicia
         son rutinas de un consumidor de cola: se registran y se devuelve `None`
-        para reintentar en la siguiente vuelta, no se propaga una excepcion.
+        para reintentar en la siguiente vuelta, no se propaga una excepcion. Un
+        payload ilegible ya salio de la cola con el `BLPOP`: va **en crudo** a la DLQ
+        para no perderlo.
         """
         try:
             item = self._client.blpop(self._key, timeout=max(1, int(timeout_s)))
@@ -80,7 +89,10 @@ class RedisChatOutbox:
         if item is None:
             return None
         _, payload = item
-        return ChatNotice.model_validate_json(payload)
+        notice = _parse_notice(payload)
+        if notice is None:
+            self._client.rpush(self._dead_key, _raw_dead_letter_payload(payload))
+        return notice
 
     def dead_letter(self, notice: ChatNotice, *, reason: str) -> None:
         self._client.rpush(self._dead_key, _dead_letter_payload(notice, reason=reason))
@@ -102,11 +114,18 @@ class InMemoryChatOutbox:
     def enqueue(self, notice: ChatNotice) -> None:
         self._items.append(notice.model_dump_json())
 
+    def requeue(self, notice: ChatNotice) -> None:
+        self._items.appendleft(notice.model_dump_json())
+
     def dequeue(self, *, timeout_s: float = 5.0) -> ChatNotice | None:
         del timeout_s  # sin espera en memoria
         if not self._items:
             return None
-        return ChatNotice.model_validate_json(self._items.popleft())
+        payload = self._items.popleft()
+        notice = _parse_notice(payload)
+        if notice is None:
+            self._dead.append(_raw_dead_letter_payload(payload))
+        return notice
 
     def dead_letter(self, notice: ChatNotice, *, reason: str) -> None:
         self._dead.append(_dead_letter_payload(notice, reason=reason))
@@ -188,6 +207,23 @@ class OutboxChatAdapter:
                 link=link,
             )
         )
+
+
+def _parse_notice(payload: bytes | str) -> ChatNotice | None:
+    try:
+        return ChatNotice.model_validate_json(payload)
+    except ValueError:
+        logger.error("Aviso ilegible en la outbox; va a la DLQ en crudo")
+        return None
+
+
+def _raw_dead_letter_payload(payload: bytes | str) -> str:
+    import json
+
+    text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else payload
+    return json.dumps(
+        {"reason": "Aviso ilegible en la outbox", "discarded_at": time.time(), "raw": text}
+    )
 
 
 def _dead_letter_payload(notice: ChatNotice, *, reason: str) -> str:

@@ -22,11 +22,7 @@ from agent_review.adapters.tooling_source import (
     validate_tooling_template as validate_tooling_template_source,
 )
 from agent_review.adapters.twg_vcs import TwgVcsAdapter, check_twg
-from agent_review.chat_outbox import (
-    InMemoryChatOutbox,
-    OutboxChatAdapter,
-    RedisChatOutbox,
-)
+from agent_review.chat_outbox import OutboxChatAdapter, RedisChatOutbox
 from agent_review.checkpointer import (
     build_checkpointer,
     latest_checkpoints,
@@ -225,17 +221,18 @@ def build_chat(settings: Settings) -> ChatPort | None:
     """Canal de chat: egress por outbox (C10). Sin canal declarado, no hay canal.
 
     El worker no conoce el transporte: encola el aviso en `reviews:notices` y el
-    bot de Teams lo publica. Si Redis no responde, la outbox en memoria sirve a
-    los tests; en produccion el aviso se pierde (asimetria aceptada, D6) y el
-    respaldo real es el CLI (C9).
+    bot de Teams lo publica. La outbox es **siempre** la de Redis, aunque Redis no
+    responda al arrancar: el adaptador registra y descarta cada aviso que no puede
+    encolar (asimetria aceptada, D6; el respaldo real es el CLI, C9), y en cuanto
+    Redis vuelve los avisos fluyen. Una outbox en memoria aqui los perderia todos
+    hasta reiniciar el worker, porque nadie la consume.
     """
     if not settings.teams_enabled:
         return None
     outbox = RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key)
-    if outbox.available():
-        return OutboxChatAdapter(outbox=outbox)
-    logger.warning("Redis no disponible; outbox de avisos en memoria (solo util en tests)")
-    return OutboxChatAdapter(outbox=InMemoryChatOutbox())
+    if not outbox.available():
+        logger.warning("Redis no disponible al arrancar; los avisos se perderan hasta que vuelva")
+    return OutboxChatAdapter(outbox=outbox)
 
 
 def node_retry_policy(settings: Settings) -> RetryPolicy:

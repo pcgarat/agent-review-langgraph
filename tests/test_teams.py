@@ -298,7 +298,9 @@ def test_enviar_una_decision_completa_encola_el_resume_y_sella_la_tarjeta() -> N
         "f1": DecisionOutcome.APPROVED,
         "f2": DecisionOutcome.REJECTED,
     }
-    assert cards.final(key) == "Paco", "la tarjeta queda sellada (C11)"
+    pause = paused.get(key)
+    assert pause is not None
+    assert cards.final(key, pause=pause.pause_id) == "Paco", "la pausa queda sellada (C11)"
     assert queue.dequeue() is None, "no se encola nada mas"
 
 

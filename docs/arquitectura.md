@@ -59,8 +59,9 @@ flowchart LR
 > iniciativa 013).** El worker **encola** avisos en `reviews:notices`; `teams-bot`
 > los consume, publica/edita en el hilo del PR y traduce las acciones de la
 > tarjeta a una `HitlDecision` encolada en `reviews:jobs` (no reanuda el grafo).
-> El respaldo de decisión sigue siendo el CLI y `POST /decision`. Pendiente
-> humano: alta del bot en el tenant (T10).
+> Solo acepta acciones del canal capturado y, con `TEAMS_BOT_TENANT_ID`, de ese
+> tenant (C5): sin canal capturado, rechaza todas. El respaldo de decisión sigue
+> siendo el CLI y `POST /decision`. Pendiente humano: alta del bot en el tenant (T10).
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
@@ -283,6 +284,10 @@ sequenceDiagram
     Note over F: resume → aplica → publish_fix + notify_fix
 ```
 
+El diff del parche se **deriva del fichero real** al `head_sha` (rango y texto de
+reemplazo que propone el modelo), no se toma del diff que devuelva el modelo: un
+header inventado haría fallar el `git apply` del runner.
+
 El worker de reviews **no** llama al sandbox (E7): propone y valida localmente,
 pausa y deja que el `fix-worker` verifique. La idempotencia del handoff vive en
 `reviews:fixes:done` (por `run_key`), que se marca **después** de encolar la
@@ -309,9 +314,10 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
 | Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
-| Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13) | — |
-| Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome` y `…:final` (actor de la primera decisión): estado de la tarjeta, por usuario (C8/C11) | 8 días |
-| Redis | `reviews:teams:channel` | `conversation_id` + `service_url` del canal dedicado (C14), capturado al instalar o ver una actividad | — |
+| Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
+| Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome`: estado de la tarjeta, por usuario (C8) | 8 días |
+| Redis | `reviews:teams:card:<review_key>:final:<pause_id>` | Actor de la primera decisión de **esa pausa** (`SETNX`, C11). `pause_id` = `thread_id@created_at`: la pasada degradada y la completa comparten `review_key` y no se cierran entre sí | 8 días |
+| Redis | `reviews:teams:channel` | `conversation_id` (id base, sin `;messageid=`) + `service_url` del canal dedicado (C14). **Gana la primera captura**; mover el canal es borrar la clave | — |
 | Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
 | Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
@@ -353,7 +359,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D11 | **Worker secuencial** | La verificación de ~20 min ya no bloquea la cola: E7 desacopla por el `fix-worker` y un `interrupt`. Queda secuencial solo el resto del grafo (LLM, publicación). |
 | D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
-| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. |
+| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
 | D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Pendiente de iniciativa propia. |

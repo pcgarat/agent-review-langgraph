@@ -2,7 +2,8 @@
 
 Cubre lo que se puede comprobar sin Azure ni Teams real: el contrato de secretos
 (fail-closed en produccion), el adaptador del SDK (que envuelve la tarjeta y pasa
-el `service_url`, hallazgos del spike) y el servicio en Compose.
+el `service_url`, hallazgos del spike), el proceso (`/healthz` con bearer, la `App`
+que monta `build_app` y `serve_bot`) y el servicio en Compose.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 
@@ -111,12 +113,14 @@ class _FakeApp:
 
     def __init__(self, *, message_id: str | None = "77") -> None:
         self.calls: list[tuple[str, str, str | None]] = []
+        self.activities: list[Any] = []
         self._message_id = message_id
 
     async def send(
         self, conversation_id: str, activity: Any, *, service_url: str | None = None
     ) -> _Sent:
         self.calls.append(("send", conversation_id, service_url))
+        self.activities.append(activity)
         return _Sent(self._message_id)
 
     async def reply(
@@ -150,6 +154,70 @@ async def test_el_reemplazo_de_la_tarjeta_lleva_el_id_del_mensaje() -> None:
 
     # El reemplazo usa `send`, no `reply`: publica la actividad con el mismo id.
     assert app.calls == [("send", "c", None)]
+    assert app.activities[0].id == "77", "sin el id, Teams publicaria otra tarjeta"
+
+
+async def test_un_envio_normal_no_fija_id() -> None:
+    app = _FakeApp()
+    client = SDKChannelClient(app)  # type: ignore[arg-type]
+
+    await client.send("c", {"type": "AdaptiveCard", "version": "1.5", "body": []})
+
+    assert getattr(app.activities[0], "id", None) is None
+
+
+# --- Proceso `teams-bot`: /healthz, build_app y serve_bot ---------------------
+
+
+async def _bot_client(settings: Settings) -> httpx.AsyncClient:
+    from agent_review.teams_bot.main import _register_healthz
+    from agent_review.teams_bot.sdk_client import build_app
+
+    app = build_app(settings)
+    _register_healthz(app, secret=settings.teams_bot_shared_secret)
+    await app.initialize()
+    transport = httpx.ASGITransport(app=app.server.adapter.app)
+    return httpx.AsyncClient(transport=transport, base_url="http://bot")
+
+
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [({}, 401), ({"Authorization": "Bearer otro"}, 401), ({"Authorization": "Bearer s3"}, 200)],
+)
+async def test_healthz_exige_el_bearer_interno(headers: dict[str, str], status: int) -> None:
+    """El endpoint es publico (lo expone el ingress): sin bearer no da informacion."""
+    async with await _bot_client(Settings(teams_bot_shared_secret="s3")) as client:
+        response = await client.get("/healthz", headers=headers)
+
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize("bot_id", ["", "bot-id"])
+async def test_la_app_de_build_app_rechaza_un_post_sin_jwt(bot_id: str) -> None:
+    """Fail-closed: la `App` que arranca el proceso no acepta actividades sin JWT."""
+    settings = Settings(teams_bot_id=bot_id, teams_bot_tenant_id="t" if bot_id else "")
+    async with await _bot_client(settings) as client:
+        response = await client.post("/api/messages", json={"type": "message", "text": "hola"})
+
+    assert response.status_code == 401
+
+
+async def test_serve_bot_propaga_el_fallo_del_consumidor() -> None:
+    """Si una mitad cae, el proceso sale entero y Compose lo reinicia."""
+    import asyncio
+
+    from agent_review.teams_bot.main import serve_bot
+
+    class _Service:
+        async def run_forever(self) -> None:
+            raise RuntimeError("consumidor caido")
+
+    class _App:
+        async def start(self, *, port: int) -> None:
+            await asyncio.sleep(10)
+
+    with pytest.raises(RuntimeError, match="consumidor caido"):
+        await asyncio.wait_for(serve_bot(_Service(), _App(), port=0), timeout=2)  # type: ignore[arg-type]
 
 
 # --- Compose y .env.example ---------------------------------------------------

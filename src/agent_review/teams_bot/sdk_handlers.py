@@ -17,6 +17,13 @@ Tres piezas:
 
 El guardado del canal es **best-effort**: si Redis falla, se registra y el ingress
 sigue (sin canal no habra egress, pero el ingress no se cae por eso).
+
+**Frontera de confianza (C5/C14).** Decide quien es miembro del canal dedicado, y
+nada mas: la **primera** conversacion capturada es el canal y otra nunca la
+sustituye; una accion de tarjeta solo se acepta si llega de ese canal (el id base,
+sin el sufijo `;messageid=` de los hilos) y, con `tenant_id` configurado, de ese
+tenant. Sin canal capturado no se acepta ninguna accion: no hay tarjeta legitima
+que pulsar.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ from agent_review.teams_bot.threads import ChannelContext, ChannelStore
 logger = logging.getLogger(__name__)
 
 _UNKNOWN = "Accion no reconocida"
+_FOREIGN = "Esta conversacion no es el canal de decision de las reviews."
 # Un chat privado con el bot no es el canal donde se publican los avisos: si se
 # tomara como destino, el egress acabaria en una conversacion de una persona.
 _PERSONAL = "personal"
@@ -54,11 +62,17 @@ class TeamsApp(Protocol):
     def on_message(self, handler: Any) -> Any: ...
 
 
-def register_handlers(app: TeamsApp, *, ingress: CardIngress, store: ChannelStore) -> None:
-    """Registra el middleware del canal y los handlers de la tarjeta."""
+def register_handlers(
+    app: TeamsApp, *, ingress: CardIngress, store: ChannelStore, tenant_id: str = ""
+) -> None:
+    """Registra el middleware del canal y los handlers de la tarjeta.
+
+    `tenant_id` es el tenant del bot (`TEAMS_BOT_TENANT_ID`); vacio, no se comprueba.
+    """
 
     async def _remember_channel(ctx: Any) -> None:
-        remember_channel(ctx.activity, store=store)
+        if _tenant_matches(ctx.activity, tenant_id):
+            remember_channel(ctx.activity, store=store)
         # Sin esto, la cadena del SDK se corta aqui y la accion de la tarjeta
         # no llegaria nunca a su handler.
         await ctx.next()
@@ -68,6 +82,8 @@ def register_handlers(app: TeamsApp, *, ingress: CardIngress, store: ChannelStor
     @app.on_card_action_execute
     async def _on_card_action(ctx: Any) -> Any:
         activity = ctx.activity
+        if not _from_decision_channel(activity, store=store, tenant_id=tenant_id):
+            return AdaptiveCardActionMessageResponse(value=_FOREIGN)
         user_id, actor = _identity(activity)
         update = await ingress.handle(_action_data(activity.value), user_id=user_id, actor=actor)
         if update is not None and update.card is not None:
@@ -81,6 +97,9 @@ def register_handlers(app: TeamsApp, *, ingress: CardIngress, store: ChannelStor
         # Fallback `Action.Submit` (T0): el `data` de la accion llega en `value`. Un
         # mensaje normal no lo trae, y se ignora sin responder.
         if not isinstance(activity.value, dict) or "action" not in activity.value:
+            return
+        if not _from_decision_channel(activity, store=store, tenant_id=tenant_id):
+            await ctx.send(_FOREIGN)
             return
         user_id, actor = _identity(activity)
         update = await ingress.handle(dict(activity.value), user_id=user_id, actor=actor)
@@ -96,13 +115,19 @@ def remember_channel(activity: Any, *, store: ChannelStore) -> None:
     de ahi cuelga el hilo de cada PR. `service_url` viaja siempre porque toda llamada
     proactiva debe llevarlo (hallazgo del spike, T0).
 
-    Dos cautelas: un **chat privado** no es el canal y no se guarda (seria publicar los
-    avisos en la conversacion de una persona), y si el destino **cambia** se registra,
-    porque el diseño asume un canal dedicado (C14) y un segundo canal seria un error de
-    configuracion silencioso.
+    Tres cautelas:
+
+    - Un **chat privado** no es el canal y no se guarda (seria publicar los avisos en
+      la conversacion de una persona).
+    - Se guarda el id **base**: una accion pulsada dentro del hilo de un PR trae
+      `<canal>;messageid=<raiz>`, y guardarlo tal cual haria que la raiz del
+      siguiente PR se publicara como respuesta en el hilo de otro.
+    - Gana la **primera** captura: si llega otra conversacion, se registra y se
+      ignora. Sustituirla moveria los avisos y la autoridad de decision (C5) a otra
+      conversacion; mover el canal es una operacion explicita (borrar la clave).
     """
     conversation = getattr(activity, "conversation", None)
-    conversation_id = getattr(conversation, "id", None)
+    conversation_id = _base_id(getattr(conversation, "id", None))
     if not conversation_id:
         return
     if str(getattr(conversation, "conversation_type", "") or "") == _PERSONAL:
@@ -111,12 +136,13 @@ def remember_channel(activity: Any, *, store: ChannelStore) -> None:
     previous = _current_channel(store)
     if previous is not None and previous != conversation_id:
         logger.warning(
-            "El canal de avisos cambia de %s a %s: el bot esta en mas de un canal",
-            previous,
+            "Actividad de %s ignorada como canal: el canal de avisos es %s",
             conversation_id,
+            previous,
         )
+        return
     context = ChannelContext(
-        conversation_id=str(conversation_id),
+        conversation_id=conversation_id,
         service_url=str(getattr(activity, "service_url", "") or ""),
     )
     try:
@@ -125,12 +151,48 @@ def remember_channel(activity: Any, *, store: ChannelStore) -> None:
         logger.warning("No se pudo recordar el canal %s: %s", conversation_id, exc)
 
 
+def _from_decision_channel(activity: Any, *, store: ChannelStore, tenant_id: str) -> bool:
+    """C5: la accion viene del canal capturado (y del tenant del bot, si se fija).
+
+    Falla cerrado: sin canal capturado, o si no se puede leer, se rechaza.
+    """
+    if not _tenant_matches(activity, tenant_id):
+        logger.warning("Accion de tarjeta de otro tenant rechazada")
+        return False
+    channel = _current_channel(store)
+    conversation_id = _base_id(getattr(getattr(activity, "conversation", None), "id", None))
+    if channel is None or conversation_id != channel:
+        logger.warning(
+            "Accion de tarjeta de %s rechazada: el canal de decision es %s",
+            conversation_id or "?",
+            channel or "(sin capturar)",
+        )
+        return False
+    return True
+
+
+def _tenant_matches(activity: Any, tenant_id: str) -> bool:
+    """`True` sin tenant configurado; si no, el de la actividad debe coincidir."""
+    if not tenant_id:
+        return True
+    tenant = getattr(getattr(activity, "conversation", None), "tenant_id", None) or getattr(
+        getattr(getattr(activity, "channel_data", None), "tenant", None), "id", None
+    )
+    return str(tenant or "") == tenant_id
+
+
 def _current_channel(store: ChannelStore) -> str | None:
+    """Canal capturado, o `None` si no hay o no se puede leer (quien llama decide)."""
     try:
         context = store.context()
-    except Exception:  # noqa: BLE001 - la comparacion es solo para avisar
+    except Exception:  # noqa: BLE001 - un fallo de lectura cuenta como "sin canal"
         return None
     return context.conversation_id if context is not None else None
+
+
+def _base_id(conversation_id: Any) -> str:
+    """Id de la conversacion sin el sufijo `;messageid=` de un hilo (como el SDK)."""
+    return str(conversation_id or "").split(";")[0]
 
 
 def _action_data(value: Any) -> dict[str, Any]:
@@ -140,11 +202,18 @@ def _action_data(value: Any) -> dict[str, Any]:
 
 
 def _identity(activity: Any) -> tuple[str, str]:
-    """`(user_id, actor)` de quien pulsa: id de Entra ID y nombre visible (C5)."""
+    """`(user_id, actor)` de quien pulsa (C5).
+
+    `user_id` es el id de Entra ID (indexa el estado por usuario). `actor` es lo que
+    queda auditado en la decision: el nombre visible **y** el id, porque C5 pide la
+    identidad de Entra ID y un nombre solo puede cambiar o repetirse.
+    """
     sender = getattr(activity, "from_", None)
     user_id = str(getattr(sender, "aad_object_id", None) or getattr(sender, "id", None) or "")
-    actor = str(getattr(sender, "name", None) or user_id or "alguien")
-    return user_id, actor
+    name = str(getattr(sender, "name", None) or "")
+    if name and user_id:
+        return user_id, f"{name} <{user_id}>"
+    return user_id, name or user_id or "alguien"
 
 
 def _notice(update: CardUpdate | None) -> str:

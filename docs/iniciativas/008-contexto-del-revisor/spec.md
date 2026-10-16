@@ -69,7 +69,7 @@ cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado
 
 ### 3.1 Una review real, medida a mano
 
-La auditoría del PR #3 está en [006 §3.1](../006-eval-de-la-review/spec.md), que es
+La auditoría del PR #3 está en [006 §3.1](../archivo/006-eval-de-la-review/spec.md), que es
 también la fuente del baseline. Los hallazgos relevantes para L0/L1:
 
 | # | Hallazgo | Veredicto | Por qué | Capa que lo caza |
@@ -255,7 +255,7 @@ presupuesto mide de menos (D17).
 - [ ] L0/L1 no modifican `severity` en ningún caso (test).
 - [ ] El contexto nunca desplaza diff dentro de un lote (test).
 - [ ] L0/L1 son una **mejora** sobre el baseline de
-      [006](../006-eval-de-la-review/spec.md) según su criterio de dominancia.
+      [006](../archivo/006-eval-de-la-review/spec.md) según su criterio de dominancia.
 - [ ] `make ci` en verde, con `make docs-check`; y los vivos al día: procedimientos
       de `arquitectura.md` §3–4 (persona y contexto) y `desarrollo.md` §2–3 (tests y
       extensión), más `CONTEXT.md` si nace un término (`L0`, `context_scope`).

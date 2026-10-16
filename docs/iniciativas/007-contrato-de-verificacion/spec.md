@@ -77,7 +77,7 @@ contrato expresa *cuánto* se ha verificado el hallazgo.
 
 ### 3.2 La evidencia empírica de una review real
 
-La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó 9
+La auditoría del PR #3 ([006 §3.1](../archivo/006-eval-de-la-review/spec.md)) dejó 9
 hallazgos publicados: **6 falsos positivos**, 1 confirmado con el fallo descrito
 **invertido** y con la severidad inflada, 1 que confirmaba una decisión ya documentada
 y 1 cierto en parte; y la revisión a mano fijó **6 hallazgos reales no detectados**

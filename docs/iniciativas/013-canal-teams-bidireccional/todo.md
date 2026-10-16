@@ -337,3 +337,31 @@ Queda T10 (alta humana).
     §3 cómo extender el chat). `CONTEXT.md` (retirada del Incoming Webhook,
     «canal»). README con `teams-bot` y outbox. Spec e índice → `implementada`;
     queda T10.
+
+## Bloque 5 — Correcciones de la revisión de la rama (2026-10-16)
+
+Checkpoint: `make ci` en verde y cada corrección con su test.
+
+- [x] **T12** El consumo de la outbox no bloquea el *messaging endpoint*
+  - El `BLPOP` síncrono corre en un hilo (`asyncio.to_thread`): compartía el bucle de
+    eventos con `/api/messages` y una acción de tarjeta esperaba hasta `poll_s`.
+  - Un aviso sin destino vuelve a la **cabeza** de la cola y el bucle espera `poll_s`
+    (antes giraba a 10 Hz); una raíz publicada sin id no se reenvía.
+  - Un fallo inesperado tras el `BLPOP` reencola el aviso; un inbox que no responde
+    aplaza la pausa en vez de descartarla (C13); un payload ilegible va en crudo a la DLQ.
+  - Verifica: `tests/test_teams_bot_service.py`.
+- [x] **T13** Sello de C11 por pausa (`pause_id`), no por `review_key`
+  - Verifica: `tests/test_teams_bot_ingress.py` (segunda pausa del mismo `review_key`).
+- [x] **T14** Canal fijo y frontera de confianza (C5/C14)
+  - Id base sin `;messageid=`, gana la primera captura, acciones solo del canal
+    capturado y del tenant del bot; `actor` audita nombre e id de Entra ID (C5).
+  - Verifica: `tests/test_teams_bot_ingress.py`.
+- [x] **T15** `/healthz` del bot respondía 422 siempre
+  - `Request` se importaba dentro de la función y FastAPI no resolvía la anotación;
+    el healthcheck de Compose nunca pasaba. Tests de bearer, `build_app` y `serve_bot`.
+  - Verifica: `tests/test_teams_bot_settings.py`.
+- [x] **T16** El worker no cae a una outbox en memoria si Redis no responde al arrancar
+  - Verifica: `tests/test_worker.py` (`build_chat` y fallos del aviso de pausa).
+- [x] **T17** Limpieza: entradas `serve`/`run` sin uso, `card_key` duplicada y aviso
+  «Entrada ilegible» espurio en cada PR nuevo
+  - Verifica: `tests/test_teams_threads.py`.

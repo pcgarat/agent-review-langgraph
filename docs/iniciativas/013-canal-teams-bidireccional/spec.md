@@ -196,7 +196,7 @@ publique mensajes ni tarjetas.
 | **Cualquiera del canal aprueba** (C5) | Riesgo asumido; canal dedicado; `actor` auditado. Un `approved` no salta `never_auto_paths` (ADR-0009). Si duele, se sube a grupo de Entra ID |
 | **Aviso de pausa no entregado** | Ya no se pierde por un bot caído: la outbox lo conserva y el bot lo consume al arrancar (C10). Un aviso de una pausa ya vencida se descarta al drenar (C13) |
 | **La outbox crece sin fin** | Drenado con TTL/recorte (C13); el estado durable sigue en Postgres y el inbox |
-| **Redis caído con la outbox** | Misma asimetría que la ingesta (D6): el aviso se pierde si Redis no responde. El *fallback* a memoria no llega al bot; el respaldo real es el CLI (C9). Se documenta, no se disimula |
+| **Redis caído con la outbox** | Misma asimetría que la ingesta (D6): el aviso se pierde si Redis no responde. El worker no cae a una outbox en memoria (nadie la consumiría): sigue con la de Redis y los avisos vuelven a fluir cuando Redis responde *(enmienda 2026-10-16)*. El respaldo real es el CLI (C9). Se documenta, no se disimula |
 | **Alta del bot** (Entra ID, consentimiento, *sideload*, ingress/TLS) | Es el coste real; se documenta como pendiente humano en el `todo.md` |
 | **SDK de Teams v2 muy nuevo** | Versión fijada; el plugin `microsoft-teams-botbuilder` permite convivir con BotBuilder si hiciera falta |
 | **Dos bots compitiendo por un aviso** | Un aviso lo consume **uno** (`BLPOP`) y la edición de tarjeta es idempotente por `review_key` |
@@ -271,4 +271,19 @@ Las cinco preguntas abiertas del borrador se cerraron el 2026-10-16:
   querrá **preguntar** para pedir más contexto del hallazgo. El `data.action` de los
   botones es un discriminante, así que una acción nueva se añade sin tocar el contrato
   de decisión; se anota como caso futuro, no entra en la 013.
+- **2026-10-16 — Sello de C11 por pausa, no por `review_key`.** El §5.2 describía
+  `…:final` por `review_key`. Varias pausas comparten `review_key` (la pasada
+  degradada y la completa, o el grafo que vuelve a interrumpir), y el sello de la
+  primera cerraba la tarjeta de la siguiente. El sello vive en
+  `reviews:teams:card:<review_key>:final:<pause_id>`, con
+  `pause_id = thread_id@created_at` (`PausedReview.pause_id`), que se conserva al
+  re-registrar la pausa en la reconciliación.
+- **2026-10-16 — Canal fijo y frontera de confianza (C5/C14).** C14 decía «capturado al
+  instalar o ver cualquier actividad», y la implementación sustituía el canal si
+  llegaba otra conversación. Ahora gana la **primera** captura (id base, sin
+  `;messageid=`, para que la raíz del siguiente PR no acabe como reply en otro hilo) y
+  otra conversación se ignora; mover el canal es borrar la clave. Una acción de
+  tarjeta solo se acepta si llega de ese canal y, con `TEAMS_BOT_TENANT_ID`, de ese
+  tenant; sin canal capturado, ninguna. Sin esto, cualquiera que hablara con el bot
+  desde otra conversación movería los avisos y la autoridad de decisión.
 

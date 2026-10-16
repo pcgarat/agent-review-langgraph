@@ -25,10 +25,18 @@ class DecisionCardService:
         self._store = store
 
     def render(
-        self, approval: ApprovalRequest, *, user_id: str, link: str | None = None
+        self,
+        approval: ApprovalRequest,
+        *,
+        user_id: str,
+        link: str | None = None,
+        pause: str = "",
     ) -> dict[str, object]:
-        """Tarjeta de `user_id`: si ya decidio, la version cerrada (C11)."""
-        actor = self._store.final(approval.review_key)
+        """Tarjeta de `user_id`: si la pausa ya se decidio, la version cerrada (C11).
+
+        `pause` es `PausedReview.pause_id`: el sello es de la pausa, no del `review_key`.
+        """
+        actor = self._store.final(approval.review_key, pause=pause)
         if actor is not None:
             return render_decided_card(approval, actor=actor, link=link)
         return render_decision_card(
@@ -45,6 +53,7 @@ class DecisionCardService:
         finding_id: str,
         outcome: DecisionOutcome,
         link: str | None = None,
+        pause: str = "",
     ) -> dict[str, object]:
         """Registra una marca y devuelve la tarjeta de ese usuario ya repintada.
 
@@ -55,11 +64,11 @@ class DecisionCardService:
             logger.warning(
                 "Marca de un hallazgo ajeno a %s (%s); se ignora", approval.review_key, finding_id
             )
-            return self.render(approval, user_id=user_id, link=link)
+            return self.render(approval, user_id=user_id, link=link, pause=pause)
         self._store.mark(
             approval.review_key, user_id=user_id, finding_id=finding_id, outcome=outcome
         )
-        return self.render(approval, user_id=user_id, link=link)
+        return self.render(approval, user_id=user_id, link=link, pause=pause)
 
     def ready_to_submit(self, approval: ApprovalRequest, *, user_id: str) -> bool:
         """C3: Enviar se habilita cuando *este* usuario ha marcado todos los pendientes."""

@@ -95,6 +95,10 @@ def _approval(review_key: str, *ids: str) -> ApprovalRequest:
     )
 
 
+# El canal dedicado ya capturado (C14): las actividades de prueba llegan de el.
+_CHANNEL = "19:canal@thread.tacv2"
+
+
 class _Harness:
     """Piezas del ingress con stores en memoria y contadores observables."""
 
@@ -111,7 +115,7 @@ class _Harness:
         self.marks = InMemoryCardStore()
         self.channel = channel or FakeChannel()
         self.store = InMemoryChannelStore()
-        self.store.remember_context(ChannelContext(conversation_id="c", service_url="s"))
+        self.store.remember_context(ChannelContext(conversation_id=_CHANNEL, service_url="s"))
         self.transport = ChannelTransport(client=self.channel, store=self.store)
         self.ingress = CardIngress(
             paused=paused,
@@ -128,6 +132,12 @@ def _harness(*pending: str) -> tuple[_Harness, str]:
     approval = _approval(request.review_key, *pending)
     paused.pause(request, approval)
     return _Harness(paused=paused, approval=approval), request.review_key
+
+
+def _pause_id(harness: _Harness, review_key: str) -> str:
+    paused = harness.paused.get(review_key)
+    assert paused is not None
+    return paused.pause_id
 
 
 def _data(action: str, review_key: str, **extra: str) -> dict[str, str]:
@@ -192,7 +202,7 @@ async def test_enviar_una_decision_completa_encola_y_repinta_la_tarjeta() -> Non
     enqueued = harness.queue.dequeue()
     assert enqueued is not None and enqueued.decision is not None
     assert enqueued.decision.actor == "Ana"
-    assert harness.marks.final(review_key) == "Ana"
+    assert harness.marks.final(review_key, pause=_pause_id(harness, review_key)) == "Ana"
     # El canal ve la tarjeta cerrada (C7/C11), editando el mensaje que ya existia.
     assert len(harness.channel.updates) == 1
     assert len(harness.channel.sends) == 1, "solo la publicacion inicial del aviso"
@@ -484,7 +494,7 @@ async def test_el_handler_de_tarjeta_marca_y_devuelve_la_tarjeta() -> None:
 
 
 async def test_el_handler_de_tarjeta_usa_el_id_de_entra_del_que_pulsa() -> None:
-    """C5: `actor` es el nombre visible; el estado se indexa por el id de Entra."""
+    """C5: el estado se indexa por el id de Entra y `actor` audita nombre e id."""
     harness, review_key = _harness()
     app = _wired(harness)
     await harness.ingress.handle(
@@ -498,7 +508,7 @@ async def test_el_handler_de_tarjeta_usa_el_id_de_entra_del_que_pulsa() -> None:
 
     enqueued = harness.queue.dequeue()
     assert enqueued is not None and enqueued.decision is not None
-    assert enqueued.decision.actor == "Ana"
+    assert enqueued.decision.actor == "Ana <aad-1>", "se audita el nombre y el id de Entra"
 
 
 async def test_sin_tarjeta_que_repintar_el_invoke_responde_un_mensaje() -> None:
@@ -586,7 +596,7 @@ async def test_el_pipeline_real_del_sdk_encola_la_decision_de_la_tarjeta() -> No
     assert response.status_code == 200
     enqueued = harness.queue.dequeue()
     assert enqueued is not None and enqueued.decision is not None
-    assert enqueued.decision.actor == "Ana"
+    assert enqueued.decision.actor == "Ana <aad-1>"
     assert harness.store.context() is not None, "el invoke tambien captura el canal (C14)"
     body = response.json()
     assert body["type"] == "application/vnd.microsoft.card.adaptive"
@@ -611,3 +621,133 @@ async def test_sin_credenciales_del_bot_el_endpoint_rechaza(header: str) -> None
 
     assert response.status_code == 401
     assert harness.queue.dequeue() is None, "una peticion sin validar no toca la cola"
+
+
+# --- Canal dedicado y frontera de decision (C5/C14) ---------------------------
+
+
+async def test_un_clic_dentro_de_un_hilo_guarda_el_id_base_del_canal() -> None:
+    """El id de hilo (`;messageid=`) no es el canal: la raiz del siguiente PR iria dentro."""
+    harness, _ = _harness()
+    harness.store = InMemoryChannelStore()
+    app = _wired(harness)
+
+    await app.middlewares[0](_FakeContext(_Activity(conversation_id=f"{_CHANNEL};messageid=123")))
+
+    context = harness.store.context()
+    assert context is not None and context.conversation_id == _CHANNEL
+
+
+async def test_otra_conversacion_no_sustituye_al_canal_capturado() -> None:
+    """Gana la primera captura: otra conversacion no se lleva avisos ni decisiones."""
+    harness, _ = _harness()
+    app = _wired(harness)
+
+    await app.middlewares[0](
+        _FakeContext(_Activity(conversation_id="19:otro@thread.v2", conversation_type="groupChat"))
+    )
+
+    context = harness.store.context()
+    assert context is not None and context.conversation_id == _CHANNEL
+
+
+def _execute(data: dict[str, str]) -> Any:
+    return type("V", (), {"action": type("A", (), {"data": data})()})()
+
+
+async def test_una_accion_desde_otra_conversacion_se_rechaza() -> None:
+    harness, review_key = _harness()
+    app = _wired(harness)
+    value = _execute(_data(DECISION_ACTION, review_key, finding_id="f1", outcome="approved"))
+
+    response = await app.handlers["card"](
+        _FakeContext(_Activity(value=value, conversation_id="19:otro@thread.v2"))
+    )
+
+    assert "no es el canal de decision" in response.value
+    assert harness.marks.marks(review_key, user_id="aad-1") == {}
+
+
+async def test_una_accion_desde_un_hilo_del_canal_se_acepta() -> None:
+    harness, review_key = _harness()
+    app = _wired(harness)
+    value = _execute(_data(DECISION_ACTION, review_key, finding_id="f1", outcome="approved"))
+
+    await app.handlers["card"](
+        _FakeContext(_Activity(value=value, conversation_id=f"{_CHANNEL};messageid=9"))
+    )
+
+    assert harness.marks.marks(review_key, user_id="aad-1") == {"f1": DecisionOutcome.APPROVED}
+
+
+async def test_sin_canal_capturado_no_se_acepta_ninguna_accion() -> None:
+    """Falla cerrado: sin canal no hay tarjeta legitima que pulsar."""
+    harness, review_key = _harness()
+    harness.store = InMemoryChannelStore()
+    app = _wired(harness)
+    ctx = _FakeContext(
+        _Activity(value=_data(DECISION_ACTION, review_key, finding_id="f1", outcome="noted"))
+    )
+
+    await app.handlers["message"](ctx)
+
+    assert ctx.sent and "no es el canal de decision" in ctx.sent[0]
+    assert harness.marks.marks(review_key, user_id="aad-1") == {}
+
+
+async def test_con_tenant_fijado_una_accion_de_otro_tenant_se_rechaza() -> None:
+    from agent_review.teams_bot.sdk_handlers import register_handlers
+
+    harness, review_key = _harness()
+    app = _FakeApp()
+    register_handlers(app, ingress=harness.ingress, store=harness.store, tenant_id="t-propio")
+    value = _execute(_data(DECISION_ACTION, review_key, finding_id="f1", outcome="approved"))
+    foreign = _Activity(value=value)
+    foreign.conversation.tenant_id = "t-ajeno"  # type: ignore[attr-defined]
+    own = _Activity(value=value)
+    own.conversation.tenant_id = "t-propio"  # type: ignore[attr-defined]
+
+    rejected = await app.handlers["card"](_FakeContext(foreign))
+    assert "no es el canal de decision" in rejected.value
+    assert harness.marks.marks(review_key, user_id="aad-1") == {}
+
+    await app.handlers["card"](_FakeContext(own))
+    assert harness.marks.marks(review_key, user_id="aad-1") == {"f1": DecisionOutcome.APPROVED}
+
+
+async def test_una_segunda_pausa_del_mismo_review_key_se_puede_decidir() -> None:
+    """C11 sella *la pausa*: decidir la degradada no cierra la tarjeta de la completa."""
+    from datetime import timedelta
+
+    harness, review_key = _harness()
+    await harness.ingress.handle(
+        _data(DECISION_ACTION, review_key, finding_id="f1", outcome="approved"),
+        user_id="u1",
+        actor="Ana",
+    )
+    first = await harness.ingress.handle(
+        _data(SUBMIT_ACTION, review_key), user_id="u1", actor="Ana"
+    )
+    assert first is not None and first.notice == "Decision enviada"
+    assert harness.queue.dequeue() is not None
+
+    # El worker aplica la decision y el grafo vuelve a pausar el mismo `review_key`.
+    previous = harness.paused.get(review_key)
+    assert previous is not None
+    harness.paused.resume(review_key)
+    harness.paused.pause(
+        previous.request,
+        harness.approval,
+        created_at=previous.created_at + timedelta(minutes=5),
+    )
+    current = harness.paused.get(review_key)
+    assert current is not None and current.pause_id != previous.pause_id
+
+    second = await harness.ingress.handle(
+        _data(SUBMIT_ACTION, review_key), user_id="u1", actor="Luis"
+    )
+
+    assert second is not None and second.notice == "Decision enviada"
+    enqueued = harness.queue.dequeue()
+    assert enqueued is not None and enqueued.decision is not None
+    assert enqueued.decision.actor == "Luis"

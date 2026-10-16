@@ -102,7 +102,8 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **`PendingDecision`** | Un hallazgo pendiente con lo necesario para decidirlo sin abrir el PR: título, severidad, `fichero:línea`, la explicación del problema y el enlace al código. |
 | **Bot de Teams** (`teams-bot`) | Proceso que consume la outbox, publica/edita en el canal y recibe las acciones de la tarjeta (`POST /api/messages`). Traduce a `HitlDecision` con `build_decision` y **encola**; no reanuda el grafo ni conoce el worker. |
 | **Hilo por PR** | Un mensaje raíz por `repo:pr` en el canal dedicado; el resto de avisos van como reply y la tarjeta se edita in-place. El mapeo vive en Redis (`reviews:teams:threads`) y es UI, no verdad: si se pierde, se abre otro hilo. |
-| **Tarjeta de decisión** | La Adaptive Card que el bot publica en Teams a partir de la `ApprovalRequest`. Un botón por hallazgo y un Enviar gobernado por el **estado por usuario** (`reviews:teams:card:<key>`, lo que cada uno ha marcado). |
+| **Tarjeta de decisión** | La Adaptive Card que el bot publica en Teams a partir de la `ApprovalRequest`. Un botón por hallazgo y un Enviar gobernado por el **estado por usuario** (`reviews:teams:card:<key>`, lo que cada uno ha marcado). La primera decisión enviada **sella** la pausa (`pause_id`) y la tarjeta queda «decidido por X». |
+| **Canal dedicado** | La conversación de Teams donde el bot publica y desde la que acepta decisiones. Es la primera que captura (no personal); otra no la sustituye. Autoriza por pertenencia: quien está en el canal, decide. |
 | **Inbox** | Índice en Redis de las reviews pausadas (`reviews:paused:<review_key>`). Sirve para descubrirlas; la verdad está en el checkpoint. |
 | **Aviso de pausa** | Aviso al canal (Teams) de que una review quedó pausada. Viaja por la **outbox** con la `ApprovalRequest` estructurada; **no lleva marca de dedupe.** |
 | **Outbox del canal** | Cola Redis `reviews:notices` donde el worker **encola** los avisos (`ChatNotice`) en vez de llamar por HTTP; el bot los consume con `BLPOP`. Un bot caído no pierde el aviso: se publica al arrancar |
@@ -158,7 +159,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 
 | Término | Definición |
 |---|---|
-| ***Gold set*** | El conjunto versionado de casos auditados a mano (`tests/eval/pr_3/`), con diff, `scope`, etiquetas y grabaciones. La fuente única del baseline es la spec [006](docs/iniciativas/006-eval-de-la-review/spec.md). |
+| ***Gold set*** | El conjunto versionado de casos auditados a mano (`tests/eval/pr_3/`), con diff, `scope`, etiquetas y grabaciones. La fuente única del baseline es la spec [006](docs/iniciativas/archivo/006-eval-de-la-review/spec.md). |
 | **Caso de evaluación** | Un directorio del *gold set*: `labels.yaml` (procedencia, `scope`, etiquetas), `diff.patch`, `recorded.json` y `expected_report.json`. |
 | **Etiqueta (`expected`/`must_not_report`/`acceptable`)** | Veredicto humano por hallazgo: debe salir, no debe salir (con motivo) o es cierto pero sin valor. Un hallazgo no etiquetado cuenta como falso positivo. |
 | ***Replay*** | Correr el grafo real con un `LlmPort` que devuelve las respuestas grabadas, abortando si el *fingerprint* del prompt o del caso no casa. Es el modo de CI. |

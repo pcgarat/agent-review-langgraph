@@ -7,10 +7,15 @@ incluida la tolerancia a entradas corruptas (perder el hilo solo abre uno nuevo)
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from agent_review.teams_bot.threads import (
     CardRef,
     ChannelContext,
     InMemoryChannelStore,
+    RedisChannelStore,
     ThreadRef,
     card_field,
     thread_field,
@@ -224,3 +229,22 @@ def test_el_store_en_memoria_guarda_canal_hilo_y_tarjeta() -> None:
 # El protocolo del cliente falso cubre lo que exige el transporte.
 def test_el_cliente_falso_cumple_el_puerto() -> None:
     assert isinstance(FakeChannel(), ChannelClient)
+
+
+def test_un_pr_nuevo_en_redis_no_se_registra_como_entrada_ilegible(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Un `HGET` sin entrada es lo normal en cada PR nuevo, no una corrupcion."""
+
+    class _EmptyRedis:
+        def hget(self, key: str, field: str) -> None:
+            return None
+
+    store = RedisChannelStore(url="redis://localhost:6399/0")
+    store._client = _EmptyRedis()  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING, logger="agent_review.teams_bot.threads"):
+        assert store.thread(repo="r", pr_id=1) is None
+        assert store.card("k") is None
+
+    assert "ilegible" not in caplog.text

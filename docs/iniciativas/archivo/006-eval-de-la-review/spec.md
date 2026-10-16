@@ -23,7 +23,7 @@ y **1** era cierto en parte. La revisión del código a mano fijó **7 hallazgos
 en total: además de ese fallo invertido y del cierto en parte, **no detectó 3 `P1`** de
 integración y configuración **ni 3 `P2`** de código. Los seis estaban en el diff del
 PR, pero el `scope` y el recorte del prompt los dejaron fuera de lo que vio el modelo
-(ver [012](../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona,
+(ver [012](../../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona,
 hallazgo a hallazgo— es valiosísimo y hoy no está en ninguna parte: se pierde al cerrar
 la pestaña. Y sin un número no hay forma de saber si un *prompt* nuevo mejora o solo
 cambia el ruido.
@@ -96,7 +96,7 @@ Los seis últimos **sí estaban en el diff del PR**, pero no en lo que vio el mo
 #1, #2, #3 y #5 por **cobertura**, el #6 y #7 por **contexto**: de 51 ficheros,
 `max_files_per_pr: 10` dejó 10 (ordenados por churn) y el corte a
 60 000 caracteres dejó ≈ 5 (reproducción en
-[012 §3.1](../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
+[012 §3.1](../../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
 decir eso en dos números: el `recall` del subconjunto `integracion`/`no_detectado` y la
 cobertura.
 
@@ -112,16 +112,16 @@ El harness no necesita nada nuevo del grafo:
 
 | Pieza | Dónde | Para qué |
 |---|---|---|
-| Grafo real con revisores inyectables | [`build_graph`](../../../src/agent_review/graph/build.py) | Corre scope→personas→merge→policy→publish sobre el caso |
-| Persona LLM con puerto inyectable | [`LlmReviewer`](../../../src/agent_review/adapters/llm_reviewer.py) | Sustituir el puerto por grabaciones sin tocar la persona |
-| Persona estática desde artefacto | [`ToolingReviewer`](../../../src/agent_review/adapters/tooling_reviewer.py) | Ingerir el artefacto de un caso que lo traiga (el semilla no) |
-| Filtro y tope de ficheros | [`scope.py`](../../../src/agent_review/scope.py) | Reproducir lo que vio el modelo con la configuración del caso |
-| Puerto de modelo | [`LlmPort`/`LlmReply`](../../../src/agent_review/ports/llm.py) | El *replay* y el modelo real son el mismo puerto |
-| `FakeVcs` + `FakeLlm` como patrón | [`test_llm_reviewer.py`](../../../tests/test_llm_reviewer.py) | El VCS falso que registra lo publicado no hay que inventarlo |
-| Fixtures mínimos | [`diff_emotivoo.diff`](../../../tests/fixtures/diff_emotivoo.diff), [`analysis.json`](../../../tests/fixtures/phpstan/analysis.json) | Son *smoke* de forma, **no** el PR #3: el caso real se captura una vez (§5.2) |
+| Grafo real con revisores inyectables | [`build_graph`](../../../../src/agent_review/graph/build.py) | Corre scope→personas→merge→policy→publish sobre el caso |
+| Persona LLM con puerto inyectable | [`LlmReviewer`](../../../../src/agent_review/adapters/llm_reviewer.py) | Sustituir el puerto por grabaciones sin tocar la persona |
+| Persona estática desde artefacto | [`ToolingReviewer`](../../../../src/agent_review/adapters/tooling_reviewer.py) | Ingerir el artefacto de un caso que lo traiga (el semilla no) |
+| Filtro y tope de ficheros | [`scope.py`](../../../../src/agent_review/scope.py) | Reproducir lo que vio el modelo con la configuración del caso |
+| Puerto de modelo | [`LlmPort`/`LlmReply`](../../../../src/agent_review/ports/llm.py) | El *replay* y el modelo real son el mismo puerto |
+| `FakeVcs` + `FakeLlm` como patrón | [`test_llm_reviewer.py`](../../../../tests/test_llm_reviewer.py) | El VCS falso que registra lo publicado no hay que inventarlo |
+| Fixtures mínimos | [`diff_emotivoo.diff`](../../../../tests/fixtures/diff_emotivoo.diff), [`analysis.json`](../../../../tests/fixtures/phpstan/analysis.json) | Son *smoke* de forma, **no** el PR #3: el caso real se captura una vez (§5.2) |
 | Coste real por llamada | `LlmReviewer.last_usage` (`LlmReply`) | `coste por hallazgo verificado` con `usage` del proveedor, no estimando |
-| Marca `live` y `-m 'not live'` | [`pyproject.toml`](../../../pyproject.toml), [`ci.yml`](../../../.github/workflows/ci.yml) | La corrida real queda fuera de CI sin inventar un mecanismo nuevo |
-| Aislamiento del entorno | [`conftest.py`](../../../tests/conftest.py) | Un caso no depende del `.env` del host |
+| Marca `live` y `-m 'not live'` | [`pyproject.toml`](../../../../pyproject.toml), [`ci.yml`](../../../../.github/workflows/ci.yml) | La corrida real queda fuera de CI sin inventar un mecanismo nuevo |
+| Aislamiento del entorno | [`conftest.py`](../../../../tests/conftest.py) | Un caso no depende del `.env` del host |
 
 ### 3.3 El baseline
 
@@ -146,7 +146,7 @@ ahí, cualquier deriva de las métricas se ve como un diff.
 | E1 | Se mide sobre lo **publicado** (el conjunto de `merged` que la política deja salir), no sobre los `findings` crudos | Lo que quema la confianza es lo que la persona ve en el PR; un hallazgo que el merge dedupe no debe contar como mérito |
 | E2 | El caso es **un directorio versionado** con diff, artefacto, `labels.yaml` y grabaciones | Un *gold set* en una hoja de cálculo no se reproduce; en git, cualquier corrida es auditable |
 | E3 | CI corre con **respuestas grabadas** (*replay*); el modelo real corre fuera de CI | Determinismo dentro, fidelidad fuera. Un CI que llama al modelo es un test *flaky* que además se paga |
-| E4 | La grabación lleva el **fingerprint del prompt y del caso**, **por rol y por llamada**, y CI falla si no coinciden | Un *prompt* nuevo con grabación vieja mediría el pasado en silencio: se fuerza a regrabar, y esa regrabación es un diff revisable. El rol forma parte del fingerprint porque dos roles con el mismo diff y `max_findings` generan el mismo prompt |
+| E4 | La grabación lleva el **fingerprint del prompt y del caso**, **por rol y por llamada**, y CI falla si no coinciden. *(Enmienda 2026-10-16: el del prompt incluye también `json_mode` y `response_schema`; ver ADR-0017)* | Un *prompt* nuevo con grabación vieja mediría el pasado en silencio: se fuerza a regrabar, y esa regrabación es un diff revisable. El rol forma parte del fingerprint porque dos roles con el mismo diff y `max_findings` generan el mismo prompt |
 | E5 | Las métricas tienen **definición cerrada** (§5.4) y un hallazgo no etiquetado cuenta como falso positivo | Un matcher laxo infla la precisión; dejarlo explícito evita discutir el número en vez del hallazgo |
 | E6 | «Mejora» es una relación de **dominancia**: precisión, recall y cobertura no bajan, los falsos `P0`/`P1` no suben, y algo sube estrictamente | Sin esto, se «mejora» subiendo recall a base de publicar basura, o precisión callando o mirando menos código |
 | E9 | Tres etiquetas: `expected`, `must_not_report` y `acceptable` (cierto pero sin valor, p. ej. una decisión ya documentada); `acceptable` no cuenta ni como `tp` ni como `fp` | Forzar H a acierto infla la precisión; forzarlo a error castiga un hallazgo cierto |
@@ -223,10 +223,10 @@ acceptable:
 ```
 
 - `match` son frases **conjuntivas** (todas deben aparecer) sobre `title` +
-  `why_it_matters`, normalizadas como en [`text_utils`](../../../src/agent_review/adapters/text_utils.py).
+  `why_it_matters`, normalizadas como en [`text_utils`](../../../../src/agent_review/adapters/text_utils.py).
 - `file` y `line` son **opcionales**: cuando están, el hallazgo debe caer en el mismo
   fichero y a ≤ 5 líneas (misma tolerancia que el merge entre personas,
-  [ADR-0014](../../adr/0014-criterio-de-merge-entre-personas.md)). Cuando no están,
+  [ADR-0014](../../../adr/0014-criterio-de-merge-entre-personas.md)). Cuando no están,
   casa por contenido: es lo que permite etiquetar los `#1`–`#7`, que no tienen línea.
 - `subset` agrupa para reportar (`correctness`, `integracion`, `no_detectado`,
   `tooling`…) y permite el `recall` por subconjunto sin duplicar casos.
@@ -260,17 +260,17 @@ flowchart LR
 | Modo | Puerto LLM | Cuándo | Qué responde |
 |---|---|---|---|
 | **replay** (por defecto) | `recorded.json`, cacheado por fingerprint | `make test` y CI | ¿Un cambio de contrato, merge o política mueve las métricas? |
-| **real** (`-m live`) | `ModelRegistry.port_for(rol)` ([ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)) | `make eval-live`, a mano y en *nightly* | ¿Un cambio de prompt o de modelo mejora la calidad? |
+| **real** (`-m live`) | `ModelRegistry.port_for(rol)` ([ADR-0015](../../../adr/0015-registro-declarativo-de-modelos.md)) | `make eval-live`, a mano y en *nightly* | ¿Un cambio de prompt o de modelo mejora la calidad? |
 
 En `replay`, el puerto devuelve el `text` y el `usage` grabados y **aborta** si el
 fingerprint del prompt o del caso no coincide con la grabación (E4). Así, la corrida
 de CI reproduce el baseline exacto y las mejoras que actúan **después** del modelo
-(L0 de [008](../008-contexto-del-revisor/spec.md), merge, gate de
-[011](../011-gate-de-severidad/spec.md)) se ven **sin gastar un token**.
+(L0 de [008](../../008-contexto-del-revisor/spec.md), merge, gate de
+[011](../../011-gate-de-severidad/spec.md)) se ven **sin gastar un token**.
 
 Las que cambian **lo que recibe** el modelo (lotes de
-[012](../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
-verificador de [009](../009-verificador-adversarial/spec.md)) invalidan el
+[012](../../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
+verificador de [009](../../009-verificador-adversarial/spec.md)) invalidan el
 fingerprint: exigen regrabar con `make eval-record`, y esa regrabación es parte del
 PR que las introduce. Las grabaciones se guardan **por rol y por llamada**
 (`correctness`, `verifier`…), de modo que regrabar un rol no invalida los demás.
@@ -335,7 +335,7 @@ en el resto (por ejemplo, sube el recall y bajan los `P0`/`P1`, pero cae la prec
 
 ### 5.5 CI y comandos
 
-- El caso corre dentro de `pytest` (sin job nuevo en [`ci.yml`](../../../.github/workflows/ci.yml)):
+- El caso corre dentro de `pytest` (sin job nuevo en [`ci.yml`](../../../../.github/workflows/ci.yml)):
   `make test` ya recorre `tests/`.
 - `make eval` — informe *replay* por consola; `EVAL_COMPARE=expected_report.json`
   añade el delta contra el baseline congelado.
@@ -380,9 +380,9 @@ en el resto (por ejemplo, sube el recall y bajan los `P0`/`P1`, pero cae la prec
 - [ ] Cada `expected` con `must_mention` no cumplido aparece en `inverted` y **no**
       mueve precisión ni recall (E16).
 - [ ] `make ci` y `make docs-check` en verde.
-- [ ] Documentos vivos al día: [`desarrollo.md`](../../desarrollo.md) §1–2 (comandos y
-      zona `eval`), [`arquitectura.md`](../../arquitectura.md) §7 (D14 pasa a parcial),
-      [`CONTEXT.md`](../../../CONTEXT.md) si nacen «*gold set*», «caso de evaluación» o
+- [ ] Documentos vivos al día: [`desarrollo.md`](../../../desarrollo.md) §1–2 (comandos y
+      zona `eval`), [`arquitectura.md`](../../../arquitectura.md) §7 (D14 pasa a parcial),
+      [`CONTEXT.md`](../../../../CONTEXT.md) si nacen «*gold set*», «caso de evaluación» o
       «mejora (dominancia)», y un ADR nuevo para E3/E4 (el siguiente número libre).
 
 ## 8. Preguntas abiertas

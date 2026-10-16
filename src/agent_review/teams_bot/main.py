@@ -20,6 +20,13 @@ import hmac
 import logging
 from typing import Any
 
+# A nivel de modulo, no dentro de `_register_healthz`: con `from __future__ import
+# annotations` FastAPI resuelve la anotacion `Request` en los globales del modulo;
+# importada en local no la encuentra, toma `request` por un query param y responde
+# 422 a todo `GET /healthz` (y el healthcheck de Compose nunca pasa).
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 from agent_review.chat_outbox import RedisChatOutbox
 from agent_review.paused_store import RedisPausedStore
 from agent_review.queue import RedisReviewQueue
@@ -74,7 +81,7 @@ def run_forever(*, settings: Settings | None = None) -> None:
         ),
         transport=transport,
     )
-    register_handlers(app, ingress=ingress, store=store)
+    register_handlers(app, ingress=ingress, store=store, tenant_id=settings.teams_bot_tenant_id)
 
     logger.info("Bot de Teams arrancado (Fase 4, iniciativa 013)")
     asyncio.run(serve_bot(service, app, port=settings.teams_bot_port))
@@ -88,8 +95,6 @@ def _register_healthz(app: Any, *, secret: str) -> None:
     endpoint es publico (el ingress lo expone), asi que no debe dar informacion sin
     credencial.
     """
-    from fastapi import Request
-    from fastapi.responses import JSONResponse
 
     async def healthz(request: Request) -> JSONResponse:
         authorization = request.headers.get("authorization", "")

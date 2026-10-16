@@ -43,7 +43,7 @@ del contexto que reduce el `unverified` legítimo
 ([008](../008-contexto-del-revisor/spec.md)) y del verificador que produce el
 veredicto ([009](../009-verificador-adversarial/spec.md)). Esta iniciativa **consume**
 esos resultados; no los implementa. Su efecto se mide con
-[006](../006-eval-de-la-review/spec.md).
+[006](../archivo/006-eval-de-la-review/spec.md).
 
 ## 2. No-objetivos
 
@@ -54,7 +54,7 @@ esos resultados; no los implementa. Su efecto se mide con
   el render sigue
   [ADR-0006](../../adr/0006-publicacion-inline-primero-resumen-al-final.md).
 - **Medir la calidad.** Las métricas (falsos positivos, precisión, recall…) y el
-  baseline son de [006](../006-eval-de-la-review/spec.md); aquí no se redefinen.
+  baseline son de [006](../archivo/006-eval-de-la-review/spec.md); aquí no se redefinen.
   Las trazas y el resto de D14 siguen fuera.
 - **Cambiar la escala de severidad ni las anclas de `confidence`.** `P0`–`P3` y
   `0/25/50/75/100` se mantienen.
@@ -64,7 +64,7 @@ esos resultados; no los implementa. Su efecto se mide con
 
 ### 3.1 La severidad no está respaldada
 
-En la auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)), **6 de 9
+En la auditoría del PR #3 ([006 §3.1](../archivo/006-eval-de-la-review/spec.md)), **6 de 9
 hallazgos publicados eran falsos positivos**, varios de ellos con severidad alta. Los
 falsos positivos nacen de afirmar sobre código que el revisor no ve. El `merge` solo
 deduplica y no filtra:
@@ -188,7 +188,7 @@ iniciativa.
 ### 5.5 Medida
 
 El gate actúa después del modelo, así que su efecto se ve en el *replay* de
-[006](../006-eval-de-la-review/spec.md) sin regrabar ni gastar tokens. Las métricas y
+[006](../archivo/006-eval-de-la-review/spec.md) sin regrabar ni gastar tokens. Las métricas y
 el baseline son los de 006; el umbral (`require_verified_for`, `degrade_to`) se
 ajusta con ellas, nunca a ojo.
 
@@ -220,7 +220,7 @@ ajusta con ellas, nunca a ojo.
    tiene una acción distinta de `report`. Tests que lo prueban.
 7. Ningún otro nodo ni adaptador modifica `severity` (test sobre L0, L2 y `merge`).
 8. El gate es una **mejora** sobre el baseline según el criterio de dominancia de
-   [006](../006-eval-de-la-review/spec.md).
+   [006](../archivo/006-eval-de-la-review/spec.md).
 9. `make ci` en verde y `make docs-check` en verde.
 10. Documentos vivos al día: [`arquitectura.md`](../../arquitectura.md) §3 (orden
    gate → reglas en `policy`) y, si el bloque cambia la configuración,
@@ -239,7 +239,7 @@ ajusta con ellas, nunca a ojo.
 - **Q3 —** *Resuelta (2026-10-16):* la severidad efectiva entra en las reglas y un
   degradado queda limitado a `report` (G7).
 - **Q4 —** *Resuelta (2026-10-16):* las métricas son de
-  [006](../006-eval-de-la-review/spec.md), que ya separa los falsos `P0`/`P1`.
+  [006](../archivo/006-eval-de-la-review/spec.md), que ya separa los falsos `P0`/`P1`.
 - **Q5 — ¿Se muestra siempre el veredicto o solo en `≥P2` y degradados?** Mostrarlo
   siempre añade ruido a los `P3`; omitirlo pierde trazabilidad.
 - **Q6 — ¿Qué umbral de `confidence` (si alguno) acompaña al gate?** Hoy

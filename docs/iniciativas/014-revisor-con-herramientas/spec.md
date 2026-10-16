@@ -58,7 +58,7 @@ Se quiere:
 
 ### 3.1 Lo que L1 no alcanza
 
-En la auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)), varios
+En la auditoría del PR #3 ([006 §3.1](../archivo/006-eval-de-la-review/spec.md)), varios
 falsos positivos nacen de código que no está en ninguno de los ficheros del diff:
 
 | # | Hallazgo | Dónde estaba lo que faltaba | Con L1 (008) | Con herramientas |
@@ -156,7 +156,7 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
   ([009 V14](../009-verificador-adversarial/spec.md)) y no viaja en el estado.
 - `ReviewerResult` gana `files_read` y el uso del bucle (`turns`, `tool_calls`,
   `bytes_served`), que `ReviewOutcome` expone para que
-  [006](../006-eval-de-la-review/spec.md) mida el coste.
+  [006](../archivo/006-eval-de-la-review/spec.md) mida el coste.
 - El `base_sha` es el mismo que necesita L0 de 008 ([008 Q1](../008-contexto-del-revisor/spec.md)).
 
 ### 5.4 Variables nuevas

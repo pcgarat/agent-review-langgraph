@@ -123,6 +123,9 @@ def _dump(**fields: str) -> str:
 
 
 def _load(raw: object) -> dict[str, Any] | None:
+    if raw is None:
+        # Clave ausente (`HGET`/`GET` de un PR o tarjeta nuevos): no es corrupcion.
+        return None
     try:
         payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else str(raw))
     except (ValueError, TypeError) as exc:
