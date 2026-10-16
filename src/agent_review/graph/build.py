@@ -32,7 +32,7 @@ from agent_review.domain.models import (
 from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter
 from agent_review.fix.node import apply_resolutions, build_wave, dispatch_fixes
-from agent_review.graph.wrapper import node_wrapper
+from agent_review.graph.wrapper import CancelCheck, node_wrapper
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
@@ -412,6 +412,7 @@ def build_graph(
     verification_enabled: bool = True,
     budget_total: int | None = None,
     progress: ProgressPort | None = None,
+    cancel: CancelCheck | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review (Fase 3-E7).
 
@@ -427,11 +428,15 @@ def build_graph(
     envuelto por `wrapper.node_wrapper` (el *seam* único, D2), que anota su frontera
     en Redis. Sin puerto, la envoltura solo deja pasar los argumentos: el grafo se
     comporta igual que sin ella (W2).
+
+    `cancel` (019 W4) es el chequeo de la marca de cancelación, aplicado en la misma
+    frontera de nodo: se aborta **entre** nodos, nunca a mitad de uno. Llega como
+    callable, igual que `progress`, para que el grafo no dependa de Redis.
     """
 
     # Un solo *seam* de envoltura (019 D2): la 018 anadira aqui su traza.
     def node(name: str, fn: Any) -> Any:
-        return node_wrapper(name, fn, progress=progress)
+        return node_wrapper(name, fn, progress=progress, cancel=cancel)
 
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()

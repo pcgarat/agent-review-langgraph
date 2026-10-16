@@ -54,7 +54,6 @@ from agent_review.graph.build import (
     build_pause,
     outcome_from_state,
 )
-from agent_review.graph.wrapper import set_cancel_check
 from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from agent_review.pending_store import PendingStore, RedisPendingStore
@@ -416,11 +415,10 @@ def build_runtime(
         settings.database_url, required=is_production(settings)
     )
     progress = progress if progress is not None else build_progress(settings)
-    # La cancelacion (019 W4) se instala en el *seam* de nodo: `build_graph` no
-    # conoce Redis, asi que el chequeo lo inyecta aqui el composition root. Sin
-    # Redis, `build_cancellation` es `None` y la frontera no consulta nada (W2).
+    # La cancelacion (019 W4) viaja como el progreso: `build_graph` no conoce Redis,
+    # asi que el composition root le pasa el chequeo ya construido. Sin Redis,
+    # `build_cancellation` es `None` y la frontera no consulta nada (W2).
     cancellation = build_cancellation(settings)
-    set_cancel_check(cancellation.is_cancelled if cancellation is not None else None)
     graph = build_graph(
         vcs=vcs,
         reviewers=reviewers,
@@ -434,6 +432,7 @@ def build_runtime(
         verification_enabled=verification_enabled(settings),
         budget_total=settings.llm_budget_tokens_per_pr,
         progress=progress,
+        cancel=cancellation.is_cancelled if cancellation is not None else None,
     )
     return graph.compile(checkpointer=saver)
 

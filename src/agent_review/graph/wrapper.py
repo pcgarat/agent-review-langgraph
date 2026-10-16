@@ -32,27 +32,9 @@ logger = logging.getLogger(__name__)
 
 # Chequeo de cancelación: dado el `review_key`, `True` si hay marca puesta (019 W4).
 # Es un callable para que la capa del grafo no dependa de Redis: quien lo construye
-# es el worker (adaptador `RedisCancellation`).
+# es el worker (adaptador `RedisCancellation`), y llega por `build_graph` igual que
+# el puerto de progreso. Sin chequeo, la frontera no consulta nada (W2).
 CancelCheck = Callable[[str], bool]
-
-# Chequeo instalado por el worker al arrancar (`set_cancel_check`). `build_graph`
-# construye los nodos sin un chequeo explícito —no es su capa—, así que el worker lo
-# inyecta aquí una sola vez: la resolución ocurre en cada llamada, de modo que el
-# grafo ya construido lo ve. Sin instalar, la cancelación no se consulta y todo se
-# comporta como antes (W2).
-_cancel_check: CancelCheck | None = None
-
-
-def set_cancel_check(check: CancelCheck | None) -> CancelCheck | None:
-    """Instala el chequeo de cancelación por defecto y devuelve el anterior.
-
-    Punto de inyección del *composition root* (`build_runtime`/`run_forever`), que
-    es quien conoce Redis. Devuelve el anterior para que un test pueda restaurarlo.
-    """
-    global _cancel_check
-    previous = _cancel_check
-    _cancel_check = check
-    return previous
 
 
 def node_wrapper(
@@ -71,8 +53,7 @@ def node_wrapper(
     `finally` la deja pasar sin tragársela.
 
     `cancel` comprueba la marca de cancelación **antes** de empezar el nodo (W4);
-    sin él se usa el chequeo instalado por el worker, y sin ninguno el sistema se
-    comporta igual que hoy.
+    sin él la frontera no consulta nada, y el sistema se comporta igual que hoy.
 
     El `review_key` se lee del estado de la rama: todas llevan su `request` (el
     `Send` del fan-out lo incluye), así que está siempre disponible.
@@ -100,7 +81,7 @@ def _guard_cancel(cancel: CancelCheck | None, review_key: str) -> None:
     """
     if not review_key:
         return
-    check = cancel if cancel is not None else _cancel_check
+    check = cancel
     if check is None:
         return
     try:

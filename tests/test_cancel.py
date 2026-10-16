@@ -20,7 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from agent_review.domain.models import ApprovalRequest, ReviewRequest
 from agent_review.domain.paused import PauseKind
 from agent_review.errors import Cancelled, PermanentError, cancel_key, is_transient
-from agent_review.graph.wrapper import node_wrapper, set_cancel_check
+from agent_review.graph.wrapper import node_wrapper
 from agent_review.paused_store import InMemoryPausedStore
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.worker.cancel import RedisCancellation
@@ -132,21 +132,24 @@ def test_sin_chequeo_el_comportamiento_actual_no_cambia() -> None:
     assert calls == ["run"]
 
 
-def test_el_chequeo_instalado_por_el_worker_aborta_cualquier_nodo_del_grafo() -> None:
-    """El `build_graph` no recibe `cancel`: usa el chequeo global que instala el worker."""
+def test_el_chequeo_llega_por_parametro_a_toda_la_frontera_del_grafo() -> None:
+    """El `cancel` viaja a `build_graph` (no por estado global): frótalo con el progreso.
+
+    Sin estado mutable de módulo, dos grafos en el mismo proceso no comparten chequeo
+    y un test no necesita restaurar nada.
+    """
     check = _redis_cancel()
     check._client.set(cancel_key("k"), "1")
-    previous = set_cancel_check(check.is_cancelled)
+    builder: StateGraph[dict[str, object]] = StateGraph(dict[str, object])
+    builder.add_node("scope", node_wrapper("scope", lambda state: state, cancel=check.is_cancelled))
+    builder.add_edge(START, "scope")
+    builder.add_edge("scope", END)
     try:
-        wrapped = node_wrapper("scope", lambda state: state)
-        try:
-            wrapped({"request": {"review_key": "k"}})
-        except Cancelled:
-            pass
-        else:  # pragma: no cover - el aborto siempre lanza
-            raise AssertionError("se esperaba Cancelled")
-    finally:
-        set_cancel_check(previous)
+        builder.compile().invoke({"request": {"review_key": "k"}})
+    except Cancelled:
+        pass
+    else:  # pragma: no cover - el aborto siempre lanza
+        raise AssertionError("se esperaba Cancelled")
 
 
 def test_un_fallo_del_chequeo_no_tumba_el_nodo() -> None:
