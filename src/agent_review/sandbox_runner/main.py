@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import yaml
 from fastapi import FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent_review.ports.context import Ref
 from agent_review.ports.sandbox import VerifyReport, VerifyRequest
 from agent_review.profile import context_denylist, load_profile
+from agent_review.sandbox_runner.console import ConsoleBuffer
 from agent_review.sandbox_runner.read_workspace import (
     PathDenied,
     ReadWorkspaceError,
@@ -250,6 +253,19 @@ def _get_workspace(settings: Settings, workspace_id: str) -> Any:
 
 
 _verifier: Verifier | None = None
+_console: ConsoleBuffer | None = None
+
+
+def build_console() -> ConsoleBuffer:
+    """Buffer de consola unico del proceso (memoria del runner; efimero, 019 W5).
+
+    El tope de lineas es una constante del modulo: `SANDBOX_CONSOLE_BUFFER_LINES` es
+    config del panel (bloque 3), no del runner, que no la necesita para funcionar.
+    """
+    global _console
+    if _console is None:
+        _console = ConsoleBuffer()
+    return _console
 
 
 def build_verifier(settings: Settings) -> Verifier:
@@ -262,8 +278,61 @@ def build_verifier(settings: Settings) -> Verifier:
             runtime=DockerCliRuntime(docker_bin=settings.sandbox_docker_bin),
             registry_user=settings.sandbox_registry_user,
             registry_token=settings.sandbox_registry_token,
+            console=build_console(),
         )
     return _verifier
+
+
+def _sse(event: str, payload: dict[str, object]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _console_events(buffer: ConsoleBuffer, run_key: str) -> Iterator[str]:
+    """Generador bloqueante que lee el buffer y rinde eventos SSE (019 W5).
+
+    Es sincrono a proposito (R7): `StreamingResponse` lo itera en un hilo del
+    *threadpool* de Starlette, asi que un `wait` corto no bloquea el bucle de
+    eventos. Emite `hello` al enganchar, `line` por cada linea y `end` cuando la
+    verificacion termina.
+    """
+    yield _sse("hello", {"run_key": run_key})
+    last_seq = 0
+    while True:
+        lines, closed = buffer.wait_for_lines(run_key, last_seq)
+        for line in lines:
+            last_seq = line.seq
+            yield _sse("line", {"seq": line.seq, "stream": line.stream, "text": line.text})
+        if closed and not lines:
+            yield _sse("end", {"run_key": run_key})
+            return
+
+
+@app.get("/verify/{run_key:path}/console")
+def verify_console(
+    run_key: str,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    """Consola en vivo de una verificacion (SSE, 019 W5/W9).
+
+    Sirve el buffer efimero del runner: si el `run_key` ya termino, emite lo que
+    quede y cierra; si no esta en el buffer (nunca existio, se desalojo o el runner
+    reinicio), `404`. El informe sigue siendo `POST /verify`, el canal fiable.
+    """
+    settings = get_settings()
+    _verify_token(settings, authorization)
+    console = build_console()
+    # El `404` se resuelve antes de abrir el stream: un `run_key` ausente no debe
+    # llegar a un `200` que se cierra sin eventos (contrato congelado con el `web`).
+    if not console.subscribe(run_key):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no hay consola para {run_key}")
+
+    def _stream() -> Iterator[str]:
+        try:
+            yield from _console_events(console, run_key)
+        finally:
+            console.unsubscribe(run_key)
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 def main() -> None:

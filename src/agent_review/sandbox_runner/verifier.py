@@ -9,6 +9,7 @@ from agent_review.domain.models import CommandResult
 from agent_review.errors import PermanentError
 from agent_review.ports.sandbox import VerifyReport, VerifyRequest
 from agent_review.profile import resolve_ci_image
+from agent_review.sandbox_runner.console import ConsoleBuffer
 from agent_review.sandbox_runner.recipes import (
     RecipeError,
     declared_checks,
@@ -21,6 +22,7 @@ from agent_review.sandbox_runner.runtime import (
     ContainerRuntime,
     ContainerSpec,
     ContainerTimeout,
+    LineSink,
 )
 from agent_review.sandbox_runner.workspace import WorkspacePort
 
@@ -71,6 +73,7 @@ class Verifier:
         registry_user: str = "",
         registry_token: str = "",
         image_already_pulled: bool = False,
+        console: ConsoleBuffer | None = None,
     ) -> None:
         self._profile_source = profile_source
         self._workspace = workspace
@@ -78,6 +81,9 @@ class Verifier:
         self._registry_user = registry_user
         self._registry_token = registry_token
         self._image_already_pulled = image_already_pulled
+        # Buffer de consola en vivo (019 W5). Opcional: sin el, la verificacion se
+        # comporta igual que antes y no se emite ninguna linea.
+        self._console = console
         self._completed: dict[str, VerifyReport] = {}
         self._running: set[str] = set()
         self._lock = threading.Lock()
@@ -95,16 +101,24 @@ class Verifier:
                 # segundo contenedor sobre el mismo parche.
                 raise RunnerError(f"la verificacion {request.run_key} ya esta en curso")
             self._running.add(request.run_key)
+        # La consola se abre antes de tocar el sandbox y se cierra pase lo que pase,
+        # para que el SSE deje de esperar cuando la verificacion termina.
+        on_line: LineSink | None = None
+        if self._console is not None:
+            self._console.open(request.run_key)
+            on_line = self._console.line_sink(request.run_key)
         try:
-            report = self._verify(request)
+            report = self._verify(request, on_line)
         finally:
+            if self._console is not None:
+                self._console.close(request.run_key)
             with self._lock:
                 self._running.discard(request.run_key)
         with self._lock:
             self._completed[request.run_key] = report
         return report
 
-    def _verify(self, request: VerifyRequest) -> VerifyReport:
+    def _verify(self, request: VerifyRequest, on_line: LineSink | None = None) -> VerifyReport:
         profile = self._profile_source.load()
         image = resolve_ci_image(profile)
         if image is None:
@@ -130,10 +144,12 @@ class Verifier:
                 self._runtime.pull(
                     image, registry_user=self._registry_user, registry_token=self._registry_token
                 )
-            results = self._run_setup(profile, workspace, image, env, timeout_s)
+            results = self._run_setup(profile, workspace, image, env, timeout_s, on_line)
             if all(result.ok for result in results):
                 results.extend(
-                    self._run_checks(recipes, workspace, image, checks, targets, env, timeout_s)
+                    self._run_checks(
+                        recipes, workspace, image, checks, targets, env, timeout_s, on_line
+                    )
                 )
         finally:
             # Pase lo que pase (exito, fallo o timeout): el workspace se borra. Los
@@ -161,6 +177,7 @@ class Verifier:
         image: str,
         env: dict[str, str],
         timeout_s: float,
+        on_line: LineSink | None = None,
     ) -> list[CommandResult]:
         """`setup_network` con red, luego el resto de `setup` sin red.
 
@@ -172,7 +189,14 @@ class Verifier:
         if isinstance(with_network, list):
             for argv in expand_setup([str(cmd) for cmd in with_network]):
                 result = self._run_command(
-                    "setup_network", argv, workspace, image, env, timeout_s, network="bridge"
+                    "setup_network",
+                    argv,
+                    workspace,
+                    image,
+                    env,
+                    timeout_s,
+                    network="bridge",
+                    on_line=on_line,
                 )
                 results.append(result)
                 if not result.ok:
@@ -181,7 +205,7 @@ class Verifier:
         if isinstance(offline, list):
             for argv in expand_setup([str(cmd) for cmd in offline]):
                 result = self._run_command(
-                    "setup", argv, workspace, image, env, timeout_s, network="none"
+                    "setup", argv, workspace, image, env, timeout_s, network="none", on_line=on_line
                 )
                 results.append(result)
                 if not result.ok:
@@ -197,6 +221,7 @@ class Verifier:
         targets: list[str],
         env: dict[str, str],
         timeout_s: float,
+        on_line: LineSink | None = None,
     ) -> list[CommandResult]:
         results: list[CommandResult] = []
         for name in recipes:
@@ -204,7 +229,9 @@ class Verifier:
             if argv is None:
                 logger.info("recipe %s sin targets; se salta", name)
                 continue
-            result = self._run_command(name, argv, workspace, image, env, timeout_s, network="none")
+            result = self._run_command(
+                name, argv, workspace, image, env, timeout_s, network="none", on_line=on_line
+            )
             results.append(result)
             if not result.ok:
                 # Para al primer fallo: los checks siguientes serian ruido caro.
@@ -221,11 +248,12 @@ class Verifier:
         timeout_s: float,
         *,
         network: str,
+        on_line: LineSink | None = None,
     ) -> CommandResult:
         spec = ContainerSpec(image=image, argv=argv, workspace=workspace, env=env, network=network)
         container_id = self._runtime.create(spec)
         try:
-            outcome = self._runtime.start(container_id, timeout_s=timeout_s)
+            outcome = self._runtime.start(container_id, timeout_s=timeout_s, on_line=on_line)
         except ContainerTimeout as exc:
             return CommandResult(
                 recipe=recipe,

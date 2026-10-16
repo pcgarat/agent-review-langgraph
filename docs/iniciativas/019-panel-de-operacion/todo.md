@@ -67,20 +67,20 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 4 — Consola del sandbox (checkpoint C4)
 
-- [ ] **OP19** `on_line` **opcional** (default `None`) en `ContainerRuntime.start`;
+- [x] **OP19** `on_line` **opcional** (default `None`) en `ContainerRuntime.start`;
   los *fakes* y el runtime actual siguen valiendo.
-- [ ] **OP20** `DockerCliRuntime` con `Popen` y un hilo lector por flujo
+- [x] **OP20** `DockerCliRuntime` con `Popen` y un hilo lector por flujo
   (`stdout`/`stderr`): **acumula** (el `VerifyReport` no cambia) **y** emite a
   `on_line`
   - Sin `stderr=STDOUT`: el informe mantiene ambos flujos separados (riesgo R5).
-- [ ] **OP21** Buffer circular en memoria del runner por `run_key`, con alta de
+- [x] **OP21** Buffer circular en memoria del runner por `run_key`, con alta de
   suscriptores (efímero, como los workspaces de [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md)).
-- [ ] **OP22** Endpoint SSE `GET /verify/{run_key}/console` en el runner, con el
+- [x] **OP22** Endpoint SSE `GET /verify/{run_key}/console` en el runner, con el
   bearer compartido.
-- [ ] **OP23** Test: con `on_line` el `VerifyReport` es idéntico; el timeout y la
+- [x] **OP23** Test: con `on_line` el `VerifyReport` es idéntico; el timeout y la
   destrucción del contenedor no cambian.
 - [ ] **OP24** Proxy SSE en el `web` y vista de consola en vivo en la UI.
-- [ ] **OP25** Test: `404` si el `run_key` no está en el buffer; un reinicio del
+- [x] **OP25** Test: `404` si el `run_key` no está en el buffer; un reinicio del
   runner pierde el buffer y no altera el informe.
 
 ## Bloque 5 — Comandos (checkpoint C5)

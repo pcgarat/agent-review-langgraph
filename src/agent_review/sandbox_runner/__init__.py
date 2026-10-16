@@ -1,3 +1,4 @@
+from agent_review.sandbox_runner.console import ConsoleBuffer, ConsoleNotFound
 from agent_review.sandbox_runner.recipes import (
     InvalidTarget,
     RecipeError,
@@ -27,6 +28,8 @@ from agent_review.sandbox_runner.workspace import (
 )
 
 __all__ = [
+    "ConsoleBuffer",
+    "ConsoleNotFound",
     "ContainerError",
     "ContainerOutcome",
     "ContainerRuntime",
