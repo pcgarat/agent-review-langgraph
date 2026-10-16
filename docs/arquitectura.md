@@ -303,7 +303,7 @@ vencimiento vive en `sweep_fix_expired`
 |---|---|---|
 | 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1) |
 | 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación) | Smoke contra infraestructura real. Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
-| 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10) y **desacople E7** (F14–F24) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), P6 (revisión de seguridad; precondición) |
+| 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10) y **desacople E7** (F14–F28) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), P6 (revisión de seguridad; precondición) |
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
 El estado vivo de cada iniciativa y sus tareas están en

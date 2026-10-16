@@ -23,8 +23,9 @@ estado vivo del plan está en `docs/iniciativas/README.md`; las tareas en
 > wave, verifica y reanuda. Idempotencia por `run_key` (`reviews:fixes:done`), TTL
 > (`FIX_VERIFY_TTL_S`) y poda (`FixWaitRetention`) cubiertas en `tests/`.
 >
-> **Cierre (2026-10-16):** F14–F24 cerradas; docs vivas, README e índice al día
-> (F24). Queda solo el smoke real (criterio 9), precondicionado por **P6**.
+> **Cierre (2026-10-16):** F14–F28 cerradas (F25–F28 corrigen los hallazgos de la
+> revisión del PR #3); docs vivas, README e índice al día. Queda solo el smoke real
+> (criterio 9), precondicionado por **P6**.
 
 ---
 

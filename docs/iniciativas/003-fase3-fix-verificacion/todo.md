@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Todo: Fase 3 (fix + verificación)
 
@@ -87,7 +87,7 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 
 > El desacople fuerte de E7 (que este bloque no cubre) tiene su propio spec y su
 > propio checklist: `docs/iniciativas/004-fase3-e7-desacople/spec.md` y `docs/iniciativas/004-fase3-e7-desacople/todo.md`
-> (F14–F24).
+> (F14–F28).
 
 ## Precondiciones externas
 

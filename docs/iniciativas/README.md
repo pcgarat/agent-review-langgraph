@@ -14,8 +14,8 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 001 | [Diseño base y Fase 1 (report-only)](001-diseno-base/spec.md) | implementada | ✅ Entregada; smoke real con el PR 430 | P1 (opcional), P3, P5 · [todo](001-diseno-base/todo.md) |
 | 002 | [Fase 2 — HITL](002-fase2-hitl/spec.md) | implementada | ✅ T1–T10 cerradas | Smoke del checkpointer contra Postgres real · [todo](002-fase2-hitl/todo.md) |
 | 003 | [Fase 3 — Fix + verificación](003-fase3-fix-verificacion/spec.md) | aprobada | 🟡 F1–F10 hechas | F11 (spike R1), F12 (smoke real), F13 (docs), P6 · [todo](003-fase3-fix-verificacion/todo.md) |
-| 004 | [Fase 3-E7 — Desacople fuerte de la verificación](004-fase3-e7-desacople/spec.md) | implementada | ✅ F14–F24 cerradas | Smoke real (P6) · [todo](004-fase3-e7-desacople/todo.md) |
-| 005 | [Fase 3.5 — Modelos declarativos por rol](005-modelos-declarativos/spec.md) | implementada | ✅ M1–M8 cerradas | Smoke real (P6) · [todo](005-modelos-declarativos/todo.md) |
+| 004 | [Fase 3-E7 — Desacople fuerte de la verificación](004-fase3-e7-desacople/spec.md) | implementada | ✅ F14–F28 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](004-fase3-e7-desacople/todo.md) |
+| 005 | [Fase 3.5 — Modelos declarativos por rol](005-modelos-declarativos/spec.md) | implementada | ✅ M1–M11 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](005-modelos-declarativos/todo.md) |
 | 006 | [Evaluación de la review: *gold set* y métricas](006-eval-de-la-review/spec.md) | borrador | 🔵 Base de medición | La miden 007–011 |
 | 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Depende de 006 para medirse · habilita 008, 009 y 011 |
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | Depende de 007 |

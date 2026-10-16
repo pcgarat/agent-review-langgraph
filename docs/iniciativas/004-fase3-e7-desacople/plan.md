@@ -56,8 +56,8 @@ F1–F10 (cerrado)                                   Fase 3 actual
 
 ## Task list
 
-Ver `docs/iniciativas/004-fase3-e7-desacople/todo.md` (F14–F24). Orden por dependencia; el contrato (F14)
-primero y el E2E (F23) antes de tocar docs.
+Ver `docs/iniciativas/004-fase3-e7-desacople/todo.md` (F14–F28). Orden por dependencia; el contrato (F14)
+primero y el E2E (F23) antes de tocar docs. F25–F28 cierran los hallazgos de la revisión del PR #3.
 
 ## Checkpoints
 

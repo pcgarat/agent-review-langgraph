@@ -55,9 +55,9 @@ adaptador y consumidores a la vez para que `mypy strict` y los tests pasen).
 
 ## Task list
 
-Ver `docs/iniciativas/005-modelos-declarativos/todo.md` (M1–M8). Orden por
+Ver `docs/iniciativas/005-modelos-declarativos/todo.md` (M1–M11). Orden por
 dependencia: el contrato primero, el puerto en bloque, y el cableado y el `probe`
-después.
+después. M9–M11 cierran los hallazgos de la revisión del PR #3.
 
 ## Checkpoints
 
