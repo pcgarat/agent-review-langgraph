@@ -48,7 +48,10 @@ flowchart LR
     WORKER -->|checkpoint| PG
     WORKER -->|"twg: diff · inline · resumen"| BB
     WORKER -->|"aviso: outbox"| REDIS
-    REDIS -.->|"teams-bot (en curso)"| TEAMS
+    REDIS -->|BLPOP| BOT["teams-bot"]
+    BOT -->|"publica / edita"| TEAMS
+    TEAMS -->|"Action.Execute"| BOT
+    BOT -->|"decisión → jobs"| REDIS
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
     FIXW -->|verifica parche| RUNNER["sandbox-runner"]
@@ -63,11 +66,12 @@ flowchart LR
 | Componente | Rol |
 |---|---|
 | `api` | FastAPI. Valida la firma del CI, deposita el artefacto, mantiene la idempotencia y encola la review. Expone el canal de decisión (`/reviews/.../decision`). |
-| `worker` | Consume la cola y ejecuta el grafo con checkpointer durable. Reintenta fallos transitorios y aplica los TTL (ingesta, decisión y handoff del fix). **Nunca** toca el sandbox. |
+| `worker` | Consume la cola y ejecuta el grafo con checkpointer durable. Reintenta fallos transitorios y aplica los TTL (ingesta, decisión y handoff del fix). **Nunca** toca el sandbox. Encola avisos al canal; no habla con Teams. |
+| `teams-bot` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages`. Traduce la tarjeta a `HitlDecision` y **encola**; no reanuda el grafo. |
 | `fix-worker` | Fase 3-E7. Consume la *wave* de verificaciones, llama al `sandbox-runner` por cada `VerifyJob` y encola la reanudación del worker con la resolución. Es el único invocador del sandbox; **no publica ni escribe en el PR**. Aislado: sin `docker.sock`, sin `TWG_*`, sin Postgres, sin token de decisión. |
 | `sandbox-runner` | Fase 3. Verifica el parche de un fix con la imagen del CI **por digest** (`POST /verify` bloqueante con `run_key` idempotente). Clona, aplica el parche, corre `setup`+checks sin red y destruye. Aislado: sin `docker.sock`, sin puertos publicados, habla con su propio demonio rootless. |
 | `postgres` | Checkpointer de LangGraph: estado de cada ejecución, base del `interrupt` (HITL) y de la no-repetición. |
-| `redis` | Cola de jobs, cola de fixes, claves de idempotencia, registro de ingesta y *inbox* de reviews pausadas. |
+| `redis` | Cola de jobs, cola de fixes, outbox del canal (`reviews:notices`), claves de idempotencia, registro de ingesta e *inbox* de reviews pausadas. |
 | `twg` | Adaptador de Bitbucket/Jira (CLI). Obtiene diff, publica comentarios inline/resumen y resuelve anclas. |
 | `github` | Adaptador de GitHub (API REST, `VcsPort`). Sustituye a `twg` con `VCS_PROVIDER=github`; el grafo no cambia. |
 | `var/` | Artefactos del CI (salida de PHPStan) que lee la persona estática. Solo lectura en el worker. |

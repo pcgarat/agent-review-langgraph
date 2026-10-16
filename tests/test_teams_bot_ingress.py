@@ -363,10 +363,17 @@ class _FakeContext:
 
 
 class _FakeApp:
-    """Registra los handlers que el wiring da de alta en la `App` del SDK."""
+    """Registra lo que el wiring da de alta en la `App` del SDK.
+
+    El middleware llega por `use`; los handlers de actividad, por los decoradores.
+    """
 
     def __init__(self) -> None:
+        self.middlewares: list[Any] = []
         self.handlers: dict[str, Any] = {}
+
+    def use(self, middleware: Any) -> None:
+        self.middlewares.append(middleware)
 
     def _decorator(self, name: str) -> Any:
         def register(func: Any) -> Any:
@@ -374,9 +381,6 @@ class _FakeApp:
             return func
 
         return register
-
-    def on_activity(self, func: Any) -> Any:
-        return self._decorator("activity")(func)
 
     def on_card_action_execute(self, func: Any) -> Any:
         return self._decorator("card")(func)
@@ -395,10 +399,13 @@ class _Activity:
         aad_object_id: str = "aad-1",
         name: str = "Ana",
         conversation_id: str = "19:canal@thread.tacv2",
+        conversation_type: str = "channel",
     ) -> None:
         self.value = value
         self.service_url = "https://smba"
-        self.conversation = type("C", (), {"id": conversation_id})()
+        self.conversation = type(
+            "C", (), {"id": conversation_id, "conversation_type": conversation_type}
+        )()
         self.from_ = type("F", (), {"aad_object_id": aad_object_id, "id": "u1", "name": name})()
 
 
@@ -410,11 +417,12 @@ def _wired(harness: _Harness) -> _FakeApp:
     return app
 
 
-def test_el_wiring_registra_los_tres_handlers() -> None:
+def test_el_wiring_registra_middleware_y_handlers() -> None:
     harness, _ = _harness()
     app = _wired(harness)
 
-    assert set(app.handlers) == {"activity", "card", "message"}
+    assert set(app.handlers) == {"card", "message"}
+    assert len(app.middlewares) == 1, "el canal se captura en el middleware (C14)"
 
 
 async def test_cualquier_actividad_captura_el_canal() -> None:
@@ -423,7 +431,7 @@ async def test_cualquier_actividad_captura_el_canal() -> None:
     harness.store = InMemoryChannelStore()
     app = _wired(harness)
 
-    await app.handlers["activity"](_FakeContext(_Activity()))
+    await app.middlewares[0](_FakeContext(_Activity()))
 
     context = harness.store.context()
     assert context is not None
@@ -431,12 +439,27 @@ async def test_cualquier_actividad_captura_el_canal() -> None:
     assert context.service_url == "https://smba"
 
 
+async def test_un_chat_privado_con_el_bot_no_es_el_canal_de_avisos() -> None:
+    """C14: si un DM tomara el relevo, los avisos irian a la conversacion de alguien."""
+    from agent_review.teams_bot.threads import InMemoryChannelStore
+
+    harness, _ = _harness()
+    harness.store = InMemoryChannelStore()
+    app = _wired(harness)
+
+    await app.middlewares[0](
+        _FakeContext(_Activity(conversation_id="a:personal", conversation_type="personal"))
+    )
+
+    assert harness.store.context() is None
+
+
 async def test_si_redis_falla_al_capturar_el_canal_el_handler_no_rompe() -> None:
     harness, _ = _harness()
     harness.store.remember_context = _raise  # type: ignore[method-assign]
     app = _wired(harness)
 
-    await app.handlers["activity"](_FakeContext(_Activity()))
+    await app.middlewares[0](_FakeContext(_Activity()))
 
 
 async def test_el_handler_de_tarjeta_marca_y_devuelve_la_tarjeta() -> None:

@@ -2,10 +2,13 @@
 
 # Canal bidireccional de Teams: un bot con un hilo por PR
 
-> **Estado:** aprobada
+> **Estado:** implementada
 > **Entrega objetivo:** el agente pregunta en Teams y una persona responde **en el
 > mismo hilo del PR**; la respuesta se convierte en una decisión humana y la review
 > reanuda. Teams deja de ser un aviso que ya no llega a ser un canal de ida y vuelta.
+>
+> **Enmienda 2026-10-16.** T1–T9 y T11 cerradas en código y docs. Queda T10 (alta
+> del bot en el tenant y smoke real en el canal).
 
 ---
 

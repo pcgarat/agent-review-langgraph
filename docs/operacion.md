@@ -257,7 +257,7 @@ se **encolan** en `reviews:jobs`. El bot no reanuda el grafo.
 | Nivel | Comando | Qué demuestra |
 |---|---|---|
 | CI local | `make ci` | `ruff check`, `ruff format --check`, `mypy` estricto, `pytest` (`live` excluido) y `docs-check` |
-| Smoke nivel 1 (sin red) | `uv run pytest tests/test_e2e_tooling.py tests/test_worker.py tests/test_graph.py tests/test_hitl_e2e.py tests/test_fix_e2e.py -v` | Artefacto → grafo → inline/resumen; pausa → decisión → fix → sugerencia, con fakes |
+| Smoke nivel 1 (sin red) | `uv run pytest tests/test_e2e_tooling.py tests/test_worker.py tests/test_graph.py tests/test_hitl_e2e.py tests/test_teams_bot_service.py tests/test_fix_e2e.py -v` | Artefacto → grafo → inline/resumen; pausa → tarjeta/CLI → reanudación → outbox, con fakes |
 | Lectura real | `REVIEWS_LIVE_PR=417 uv run pytest tests/test_live_twg.py -m live` | El contrato de `twg` contra Bitbucket (solo lectura) |
 | Smoke nivel 2 | `scripts/smoke-nivel2.sh <PR_ID> [PIPELINE_ID]` | Levanta el stack, firma y deposita el artefacto, y espera la publicación real |
 
@@ -291,6 +291,8 @@ firma inválida o ausente da `401`.
 | Fix `not_verifiable` | Sin digest, sin runner, sin fixer, o el runner rechazó la petición | La razón aparece en el inline y en el log `Fase 3:`. Si vino de un TTL (`FIX_VERIFY_TTL_S`), revisa que el `fix-worker` esté arriba |
 | La review pausa "en verificación" y no cierra | La wave no vuelve: `fix-worker` caído o runner sin responder | `docker compose logs -f fix-worker`; la wave vence por TTL y queda `NOT_VERIFIABLE` |
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
+| No llegan avisos a Teams | `teams-bot` caído, sin canal capturado (C14) o `TEAMS_ENABLED=false` | `docker compose logs -f teams-bot`; `LLEN reviews:notices` (la outbox acumula); instalar el bot en el canal dedicado (T10) |
+| La tarjeta no reanuda y el CLI sí | Acción no llegó al ingress o JWT inválido | Mirar `401` en `/api/messages`; el CLI/HTTP es el respaldo (C9) |
 
 Fallos históricos que solo afloraron con Docker y ya están corregidos:
 

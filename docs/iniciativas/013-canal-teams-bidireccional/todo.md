@@ -3,7 +3,8 @@
 # Todo: Canal bidireccional de Teams (bot con hilo por PR)
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
-el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados; T9–T11 pendientes.
+el orden, en [`plan.md`](plan.md). Spec implementada el 2026-10-16 (T1–T9 y T11).
+Queda T10 (alta humana).
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
@@ -227,17 +228,19 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados
     `docs/operacion.md`.
   - **Hecho (2026-10-16).** `CardIngress` es la lógica **pura** (sin SDK): despacha
     `teams.decision` / `teams.submit` al `DecisionCardService` y al
-    `DecisionSubmitter` de T3. El wiring del SDK (`sdk_handlers.py`) registra
-    `on_activity` (C14), `on_card_action_execute` y el fallback `on_message`
-    (`Action.Submit`). El JWT lo valida el propio SDK al haber `client_id` (fail-
-    closed en producción); sin identidad o con token inválido responde `401`
-    antes de los handlers (probado con el pipeline real sobre FastAPI).
-  - **Tres correcciones durante el implemento.** (1) La respuesta del
+    `DecisionSubmitter` de T3. El wiring del SDK (`sdk_handlers.py`) registra un
+    **middleware** que captura el canal (C14), `on_card_action_execute` y el
+    fallback `on_message` (`Action.Submit`). El JWT lo valida el propio SDK al haber
+    `client_id` (fail-closed en producción); sin identidad o con token inválido
+    responde `401` antes de los handlers (probado con el pipeline real sobre FastAPI).
+  - **Cuatro correcciones durante el implemento.** (1) La respuesta del
     `Action.Execute` debe ser `AdaptiveCardActionCardResponse` con la tarjeta
-    repintada, no un mensaje: si no, se rompe C8. (2) El catch-all `on_activity`
-    **debe** llamar a `await ctx.next()`; sin eso, el SDK no llega a los
-    handlers de tarjeta (cadena de middleware). (3) Solo se recuerda el canal
-    si la conversación es `channel`: un DM no pisa el canal dedicado.
+    repintada, no un mensaje: si no, se rompe C8. (2) La captura del canal va en un
+    **middleware** (`app.use`) que llama a `await ctx.next()`: un handler normal
+    **corta la cadena** del SDK y la acción de la tarjeta no llegaría a su handler.
+    (3) Un **chat privado** no es el canal y no se guarda: si no, los avisos
+    acabarían en la conversación de una persona. (4) La superficie del SDK se
+    declara con un `Protocol` (`TeamsApp`) porque el paquete no trae `py.typed`.
   - Un fallo de Redis al marcar/encolar responde con aviso de reintento, no con
     `500` (Teams reintentaría a ciegas). Un fallo al editar la tarjeta tras
     Enviar es cosmético: la decisión ya está encolada.
@@ -255,7 +258,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados
     pendiente solo la parte de Compose (T6), donde `teams-bot` sustituye al webhook
     como publicador real.
 
-- [ ] **T9** E2E con fakes
+- [x] **T9** E2E con fakes
   - Review → pausa → aviso en la outbox → tarjeta de decisión → decisión desde la
     tarjeta → reanudación → aviso, con la cola y el transporte falsos. Casos: bot
     caído (el aviso se publica al arrancar), aviso de pausa vencida (se descarta) y
@@ -264,6 +267,13 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados
     reanuda con normalidad; un aviso de pausa vencida no genera tarjeta.
   - Verifica: `tests/test_hitl_e2e.py`.
   - Ficheros: `tests/test_hitl_e2e.py`.
+  - **Hecho (2026-10-16).** Cuatro casos en `tests/test_hitl_e2e.py` con outbox,
+    `TeamsBotService`, `CardIngress` y transporte falsos: (1) ciclo completo
+    pausa→tarjeta→Enviar→reanudación→aviso de review sin duplicar; (2) bot caído
+    publica al drenar; (3) pausa vencida (CLI decide antes) a la DLQ sin tarjeta;
+    (4) CLI con bot caído reanuda el PR con normalidad (C9). El grafo del E2E
+    recibe el `OutboxChatAdapter` para que el nodo `notify` deje el aviso
+    `published` en la misma cola que consume el bot.
 
 ## Bloque 4 — Pendientes humanos y documentación
 
@@ -309,7 +319,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados
   - Verifica: ejecución manual (smoke, fuera de CI).
   - Ficheros: `manifest.json` + iconos, `.env` (no versionado).
 
-- [ ] **T11** Documentación viva e índices
+- [x] **T11** Documentación viva e índices
   - ADR-0016 pasa a `Aceptado`; `arquitectura.md` (§1 diagrama, §2 capas, §4.3, §5
     claves nuevas, §6 fases, §7 deuda); `operacion.md` (§1 compose, §2 variables, §3
     secretos, §5 endpoint, §6 smoke); `desarrollo.md` (§2 tests, §3 extensión);
@@ -320,3 +330,10 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados
   - Ficheros: `docs/adr/0016-*.md`, `docs/adr/README.md`, `docs/arquitectura.md`,
     `docs/operacion.md`, `docs/desarrollo.md`, `CONTEXT.md`, `README.md`,
     `docs/iniciativas/README.md`.
+  - **Hecho (2026-10-16).** ADR-0016 ya estaba `Aceptado`. Diagrama de
+    `arquitectura.md` con `teams-bot` en Compose; capas (`chat_outbox.py`); §6
+    HITL enlaza 013/ADR-0016. `operacion.md` (diagnóstico outbox/ingress, smoke
+    con `test_hitl_e2e`/`test_teams_bot_service`). `desarrollo.md` (§2 canal +
+    §3 cómo extender el chat). `CONTEXT.md` (retirada del Incoming Webhook,
+    «canal»). README con `teams-bot` y outbox. Spec e índice → `implementada`;
+    queda T10.

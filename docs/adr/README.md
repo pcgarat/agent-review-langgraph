@@ -26,6 +26,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0015](0015-registro-declarativo-de-modelos.md) | Registro declarativo de modelos por rol, con el `LlmPort` negociando capacidades | Aceptado |
 | [0016](0016-bot-de-teams-para-el-canal-de-decision.md) | Un bot de Teams es el canal de decisión, con un hilo por PR | Aceptado |
 | [0017](0017-replay-determinista-con-fingerprint.md) | Un *gold set* versionado se mide en CI con respuestas grabadas y *fingerprint* | Aceptado |
+| [0018](0018-workspace-de-lectura-en-el-runner.md) | El `sandbox-runner` también sirve lecturas del repo desde un clon *bare* | Propuesto |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/003-fase3-fix-verificacion/spec.md))

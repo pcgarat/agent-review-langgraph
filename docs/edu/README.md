@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Documentación educativa de LangGraph
 
@@ -41,6 +41,7 @@ flowchart LR
     M7 --> M8[08 Resiliencia]
     M8 --> M9[09 Streaming]
     M9 --> M10[10 Avanzados]
+    M10 --> M11[11 Recorrido de una review]
     M2 -. "misma clave, varias escrituras" .-> M3
     M4 -. "pausa durable" .-> M6
     M5 -. "re-ejecución" .-> M7
@@ -113,6 +114,7 @@ Tabla de "quiero entender X → módulo donde vive X".
 | **Streaming** (`values`, `updates`, `messages`, `custom`) | [09 — Streaming y observabilidad](09-streaming-y-observabilidad.md) |
 | Subgrafos, `input_schema`/`output_schema`, nodos como grafos | [10 — Patrones avanzados](10-patrones-avanzados.md) |
 | `context_schema`, `store`, `durability`, `Overwrite` | [10 — Patrones avanzados](10-patrones-avanzados.md) |
+| **El grafo de `reviews` recorrido caso a caso** (sin hallazgos, report, HITL, fix, fallos, degradada) | [11 — Recorrido de una review](11-recorrido-de-una-review.md) |
 
 ---
 
@@ -123,14 +125,20 @@ Es el mejor mapa mental antes de empezar: todo lo demás explica una pieza de es
 ```mermaid
 flowchart TD
     S([START]) --> scope["scope<br/>obtiene y filtra el diff"]
-    scope -->|conditional: dispatch| P["persona ×N<br/>(fan-out con Send)"]
-    P --> merge["merge<br/>dedupe por (fichero, línea, título)"]
+    scope -->|"conditional: dispatch"| P["persona ×N<br/>(fan-out con Send)"]
+    P --> merge["merge<br/>dedupe entre personas"]
     merge --> policy["policy<br/>autonomy.yaml, sin LLM"]
     policy --> hitl{"hitl<br/>¿hay pendientes?"}
-    hitl -->|no| publish["publish<br/>inline + resumen"]
-    hitl -->|sí| I["interrupt(ApprovalRequest)<br/>pausa durable"]
+    hitl -.->|"sí: interrupt(ApprovalRequest)"| I(["pausa humana"])
     I -.->|Command resume| hitl
-    publish --> notify["notify<br/>tarjeta de Teams"]
+    hitl --> fd["fix_dispatch<br/>propone parches aprobados"]
+    fd --> publish["publish<br/>inline + resumen"]
+    publish --> fw{"fix_wait<br/>¿parches por verificar?"}
+    fw -.->|"sí: interrupt(FixWaitRequest)"| FP(["pausa de fix"])
+    FP -.->|Command resume| fw
+    fw -->|"FAILED con intentos"| fd
+    fw --> pf["publish_fix → notify_fix"]
+    pf --> notify["notify<br/>aviso en Teams"]
     notify --> E([END])
 ```
 
@@ -144,6 +152,9 @@ Lo que este dibujo ya encierra (y cada módulo desarrolla):
 - **HITL** (6): `interrupt` pausa sin bloquear el worker; la decisión humana reanuda.
 - **Idempotencia** (7): aunque el grafo se re-ejecute, los efectos externos
   (comentarios en el PR) no se duplican.
+
+El recorrido completo de este grafo, caso a caso, está en
+[11 — Recorrido de una review](11-recorrido-de-una-review.md).
 
 ---
 
@@ -178,7 +189,7 @@ flowchart TD
     INBOX --> H[decisión humana · CLI/API]
     H -->|Command resume| Q
     G -->|publish| VCS[comentarios inline + resumen]
-    G -->|teaser| TEAMS[Teams webhook]
+    G -->|teaser · outbox| TEAMS[teams-bot · Teams]
 ```
 
 ## Glosario mínimo

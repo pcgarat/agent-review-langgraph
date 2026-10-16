@@ -52,7 +52,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
-| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes) |
+| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
@@ -129,6 +129,22 @@ Edita `config/autonomy.yaml`. Claves válidas en `when`: `protected_subject`,
 `severity`, `autofix_class`, `confidence` y `paths`. Una clave desconocida da
 `PolicyError` al evaluar el primer hallazgo; añade un test en `test_policy`. Subir
 `max_autonomy` es un cambio de comportamiento: actívalo solo con revisión.
+
+### El canal de chat (Teams u otro)
+
+El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` vía
+`OutboxChatAdapter` (`chat_outbox.py`). El transporte vive en `teams_bot/`:
+
+1. **Egress:** `TeamsBotService` drena `reviews:notices` y publica con
+   `ChannelTransport` (hilo por PR, edición de tarjeta).
+2. **Ingress:** `CardIngress` traduce las acciones; `sdk_handlers` cablea el SDK.
+   La decisión pasa por `build_decision` y se **encola** en `reviews:jobs` (C4): el
+   bot no reanuda el grafo.
+3. Un canal nuevo (Slack, etc.) es otro consumidor de la outbox + otro ingress; el
+   worker y el grafo no cambian. El SDK de Teams solo se importa en
+   `sdk_client.py` / `sdk_handlers.py`.
+4. Tests con fakes del cliente y de la outbox (`test_teams_*`, `test_hitl_e2e`);
+   sin Teams real.
 
 ## 4. Invariantes que no se rompen
 

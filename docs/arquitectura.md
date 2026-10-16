@@ -15,7 +15,7 @@ flowchart LR
     subgraph EXT["Externos"]
         CI["CI del repo revisado<br/>(emotivoo-v2)"]
         VCS["Bitbucket (twg)<br/>o GitHub (REST)"]
-        TEAMS["Microsoft Teams<br/>(bot · teams-bot)"]
+        TEAMS["Microsoft Teams<br/>(canal dedicado)"]
         LLM["Proveedor LLM<br/>(compatible OpenAI)"]
         HUMAN["Persona"]
     end
@@ -24,6 +24,7 @@ flowchart LR
         API["api · FastAPI :8000"]
         WORKER["worker · grafo LangGraph"]
         FIXW["fix-worker<br/>verifica · nunca publica"]
+        BOT["teams-bot<br/>outbox · POST /api/messages"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
         REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
@@ -41,8 +42,10 @@ flowchart LR
     WORKER <-->|checkpoint| PG
     WORKER -->|"diff · inline · resumen"| VCS
     WORKER -->|"aviso: encola en la outbox"| REDIS
-    REDIS -->|"BLPOP · teams-bot"| TEAMS
-    TEAMS -->|"Action.Execute → encola decisión"| REDIS
+    REDIS -->|"BLPOP"| BOT
+    BOT -->|"publica / edita hilo"| TEAMS
+    TEAMS -->|"Action.Execute"| BOT
+    BOT -->|"HitlDecision → reviews:jobs"| REDIS
     WORKER -->|"personas · fixer<br/>(modelo por rol)"| LLM
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
@@ -52,12 +55,12 @@ flowchart LR
     TEAMS -.-> HUMAN
 ```
 
-> **Canal de Teams (iniciativa 013).** El worker **encola** avisos en
-> `reviews:notices`; `teams-bot` los consume, publica/edita en el hilo del PR y
-> traduce las acciones de la tarjeta a una `HitlDecision` encolada en
-> `reviews:jobs` (no reanuda el grafo). El respaldo de decisión sigue siendo el
-> CLI y `POST /decision`. Pendiente: alta del bot en el tenant (T10) y el E2E de
-> fakes (T9).
+> **Canal de Teams ([ADR-0016](adr/0016-bot-de-teams-para-el-canal-de-decision.md),
+> iniciativa 013).** El worker **encola** avisos en `reviews:notices`; `teams-bot`
+> los consume, publica/edita en el hilo del PR y traduce las acciones de la
+> tarjeta a una `HitlDecision` encolada en `reviews:jobs` (no reanuda el grafo).
+> El respaldo de decisión sigue siendo el CLI y `POST /decision`. Pendiente
+> humano: alta del bot en el tenant (T10).
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
@@ -81,6 +84,7 @@ src/agent_review/
 │                  openai_llm, http_sandbox, tooling_source, diff_parser
 ├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, service,
 │                  ingress, sdk_client/handlers. El worker no importa este paquete.
+├── chat_outbox.py Outbox `reviews:notices` + `OutboxChatAdapter` (`ChatPort`)
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
 ├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)
 ├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
@@ -321,7 +325,7 @@ vencimiento vive en `sweep_fix_expired`
 | Fase | Estado | Qué falta |
 |---|---|---|
 | 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1) |
-| 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación) | Smoke contra infraestructura real. Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
+| 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación). Canal Teams: bot + outbox ([013](iniciativas/013-canal-teams-bidireccional/spec.md), [ADR-0016](adr/0016-bot-de-teams-para-el-canal-de-decision.md)) | Smoke contra infraestructura real. Alta del bot en el tenant (T10). Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
 | 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10) y **desacople E7** (F14–F28) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), P6 (revisión de seguridad; precondición) |
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 

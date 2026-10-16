@@ -179,7 +179,10 @@ Teams. **Nunca escribe en el repositorio revisado.**
 - **«Review publicada»** significa que esta ejecución dejó su marca de resumen. Un
   aviso de pausa no cuenta como publicación.
 - **«Sin hallazgos»** solo significa «PR limpio» si la review está completa.
-- **«Teams»** es Microsoft Teams (canal de avisos y decisión). `twg teams` es Atlassian Teams y
-  no tiene nada que ver.
+- **«Teams»** es Microsoft Teams (canal de avisos y decisión vía bot). El Incoming
+  Webhook de Office 365 Connectors está **retirado**; no hay `TEAMS_WEBHOOK_URL`.
+  `twg teams` es Atlassian Teams y no tiene nada que ver.
+- **«Canal»** en este dominio es el medio de avisos y decisión humana (hoy Teams).
+  No confundir con un canal de Redis ni con el *messaging endpoint* HTTP.
 - **El CLI se llama `agent_review`** (`[project.scripts]`). Las specs de Fase 2 y 3
   dicen `reviews`, que era el nombre anterior.
