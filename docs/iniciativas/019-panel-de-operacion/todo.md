@@ -59,9 +59,9 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP14** Endpoint de recorrido: expone `read_trace` (OP1) para una review.
 - [ ] **OP15** UI de lectura: vista global (cola, en vuelo, pausas, descartes) y vista
   de detalle con el recorrido.
-- [ ] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
+- [x] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
   nuevo.
-- [ ] **OP17** Test de auth: `401` sin sesión; el rol `lector` no ejecuta comandos.
+- [x] **OP17** Test de auth: `401` sin sesión; el rol `lector` no ejecuta comandos.
 - [x] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../operacion.md) §1–2
   (servicio y variables) y §5 (endpoints del panel).
   - Enmienda 2026-10-16: el secreto del panel entra en el contrato fail-closed de
