@@ -48,7 +48,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Grafo y publicación | `test_graph`, `test_scope`, `test_e2e_tooling` |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
-| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`; `test_compose` cubre el perfil `panel`) |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar); `test_compose` cubre el perfil `panel` |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
@@ -154,6 +154,35 @@ en ese mismo *seam*, no en una segunda envoltura. Al extenderlo, dos reglas:
    pierda rompe el fan-out o el reintento (riesgo R1 del plan; lo fija `test_progress`).
 2. **No tragarse excepciones**: el `finally` cierra la marca, pero deja pasar el
    `interrupt` (pausa) y el error del nodo.
+
+El mismo *seam* comprueba la **cancelación** (019 W4): un `cancel: CancelCheck | None`
+opcional que recibe `build_graph` igual que el progreso (no un estado global de módulo).
+Si la review tiene marca `reviews:cancel:<key>`, la envoltura lanza `Cancelled` **antes**
+de entrar al nodo. Al añadir un chequeo nuevo, dos reglas más:
+
+3. **La frontera es el único punto seguro**: LangGraph no cancela un `invoke`, así que
+   el aborto cae **entre** nodos, nunca a mitad de uno (riesgo R5).
+4. **La marca no basta para una pausa**: una review pausada no pasa por ninguna
+   frontera. Su cancelación viaja como un `ReviewRequest` marcado (`cancelled=True`) y
+   `_consume` la aborta **antes** de tocar el grafo; comprobarlo después del `invoke`
+   reanudaría la pausa y publicaría.
+
+### La web del panel (019)
+
+El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.md)):
+**lee** y **encola comandos**, nunca muta el estado del grafo. Al extenderlo:
+
+1. **Un puerto por fuente**: el estado (Redis) y el recorrido (Postgres) viven tras
+   `PanelReadModel`; los endpoints se prueban con un fake en memoria, sin Redis ni
+   Postgres. Un adaptador nuevo (otra fuente) se añade sin tocar los endpoints.
+2. **La semántica de los comandos vive en `web/commands.py`**, no en los endpoints:
+   `CommandService` resuelve cada comando contra la cola y el inbox y devuelve un
+   `CommandEffect`. Los endpoints solo validan la sesión (`require_operador`) y traducen
+   el `CommandError` a `409`. Antes de añadir un comando, decide su semántica por estado
+   (spec §5.4/§5.5) y su efecto.
+3. **La sesión viaja por cabecera o cookie**: `require_session` acepta
+   `X-Panel-Session` (CLI, tests) y la cookie `panel_session` (navegador). Un endpoint
+   nuevo que ejecute algo usa `require_operador`, nunca `require_session` a secas.
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres

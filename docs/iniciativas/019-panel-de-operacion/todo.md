@@ -118,15 +118,15 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 6 — Cierre (checkpoint C6)
 
-- [ ] **OP36** ADR-0020: «panel como servicio aparte, *read model* + comandos,
+- [x] **OP36** ADR-0020: «panel como servicio aparte, *read model* + comandos,
   progreso por marca» (Q7 de la spec).
-- [ ] **OP37** `CONTEXT.md`: «panel», «progreso», «cancelación».
-- [ ] **OP38** [`arquitectura.md`](../../arquitectura.md) §7 (D14 y D16 acotadas) y
+- [x] **OP37** `CONTEXT.md`: «panel», «progreso», «cancelación».
+- [x] **OP38** [`arquitectura.md`](../../arquitectura.md) §7 (D14 y D16 acotadas) y
   §2/§5 si el servicio o las claves lo requieren.
-- [ ] **OP39** [`operacion.md`](../../operacion.md) §7 (diagnóstico del panel y de la
+- [x] **OP39** [`operacion.md`](../../operacion.md) §7 (diagnóstico del panel y de la
   consola del sandbox).
-- [ ] **OP40** [`desarrollo.md`](../../desarrollo.md) §2 (zonas de test nuevas) y §3
+- [x] **OP40** [`desarrollo.md`](../../desarrollo.md) §2 (zonas de test nuevas) y §3
   (extensión: puerto de progreso y envoltura de nodo).
-- [ ] **OP41** `make ci` y `make docs-check` en verde.
-- [ ] **OP42** Anotar en la [018](../018-trazas-de-la-review/spec.md) la coordinación
+- [x] **OP41** `make ci` y `make docs-check` en verde.
+- [x] **OP42** Anotar en la [018](../018-trazas-de-la-review/spec.md) la coordinación
   del *seam* de nodos (D2 del plan).

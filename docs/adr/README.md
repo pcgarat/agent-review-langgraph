@@ -28,6 +28,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0017](0017-replay-determinista-con-fingerprint.md) | Un *gold set* versionado se mide en CI con respuestas grabadas y *fingerprint* | Aceptado |
 | [0018](0018-workspace-de-lectura-en-el-runner.md) | El `sandbox-runner` también sirve lecturas del repo desde un clon *bare* | Aceptado |
 | [0019](0019-presupuesto-de-tokens-por-review.md) | El presupuesto de tokens es un contador compartido por review, no un entero por llamada | Aceptado |
+| [0020](0020-panel-como-servicio-aparte.md) | El panel es un servicio aparte: *read model* + comandos encolados | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

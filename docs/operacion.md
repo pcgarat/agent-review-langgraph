@@ -250,14 +250,25 @@ El panel es un proceso aparte (`python -m agent_review.web.main`), opt-in por el
 perfil de compose `panel`. Lee el estado operativo de Redis y el recorrido del
 checkpointer con un pool de **solo lectura**; no recibe credencial de VCS ni clave
 del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
-`X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`), **no** en
-`REVIEWS_DECISION_TOKEN`.
+`X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`) o en la cookie
+`panel_session` (el navegador no puede mandar cabeceras en una navegación normal);
+**no** es `REVIEWS_DECISION_TOKEN`.
 
 | Método | Ruta | Auth | Respuestas |
 |---|---|---|---|
 | `GET` | `/healthz` | — | `200` |
 | `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
 | `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
+| `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector`; `409` si no aplica; `503` si Redis no responde |
+| `POST` | `/api/reviews/{review_key}/retry` | `operador` | Reencola un descarte de la DLQ con `attempts=0`; `409` si no está en la DLQ |
+| `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana; `409` si no está pausada |
+| `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso o el runner no tiene su buffer |
+| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
+
+Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review
+(o encola el `request` marcado si estaba pausada) y el worker aborta en la frontera de
+nodo o al desencolar. La UI solo ofrece cada botón en el estado en que aplica y nunca
+ofrece «cancelar la review» si ya publicó (solo «cancelar lo pendiente»).
 
 Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja; con uno real,
 la cabecera es obligatoria (`401` sin ella) y un rol `lector` recibe `403` en
@@ -373,6 +384,12 @@ firma inválida o ausente da `401`.
 | La review pausa "en verificación" y no cierra | La wave no vuelve: `fix-worker` caído o runner sin responder | `docker compose logs -f fix-worker`; la wave vence por TTL y queda `NOT_VERIFIABLE` |
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
 | «¿En qué nodo está ahora?» | El progreso del worker (019) | Con `PROGRESS_ENABLED=true`: `redis-cli HGETALL reviews:active:<review_key>` da el nodo en curso, su `started_at` y cuántas ramas del fan-out siguen. Sin marca y con el latido fresco, el worker vive pero no está ejecutando ningún nodo (entre reviews). Un `started_at` muy antiguo con la marca viva delata un nodo colgado, no un worker muerto |
+| El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es obligatoria (`X-Panel-Session: <usuario>:<rol>` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
+| El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
+| Cancelar no surte efecto | La marca no llegó, o la review no pasa por una frontera | `redis-cli EXISTS reviews:cancel:<review_key>`; si está, la review corre: la cancelación se aplica al empezar el **siguiente nodo** (un nodo entero de latencia). Si estaba pausada, el comando encola el `request` marcado y el worker lo aborta al desencolar |
+| Cancelada pero el PR ya tiene comentarios | Publicó antes de cancelar | Es esperado (W6/R2): cancelar no despublica. La UI solo ofrece «cancelar lo pendiente» en ese estado |
+| La consola del sandbox da `404` | El `run_key` no está en el buffer del runner | Es efímero (W5): un reinicio del runner lo pierde y una verificación terminada se desaloja. El informe sigue en `POST /verify`; la consola es *best-effort* |
+| La consola no muestra nada | El runner no responde, o `SANDBOX_RUNNER_URL`/`SANDBOX_RUNNER_TOKEN` vacíos en el `web` | El proxy degrada a `404` sin tumbar el panel; revisar `docker compose logs -f sandbox-runner` |
 | No llegan avisos a Teams | `teams-bot` caído, sin canal capturado (C14) o `TEAMS_ENABLED=false` | `docker compose logs -f teams-bot`; `LLEN reviews:notices` (la outbox acumula); instalar el bot en el canal dedicado (T10) |
 | La tarjeta no reanuda y el CLI sí | Acción no llegó al ingress o JWT inválido | Mirar `401` en `/api/messages`; el CLI/HTTP es el respaldo (C9) |
 | La tarjeta responde «no es el canal de decisión» | La acción viene de otra conversación o de otro tenant, o aún no hay canal capturado | Buscar `Accion de tarjeta de … rechazada` en los logs del bot; `GET reviews:teams:channel` dice cuál es el canal. Si está mal, ver §5 (mover el canal) |

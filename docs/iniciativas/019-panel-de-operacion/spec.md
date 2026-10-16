@@ -2,7 +2,7 @@
 
 # Panel de operación: ver el sistema en vivo, cancelar y reintentar
 
-> **Estado:** aprobada
+> **Estado:** implementada
 >
 > **Entrega objetivo:** una web propia que muestre, en todo momento, qué está haciendo
 > el sistema (cola, reviews en vuelo, pausas, verificaciones y descartes), que deje
