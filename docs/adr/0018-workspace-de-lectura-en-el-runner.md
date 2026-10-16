@@ -1,6 +1,6 @@
 # ADR-0018 — El `sandbox-runner` también sirve lecturas del repo desde un clon *bare*
 
-- **Estado:** Propuesto
+- **Estado:** Aceptado
 - **Fecha:** 2026-10-16
 
 ## Contexto

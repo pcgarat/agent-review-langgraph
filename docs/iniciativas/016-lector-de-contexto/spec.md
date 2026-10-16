@@ -2,7 +2,7 @@
 
 # Lector de contexto: puerto, bucle de herramientas y workspace de lectura
 
-> **Estado:** borrador
+> **Estado:** implementada *(2026-10-16)*
 >
 > **Entrega objetivo:** una pieza compartida que permite a un modelo **leer el
 > repositorio** mientras razona: el `ContextReaderPort` con tres adaptadores, un
@@ -166,9 +166,13 @@ worker de reviews gana `SANDBOX_RUNNER_URL` y `SANDBOX_RUNNER_TOKEN`, solo para
 ## 8. Preguntas abiertas
 
 - **Q1 — ¿`git grep` con expresiones regulares o con texto literal por defecto?**
-  Las expresiones son más útiles para el modelo; el texto literal es más barato y
-  más predecible.
-- **Q2 — ¿El `FixtureContextReader` vive en `tests/eval/` o en `src/`?** El harness
-  de 006 está en [`tests/eval/harness.py`](../../../tests/eval/harness.py); dejarlo
-  junto a él es lo natural, pero un adaptador en `src/` serviría también para
-  reproducir una review real a mano.
+  *Resuelta (2026-10-16):* **literal** por defecto (`git grep -F`; búsqueda literal en
+  los adaptadores en memoria). Es más barato y predecible y cierra de raíz el riesgo
+  R4 (un patrón regex caro). El modelo rara vez necesita regex para localizar un
+  identificador; si lo necesita, dos `grep` literales bastan.
+- **Q2 — ¿El `FixtureContextReader` vive en `tests/eval/` o en `src/`?**
+  *Resuelta (2026-10-16):* en **`src/agent_review/adapters/`**. El *replay* de
+  [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md) lo usa en rutas de
+  producto (el bucle de 014 con un rol activado) y `src/` no debe importar de
+  `tests/`; además sirve para reproducir una review real a mano con un directorio de
+  ficheros.

@@ -115,6 +115,11 @@ services:
       # El runner no revisa nada: no necesita las credenciales de Bitbucket del
       # worker (TWG_*). Solo clona con su token de solo lectura y ejecuta la imagen.
       TWG_BBC_TOKEN: ""
+      # Workspaces de lectura (iniciativa 016): TTL de un clon *bare* abierto y
+      # tope de clones simultaneos. Explicito aqui porque solo el runner los
+      # aplica; el valor del `.env` los puede subir.
+      SANDBOX_WORKSPACE_TTL_S: ${SANDBOX_WORKSPACE_TTL_S:-1800}
+      SANDBOX_MAX_WORKSPACES: ${SANDBOX_MAX_WORKSPACES:-4}
     volumes:
       - ./config:/app/config:ro
       # El socket del demonio DEDICADO del runner (rootless), en el path por

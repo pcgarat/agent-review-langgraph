@@ -51,6 +51,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
+| Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores y `FixtureContextReader`), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_tool_loop` (bucle, topes, citas y presupuesto) |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
 | Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
@@ -117,6 +118,30 @@ Antes de invertir aquí, recuerda que la ingesta es un puente desechable
 
 Añádelo a `checkpointer._STATE_TYPES`. Si no, la reanudación de un hilo pausado
 depende del msgpack permisivo.
+
+### Un lector de contexto nuevo
+
+El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
+operaciones de **solo lectura** —`read_file`, `grep` (literal) y `list_dir`— que el
+bucle `run_tool_loop` (`adapters/tool_loop.py`) sirve turno a turno. Hay tres
+adaptadores y todos pasan el mismo test de contrato:
+
+1. **`FixtureContextReader`** (`adapters/context_fixture.py`): sirve un directorio
+   local. Es el lector determinista del *replay* ([ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)).
+2. **`VcsContextReader`** (`adapters/context_vcs.py`): modo degradado por
+   `VcsPort.get_file`. Sin árbol, `grep` y `list_dir` solo ven lo ya servido y los
+   ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`).
+3. **`WorkspaceContextReader`** (`adapters/context_workspace.py`): HTTP contra los
+   `/workspaces` del `sandbox-runner`; es el único que hace `grep` del árbol completo.
+
+Para añadir uno: implementa los tres métodos, respeta `is_denied` (rutas vetadas),
+devuelve `None` (no excepción) cuando una lectura no es posible y añade el adaptador a
+`build_reader_factory` (`adapters/context_factory.py`) con su degradación. La fábrica
+es lo que ve el consumidor: recibe `(repo, head_sha, base_sha)` y devuelve el puerto,
+de modo que el bucle no sepa si detrás está el runner o el VCS. Un fallo del lector
+dentro del bucle se sirve al modelo como error y la review sigue. Cubre el contrato en
+`tests/test_context_ports.py` (paramétrico sobre los tres adaptadores) y el adaptador
+nuevo en su propia suite.
 
 ### Una receta nueva en el sandbox
 

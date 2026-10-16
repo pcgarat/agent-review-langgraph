@@ -142,6 +142,21 @@ Teams. **Nunca escribe en el repositorio revisado.**
 
 ---
 
+## Lectura de contexto (iniciativa 016)
+
+| Término | Definición |
+|---|---|
+| **Puerto de contexto** (`ContextReaderPort`) | Interfaz uniforme con tres operaciones de **solo lectura** sobre el repo: `read_file(path, ref, start, end)`, `grep(pattern, glob)` (literal) y `list_dir(path)`. Ningún adaptador ejecuta código del PR. |
+| **Adaptador de contexto** | Implementación del puerto. `FixtureContextReader` (ficheros de un directorio, determinista para el *replay*), `VcsContextReader` (por `VcsPort.get_file`, modo degradado) y `WorkspaceContextReader` (por los endpoints `/workspaces` del `sandbox-runner`). |
+| **Workspace de lectura** | Clon *bare* de `repo@head_sha` que el `sandbox-runner` sirve con `git show`/`git grep -F`/`git ls-tree`, sin *checkout* ni contenedor ([ADR-0018](docs/adr/0018-workspace-de-lectura-en-el-runner.md)). Idempotente por `(repo, head_sha)`, con TTL (1800 s) y máximo 4 abiertos. |
+| **Lector degradado** | `VcsContextReader` como red de seguridad: cuando el `sandbox-runner` no está o falla, la review sigue leyendo fichero a fichero (con `grep` solo sobre lo servido y los ficheros del diff). La fábrica de lectores decide y degrada una sola vez por lote. |
+| **Bucle de herramientas** | `run_tool_loop`: bucle *ReAct* en JSON sobre `LlmPort`. Cada turno es `{"tools": [...]}` o el objeto final; como máximo 3 peticiones por turno, un turno correctivo ante JSON inválido y un turno final forzado al agotar un tope (turnos, peticiones, bytes o presupuesto). Devuelve un `LoopResult`. |
+| **`served` / `cite_served`** | Registro de lo que el bucle sirvió (`dict[path, ref]`) y la comprobación de que una cita `path:line` referencia un fichero servido. Es la validación de citas de 009 y 014, escrita una sola vez. |
+| **`BudgetPort`** | Presupuesto de tokens **por review** que el bucle consume (017): reserva antes de cada llamada y ajusta con el `usage` real. `None` = sin presupuesto. |
+| **Rutas vetadas** (`context_denylist`) | Rutas que el runner nunca sirve (default `.env*`, `*.pem`, `*.key`, `**/secrets/**`). Las declara el perfil y las aplica el runner: el modelo no puede saltárselas pidiendo otra ruta. |
+
+---
+
 ## Fiabilidad
 
 | Término | Definición |
