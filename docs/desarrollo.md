@@ -51,7 +51,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados) |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
-| Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
+| Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
 | Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores y `FixtureContextReader`), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_tool_loop` (bucle, topes, citas y presupuesto) |
 | Presupuesto (017) | `test_budget` (contrato paramétrico de `InMemoryBudget` y `RedisBudget` sobre `fakeredis`, reserva/confirmación y el consumo desde el bucle), `test_llm_reviewer` y `test_llm_fixer` (reserva, tope blando, corte y devolución en el error), `test_worker` (reparto `2×total/N` en `build_reviewers`), `test_graph` (el hecho del corte en el `ReviewOutcome`) |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
@@ -200,6 +200,15 @@ encapsulan las dos reglas para que ningún consumidor olvide mirar el resultado.
 
 Declárala en `checks:` del perfil y, si toca, en `verify:`. Es una decisión humana
 revisada. El runner no ejecuta nada que no esté declarado y nunca usa una shell.
+
+### La consola en vivo del sandbox (019)
+
+`ContainerRuntime.start` acepta un `on_line(stream, line)` **opcional** con `stream`
+en `{"stdout", "stderr"}`. El `Verifier` lo conecta al `ConsoleBuffer` (memoria del
+runner, indexado por `run_key`) y `GET /verify/{run_key}/console` sirve ese buffer como
+SSE. Para añadir una fuente de consola nueva basta con emitir por `on_line`: es
+*best-effort* y nunca altera el `VerifyReport`, que se sigue acumulando por separado
+(019 W8). El buffer es efímero: no persiste y un reinicio del runner da `404`.
 
 ### Cambiar la política
 

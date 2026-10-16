@@ -1,5 +1,4 @@
 Última modificación: 2026-10-16 | Creado: 2026-10-11
-
 # Operación
 
 Cómo se levanta, se configura, se verifica y se diagnostica el agente. La
@@ -279,6 +278,28 @@ Un `{id}` desconocido (caducado, desalojado o perdido en un reinicio) da `410` e
 commit». Un workspace caduca por TTL (`SANDBOX_WORKSPACE_TTL_S`) y se relanza con otra llamada
 a `POST /workspaces`; el lector del worker lo hace solo, una vez, al recibir `410`. El veto de rutas (`context_denylist:` del perfil) lo aplica el
 runner: una ruta vetada da `403` y no aparece en `grep`.
+
+### Consola en vivo del `sandbox-runner`
+
+El runner expone también `GET /verify/{run_key}/console`, la **consola en vivo** de una
+verificación ([019](iniciativas/019-panel-de-operacion/spec.md) §5.6, W5/W8/W9): un
+*stream* SSE (`text/event-stream`) con el `stdout`/`stderr` del contenedor **a medida que
+se ejecuta**, que el `web` proxya y el panel pinta. Usa el mismo bearer
+`SANDBOX_RUNNER_TOKEN` que el resto del runner.
+
+| Evento | `data` | Cuándo |
+|---|---|---|
+| `hello` | `{run_key}` | Al engancharse al stream |
+| `line` | `{seq, stream, text}` (`stream` = `stdout` \| `stderr`) | Por cada línea emitida |
+| `end` | `{run_key}` | Al terminar la verificación; el stream cierra |
+
+El buffer vive **en la memoria del runner**, indexado por `run_key` y con tope de líneas
+y de verificaciones terminadas; es **efímero**: no se persiste, **no** entra en el
+`VerifyReport` y un reinicio del runner lo pierde. Por eso un `run_key` desconocido
+(nunca visto, desalojado o perdido en un reinicio) da `404`, no un informe alterado. El
+`run_key` lleva `/` y `:`, así que va tal cual (el parámetro es *path*). El canal fiable
+de la verificación sigue siendo el `POST /verify` bloqueante: la consola es
+*best-effort* y su caída no afecta a la verificación (W8).
 
 ---
 
