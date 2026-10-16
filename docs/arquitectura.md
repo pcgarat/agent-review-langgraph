@@ -339,8 +339,11 @@ El runner sirve lecturas del repo ([016](iniciativas/archivo/016-lector-de-conte
 [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)) desde clones *bare* que
 viven en su memoria de proceso: `ReadWorkspaceManager` con
 `dict[workspace_id → (ReadWorkspace, expires_at)]` y un índice por `(repo,
-head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde
-y el adaptador reabre una vez (o degrada al VCS). Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
+head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde.
+Un workspace desconocido responde `410` (y un fichero ausente, `404`): solo el `410`
+hace que el adaptador reabra, una vez, o degrade al VCS. El clon corre **fuera** del
+lock del gestor, con una marca por `(repo, head_sha)` para que dos aperturas del mismo
+par clonen una sola vez; un clon lento no bloquea las lecturas de otros workspaces. Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
 1800 s) y un tope de abiertos (`SANDBOX_MAX_WORKSPACES`, 4) con *reaper* perezoso
 acotan el disco; el desalojo borra el más antiguo. Cada clon vive en un directorio
 temporal, **fuera** de lo que se monta en los contenedores de `/verify`.

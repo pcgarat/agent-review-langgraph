@@ -194,3 +194,35 @@ def test_un_fallo_del_modelo_devuelve_la_reserva(tmp_path: Path) -> None:
         _run(Fallon(), build_fixture_reader(tmp_path), budget=budget)
     assert budget.remaining("r:1") == 10_000_000, "la reserva del intento fallido se devuelve"
     assert budget.spent("r:1") == 0
+
+
+def test_el_salvamento_sin_reserva_no_libera_la_de_otra_rama(tmp_path: Path) -> None:
+    """B12: el turno final sin reserva cobra lo gastado sin tocar lo de las demás.
+
+    Otra rama de la misma review tiene una reserva pendiente que deja al bucle sin
+    saldo. El salvamento llama igualmente (B4) y cobra su gasto real, pero la
+    reserva ajena sigue intacta: liberarla dejaría pasar a una tercera rama.
+    """
+    budget = InMemoryBudget(total=20_000)
+    assert budget.reserve("r:1", 17_000), "la otra rama reserva primero"
+    llm = ScriptedLlm(json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path), budget=budget)
+    assert result.final_forced
+    assert len(llm.calls) == 1, "el turno de salvamento se hace"
+    assert budget.reserved("r:1") == 17_000, "la reserva de la otra rama sigue entera"
+    assert budget.spent("r:1") == 15, "el gasto real del salvamento se cobra"
+
+
+def test_un_fallo_del_salvamento_no_libera_la_reserva_de_otra_rama(tmp_path: Path) -> None:
+    """B8 + B12: el camino del error solo devuelve lo que esta llamada reservó."""
+    budget = InMemoryBudget(total=20_000)
+    assert budget.reserve("r:1", 17_000)
+
+    class Fallon(ScriptedLlm):
+        def complete(self, **kwargs: Any) -> LlmReply:
+            raise RuntimeError("transitorio")
+
+    with pytest.raises(RuntimeError):
+        _run(Fallon(), build_fixture_reader(tmp_path), budget=budget)
+    assert budget.reserved("r:1") == 17_000, "no se devuelve una reserva que no se hizo"
+    assert budget.spent("r:1") == 0

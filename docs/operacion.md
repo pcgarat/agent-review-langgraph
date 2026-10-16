@@ -273,8 +273,10 @@ puertos). Una petición sin bearer —cuando hay uno configurado— da `401`.
 | `GET` | `/workspaces/{id}/tree` | `path` | `200 {entries}` |
 | `DELETE` | `/workspaces/{id}` | — | `200 {deleted}` |
 
-Un workspace caduca por TTL (`SANDBOX_WORKSPACE_TTL_S`) y se relanza con otra llamada
-a `POST /workspaces`. El veto de rutas (`context_denylist:` del perfil) lo aplica el
+Un `{id}` desconocido (caducado, desalojado o perdido en un reinicio) da `410` en
+`file`, `grep` y `tree`; el `404` de `file` es solo «el fichero no existe en el
+commit». Un workspace caduca por TTL (`SANDBOX_WORKSPACE_TTL_S`) y se relanza con otra llamada
+a `POST /workspaces`; el lector del worker lo hace solo, una vez, al recibir `410`. El veto de rutas (`context_denylist:` del perfil) lo aplica el
 runner: una ruta vetada da `403` y no aparece en `grep`.
 
 ---

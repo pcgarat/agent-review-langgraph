@@ -243,7 +243,10 @@ def _get_workspace(settings: Settings, workspace_id: str) -> Any:
     try:
         return build_workspaces(settings).get(workspace_id)
     except ReadWorkspaceError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        # `410` y no `404`: el `404` es de un fichero que no existe en el commit. Si
+        # compartieran codigo, el lector gastaria su unica reapertura en una ruta
+        # inventada por el modelo y no degradaria al VCS ante una perdida real (W8).
+        raise HTTPException(status.HTTP_410_GONE, str(exc)) from exc
 
 
 _verifier: Verifier | None = None

@@ -67,7 +67,7 @@ Se quiere:
 | B9 | `remaining` devuelve el saldo **descontando lo reservado y no confirmado** | Si solo descontara lo confirmado, dos ramas en paralelo verían el mismo saldo y ambas pasarían la comprobación: justo la carrera que B3 cierra |
 | B10 | El reparto entre personas es **«el primero que llega»** sobre el contador atómico, con un tope blando por persona de `2 × total / N` (`N` = personas LLM del fan-out) | Sin cuota fija no se desperdicia lo que una persona no usa; sin tope, una persona con *prompt* grande se lo come todo (R1) |
 | B11 | El fix tiene su **propio contador** por review (clave distinta), no el de la review | La aprobación humana puede tardar más que el TTL de la review (R3): compartir la clave dejaría al fix sin presupuesto, o lo recrearía con saldo entero |
-| B12 | Si `reserve` devuelve `False`, **no se llama a `commit`**: el `commit` va condicionado a `reserve is True` | Sin reserva no hay nada que ajustar; un `commit(key, 0, actual)` cobraría un gasto que la reserva rechazó (§8 Q4) |
+| B12 | Si `reserve` devuelve `False`, **no se llama a `commit`**: el `commit` va condicionado a `reserve is True`. *Enmienda 2026-10-16:* la excepción es el turno de salvamento del bucle (B4), que llama aunque no haya reserva; cobra su gasto real con `commit(key, 0, actual)` y nunca devuelve una reserva que no hizo | Sin reserva no hay nada que ajustar; un `commit(key, 0, actual)` cobraría un gasto que la reserva rechazó (§8 Q4). Pero el salvamento sí gasta, y el pendiente es común a todas las ramas: devolver `reserved` sin haberlo reservado liberaba las reservas de las demás y dejaba pasar el tope |
 
 ## 5. Diseño o contrato
 
@@ -114,6 +114,12 @@ class BudgetPort(Protocol):
   gasto que la reserva rechazó. El `commit` del consumidor queda **condicionado a
   `reserve is True`**; un `commit` sobre una clave sin reserva es un error del
   consumidor, no un cobro.
+- **Enmienda 2026-10-16 (revisión de la rama).** El turno de salvamento del bucle
+  (B4) es la única llamada que se hace sin reserva. Cobra su gasto real con
+  `commit(key, 0, actual)`: `reserved=0` no toca el pendiente, que es la suma de las
+  reservas de **todas** las ramas de la review, así que no libera las ajenas. El
+  camino del error tampoco devuelve nada si no hubo reserva. Lo fijan dos tests de
+  `tests/test_budget.py` con otra rama que tiene una reserva pendiente.
 
 ## 6. Riesgos
 
@@ -164,4 +170,5 @@ Todas resueltas el 2026-10-16. Se conservan con su respuesta para la traza:
   llama**. El `commit` del consumidor queda condicionado a `reserve is True`: sin
   reserva no hay nada que ajustar, y un `commit(key, 0, actual)` cobraría un gasto que
   la reserva rechazó. Un `commit` sobre una clave sin reserva es un error del
-  consumidor, no un cobro. Nace de la enmienda D21 (§5).
+  consumidor, no un cobro. Nace de la enmienda D21 (§5). *Enmienda 2026-10-16:* el
+  turno de salvamento (B4) sí cobra lo gastado, con `commit(key, 0, actual)` (B12).

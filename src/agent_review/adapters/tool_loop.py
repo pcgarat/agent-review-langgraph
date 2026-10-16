@@ -121,7 +121,8 @@ def run_tool_loop(
         # B8: la estimacion se reserva antes de la llamada. Si el modelo falla, el
         # `except` la devuelve para que el reintento del nodo no reserve dos veces.
         reserved = _estimate_tokens(full_system, turn_prompt) + max_tokens
-        if not reserve_tokens(budget, review_key, reserved):
+        held = reserve_tokens(budget, review_key, reserved)
+        if not held:
             # B7/D21: el `False` de `reserve` es vinculante, aunque `remaining`
             # hubiera dado positivo: no se gasta un turno **con herramientas**. Es
             # el unico punto que cierra la carrera entre ramas en paralelo.
@@ -136,7 +137,11 @@ def run_tool_loop(
             # unica llamada que puede exceder el tope, acotada por `max_tokens`
             # (R4). Perderlo tiraria el trabajo de los turnos anteriores.
             reserved = _estimate_tokens(full_system, turn_prompt) + max_tokens
-            reserve_tokens(budget, review_key, reserved)
+            held = reserve_tokens(budget, review_key, reserved)
+        # Lo que se ajusta o se devuelve es solo lo que esta llamada tiene
+        # reservado. El pendiente es comun a todas las ramas de la review: devolver
+        # una reserva que no se hizo liberaria las de las demas (017 B12).
+        held_tokens = reserved if held else 0
 
         try:
             reply = llm.complete(
@@ -146,13 +151,14 @@ def run_tool_loop(
                 json_mode="json_object",
             )
         except BaseException:
-            release_tokens(budget, review_key, reserved)
+            release_tokens(budget, review_key, held_tokens)
             raise
         result.usage += reply.total_tokens
         if budget is not None and review_key:
-            # Confirma el gasto real. Si la reserva no llego a cuajar (salvamento),
-            # cuenta el gasto igual: el contador refleja lo gastado de verdad.
-            budget.commit(review_key, reserved, reply.total_tokens)
+            # Confirma el gasto real. En el salvamento sin reserva (`held_tokens`
+            # = 0) se cobra el gasto sin tocar el pendiente: el contador refleja lo
+            # gastado de verdad (enmienda de B12, 2026-10-16).
+            budget.commit(review_key, held_tokens, reply.total_tokens)
         if force_final:
             result.final_forced = True
         else:

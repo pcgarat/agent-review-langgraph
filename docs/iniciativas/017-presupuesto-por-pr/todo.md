@@ -111,3 +111,44 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Verifica: `make ci`.
   - Ficheros: `docs/arquitectura.md`, `docs/operacion.md`, `docs/desarrollo.md`,
     `CONTEXT.md`, `docs/iniciativas/README.md`.
+
+## Bloque 4 — Correcciones de la revisión de la rama (2026-10-16)
+
+La revisión de `feat/017-presupuesto-por-pr` (que arrastra la 016, sin fusionar)
+confirmó cuatro defectos. Dos son de la 016, ya archivada; se cierran aquí porque
+viajan en la misma rama.
+
+- [x] **P9** El salvamento no devuelve reservas ajenas (B12, enmienda 2026-10-16)
+  - `src/agent_review/adapters/tool_loop.py`: el turno de salvamento guarda si su
+    `reserve` cuajó; sin reserva, cobra con `commit(key, 0, actual)` y el camino del
+    error no devuelve nada. Antes devolvía `reserved` contra el pendiente común y
+    liberaba las reservas de otras ramas.
+  - Verifica: `tests/test_budget.py` (otra rama con reserva pendiente, con y sin fallo
+    del modelo).
+  - Ficheros: `src/agent_review/adapters/tool_loop.py`, `tests/test_budget.py`.
+
+- [x] **P10** El veto de rutas cubre la raíz (016 W7)
+  - `src/agent_review/ports/context.py`: `is_denied` quita solo los prefijos `./` y
+    `/` (`lstrip("./")` convertía `.env` en `env`) y un patrón `**/x/**` casa también
+    `x/...` en la raíz.
+  - Verifica: `tests/test_context_ports.py`.
+  - Ficheros: `src/agent_review/ports/context.py`, `tests/test_context_ports.py`.
+
+- [x] **P11** `410` para un workspace perdido (016 W8, enmienda 2026-10-16)
+  - `src/agent_review/sandbox_runner/main.py` responde `410` a un workspace
+    desconocido; `src/agent_review/adapters/context_workspace.py` reabre solo ante
+    `410`. Un `404` de fichero ausente ya no gasta la única reapertura.
+  - Verifica: `tests/test_context_workspace.py`, `tests/test_read_workspace.py`.
+  - Ficheros: `src/agent_review/sandbox_runner/main.py`,
+    `src/agent_review/adapters/context_workspace.py`, `docs/operacion.md` §5.
+
+- [x] **P12** El clon del workspace corre fuera del lock del gestor
+  - `src/agent_review/sandbox_runner/read_workspace.py`: `open()` marca la clave en
+    curso, clona sin el lock y publica con él; un clon lento no bloquea los `get()`
+    de otras reviews y dos aperturas del mismo par clonan una vez.
+  - Verifica: `tests/test_read_workspace.py`.
+  - Ficheros: `src/agent_review/sandbox_runner/read_workspace.py`.
+
+### Checkpoint 4 (tras P9–P12)
+
+- [x] `make ci` en verde.

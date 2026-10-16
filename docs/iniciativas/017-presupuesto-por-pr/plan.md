@@ -35,7 +35,8 @@ Cuatro piezas:
   descartarse en `_reserve` de `tool_loop.py`.
 - **Un `reserve` rechazado no lleva `commit`** (B12): si `reserve` devuelve `False`,
   no se llama a `commit` (no hay reserva que ajustar). El `commit` va condicionado a
-  `reserve is True`.
+  `reserve is True`. La excepción es el turno de salvamento (enmienda 2026-10-16):
+  cobra lo gastado con `commit(key, 0, actual)`, sin devolver una reserva ajena.
 - **El reparto es del consumidor que conoce N** (B10): `build_reviewers` calcula
   `2 * total // N` y se lo pasa al `LlmReviewer` como tope blando. El puerto solo
   cuenta.
