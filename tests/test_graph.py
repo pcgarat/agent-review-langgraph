@@ -89,14 +89,31 @@ class StaticReviewer:
         findings: list[Finding],
         *,
         status: ToolingSourceStatus | None = None,
+        budget_exhausted: bool = False,
+        tokens_used: int = 0,
     ) -> None:
         self.name = name
         self._findings = findings
         self._status = status
+        self._budget_exhausted = budget_exhausted
+        self._tokens_used = tokens_used
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
-        del repo, pr_id, diff, head_sha
-        return ReviewerResult(findings=list(self._findings), tooling_status=self._status)
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
+        del repo, pr_id, diff, head_sha, review_key
+        return ReviewerResult(
+            findings=list(self._findings),
+            tooling_status=self._status,
+            budget_exhausted=self._budget_exhausted,
+            tokens_used=self._tokens_used,
+        )
 
 
 def make_finding(
@@ -141,6 +158,64 @@ def test_grafo_de_duplica_hallazgos_de_dos_personas() -> None:
     assert len(outcome.decisions) == 1
     assert len(vcs.inlines) == 1
     assert vcs.comments, "debe publicar el resumen en el PR"
+
+
+def test_el_hecho_del_corte_viaja_al_outcome() -> None:
+    # P7/B4: una persona que se corta por presupuesto declara el hecho y su gasto;
+    # el `ReviewOutcome` los expone (el render como `SkipReason.BUDGET` es de 012).
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", [make_finding()], budget_exhausted=True, tokens_used=1234),
+        StaticReviewer("security", [], tokens_used=10),
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy, budget_total=10_000).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    outcome = outcome_from_state(result)
+    assert outcome.budget_exhausted == ["correctness"]
+    assert outcome.tokens_spent == {"correctness": 1234, "security": 10}
+    assert outcome.tokens_total == 1244
+    assert outcome.tokens_remaining == 8756, "el saldo se deriva del tope y el gasto"
+
+
+def test_sin_tope_no_se_puede_derivar_el_saldo() -> None:
+    # Sin `budget_total` (tests y replay sin presupuesto) el gasto viaja igual y el
+    # saldo queda `None`: no se consulta al puerto para pintarlo (017 B4).
+    vcs = FakeVcs(anchors={})
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [], tokens_used=42)]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    outcome = outcome_from_state(result)
+    assert outcome.tokens_spent == {"correctness": 42}
+    assert outcome.tokens_remaining is None
+
+
+def test_sin_corte_no_hay_hecho_de_presupuesto() -> None:
+    vcs = FakeVcs(anchors={})
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    outcome = outcome_from_state(result)
+    assert outcome.budget_exhausted == []
+    assert outcome.tokens_spent == {}
+    assert outcome.tokens_total == 0
 
 
 def test_publish_sin_ancla_cae_al_resumen() -> None:
@@ -289,7 +364,15 @@ def test_scope_filtra_ruido_antes_de_las_personas() -> None:
     class CaptureReviewer:
         name = "correctness"
 
-        def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""):
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+        ):
             del repo, pr_id, head_sha
             captured["diff"] = diff
             return ReviewerResult()
@@ -326,7 +409,15 @@ def test_scope_aplica_max_files_per_pr() -> None:
     class CaptureReviewer:
         name = "correctness"
 
-        def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = ""):
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+        ):
             del repo, pr_id, head_sha
             captured["diff"] = diff
             return ReviewerResult()

@@ -201,7 +201,15 @@ class CountingReviewer:
         self.calls = 0
         self._fail_times = fail_times
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         self.calls += 1
         if self.calls <= self._fail_times:

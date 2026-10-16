@@ -4,6 +4,9 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
+from agent_review.adapters.budget_memory import InMemoryBudget
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.domain.models import (
     AutofixClass,
@@ -12,6 +15,7 @@ from agent_review.domain.models import (
     ReviewerResult,
     Severity,
 )
+from agent_review.errors import TransientError
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.llm import LlmReply
@@ -23,9 +27,18 @@ TRANSFER = "src/BackOffice/Application/Wallet/Transfer.php"
 
 
 class FakeLlm:
-    def __init__(self, response: str = "", *, raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        response: str = "",
+        *,
+        raises: Exception | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
         self._response = response
         self._raises = raises
+        self._prompt_tokens = prompt_tokens
+        self._completion_tokens = completion_tokens
         self.calls: list[tuple[str, str, int]] = []
         self.json_modes: list[str | None] = []
 
@@ -43,11 +56,26 @@ class FakeLlm:
         self.json_modes.append(json_mode)
         if self._raises is not None:
             raise self._raises
-        return LlmReply(text=self._response)
+        return LlmReply(
+            text=self._response,
+            prompt_tokens=self._prompt_tokens,
+            completion_tokens=self._completion_tokens,
+        )
 
 
 def _response(*findings: dict) -> str:
     return json.dumps({"findings": list(findings)})
+
+
+class _ToggleBudget(InMemoryBudget):
+    """Adaptador que se puede cortar a voluntad para provocar el corte (B4)."""
+
+    def __init__(self) -> None:
+        super().__init__(total=10_000_000)
+        self.allow = True
+
+    def reserve(self, review_key: str, tokens: int) -> bool:
+        return self.allow and super().reserve(review_key, tokens)
 
 
 def _finding_json(**overrides) -> dict:
@@ -147,24 +175,85 @@ def test_diff_vacio_no_llama_al_modelo() -> None:
     assert llm.calls == []
 
 
-def test_presupuesto_corta_la_llamada_al_modelo(caplog) -> None:
-    # C3: un presupuesto por debajo del coste estimado no se loguea y sigue: se
-    # corta la persona antes de llamar al modelo.
+def test_presupuesto_agotado_corta_la_llamada_al_modelo(caplog) -> None:
+    # B4: sin saldo en el contador compartido, la persona no llama al modelo y
+    # declara el hecho del corte.
     llm = FakeLlm(_response(_finding_json()))
-    reviewer = LlmReviewer(llm=llm, budget_tokens_per_pr=1)
+    budget = InMemoryBudget(total=1)
+    reviewer = LlmReviewer(llm=llm, budget=budget)
     with caplog.at_level(logging.WARNING):
-        result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+        result = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
     assert result.findings == []
+    assert result.budget_exhausted is True
     assert llm.calls == [], "no debe llamarse al modelo si excede el presupuesto"
     assert "presupuesto" in caplog.text
 
 
+def test_tope_blando_por_persona_corta_antes_de_reservar(caplog) -> None:
+    # B10: el tope blando acota lo que una persona con prompt grande se come del
+    # presupuesto comun, aunque al contador le quede saldo de sobra.
+    llm = FakeLlm(_response(_finding_json()))
+    budget = InMemoryBudget(total=500_000)
+    reviewer = LlmReviewer(llm=llm, budget=budget, budget_limit=1)
+    with caplog.at_level(logging.WARNING):
+        result = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
+    assert result.budget_exhausted is True
+    assert llm.calls == []
+    assert budget.reserved("r:1") == 0, "no se reserva si el tope blando ya corta"
+    assert "tope de la persona" in caplog.text
+
+
 def test_presupuesto_amplio_permite_la_llamada() -> None:
     llm = FakeLlm(_response(_finding_json()))
-    reviewer = LlmReviewer(llm=llm, budget_tokens_per_pr=500_000)
-    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    budget = InMemoryBudget(total=500_000)
+    reviewer = LlmReviewer(llm=llm, budget=budget)
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
     assert len(result.findings) == 1
     assert reviewer.last_estimated_tokens > 0
+    assert result.budget_exhausted is False
+    assert result.tokens_used >= 0
+    assert budget.reserved("r:1") == 0, "la reserva se confirma al volver"
+
+
+def test_el_gasto_real_ajusta_la_reserva() -> None:
+    # B3: se reserva la estimacion y se confirma el `usage` real del proveedor.
+    llm = FakeLlm(_response(_finding_json()), prompt_tokens=7, completion_tokens=3)
+    reviewer = LlmReviewer(llm=llm, budget=None)
+    reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
+    assert reviewer.tokens_used == 10
+
+
+def test_los_hechos_no_se_arrastran_entre_reviews() -> None:
+    # El worker reutiliza la instancia: el corte de una review no puede marcar la
+    # siguiente (los hechos son por review, B4).
+    budget = _ToggleBudget()
+    llm = FakeLlm(_response(_finding_json()), prompt_tokens=7, completion_tokens=3)
+    reviewer = LlmReviewer(llm=llm, budget=budget)
+
+    limpia = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
+    assert limpia.budget_exhausted is False
+    assert limpia.tokens_used == 10
+
+    budget.allow = False
+    cortada = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:2")
+    assert cortada.budget_exhausted is True
+    assert cortada.tokens_used == 0, "el gasto de la review anterior no se arrastra"
+
+    budget.allow = True
+    de_nuevo = reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:3")
+    assert de_nuevo.budget_exhausted is False
+
+
+def test_un_fallo_transitorio_del_modelo_devuelve_la_reserva() -> None:
+    # B8: la reserva no se queda colgada si la llamada lanza: el reintento del nodo
+    # no debe reservar dos veces.
+    llm = FakeLlm(raises=TransientError("boom"))
+    budget = InMemoryBudget(total=500_000)
+    reviewer = LlmReviewer(llm=llm, budget=budget)
+    with pytest.raises(TransientError):
+        reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
+    assert budget.reserved("r:1") == 0
+    assert budget.spent("r:1") == 0
 
 
 def test_last_seen_files_expoe_lo_que_entro_en_el_prompt() -> None:
@@ -192,7 +281,15 @@ class StaticReviewer:
         self.name = name
         self._findings = findings
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(findings=list(self._findings))
 

@@ -250,7 +250,9 @@ def _propose(
 
     attempt = (previous.attempts if previous is not None else 0) + 1
     try:
-        patch = fixer.propose(finding, source=source, previous=previous)
+        patch = fixer.propose(
+            finding, source=source, previous=previous, review_key=request.review_key
+        )
     except Exception as exc:
         # Un fallo transitorio del modelo lo reintenta el grafo (`RetryPolicy`).
         if is_transient(exc):

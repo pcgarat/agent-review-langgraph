@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent_review.adapters.budget_memory import InMemoryBudget
 from agent_review.adapters.llm_fixer import FixBudgetExceeded, FixNotProposed, LlmFixer
 from agent_review.domain.models import (
     AutofixClass,
@@ -12,12 +13,23 @@ from agent_review.domain.models import (
     Owner,
     Severity,
 )
+from agent_review.errors import TransientError
 from agent_review.ports.llm import LlmReply
 
 
 class _Llm:
-    def __init__(self, reply: str) -> None:
+    def __init__(
+        self,
+        reply: str,
+        *,
+        raises: Exception | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
         self.reply = reply
+        self._raises = raises
+        self._prompt_tokens = prompt_tokens
+        self._completion_tokens = completion_tokens
         self.calls: list[str] = []
 
     def complete(
@@ -31,7 +43,13 @@ class _Llm:
     ) -> LlmReply:
         del system, max_tokens, json_mode, response_schema
         self.calls.append(prompt)
-        return LlmReply(text=self.reply)
+        if self._raises is not None:
+            raise self._raises
+        return LlmReply(
+            text=self.reply,
+            prompt_tokens=self._prompt_tokens,
+            completion_tokens=self._completion_tokens,
+        )
 
 
 _FINDING = Finding(
@@ -107,7 +125,32 @@ def test_salida_no_json_no_produce_parche() -> None:
 
 def test_presupuesto_agotado_no_llama_al_modelo() -> None:
     llm = _Llm('{"start_line": 2, "end_line": 2, "replacement": "x;"}')
-    fixer = LlmFixer(llm=llm, budget_tokens_per_pr=1)
+    fixer = LlmFixer(llm=llm, budget=InMemoryBudget(total=1))
     with pytest.raises(FixBudgetExceeded):
-        fixer.propose(_FINDING, source=_SOURCE, previous=None)
+        fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="r:1")
     assert llm.calls == []
+
+
+def test_el_fixer_usa_su_propio_contador() -> None:
+    # B11: el fix gasta contra `budget:fix:{review_key}`, no contra el de la review.
+    llm = _Llm(
+        '{"start_line": 2, "end_line": 2, "replacement": "use App\\\\Bar;"}',
+        prompt_tokens=100,
+        completion_tokens=20,
+    )
+    fix = InMemoryBudget(total=500_000)
+    review = InMemoryBudget(total=500_000)
+    fixer = LlmFixer(llm=llm, budget=fix)
+    fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="fix:r:1")
+    assert fix.spent("fix:r:1") == 120, "el fix cobra su gasto real en su contador"
+    assert review.remaining("r:1") == 500_000, "el contador de la review no se toca"
+
+
+def test_un_fallo_transitorio_devuelve_la_reserva_del_fix() -> None:
+    # B8: sin la devolucion, el reintento del nodo reservaria dos veces.
+    llm = _Llm("", raises=TransientError("boom"))
+    budget = InMemoryBudget(total=500_000)
+    fixer = LlmFixer(llm=llm, budget=budget)
+    with pytest.raises(TransientError):
+        fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="fix:r:1")
+    assert budget.reserved("fix:r:1") == 0
