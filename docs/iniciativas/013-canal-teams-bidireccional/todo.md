@@ -131,7 +131,7 @@ T4–T7, T9–T11 pendientes.
 
 ## Bloque 2 — Hilo por PR y egress
 
-- [ ] **T4** Hilo por PR: mapeo, root message, reply y edición
+- [x] **T4** Hilo por PR: mapeo, root message, reply y edición
   - Clave `reviews:teams:thread:<repo>:<pr>` → `{conversation_id, root_message_id}`.
     La primera review del PR abre el hilo raíz; el resto va como **reply**. La tarjeta
     se **edita** (`updateActivity`) al avanzar el grafo (C7). Si falta el mapeo, hilo
@@ -140,6 +140,26 @@ T4–T7, T9–T11 pendientes.
     de Redis crea otro hilo y no rompe la reanudación.
   - Verifica: `tests/test_teams.py`; revisión humana del hilo en un canal de prueba.
   - Ficheros: `src/agent_review/teams_bot/` (`transport.py`), `src/agent_review/settings.py`.
+  - **Hecho (2026-10-16).** `ChannelStore` (`threads.py`) guarda **tres** mapeos:
+    el canal dedicado (C14), el hilo por PR (C6) y la **tarjeta** de cada review
+    (C7, hace falta para editar en vez de duplicar). Los tres se indexan con un
+    **hash del `repo:pr`/`review_key`**: un campo de hash de Redis no admite `:` sin
+    ambigüedad ni puede crecer con el número de PRs; el precio es que no se lee a
+    ojo (documentado en el módulo). `ChannelTransport` resuelve el destino con la
+    regla: sin hilo → mensaje **raíz** del PR; con hilo → **reply**; tarjeta ya
+    publicada → **edición** por id. El `service_url` viaja en cada mapeo: toda
+    llamada proactiva debe llevarlo (hallazgo del spike).
+  - **Decisión de diseño (crítica a la primera versión del plan).** El plan hablaba
+    de una clave por PR (`reviews:teams:thread:<repo>:<pr>`), que en Redis no puede
+    ser una clave por el `/` del repo y el `:` del PR. Se usa un **hash** con campo
+    hasheado, que además no puede crecer con los PRs. Se anota en `spec.md` §5.2.
+  - **Rotura de Redis, cubierta.** Un `hget` que falla (Redis caído) o una entrada
+    ilegible devuelven "hilo no iniciado" y se publica de nuevo; nunca se propaga el
+    error. Un `root_message_id` no numérico (el SDK lo exige: T0) se trata igual.
+  - **El SDK real no entra aquí.** T4 es la **lógica** de hilo, probada con un
+    `ChannelClient` falso (`tests/test_teams_threads.py`, 13 casos); el adaptador del
+    SDK y las variables de settings son T6. Se activó `asyncio_mode = "auto"` en
+    `pyproject.toml` (el paquete es async).
 
 - [ ] **T5** Servicio `teams-bot`: consumo de la outbox y `ChatTransport`
   - `ChatTransport` (capa HTTP interna del bot, con bearer) y el bucle que consume

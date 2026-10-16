@@ -118,9 +118,15 @@ flowchart LR
   ser editable desde Teams (C11).
 - **Claves Redis nuevas:**
   - `reviews:notices` → cola de avisos al bot (outbox durable).
-  - `reviews:teams:channel` → `conversation_id` del **canal dedicado**, capturado al
-    instalar el bot (C14).
-  - `reviews:teams:thread:<repo>:<pr>` → `{conversation_id, root_message_id}`.
+  - `reviews:teams:channel` → `conversation_id` y `service_url` del **canal
+    dedicado**, capturado al ver una actividad (C14).
+  - `reviews:teams:threads` → hash `sha256(repo:pr)[:12] -> {conversation_id,
+    root_message_id, service_url}`. Hilo por PR (C6). El `repo:pr` se **hashea**
+    porque no cabe en el nombre de una clave (crecería con los PRs) y sus `:` y `/`
+    harían ambigua la lectura; un campo de hash con el `repo:pr` en crudo no vale.
+  - `reviews:teams:cards` → hash `sha256(review_key)[:12] -> {conversation_id,
+    message_id, service_url}`. Mensaje de la tarjeta de cada review, para **editarla**
+    al avanzar el grafo (C7) en vez de publicar otra.
   - `reviews:teams:card:<review_key>` → hash `user_id|finding_id → outcome` (estado de
     la tarjeta, **por usuario**) y `…:final` con el actor de la primera decisión (C11).
 
@@ -252,6 +258,12 @@ Las cinco preguntas abiertas del borrador se cerraron el 2026-10-16:
   por `user_id|finding_id`, `Action.Execute` repinta la tarjeta solo para quien pulsa,
   y Enviar se habilita cuando *ese* usuario ha cubierto todos los pendientes. La
   atomicidad de la decisión no cambia (`build_decision` sigue exigiendo cubrir todo).
+- **2026-10-16 — Hilos y tarjetas en hashes con campo hasheado (T4).** El §5.2
+  describía `reviews:teams:thread:<repo>:<pr>` como clave. Redis no lo admite: el repo
+  lleva `/` y el PR `:` en un nombre de clave, y una clave por PR crecería sin fin. Se
+  usa un **hash** (`reviews:teams:threads`) con campo `sha256(repo:pr)[:12]`, y otro
+  para las **tarjetas** (`reviews:teams:cards`), que hacen falta para editar en vez de
+  duplicar (C7). Coste: no se leen a ojo; documentado en el módulo.
 - **2026-10-16 — Preguntas sobre un hallazgo (futuro).** Además de aprobar/rechazar se
   querrá **preguntar** para pedir más contexto del hallazgo. El `data.action` de los
   botones es un discriminante, así que una acción nueva se añade sin tocar el contrato

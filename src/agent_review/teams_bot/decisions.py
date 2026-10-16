@@ -77,10 +77,18 @@ class DecisionSubmitter:
         pasa el id de Entra ID y el nombre visible, respectivamente (C5).
         """
         paused = self._paused.get(review_key)
-        if paused is None or paused.kind is not PauseKind.HUMAN:
-            # Un `review_key` de una pausa de fix no tiene tarjeta humana.
+        if paused is None:
+            # Un `expired` del TTL, una decision por el CLI o una reanudacion ya
+            # aplicada: la tarjeta quedo obsoleta.
             logger.info("Decision de Teams para %s ignorada: no consta pausada", review_key)
             return SubmitOutcome(SubmitStatus.NOT_PAUSED, reason="La review ya no esta pausada")
+        if paused.kind is not PauseKind.HUMAN:
+            # Un `review_key` de una pausa de fix no tiene tarjeta humana.
+            logger.info("Decision de Teams para %s ignorada: la pausa es de fix", review_key)
+            return SubmitOutcome(
+                SubmitStatus.NOT_PAUSED,
+                reason="La pausa no admite decision humana (espera verificacion de fixes)",
+            )
 
         decided_by = self._cards.final(review_key)
         if decided_by is not None:

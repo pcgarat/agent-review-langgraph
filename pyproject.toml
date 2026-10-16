@@ -48,6 +48,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-m 'not live'"
+# El servicio `teams-bot` (iniciativa 013) tiene handlers async; con `auto`,
+# `async def test_...` no necesita el decorador `pytest.mark.asyncio`.
+asyncio_mode = "auto"
 markers = [
     "live: requiere credenciales reales y red (twg autenticado, LLM_API_KEY); excluido por defecto",
 ]
