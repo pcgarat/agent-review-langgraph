@@ -28,14 +28,28 @@ def test_el_worker_de_fixes_no_monta_socket_ni_publica_puertos() -> None:
 
 
 def test_el_worker_de_fixes_no_tiene_credenciales_de_vcs_ni_postgres() -> None:
-    """Frontera de seguridad: solo Redis + token del runner; nunca publica."""
+    """Frontera de seguridad: solo Redis + token del runner; nunca publica.
+
+    Sin `env_file`: el `.env` del despliegue lleva todos los secretos, y bastaria
+    con heredarlo para que un fix-worker comprometido tuviera la pluma del PR.
+    """
     service = _compose()["services"]["fix-worker"]
+    assert "env_file" not in service, "el fix-worker no hereda el .env entero"
     env = service.get("environment", {})
-    assert env.get("TWG_BBC_TOKEN") == "", "sin credencial de Bitbucket"
-    assert env.get("TWG_TOKEN") == "", "sin token de Atlassian"
-    assert "DATABASE_URL" not in env, "no habla con Postgres (no hay grafo)"
-    # No publica: la unica pluma es el worker de reviews.
-    assert "REVIEWS_DECISION_TOKEN" not in env
+    for secret in (
+        "GITHUB_TOKEN",
+        "TWG_BBC_TOKEN",
+        "TWG_TOKEN",
+        "REVIEWS_DECISION_TOKEN",
+        "TOOLING_WEBHOOK_SECRET",
+        "LLM_API_KEY",
+        "SANDBOX_GIT_TOKEN",
+        "SANDBOX_REGISTRY_TOKEN",
+        "DATABASE_URL",
+        "POSTGRES_PASSWORD",
+    ):
+        assert secret not in env, f"el fix-worker no debe recibir {secret}"
+    assert "SANDBOX_RUNNER_TOKEN" in env, "necesita el token compartido con el runner"
 
 
 def test_el_worker_no_monta_ningun_socket_de_docker() -> None:

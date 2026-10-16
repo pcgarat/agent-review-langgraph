@@ -118,6 +118,7 @@ def _dispatch(
     policy: PolicyEngine | None = None,
     finding: Finding | None = None,
     existing=None,
+    verification_enabled: bool = True,
 ) -> dict[str, FixResult]:
     return dispatch_fixes(
         request=_REQUEST,
@@ -130,6 +131,7 @@ def _dispatch(
         recipes=["typecheck"],
         targets=[],
         existing=existing,
+        verification_enabled=verification_enabled,
     )
 
 
@@ -194,6 +196,15 @@ def test_escalate_aprobado_no_genera_fix() -> None:
 def test_sin_fixer_es_no_verificable() -> None:
     results = _dispatch(fixer=None)
     assert results["f1"].status is FixStatus.NOT_VERIFIABLE
+
+
+def test_sin_sandbox_es_no_verificable_sin_pedir_parche() -> None:
+    """Con `SANDBOX_ENABLED=false` nadie resolveria la wave: no se deja `PENDING`."""
+    fixer = _Fixer()
+    results = _dispatch(fixer=fixer, verification_enabled=False)
+    assert results["f1"].status is FixStatus.NOT_VERIFIABLE
+    assert "sandbox" in results["f1"].reason
+    assert fixer.calls == 0, "no se gasta el fixer en un parche que nadie verificara"
 
 
 def test_tope_de_fixes_marca_skipped() -> None:

@@ -69,12 +69,20 @@ services:
     build: .
     restart: unless-stopped
     command: python -m agent_review.fixworker.main
-    env_file: .env
+    # Sin `env_file`: el `.env` lleva todos los secretos del despliegue (token de
+    # escritura del PR, token de decision, clave del LLM...). Solo se le pasa lo
+    # que lee, interpolado desde el `.env` del host; el resto queda en su valor
+    # por defecto (la imagen no incluye `.env`).
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       REDIS_URL: redis://redis:6379/0
-      # Sin acceso al proveedor de VCS ni a las credenciales de Bitbucket.
-      TWG_BBC_TOKEN: ""
-      TWG_TOKEN: ""
+      SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
+      SANDBOX_RUNNER_TOKEN: ${SANDBOX_RUNNER_TOKEN:-}
+      SANDBOX_TIMEOUT_S: ${SANDBOX_TIMEOUT_S:-1200}
+      REPO_PROFILE_CONFIG: ${REPO_PROFILE_CONFIG:-config/repo_profile.emotivoo-v2.yaml}
+      MAX_FIX_ATTEMPTS_JOB: ${MAX_FIX_ATTEMPTS_JOB:-3}
+      FIX_POLL_S: ${FIX_POLL_S:-5}
     volumes:
       - ./config:/app/config:ro
     depends_on:

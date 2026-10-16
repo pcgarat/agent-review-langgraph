@@ -21,7 +21,7 @@ from agent_review.queue import (
     RedisReviewQueue,
     ReviewQueue,
 )
-from agent_review.settings import Settings, get_settings, require_production_secrets
+from agent_review.settings import Settings, get_settings, require_fix_worker_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +117,16 @@ def _consume(
             logger.exception("Fallo inesperado verificando %s", job.review_key)
         _requeue_or_drop(queue, job, max_attempts=max_attempts)
         return
-    for key in done_keys:
-        queue.mark_done(key)
-    # Marca las verificaciones resueltas por si una reentrega llega despues del
-    # `mark_done` y antes del `enqueue`.
+    # Primero la reanudacion, despues la marca: una caida (o un Redis caido) entre
+    # ambas deja la wave sin marcar y una reentrega la vuelve a resolver (el runner
+    # es idempotente por `run_key`). Al reves, la reentrega veria la wave marcada y
+    # saldria sin encolar nada: la reanudacion se perderia hasta el TTL. Una
+    # reanudacion duplicada es inocua: el worker de reviews descarta la que no
+    # corresponde a la wave pendiente del hilo.
     resume = job.request.model_copy(update={"fix_resolution": resolutions})
     review_queue.enqueue(resume)
+    for key in done_keys:
+        queue.mark_done(key)
     logger.info(
         "Wave %s resuelta (%d verificacion(es)); reanudacion encolada",
         job.review_key,
@@ -176,7 +180,7 @@ def run_forever(
     poll_s: float | None = None,
 ) -> None:
     settings = settings or get_settings()
-    require_production_secrets(settings)
+    require_fix_worker_secrets(settings)
     logging.basicConfig(level=settings.log_level)
     queue = queue or build_fix_queue(settings)
     review_queue = review_queue or build_review_queue(settings)
@@ -185,16 +189,37 @@ def run_forever(
     logger.info("Worker de fixes arrancado (Fase 3-E7)")
     start_heartbeat()
     while True:
-        job = queue.dequeue(timeout_s=poll)
-        if job is None:
-            continue
-        _consume(
+        poll_once(
             queue,
             review_queue,
             sandbox,
-            job,
+            poll_s=poll,
             max_attempts=settings.max_fix_attempts_job,
         )
+
+
+def poll_once(
+    queue: FixQueue,
+    review_queue: ReviewQueue,
+    sandbox: SandboxPort,
+    *,
+    poll_s: float,
+    max_attempts: int,
+) -> None:
+    """Una vuelta del bucle: saca un job y lo resuelve sin tumbar el proceso.
+
+    Un fallo al encolar la reanudacion (Redis caido) o un payload ilegible no
+    deben matar al worker: el job ya salio de la cola y la wave queda sin marcar,
+    asi que la recupera la reconciliacion del worker de reviews o el TTL del
+    handoff. Se registra con traza y se sigue con el siguiente.
+    """
+    try:
+        job = queue.dequeue(timeout_s=poll_s)
+        if job is None:
+            return
+        _consume(queue, review_queue, sandbox, job, max_attempts=max_attempts)
+    except Exception:
+        logger.exception("Fallo inesperado en el worker de fixes; se sigue con el siguiente job")
 
 
 def main() -> None:

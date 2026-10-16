@@ -73,6 +73,7 @@ def test_probe_detecta_un_modelo_inexistente(tmp_path: Path) -> None:
     # descubriria en la primera review, no en el arranque.
     assert len(problems) == 1
     assert "modelo-b" in str(problems[0])
+    assert problems[0].fatal, "un modelo que no existe es configuracion rota"
 
 
 def test_probe_sin_problemas_si_todo_esta(tmp_path: Path) -> None:
@@ -93,3 +94,18 @@ def test_probe_soporta_un_proveedor_caido(tmp_path: Path) -> None:
     problems = registry.probe(client=client)
     assert len(problems) == 1
     assert "no se pudo consultar" in str(problems[0])
+    assert not problems[0].fatal, "la red caida no debe impedir el arranque"
+
+
+def test_probe_una_credencial_rechazada_es_fatal(tmp_path: Path) -> None:
+    """Un 401/403 no es la red: la clave no vale y cada review fallaria."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    registry = ModelRegistry.from_settings(_settings(tmp_path))
+    problems = registry.probe(client=client)
+    assert len(problems) == 1
+    assert problems[0].fatal
+    assert "401" in str(problems[0])

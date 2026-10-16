@@ -18,13 +18,22 @@ from agent_review.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Respuestas de `GET /models` que significan "la clave no vale", no "no hay red".
+_AUTH_REJECTED = frozenset({401, 403})
+
 
 @dataclass(frozen=True)
 class Problem:
-    """Un problema detectado en el registro. No es una excepcion: se acumulan."""
+    """Un problema detectado en el registro. No es una excepcion: se acumulan.
+
+    `fatal` lo decide quien lo detecta, no quien lo lee: un modelo que el proveedor
+    no lista o una credencial rechazada (401/403) son configuracion rota; un
+    proveedor que no responde es la red, y no debe impedir el arranque.
+    """
 
     where: str
     message: str
+    fatal: bool = True
 
     def __str__(self) -> str:
         return f"{self.where}: {self.message}"
@@ -103,11 +112,23 @@ class ModelRegistry:
             self._config.models[name].provider for name in self._config.bindings.values()
         ):
             provider = self._config.providers[provider_name]
-            listed = self._list_models(provider, client=client)
+            listed, status = self._list_models(provider, client=client)
             if listed is None:
-                problems.append(
-                    Problem(provider_name, f"no se pudo consultar {provider.base_url}/models")
-                )
+                if status in _AUTH_REJECTED:
+                    problems.append(
+                        Problem(
+                            provider_name,
+                            f"{provider.base_url}/models rechazo la credencial (HTTP {status})",
+                        )
+                    )
+                else:
+                    problems.append(
+                        Problem(
+                            provider_name,
+                            f"no se pudo consultar {provider.base_url}/models",
+                            fatal=False,
+                        )
+                    )
                 continue
             for model_name in dict.fromkeys(self._config.bindings.values()):
                 if self._config.models[model_name].provider != provider_name:
@@ -121,7 +142,10 @@ class ModelRegistry:
                     )
         return problems
 
-    def _list_models(self, provider: ProviderSpec, *, client: Any | None) -> set[str] | None:
+    def _list_models(
+        self, provider: ProviderSpec, *, client: Any | None
+    ) -> tuple[set[str] | None, int | None]:
+        """Modelos que lista el proveedor y el HTTP status si la consulta fallo."""
         import httpx
 
         url = f"{provider.base_url.rstrip('/')}/models"
@@ -135,8 +159,11 @@ class ModelRegistry:
             data = response.json()
             entries = data.get("data") if isinstance(data, dict) else None
             if not isinstance(entries, list):
-                return None
-            return {str(item.get("id")) for item in entries if isinstance(item, dict)}
+                return None, None
+            return {str(item.get("id")) for item in entries if isinstance(item, dict)}, None
+        except httpx.HTTPStatusError as exc:
+            logger.warning("No se pudo consultar %s: %s", url, exc)
+            return None, exc.response.status_code
         except Exception as exc:
             logger.warning("No se pudo consultar %s: %s", url, exc)
-            return None
+            return None, None

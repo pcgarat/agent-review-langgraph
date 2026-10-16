@@ -169,6 +169,39 @@ entra en esta fase.
 
 - [x] `make ci` en verde (475 tests); smoke real pendiente de **P6**.
 
+## Bloque 4 — Correcciones de la revisión del PR #3
+
+- [x] **F25** El fix-worker arranca en producción con su propio contrato de secretos
+  - `require_fix_worker_secrets` exige solo `SANDBOX_RUNNER_URL` y un
+    `SANDBOX_RUNNER_TOKEN` real; antes reutilizaba el contrato del worker de
+    reviews, que pide `TWG_BBC_TOKEN` (vacío en este servicio) y lo tumbaba.
+  - Verifica: `tests/test_fix_worker.py` (arranque en producción sin `TWG_*`). ✅
+  - Ficheros: `src/agent_review/settings.py`, `src/agent_review/fixworker/main.py`.
+- [x] **F26** El fix-worker no hereda el `.env`
+  - Compose le pasa solo las variables que lee (sin `env_file`): la frontera que
+    describe el spec §10 (solo Redis y el token del runner) ya es real.
+  - Verifica: `tests/test_compose.py` (ningún secreto de VCS, decisión, LLM ni
+    Postgres). ✅
+  - Ficheros: `docker-compose.yml`, `docs/operacion.md` §1 y §3.
+- [x] **F27** La reanudación se encola antes de marcar la wave como resuelta
+  - Al revés, una caída o un Redis caído entre ambas dejaba la wave marcada sin
+    reanudación y la review pausada hasta el TTL. El bucle (`poll_once`) ya no
+    muere ante un fallo inesperado.
+  - Verifica: `tests/test_fix_worker.py` (encolado que falla no marca la wave;
+    `poll_once` sobrevive). ✅
+  - Ficheros: `src/agent_review/fixworker/main.py`, `docs/arquitectura.md` §4.
+- [x] **F28** Sin sandbox o sin runner, el fix es `NOT_VERIFIABLE` al despacharlo
+  - `verification_enabled` (`SANDBOX_ENABLED` + `SANDBOX_RUNNER_URL`) vuelve a
+    cortar en `dispatch_fixes`, como antes de la E7; sin ello la review pausaba en
+    `fix_wait` hasta el TTL.
+  - Verifica: `tests/test_fix_node.py`, `tests/test_worker.py`. ✅
+  - Ficheros: `src/agent_review/fix/node.py`, `src/agent_review/graph/build.py`,
+    `src/agent_review/worker/main.py`.
+
+### Checkpoint: tras F25–F28
+
+- [x] `make ci` en verde.
+
 ## Precondiciones externas
 
 - [ ] **P6** revisión de seguridad del tema protegido — precondición del smoke real

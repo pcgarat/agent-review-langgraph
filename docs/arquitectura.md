@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Arquitectura
 
@@ -261,14 +261,19 @@ sequenceDiagram
     S->>S: imagen@digest · clone · git apply · targets del fichero tocado
     S->>S: setup_network · setup/checks --network none (targeted … tests) · destroy
     S-->>FW: VerifyReport → VERIFIED | FAILED (reintenta con stderr_tail) | error
-    FW->>FW: marca run_key en reviews:fixes:done
     FW->>F: encola reanudacion con FixResolutions
+    FW->>FW: marca run_key en reviews:fixes:done (despues de encolar)
     Note over F: resume → aplica → publish_fix + notify_fix
 ```
 
 El worker de reviews **no** llama al sandbox (E7): propone y valida localmente,
 pausa y deja que el `fix-worker` verifique. La idempotencia del handoff vive en
-`reviews:fixes:done` (por `run_key`) y el vencimiento en `sweep_fix_expired`
+`reviews:fixes:done` (por `run_key`), que se marca **después** de encolar la
+reanudación: una caída entre ambas repite la verificación (el runner la sirve de su
+caché por `run_key`) en vez de perder la reanudación, y una reanudación duplicada se
+descarta porque no corresponde a la wave pendiente del hilo. Sin `SANDBOX_ENABLED`
+o sin runner, `fix_dispatch` marca los fixes `NOT_VERIFIABLE` y no se pausa. El
+vencimiento vive en `sweep_fix_expired`
 (`FIX_VERIFY_TTL_S` → `NOT_VERIFIABLE`). La pausa de fix se poda con
 `FixWaitRetention`; las pausas `human` nunca.
 

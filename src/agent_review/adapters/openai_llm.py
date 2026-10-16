@@ -104,22 +104,25 @@ class OpenAiCompatibleLlm:
     ) -> JsonMode | None:
         """Modo JSON que se pide de verdad, segun lo que el modelo declare.
 
-        Si el modelo no declara `json_mode`, no se envia `response_format`: pedir
-        esquema a quien no lo soporta es un 400 permanente, no un reintento.
+        Si el modelo no declara `json_mode`, no se envia `response_format`, lo pida
+        quien lo pida: pedir un formato a quien no lo soporta es un 400 permanente,
+        no un reintento. Un modelo que declara `json_schema` tambien admite
+        `json_object`.
         """
-        if requested is None:
-            return self._json_mode
-        if requested == "json_schema" and self._json_mode != "json_schema":
+        if self._json_mode is None:
+            return None
+        mode = requested if requested is not None else self._json_mode
+        if mode == "json_schema" and self._json_mode != "json_schema":
             logger.warning(
                 "El modelo %s no declara json_schema; se omite response_format",
                 self._model,
             )
             return None
-        if requested == "json_schema" and response_schema is None:
+        if mode == "json_schema" and response_schema is None:
             # Sin esquema, `json_schema` no es utilizable; se degrada a sin formato.
             logger.warning("json_schema pedido sin esquema; se omite response_format")
             return None
-        return requested
+        return mode
 
     def _effective_max_tokens(self, max_tokens: int) -> int:
         """Techo real: si el modelo razona por defecto, la API puede subirlo.

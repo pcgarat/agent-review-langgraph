@@ -142,6 +142,46 @@ def test_json_schema_con_esquema_se_envia() -> None:
     assert captured["response_format"]["json_schema"]["schema"] == {"type": "object"}
 
 
+def _captura(json_mode: str | None) -> tuple[OpenAiCompatibleLlm, dict]:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(_payload(request))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    llm = OpenAiCompatibleLlm(
+        api_key="k",
+        model="m",
+        client=_client(handler),
+        json_mode=json_mode,  # type: ignore[arg-type]
+    )
+    return llm, captured
+
+
+def test_sin_json_mode_declarado_no_se_envia_response_format_aunque_se_pida() -> None:
+    """La persona pide `json_object`, pero un modelo que no lo declara no lo recibe.
+
+    Es la via implicita de `LLM_*` y cualquier modelo sin `json_mode` en el YAML:
+    un proveedor que no lo admite responderia 400 en cada review.
+    """
+    llm, captured = _captura(None)
+    llm.complete(system="s", prompt="p", max_tokens=1, json_mode="json_object")
+    assert "response_format" not in captured
+
+
+def test_un_modelo_con_json_schema_admite_json_object() -> None:
+    llm, captured = _captura("json_schema")
+    llm.complete(system="s", prompt="p", max_tokens=1, json_mode="json_object")
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_json_schema_declarado_sin_esquema_se_omite() -> None:
+    """Sin peticion explicita se usa lo declarado, pero sin esquema no es utilizable."""
+    llm, captured = _captura("json_schema")
+    llm.complete(system="s", prompt="p", max_tokens=1)
+    assert "response_format" not in captured
+
+
 def test_reasoning_sube_el_techo_de_tokens() -> None:
     captured: dict = {}
 

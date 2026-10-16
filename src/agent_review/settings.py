@@ -149,10 +149,12 @@ class Settings(BaseSettings):
     # declarativo (roles -> modelo); sin el, se sintetiza desde `LLM_*` para no
     # romper un despliegue existente (D7 de la iniciativa 005).
     llm_reviewer_enabled: bool = False
-    # Registro declarativo de proveedores y modelos (`config/models.yaml`). Un
-    # fichero declarado que no existe es un error de arranque (fail-fast); para la
-    # via de compatibilidad por entorno, dejarlo vacio (D7 de la iniciativa 005).
-    models_config: str = "config/models.yaml"
+    # Registro declarativo de proveedores y modelos (p. ej. `config/models.yaml`).
+    # Un fichero declarado que no existe es un error de arranque (fail-fast). Vacio
+    # por defecto: un despliegue que solo tiene `LLM_*` sigue usando la via de
+    # compatibilidad sin tocar su `.env` (D7 de la iniciativa 005); el registro se
+    # activa declarando `MODELS_CONFIG`, como hace `.env.example`.
+    models_config: str = ""
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
@@ -246,6 +248,22 @@ def insecure_secrets(settings: Settings) -> list[str]:
     return insecure
 
 
+def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
+    """Secretos que necesita el worker de fixes y siguen sin configurar (E7).
+
+    Su contrato es mucho menor que el del worker de reviews: solo habla con Redis y
+    con el runner. No recibe credencial de VCS, token de decision ni clave del LLM
+    (vive aislado), asi que exigirle el contrato completo lo tumbaria en produccion.
+    """
+    insecure: list[str] = []
+    if not settings.sandbox_runner_url.strip():
+        insecure.append("SANDBOX_RUNNER_URL")
+    token = settings.sandbox_runner_token
+    if not token.strip() or _is_unset(token):
+        insecure.append("SANDBOX_RUNNER_TOKEN")
+    return insecure
+
+
 def is_production(settings: Settings) -> bool:
     return settings.environment.strip().lower() in {"production", "prod"}
 
@@ -258,7 +276,17 @@ def require_production_secrets(settings: Settings) -> None:
     """
     if not is_production(settings):
         return
-    insecure = insecure_secrets(settings)
+    _raise_if_insecure(insecure_secrets(settings))
+
+
+def require_fix_worker_secrets(settings: Settings) -> None:
+    """Como `require_production_secrets`, con el contrato del worker de fixes."""
+    if not is_production(settings):
+        return
+    _raise_if_insecure(fix_worker_insecure_secrets(settings))
+
+
+def _raise_if_insecure(insecure: list[str]) -> None:
     if insecure:
         raise RuntimeError(
             "Secretos sin configurar en produccion: "

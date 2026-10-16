@@ -22,6 +22,8 @@ from agent_review.domain.models import (
 from agent_review.domain.pending import InMemoryPendingStore
 from agent_review.graph.build import build_approval as graph_build_approval
 from agent_review.graph.build import build_graph, render_pause_notice
+from agent_review.models_config import ModelsConfig
+from agent_review.models_registry import Problem
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 from agent_review.profile import expected_tools
@@ -35,6 +37,8 @@ from agent_review.worker.main import (
     start_heartbeat,
     sweep_expired,
     sweep_pending,
+    validate_models,
+    verification_enabled,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -312,6 +316,71 @@ def test_build_registry_sin_habilitar_no_bindea_roles() -> None:
     registry = build_registry(Settings())
     assert registry.port_for("correctness") is None
     assert registry.config.models == {}
+
+
+def test_sin_models_config_se_usa_el_registro_implicito_de_llm() -> None:
+    """D7 de la iniciativa 005: un `.env` con solo `LLM_*` no cambia de proveedor.
+
+    Sin declarar `MODELS_CONFIG`, el registro se sintetiza desde `LLM_*`; nunca se
+    lee el `config/models.yaml` versionado (otro proveedor, otra clave).
+    """
+    settings = Settings(
+        llm_reviewer_enabled=True,
+        llm_model="gpt-x",
+        llm_base_url="https://llm.example.test/v1",
+        llm_api_key="k",
+    )
+    registry = build_registry(settings)
+    assert registry.model_for("correctness") == "gpt-x"
+    assert registry.model_for("fixer") == "gpt-x"
+
+
+class _StubRegistry:
+    def __init__(self, problems: list[Problem], *, bindings: dict[str, str] | None = None):
+        self.config = ModelsConfig.model_construct(
+            providers={}, models={}, bindings=bindings if bindings is not None else {"r": "m"}
+        )
+        self._problems = problems
+        self.probed = False
+
+    def probe(self) -> list[Problem]:
+        self.probed = True
+        return self._problems
+
+
+def test_validate_models_falla_ante_un_problema_fatal() -> None:
+    registry = _StubRegistry([Problem("p", "el modelo 'm' no aparece")])
+    with pytest.raises(RuntimeError, match="no aparece"):
+        validate_models(registry)  # type: ignore[arg-type]
+
+
+def test_validate_models_solo_avisa_si_el_proveedor_no_responde(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = _StubRegistry([Problem("p", "otro texto cualquiera", fatal=False)])
+    validate_models(registry)  # type: ignore[arg-type]
+    assert "otro texto cualquiera" in caplog.text
+
+
+def test_validate_models_sin_bindings_no_consulta() -> None:
+    registry = _StubRegistry([], bindings={})
+    validate_models(registry)  # type: ignore[arg-type]
+    assert not registry.probed
+
+
+@pytest.mark.parametrize(
+    ("enabled", "url", "expected"),
+    [
+        (True, "http://sandbox-runner:8099", True),
+        (False, "http://sandbox-runner:8099", False),
+        (True, "", False),
+    ],
+)
+def test_verification_enabled_exige_sandbox_y_runner(
+    enabled: bool, url: str, expected: bool
+) -> None:
+    settings = Settings(sandbox_enabled=enabled, sandbox_runner_url=url)
+    assert verification_enabled(settings) is expected
 
 
 def test_worker_hasta_formato_publica_salida_del_perfil(tmp_path: Path) -> None:
