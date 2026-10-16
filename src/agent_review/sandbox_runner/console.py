@@ -12,8 +12,9 @@ DEFAULT_MAX_LINES = 2000
 # Verificaciones terminadas que se retienen para servir su consola a quien llega
 # tarde. Un reinicio del runner las pierde todas (efimero, como ADR-0018).
 DEFAULT_MAX_RUNS = 8
-# Cadencia del latido de un SSE sin lineas nuevas. Una linea despierta al suscriptor
-# al instante, asi que este valor no anade latencia: solo acota los pings.
+# Cadencia con la que un suscriptor sin lineas nuevas vuelve a comprobar el buffer.
+# Una linea o el cierre lo despiertan al instante, asi que este valor solo acota la
+# espera maxima cuando la verificacion sigue muda.
 DEFAULT_POLL_S = 1.0
 
 
