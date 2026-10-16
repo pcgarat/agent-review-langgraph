@@ -46,7 +46,7 @@ from agent_review.domain.models import (
 )
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
-from agent_review.errors import is_transient
+from agent_review.errors import Cancelled, is_transient
 from agent_review.fix.delivery import DeliveryFormatter, DiffFormatter, SuggestionFormatter
 from agent_review.graph.build import (
     ReviewState,
@@ -54,6 +54,7 @@ from agent_review.graph.build import (
     build_pause,
     outcome_from_state,
 )
+from agent_review.graph.wrapper import set_cancel_check
 from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from agent_review.pending_store import PendingStore, RedisPendingStore
@@ -69,6 +70,7 @@ from agent_review.ports.vcs import VcsPort
 from agent_review.profile import expected_tools, fix_recipes, load_profile
 from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, is_production, require_production_secrets
+from agent_review.worker.cancel import CancellationPort, build_cancellation
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +416,11 @@ def build_runtime(
         settings.database_url, required=is_production(settings)
     )
     progress = progress if progress is not None else build_progress(settings)
+    # La cancelacion (019 W4) se instala en el *seam* de nodo: `build_graph` no
+    # conoce Redis, asi que el chequeo lo inyecta aqui el composition root. Sin
+    # Redis, `build_cancellation` es `None` y la frontera no consulta nada (W2).
+    cancellation = build_cancellation(settings)
+    set_cancel_check(cancellation.is_cancelled if cancellation is not None else None)
     graph = build_graph(
         vcs=vcs,
         reviewers=reviewers,
@@ -1107,6 +1114,7 @@ def _consume(
     fix_queue: FixQueue | None = None,
     fix_ttl_s: float | None = None,
     progress: ProgressPort | None = None,
+    cancel: CancellationPort | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1114,6 +1122,9 @@ def _consume(
     no queda ningún nodo en curso y el hash de la review debe quedar vacío. El
     `finally` cubre también el fallo: la envoltura de nodo ya cierra su propio campo,
     esto es la garantía de que la review no deja una marca colgando.
+
+    Una `Cancelled` (019 OP28) no reencola: borra el hilo del checkpointer, limpia el
+    inbox de pausas y, si `cancel` está, retira la marca.
     """
     try:
         process_request(
@@ -1125,6 +1136,11 @@ def _consume(
             fix_queue=fix_queue,
             fix_ttl_s=fix_ttl_s,
         )
+    except Cancelled:
+        # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
+        # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo
+        # que se ha dejado de querer; limpiar el inbox evita la pausa huerfana.
+        _on_cancelled(graph, request, paused=paused, cancel=cancel)
     except Exception as exc:
         if is_transient(exc):
             logger.warning(
@@ -1149,6 +1165,36 @@ def _consume(
             )
     finally:
         clear_progress(progress, request.review_key)
+
+
+def _on_cancelled(
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    paused: PausedStore | None = None,
+    cancel: CancellationPort | None = None,
+) -> None:
+    """Cierra una cancelacion: borra el hilo, limpia el inbox y no reencola (D5/OP28).
+
+    **Borrar el hilo es la guarda durable**: si se dejara, un hilo abortado con
+    `next` no vacio se reanudaria en la siguiente reentrega (`process_request`
+    continuaria desde el ultimo checkpoint) y la cancelacion no serviria de nada.
+    Es el mismo borrado que hace `reconcile_paused` con los hilos `:partial`
+    superados. Limpiar el inbox evita la pausa huerfana inmortal (familia de D15).
+
+    Nada de esto puede tumbar al worker: el job ya salio de la cola y el bucle vive.
+    """
+    saver = getattr(graph, "checkpointer", None)
+    thread_id = request.thread_id
+    if saver is not None:
+        try:
+            saver.delete_thread(thread_id)
+        except Exception:
+            logger.exception("No se pudo borrar el hilo cancelado %s", thread_id)
+    _clear_paused(paused, request)
+    if cancel is not None:
+        cancel.clear(request.review_key)
+    logger.info("Review %s cancelada; hilo borrado y fuera del inbox", request.review_key)
 
 
 def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
@@ -1218,6 +1264,9 @@ def run_forever(
     # El progreso se construye aparte para poder limpiarlo al cerrar cada pasada
     # (OP8) y para que `build_runtime` reciba el mismo objeto.
     progress = build_progress(settings)
+    # Cancelacion (019 OP28): el mismo adaptador que instala `build_runtime` en el
+    # *seam* de nodo, aqui para retirar la marca al abortar.
+    cancellation = build_cancellation(settings)
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.
     vcs: VcsPort | None = None
@@ -1246,6 +1295,7 @@ def run_forever(
                 fix_queue=fix_queue,
                 fix_ttl_s=settings.fix_verify_ttl_s,
                 progress=progress,
+                cancel=cancellation,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).

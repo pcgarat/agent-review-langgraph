@@ -85,14 +85,18 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 5 — Comandos (checkpoint C5)
 
-- [ ] **OP26** `Cancelled` (hereda de `PermanentError`, D6 del plan) y marca
+- [x] **OP26** `Cancelled` (hereda de `PermanentError`, D6 del plan) y marca
   `reviews:cancel:<review_key>`.
-- [ ] **OP27** La envoltura (OP7) comprueba la marca en la **frontera de nodo** y
+- [x] **OP27** La envoltura (OP7) comprueba la marca en la **frontera de nodo** y
   aborta; nunca a mitad de nodo (W4).
-- [ ] **OP28** El worker maneja `Cancelled`: **borra el hilo** del checkpointer,
+- [x] **OP28** El worker maneja `Cancelled`: **borra el hilo** del checkpointer,
   limpia el inbox y **no** reencola (D5 del plan)
   - Borrar el hilo es la guarda durable: un hilo abortado con `next` no vacío se
     reanudaría en una reentrega.
+  - Nota 2026-10-16: el chequeo de la marca se instala en el *seam* de nodo desde el
+    *composition root* (`set_cancel_check` en `graph/wrapper.py`, llamado por
+    `build_runtime`), porque `build_graph` no conoce Redis. Sin chequeo instalado, la
+    frontera no consulta nada y el sistema se comporta igual que antes.
 - [ ] **OP29** Endpoint `POST /reviews/{key}/cancel` (rol `operador`), que pone la
   marca y encola el comando.
 - [ ] **OP30** Semántica por estado: antes de publicar → cancelación limpia; después →

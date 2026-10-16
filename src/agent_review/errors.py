@@ -23,6 +23,29 @@ class PermanentError(RuntimeError):
     """Fallo no recuperable: reintentarlo lo repite (bug, 4xx, payload invalido)."""
 
 
+# Prefijo de la marca de cancelacion cooperativa (019 W4/W6): la pone el panel
+# (`SET`) y la lee la envoltura de nodo en la frontera de cada nodo. La clave
+# completa es `reviews:cancel:<review_key>`.
+CANCEL_KEY_PREFIX = "reviews:cancel:"
+
+
+def cancel_key(review_key: str) -> str:
+    """Clave Redis de la marca de cancelacion de una review (019 §5.4)."""
+    return f"{CANCEL_KEY_PREFIX}{review_key}"
+
+
+class Cancelled(PermanentError):
+    """Cancelacion pedida por una persona: se aborta y **no** se reintenta (019 D6).
+
+    Hereda de `PermanentError`, nunca de `TransientError`, **a proposito**: la
+    `RetryPolicy` de los nodos reintenta con `retry_on=is_transient`, y como todo
+    `PermanentError` se clasifica como no recuperable, el `Cancelled` que lanza la
+    envoltura en la frontera de nodo sale del grafo sin reintento. Una cancelacion
+    no es un fallo que se arregle repitiendo: repetir solo gastaria el LLM y el VCS
+    en un trabajo que ya no se quiere.
+    """
+
+
 def is_transient(exc: BaseException) -> bool:
     """¿Merece un reintento? Politica unica de reintento de nodo para el grafo.
 
