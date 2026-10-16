@@ -10,7 +10,7 @@ Arranque: `python -m agent_review.web.main` (uvicorn en `PANEL_PORT`).
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from agent_review.paused_store import RedisPausedStore
 from agent_review.queue import RedisReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
-from agent_review.web.auth import Session, require_operador, require_session
+from agent_review.web.auth import Session, require_command_session, require_session
 from agent_review.web.commands import (
     CommandEffect,
     CommandError,
@@ -139,7 +139,7 @@ def _actor_of(session: Session, body: dict[str, object]) -> str:
 async def cancel_review(
     review_key: str,
     request: Request,
-    session: Annotated[Session, Depends(require_operador)],
+    session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Cancela una review (OP29/OP30): marca para lo que corre, comando para la pausa."""
@@ -150,7 +150,7 @@ async def cancel_review(
 async def retry_review(
     review_key: str,
     request: Request,
-    session: Annotated[Session, Depends(require_operador)],
+    session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Reencola un descarte de la DLQ con `attempts=0` (OP31)."""
@@ -161,7 +161,7 @@ async def retry_review(
 async def resume_review(
     review_key: str,
     request: Request,
-    session: Annotated[Session, Depends(require_operador)],
+    session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Reencola la reanudacion de una pausa humana (OP32)."""
@@ -169,21 +169,21 @@ async def resume_review(
 
 
 def _run_command(
-    operation: object,
+    operation: Callable[..., CommandEffect],
     review_key: str,
     body: dict[str, object],
     session: Session,
 ) -> dict[str, object]:
     actor = _actor_of(session, body)
     try:
-        effect = operation(review_key, actor=actor)  # type: ignore[operator]
+        effect = operation(review_key, actor=actor)
     except CommandError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except Exception as exc:
         # Un fallo de Redis al marcar no puede devolver `200`: la cancelacion no ocurrio.
         logger.exception("Comando fallido sobre %s", review_key)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
-    return {"review_key": review_key, "effect": CommandEffect(effect).value, "actor": actor}
+    return {"review_key": review_key, "effect": effect.value, "actor": actor}
 
 
 async def _body(request: Request) -> dict[str, object]:
@@ -215,7 +215,11 @@ def review_console(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Sin verificacion en curso para {review_key}"
         )
-    stream = console.stream(run_key)
+    stream = console.open(run_key)
+    if stream is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"El runner no tiene la consola de {review_key}"
+        )
 
     def _events() -> Iterator[str]:
         for line in stream:

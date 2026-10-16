@@ -192,6 +192,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
       PROGRESS_KEY: ${PROGRESS_KEY:-reviews:active}
+      CANCEL_TTL_S: ${CANCEL_TTL_S:-604800}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-500000}
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.

@@ -10,8 +10,10 @@ Las tres operaciones son distintas a proposito (spec §5.5):
   publicado** solo puede cancelar lo pendiente (los comentarios del PR se quedan).
   Para lo que corre o espera en cola basta la marca `reviews:cancel:<key>`; para una
   review **pausada** se encola el `request` marcado, porque no hay ningun nodo que
-  mire la marca.
-- **Reintentar**: reencola el `request` de un descarte de la DLQ con `attempts=0`.
+  mire la marca. Una pausa de **fix** no lleva marca: su cancelacion es una
+  reanudacion normal (la wave como no verificable) y la marca la abortaria.
+- **Reintentar**: retira la marca (si la review se cancelo) y reencola el `request`
+  de un descarte de la DLQ con `attempts=0`.
 - **Reanudar**: reencola la reanudacion de una pausa humana. Reanudar **es** decidir:
   una pausa humana espera a una persona, asi que reanudar sin decidir equivale a
   resolver los pendientes como `expired` (lo que ya hace el TTL, pero a peticion).
@@ -56,9 +58,15 @@ class CommandEffect(StrEnum):
 
 
 class CancellationMarker(Protocol):
-    """Escribe la marca de cancelacion (OP26). El worker la lee en la frontera."""
+    """Escribe la marca de cancelacion (OP26). El worker la lee en la frontera.
+
+    `clear` la retira al reintentar: la marca sobrevive al aborto como *tombstone*
+    y, sin retirarla, el reintento se abortaria al desencolar.
+    """
 
     def mark(self, review_key: str) -> None: ...
+
+    def clear(self, review_key: str) -> None: ...
 
 
 class ReviewCommands(Protocol):
@@ -91,27 +99,38 @@ class CommandService:
         Una pausa de fix es **posterior a publicar**: cancelarla es «cancelar lo
         pendiente» (el fix queda no verificable), nunca deshacer lo publicado. Una
         pausa humana es previa a publicar: cancelar es limpio y no deja comentarios.
+
+        La pausa de fix **no** se marca: el worker abortaria con la marca el propio
+        job de cancelacion (borrando el hilo) y la reanudacion tardia del fix-worker
+        re-ejecutaria la review desde cero. Sin marca, el job resuelve la wave y el
+        hilo queda completado; la reanudacion real que llegue despues es un no-op.
         """
         paused = self._paused.get(review_key)
+        if paused is not None and paused.kind is PauseKind.FIX:
+            self._queue.enqueue(_fix_cancellation(paused))
+            logger.info("Cancelado lo pendiente de %s (actor=%s)", review_key, actor)
+            return CommandEffect.CANCELLED_PENDING
         self._cancellation.mark(review_key)
         if paused is None:
             # En cola o en vuelo: la marca basta, la frontera de nodo aborta.
             logger.info("Cancelacion marcada para %s (actor=%s)", review_key, actor)
             return CommandEffect.CANCELLED
-        if paused.kind is PauseKind.FIX:
-            self._queue.enqueue(_fix_cancellation(paused))
-            logger.info("Cancelado lo pendiente de %s (actor=%s)", review_key, actor)
-            return CommandEffect.CANCELLED_PENDING
         self._queue.enqueue(paused.request.model_copy(update={"cancelled": True}))
         logger.info("Cancelada la review pausada %s (actor=%s)", review_key, actor)
         return CommandEffect.CANCELLED
 
     def retry(self, review_key: str, *, actor: str) -> CommandEffect:
-        """Reencola un descarte de la DLQ con `attempts=0` (spec §5.5)."""
+        """Reencola un descarte de la DLQ con `attempts=0` (spec §5.5).
+
+        Reintentar es la orden explicita de que la review vuelva a correr, asi que
+        retira antes una marca de cancelacion que pudiera quedar: si no, el worker
+        abortaria el reintento al desencolarlo y el panel habria dicho `RETRIED`.
+        """
         entry = _find_dead(self._queue, review_key)
         if entry is None:
             raise CommandError(f"{review_key} no esta en la DLQ")
         request = ReviewRequest.model_validate(entry["request"])
+        self._cancellation.clear(review_key)
         self._queue.enqueue(request.model_copy(update={"attempts": 0, "cancelled": False}))
         logger.info("Reintento encolado para %s (actor=%s)", review_key, actor)
         return CommandEffect.RETRIED

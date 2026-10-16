@@ -114,7 +114,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
-| Progreso y panel (019) | `PROGRESS_ENABLED` (`false`: activa el progreso del worker en Redis, cierra D16), `PROGRESS_TTL_S` (3600), `PROGRESS_KEY` (`reviews:active`; el panel de operación lee de aquí el nodo en curso) |
+| Progreso y panel (019) | `PROGRESS_ENABLED` (`false`: activa el progreso del worker en Redis, cierra D16), `PROGRESS_TTL_S` (3600), `PROGRESS_KEY` (`reviews:active`; el panel de operación lee de aquí el nodo en curso), `CANCEL_TTL_S` (604800: vida de la marca de cancelación, que queda como *tombstone* tras abortar; debe superar `DECISION_TTL_S`) |
 | Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (sesión `<usuario>:<lector\|operador>`; **no** es `REVIEWS_DECISION_TOKEN`; fail-closed en producción), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4) |
 | LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: tope de tokens **por review**, compartido por todas las personas y el fixer; al agotarse, lo que falte se registra como `budget_exhausted` en vez de gastar de más, §2) |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
@@ -259,16 +259,24 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `GET` | `/healthz` | — | `200` |
 | `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
 | `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
-| `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector`; `409` si no aplica; `503` si Redis no responde |
-| `POST` | `/api/reviews/{review_key}/retry` | `operador` | Reencola un descarte de la DLQ con `attempts=0`; `409` si no está en la DLQ |
+| `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
+| `POST` | `/api/reviews/{review_key}/retry` | `operador` | Retira la marca de cancelación, si la hay, y reencola un descarte de la DLQ con `attempts=0`; `409` si no está en la DLQ |
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana; `409` si no está pausada |
-| `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso o el runner no tiene su buffer |
+| `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review
 (o encola el `request` marcado si estaba pausada) y el worker aborta en la frontera de
-nodo o al desencolar. La UI solo ofrece cada botón en el estado en que aplica y nunca
-ofrece «cancelar la review» si ya publicó (solo «cancelar lo pendiente»).
+nodo o al desencolar. Una pausa de fix no se marca: su cancelación encola la wave como
+no verificable y el hilo completa. La marca sobrevive al aborto hasta `CANCEL_TTL_S`
+para abortar también los jobs rezagados de la review; reintentar la retira. La UI solo
+ofrece cada botón en el estado en que aplica y nunca ofrece «cancelar la review» si ya
+publicó (solo «cancelar lo pendiente»).
+
+Con la sesión en la cookie, un comando solo se acepta como `fetch` JSON del mismo
+origen (`Content-Type: application/json`, y `Origin`/`Sec-Fetch-Site` del propio panel
+si vienen): es la defensa contra CSRF, porque el navegador manda la cookie también en un
+formulario que dispare otra web. Con la cabecera `X-Panel-Session` no se exige.
 
 Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja; con uno real,
 la cabecera es obligatoria (`401` sin ella) y un rol `lector` recibe `403` en
@@ -387,6 +395,8 @@ firma inválida o ausente da `401`.
 | El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es obligatoria (`X-Panel-Session: <usuario>:<rol>` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
 | El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
 | Cancelar no surte efecto | La marca no llegó, o la review no pasa por una frontera | `redis-cli EXISTS reviews:cancel:<review_key>`; si está, la review corre: la cancelación se aplica al empezar el **siguiente nodo** (un nodo entero de latencia). Si estaba pausada, el comando encola el `request` marcado y el worker lo aborta al desencolar |
+| Un reintento termina cancelado, o un job de la review se descarta solo | Queda la marca de cancelación (*tombstone*, `CANCEL_TTL_S`) | Es esperado: aborta los rezagados de una review cancelada. «Reintentar» desde el panel la retira; a mano, `redis-cli DEL reviews:cancel:<review_key>` |
+| Un comando da `403` con un operador | La sesión va por cookie y la petición no es JSON del mismo origen | Usar la UI del panel o mandar la cabecera `X-Panel-Session` |
 | Cancelada pero el PR ya tiene comentarios | Publicó antes de cancelar | Es esperado (W6/R2): cancelar no despublica. La UI solo ofrece «cancelar lo pendiente» en ese estado |
 | La consola del sandbox da `404` | El `run_key` no está en el buffer del runner | Es efímero (W5): un reinicio del runner lo pierde y una verificación terminada se desaloja. El informe sigue en `POST /verify`; la consola es *best-effort* |
 | La consola no muestra nada | El runner no responde, o `SANDBOX_RUNNER_URL`/`SANDBOX_RUNNER_TOKEN` vacíos en el `web` | El proxy degrada a `404` sin tumbar el panel; revisar `docker compose logs -f sandbox-runner` |

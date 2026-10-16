@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import fakeredis
+import httpx
 import pytest
 import redis
 from fastapi import Depends, FastAPI, HTTPException
@@ -52,6 +53,7 @@ from agent_review.web.read_model import (
     RedisPanelReadModel,
     build_panel_read_model,
 )
+from agent_review.web.runner_client import RunnerConsoleClient
 
 client = TestClient(app)
 
@@ -435,3 +437,66 @@ def test_build_panel_read_model_compone_las_dos_fuentes() -> None:
     assert isinstance(model, CompositePanelReadModel)
     assert isinstance(model, PanelReadModel)
     model.close()
+
+
+# --- OP24: proxy de la consola del runner ------------------------------------------
+
+_FIX_KEY = "cqm/emotivoo-v2:39:bbb:4"
+_SSE = 'event: line\ndata: {"text": "hola"}\n\nevent: end\ndata: {}\n\n'
+
+
+def _console(handler: object) -> RunnerConsoleClient:
+    return RunnerConsoleClient(
+        base_url="http://runner",
+        token="t0k",
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+    )
+
+
+def test_la_consola_reenvia_el_sse_del_runner_con_el_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, text=_SSE, headers={"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(app.state, "console", _console(handler), raising=False)
+    response = client.get(f"/api/reviews/{_FIX_KEY}/console")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert '"text": "hola"' in response.text and "event: end" in response.text
+    assert seen == {"url": "http://runner/verify/r:f2:1/console", "auth": "Bearer t0k"}
+
+
+def test_la_consola_da_404_si_el_runner_no_tiene_el_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un `200` vacio haria reconectar al `EventSource` sin fin; un `404` lo para."""
+    monkeypatch.setattr(
+        app.state, "console", _console(lambda request: httpx.Response(404)), raising=False
+    )
+    assert client.get(f"/api/reviews/{_FIX_KEY}/console").status_code == 404
+
+
+def test_la_consola_da_404_si_el_runner_no_responde(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("runner caido", request=request)
+
+    monkeypatch.setattr(app.state, "console", _console(handler), raising=False)
+    assert client.get(f"/api/reviews/{_FIX_KEY}/console").status_code == 404
+
+
+def test_la_consola_da_404_sin_verificacion_en_curso(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        app.state, "console", _console(lambda request: httpx.Response(200)), raising=False
+    )
+    assert client.get(f"/api/reviews/{_REVIEW_KEY}/console").status_code == 404
+
+
+def test_la_consola_da_404_sin_runner_configurado(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app.state, "console", RunnerConsoleClient(base_url=""), raising=False)
+    assert client.get(f"/api/reviews/{_FIX_KEY}/console").status_code == 404

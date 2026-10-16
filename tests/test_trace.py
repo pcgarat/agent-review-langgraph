@@ -162,6 +162,39 @@ def test_recorrido_de_un_hilo_a_medias() -> None:
     assert trace.pause_kind is None
 
 
+def test_recorrido_de_un_nodo_corriendo_ahora_es_en_curso() -> None:
+    """Un nodo vivo (o uno cuyo worker murio a mitad) no deja `__error__`: no es completado."""
+    from langgraph.graph import END, START, StateGraph
+
+    saver = _memory_saver()
+    thread_id = "r:1:abc:vivo"
+    seen: list[ReviewTrace | None] = []
+
+    def first(state: dict[str, object]) -> dict[str, object]:
+        return {"x": 1}
+
+    def running(state: dict[str, object]) -> dict[str, object]:
+        seen.append(read_trace(saver, thread_id))
+        return {"x": 2}
+
+    builder: StateGraph[dict[str, object]] = StateGraph(dict[str, object])
+    builder.add_node("scope", first)
+    builder.add_node("persona", running)
+    builder.add_edge(START, "scope")
+    builder.add_edge("scope", "persona")
+    builder.add_edge("persona", END)
+    builder.compile(checkpointer=saver).invoke(
+        {"x": 0}, config={"configurable": {"thread_id": thread_id}}
+    )
+
+    trace = seen[0]
+    assert trace is not None
+    assert trace.state == "in_progress"
+    assert trace.next == ["persona"]
+    after = read_trace(saver, thread_id)
+    assert after is not None and after.state == "completed" and after.next == []
+
+
 def test_recorrido_de_un_hilo_inexistente_es_none() -> None:
     assert read_trace(_memory_saver(), "no:existe:1") is None
 

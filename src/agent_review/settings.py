@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # TTL de la marca de progreso: por encima del peor caso de un nodo con
     # reintentos. Una marca caducada no se confunde con un trabajo vivo.
     progress_ttl_s: float = 3600.0
+    # TTL de la marca de cancelacion `reviews:cancel:<review_key>` (019 §5.4). La
+    # marca sobrevive al aborto como *tombstone*: cualquier job rezagado de la misma
+    # review (la reanudacion del fix-worker, una decision encolada) se aborta al
+    # desencolar en vez de re-ejecutar la review desde cero. Debe superar el plazo
+    # mas largo en que puede llegar un rezagado: `DECISION_TTL_S` (7 dias).
+    cancel_ttl_s: float = 7 * 24 * 3600.0
     # Clave del hash de progreso (019 §5.2). Un campo por nodo en curso.
     progress_key: str = "reviews:active"
 

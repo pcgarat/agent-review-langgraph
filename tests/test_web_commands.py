@@ -135,13 +135,17 @@ def test_cancelar_una_pausa_humana_encola_el_request_marcado() -> None:
 
 
 def test_cancelar_una_pausa_de_fix_solo_cancela_lo_pendiente() -> None:
-    """Despues de publicar: los comentarios se quedan; la wave se descarta (W6/R2)."""
-    service, queue, paused, _marker = _service()
+    """Despues de publicar: los comentarios se quedan; la wave se descarta (W6/R2).
+
+    Sin marca: el worker abortaria con ella el propio job que resuelve la wave.
+    """
+    service, queue, paused, marker = _service()
     _pause_fix(paused, _request())
 
     effect = service.cancel(_REVIEW_KEY, actor="ana")
 
     assert effect is CommandEffect.CANCELLED_PENDING
+    assert marker.is_cancelled(_REVIEW_KEY) is False
     queued = queue.dequeue()
     assert queued is not None and queued.cancelled is False
     assert queued.fix_resolution is not None
@@ -160,6 +164,17 @@ def test_reintentar_un_descarte_lo_reencola_con_attempts_cero() -> None:
     assert effect is CommandEffect.RETRIED
     queued = queue.dequeue()
     assert queued is not None and queued.attempts == 0
+
+
+def test_reintentar_retira_la_marca_de_una_review_cancelada() -> None:
+    """Sin retirarla, el worker abortaria el reintento al desencolarlo."""
+    service, queue, _paused, marker = _service()
+    marker.mark(_REVIEW_KEY)
+    queue.dead_letter(_request(attempts=3), reason="intentos agotados")
+
+    service.retry(_REVIEW_KEY, actor="ana")
+
+    assert marker.is_cancelled(_REVIEW_KEY) is False
 
 
 def test_reintentar_algo_que_no_esta_en_la_dlq_falla() -> None:
@@ -237,3 +252,44 @@ def test_un_comando_que_no_aplica_responde_409(client: TestClient) -> None:
             json={"actor": "ana"},
         )
     assert response.status_code == 409
+
+
+# --- CSRF: los comandos por cookie exigen JSON del mismo origen --------------------
+
+
+def _cookie_post(client: TestClient, *, headers: dict[str, str], **kwargs: object) -> int:
+    service, _queue, _paused, _marker = _service()
+    with client as _c:
+        web_main.app.state.commands = service
+        _c.cookies.set("panel_session", "ana:operador")
+        response = _c.post(f"/api/reviews/{_REVIEW_KEY}/cancel", headers=headers, **kwargs)
+    return response.status_code
+
+
+def test_un_formulario_de_otra_web_no_ejecuta_comandos(client: TestClient) -> None:
+    status_code = _cookie_post(
+        client,
+        headers={"Content-Type": "text/plain", "Origin": "https://evil.example"},
+        content=b'{"actor": "x"}',
+    )
+    assert status_code == 403
+
+
+def test_un_fetch_json_de_otro_origen_no_ejecuta_comandos(client: TestClient) -> None:
+    status_code = _cookie_post(
+        client, headers={"Origin": "https://evil.example"}, json={"actor": "ana"}
+    )
+    assert status_code == 403
+
+
+def test_un_comando_por_cookie_sin_json_se_rechaza(client: TestClient) -> None:
+    assert _cookie_post(client, headers={}, data={"actor": "ana"}) == 403
+
+
+def test_la_ui_del_mismo_origen_ejecuta_comandos_por_cookie(client: TestClient) -> None:
+    status_code = _cookie_post(
+        client,
+        headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"},
+        json={"actor": "ana"},
+    )
+    assert status_code == 200

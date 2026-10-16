@@ -180,6 +180,11 @@ de entrar al nodo. Al añadir un chequeo nuevo, dos reglas más:
    frontera. Su cancelación viaja como un `ReviewRequest` marcado (`cancelled=True`) y
    `_consume` la aborta **antes** de tocar el grafo; comprobarlo después del `invoke`
    reanudaría la pausa y publicaría.
+5. **La marca es un tombstone**: el worker no la retira al abortar. Sin hilo, cualquier
+   job rezagado de la misma review (la reanudación del fix-worker, una decisión
+   encolada) arrancaría desde `START`; la marca, con su TTL (`CANCEL_TTL_S`), hace que
+   `_consume` lo aborte. Solo el comando «Reintentar» la retira. Por la misma razón una
+   pausa de **fix** no se marca: la marca abortaría el job que resuelve la wave.
 
 ### La web del panel (019)
 

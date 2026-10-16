@@ -130,3 +130,22 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP41** `make ci` y `make docs-check` en verde.
 - [x] **OP42** Anotar en la [018](../018-trazas-de-la-review/spec.md) la coordinación
   del *seam* de nodos (D2 del plan).
+
+## Bloque 7 — Correcciones de la revisión de código (checkpoint C7)
+
+Hallazgos confirmados de la revisión de la 019 antes de subirla. Checkpoint: los
+tests de regresión fallan con el código anterior y `make ci` queda en verde.
+
+- [x] **OP43** CSRF en los comandos por cookie: `require_command_session` exige
+  `Content-Type: application/json` y `Origin`/`Sec-Fetch-Site` del mismo origen
+  cuando la sesión llega por cookie (`web/auth.py`).
+- [x] **OP44** Cancelar una pausa de fix no pone la marca: el job resuelve la wave como
+  no verificable y la reanudación tardía del fix-worker es un no-op.
+- [x] **OP45** La marca de cancelación queda como *tombstone* tras abortar, para que
+  un job rezagado no re-ejecute la review desde `START`.
+- [x] **OP46** La marca lleva TTL (`CANCEL_TTL_S`) y «Reintentar» la retira antes de
+  reencolar.
+- [x] **OP47** El recorrido marca `in_progress` un hilo con un nodo despachado y sin
+  cerrar (nodo vivo o worker muerto a mitad), no `completed`.
+- [x] **OP48** El proxy de la consola resuelve la respuesta del runner antes de abrir
+  el stream y da `404` en vez de un `200` vacío.

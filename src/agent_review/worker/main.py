@@ -1122,15 +1122,17 @@ def _consume(
     `finally` cubre también el fallo: la envoltura de nodo ya cierra su propio campo,
     esto es la garantía de que la review no deja una marca colgando.
 
-    Una `Cancelled` (019 OP28) no reencola: borra el hilo del checkpointer, limpia el
-    inbox de pausas y, si `cancel` está, retira la marca. Una review **ya cancelada**
-    (marca puesta o comando encolado, OP29) se aborta antes de tocar el grafo: la
-    marca sola no basta en una pausa, donde no hay frontera de nodo que la mire.
+    Una `Cancelled` (019 OP28) no reencola: borra el hilo del checkpointer y limpia el
+    inbox de pausas. Una review **ya cancelada** (marca puesta o comando encolado,
+    OP29) se aborta antes de tocar el grafo: la marca sola no basta en una pausa,
+    donde no hay frontera de nodo que la mire. La marca **no** se retira: es el
+    *tombstone* que aborta aquí mismo cualquier job rezagado de la review (ver
+    `worker.cancel`).
     """
     # Cancelacion previa al trabajo: el worker bloqueado en `graph.invoke` no procesa
     # un job de cancelacion, y una pausa no pasa por ninguna frontera de nodo.
     if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
-        _on_cancelled(graph, request, paused=paused, cancel=cancel)
+        _on_cancelled(graph, request, paused=paused)
         return
     try:
         process_request(
@@ -1146,7 +1148,7 @@ def _consume(
         # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
         # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo
         # que se ha dejado de querer; limpiar el inbox evita la pausa huerfana.
-        _on_cancelled(graph, request, paused=paused, cancel=cancel)
+        _on_cancelled(graph, request, paused=paused)
     except Exception as exc:
         if is_transient(exc):
             logger.warning(
@@ -1178,15 +1180,16 @@ def _on_cancelled(
     request: ReviewRequest,
     *,
     paused: PausedStore | None = None,
-    cancel: CancellationPort | None = None,
 ) -> None:
     """Cierra una cancelacion: borra el hilo, limpia el inbox y no reencola (D5/OP28).
 
-    **Borrar el hilo es la guarda durable**: si se dejara, un hilo abortado con
-    `next` no vacio se reanudaria en la siguiente reentrega (`process_request`
-    continuaria desde el ultimo checkpoint) y la cancelacion no serviria de nada.
-    Es el mismo borrado que hace `reconcile_paused` con los hilos `:partial`
-    superados. Limpiar el inbox evita la pausa huerfana inmortal (familia de D15).
+    Borrar el hilo evita que una reentrega reanude el trabajo abortado desde el
+    ultimo checkpoint; es el mismo borrado que hace `reconcile_paused` con los hilos
+    `:partial` superados. Pero sin hilo, un job rezagado (la reanudacion del
+    fix-worker, una decision encolada) arrancaria la review **desde cero**: por eso
+    la marca de cancelacion se deja puesta hasta su TTL (`CANCEL_TTL_S`), y el
+    chequeo previo de `_consume` aborta esos rezagados. Limpiar el inbox evita la
+    pausa huerfana inmortal (familia de D15).
 
     Nada de esto puede tumbar al worker: el job ya salio de la cola y el bucle vive.
     """
@@ -1197,9 +1200,10 @@ def _on_cancelled(
             saver.delete_thread(thread_id)
         except Exception:
             logger.exception("No se pudo borrar el hilo cancelado %s", thread_id)
-    _clear_paused(paused, request)
-    if cancel is not None:
-        cancel.clear(request.review_key)
+    try:
+        _clear_paused(paused, request)
+    except Exception:
+        logger.exception("No se pudo sacar del inbox la review cancelada %s", request.review_key)
     logger.info("Review %s cancelada; hilo borrado y fuera del inbox", request.review_key)
 
 
@@ -1271,7 +1275,7 @@ def run_forever(
     # (OP8) y para que `build_runtime` reciba el mismo objeto.
     progress = build_progress(settings)
     # Cancelacion (019 OP28): el mismo adaptador que instala `build_runtime` en el
-    # *seam* de nodo, aqui para retirar la marca al abortar.
+    # *seam* de nodo, aqui para abortar al desencolar los jobs ya cancelados.
     cancellation = build_cancellation(settings)
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.

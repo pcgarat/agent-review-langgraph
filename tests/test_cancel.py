@@ -8,7 +8,8 @@ Tres frentes:
    entrar al nodo; con marca, aborta sin ejecutar el cuerpo. Sin marca, el grafo
    se comporta exactamente como hoy.
 3. **Worker** (OP28, D5): una `Cancelled` borra el hilo del checkpointer, limpia el
-   inbox de pausas y **no** reencola.
+   inbox de pausas y **no** reencola. La marca queda como *tombstone* (con TTL) y
+   aborta los jobs rezagados de la misma review en vez de re-ejecutarla desde cero.
 """
 
 from __future__ import annotations
@@ -16,15 +17,23 @@ from __future__ import annotations
 import fakeredis
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from test_checkpointer import _approve, _fix_graph, _FixVcs
+from test_worker import FakeVcs, _CountingReviewer, _escalating_finding, _hitl_graph
 
-from agent_review.domain.models import ApprovalRequest, ReviewRequest
+from agent_review.domain.models import (
+    ApprovalRequest,
+    FixResolution,
+    FixResolutions,
+    ReviewRequest,
+)
 from agent_review.domain.paused import PauseKind
 from agent_review.errors import Cancelled, PermanentError, cancel_key, is_transient
 from agent_review.graph.wrapper import node_wrapper
 from agent_review.paused_store import InMemoryPausedStore
 from agent_review.queue import InMemoryReviewQueue
+from agent_review.web.commands import CommandEffect, build_command_service
 from agent_review.worker.cancel import RedisCancellation
-from agent_review.worker.main import _consume
+from agent_review.worker.main import _consume, process_request
 
 
 def _redis_cancel() -> RedisCancellation:
@@ -273,11 +282,11 @@ def test_un_comando_cancelled_no_reanuda_la_pausa_y_borra_el_hilo() -> None:
     assert queue.dequeue() is None
 
 
-def test_cancelled_retira_la_marca_al_abortar() -> None:
-    """El worker consume la marca: sin retirarla, la review quedaría cancelada para siempre."""
+def test_la_marca_queda_como_tombstone_al_abortar() -> None:
+    """Sin hilo, un rezagado re-ejecutaria la review: la marca se queda hasta su TTL."""
     request = ReviewRequest(repo="r", pr_id=1, head_sha="a", pipeline_id="7")
     cancel = _redis_cancel()
-    cancel._client.set(cancel_key(request.review_key), "1")
+    cancel.mark(request.review_key)
 
     _consume(
         InMemoryReviewQueue(),
@@ -287,7 +296,84 @@ def test_cancelled_retira_la_marca_al_abortar() -> None:
         cancel=cancel,
     )
 
+    assert cancel.is_cancelled(request.review_key) is True
+
+
+def test_la_marca_caduca_con_su_ttl() -> None:
+    cancel = RedisCancellation(
+        url="redis://localhost:6379/0", client=fakeredis.FakeRedis(), ttl_s=600
+    )
+    cancel.mark("k")
+
+    assert 0 < cancel._client.ttl(cancel_key("k")) <= 600
+
+
+def test_una_decision_rezagada_tras_cancelar_no_re_ejecuta_la_review() -> None:
+    """Pausa humana cancelada: la decision que llega despues no arranca desde START."""
+    vcs = FakeVcs()
+    reviewer = _CountingReviewer(_escalating_finding())
+    graph = _hitl_graph(vcs, reviewer)
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    paused = InMemoryPausedStore()
+    queue = InMemoryReviewQueue()
+    cancel = _redis_cancel()
+    process_request(graph, request, paused=paused)
+    calls = reviewer.calls
+    service = build_command_service(queue=queue, paused=paused, cancellation=cancel)
+
+    assert service.cancel(request.review_key, actor="ana") is CommandEffect.CANCELLED
+    job = queue.dequeue()
+    assert job is not None
+    _consume(queue, graph, job, max_attempts=3, paused=paused, cancel=cancel)
+    late = request.model_copy(update={"decision": _approve(request.review_key, "w1")})
+    _consume(queue, graph, late, max_attempts=3, paused=paused, cancel=cancel)
+
+    assert reviewer.calls == calls, "el rezagado no vuelve a revisar"
+    assert graph.get_state({"configurable": {"thread_id": request.thread_id}}).values == {}
+
+
+def test_cancelar_una_pausa_de_fix_resuelve_la_wave_y_el_rezagado_es_no_op() -> None:
+    """La cancelacion de fix no se marca: resuelve la wave; la reanudacion real no re-publica."""
+    vcs = _FixVcs()
+    graph = _fix_graph(vcs)
+    request = ReviewRequest(repo="r", pr_id=2, head_sha="h", pipeline_id="fix")
+    paused = InMemoryPausedStore()
+    queue = InMemoryReviewQueue()
+    cancel = _redis_cancel()
+    process_request(graph, request, paused=paused)
+    process_request(
+        graph,
+        request.model_copy(update={"decision": _approve(request.review_key, "f1")}),
+        paused=paused,
+    )
+    entry = paused.get(request.review_key)
+    assert entry is not None and entry.kind is PauseKind.FIX
+    run_key = entry.fix_request.jobs[0].run_key
+    service = build_command_service(queue=queue, paused=paused, cancellation=cancel)
+
+    effect = service.cancel(request.review_key, actor="ana")
+    job = queue.dequeue()
+    assert job is not None
+    _consume(queue, graph, job, max_attempts=3, paused=paused, cancel=cancel)
+
+    config = {"configurable": {"thread_id": request.thread_id}}
+    assert effect is CommandEffect.CANCELLED_PENDING
     assert cancel.is_cancelled(request.review_key) is False
+    snapshot = graph.get_state(config)
+    assert snapshot.values and not snapshot.next, "la wave se resuelve y el hilo completa"
+    published = (len(vcs.comments), len(vcs.inlines))
+
+    late = request.model_copy(
+        update={
+            "fix_resolution": FixResolutions(
+                items=[FixResolution(run_key=run_key, outcome="error", error="tarde")]
+            )
+        }
+    )
+    _consume(queue, graph, late, max_attempts=3, paused=paused, cancel=cancel)
+
+    assert (len(vcs.comments), len(vcs.inlines)) == published, "el rezagado no re-publica"
+    assert paused.get(request.review_key) is None
 
 
 def _approval(request: ReviewRequest) -> ApprovalRequest:

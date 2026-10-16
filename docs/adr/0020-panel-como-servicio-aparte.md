@@ -53,6 +53,9 @@ síncrono.
   por eso la señal duradera es la **marca** para lo que corre y el **job** para lo
   pausado. Borrar el hilo del checkpointer al abortar es la guarda frente a una
   reentrega que reanudaría un trabajo ya no querido.
+  *Corrección (2026-10-16):* borrar el hilo no basta: sin él, un job rezagado
+  arrancaría la review desde cero. La marca se conserva como *tombstone* hasta
+  `CANCEL_TTL_S` (solo «Reintentar» la retira), y una pausa de fix no se marca.
 - Cancelar **no** es reversible: si la review ya publicó, la UI solo ofrece «cancelar
   lo pendiente» y los comentarios del PR se quedan.
 - El panel muestra diffs y salidas de PRs de terceros; mismo tratamiento que la 018

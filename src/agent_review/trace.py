@@ -109,8 +109,11 @@ def _state_of(
     """Estado del hilo y nodos pendientes, leidos del checkpoint mas nuevo.
 
     Los canales que LangGraph escribe al cerrar un paso delatan el estado:
-    `__error__` (un nodo fallo), `__interrupt__` (pausa) o ninguno (completado).
-    Es la misma convencion que `checkpointer._is_completed`, sin grafo.
+    `__error__` (un nodo fallo) o `__interrupt__` (pausa). Sin ninguno de los dos, el
+    hilo esta completado **solo si** su ultimo checkpoint no despacha nada: un nodo
+    corriendo ahora (o uno cuyo worker murio a mitad) deja ese checkpoint con su
+    arista `branch:to:<nodo>` (o los `Send` del fan-out) en `channel_values` y sin
+    escrituras propias. Es lo que LangGraph usa para calcular `next`.
     """
     newest = tuples[0]
     channels = {write[1] for write in newest.pending_writes or []}
@@ -125,7 +128,20 @@ def _state_of(
         # Ni un solo nodo cerrado: el hilo solo tiene el checkpoint de entrada.
         # Llamarlo completado seria mentir; lo honesto es «aun no ha empezado».
         return "in_progress", _edge_targets(newest.pending_writes)
+    running = _dispatched_by(newest)
+    if running:
+        return "in_progress", running
     return "completed", []
+
+
+def _dispatched_by(tup: CheckpointTuple) -> list[str]:
+    """Nodos que el checkpoint `tup` deja despachados y aun sin cerrar.
+
+    Se leen de sus `channel_values` con la misma convencion que las escrituras
+    (`branch:to:<nodo>` y `__pregel_tasks`), asi que se reutiliza `_edge_targets`.
+    """
+    values = tup.checkpoint.get("channel_values") or {}
+    return _edge_targets([("", channel, value) for channel, value in values.items()])
 
 
 def _edge_targets(pending: list[PendingWrite] | None) -> list[str]:
