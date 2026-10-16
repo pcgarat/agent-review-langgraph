@@ -52,6 +52,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
 | Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores y `FixtureContextReader`), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_tool_loop` (bucle, topes, citas y presupuesto) |
+| Presupuesto (017) | `test_budget` (contrato paramétrico de `InMemoryBudget` y `RedisBudget` sobre `fakeredis`, reserva/confirmación y el consumo desde el bucle), `test_llm_reviewer` y `test_llm_fixer` (reserva, tope blando, corte y devolución en el error), `test_worker` (reparto `2×total/N` en `build_reviewers`), `test_graph` (el hecho del corte en el `ReviewOutcome`) |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
 | Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
@@ -143,6 +144,24 @@ dentro del bucle se sirve al modelo como error y la review sigue. Cubre el contr
 `tests/test_context_ports.py` (paramétrico sobre los tres adaptadores) y el adaptador
 nuevo en su propia suite.
 
+### Una fuente de presupuesto nueva
+
+El `BudgetPort` (`ports/budget.py`) cuenta tokens **por review** (`reserve`,
+`commit`, `remaining`), con un contador compartido por el fan-out y el fix. Hay dos
+adaptadores y ambos pasan el mismo test de contrato:
+
+1. **`InMemoryBudget`** (`adapters/budget_memory.py`): `dict` por `review_key` con un
+   `Lock`. Es el de los tests, el *replay* y el despliegue sin Redis.
+2. **`RedisBudget`** (`adapters/budget_redis.py`): script Lua atómico (`INCRBY` con
+   comprobación de tope y TTL). Es lo único que ven a la vez las ramas paralelas del
+   fan-out y el `fix-worker`. Si Redis no responde, cae a un contador local.
+
+Para añadir uno: implementa la semántica de `remaining` (`total − confirmado −
+reservado sin confirmar`, que fija `tests/test_budget.py`), trata `False` de
+`reserve` como vinculante y devuelve la reserva con `commit(..., 0)` en el error. Al
+consumidor le llegue el puerto, no un entero: `reserve_tokens`/`release_tokens`
+encapsulan las dos reglas para que ningún consumidor olvide mirar el resultado.
+
 ### Una receta nueva en el sandbox
 
 Declárala en `checks:` del perfil y, si toca, en `verify:`. Es una decisión humana
@@ -184,6 +203,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como
   limpia.
+- **Ninguna persona compara su propia llamada contra un entero de presupuesto.** El
+  gasto se reserva y se confirma contra el `BudgetPort` compartido; el hecho del
+  corte (`budget_exhausted`) viaja, no se silencia.
 
 ## 5. Convenciones
 

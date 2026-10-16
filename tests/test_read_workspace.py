@@ -9,6 +9,7 @@ el TTL y el tope de workspaces abiertos. Al final, los endpoints `/workspaces` c
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -203,6 +204,88 @@ def test_el_tope_de_workspaces_desaloja_el_mas_viejo(remote) -> None:
         manager.close()
 
 
+class _GatedManager(ReadWorkspaceManager):
+    """Gestor cuyo clon espera a una señal: simula un `git fetch` lento."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.gate = threading.Event()
+        self.cloning = threading.Event()
+        self.clones = 0
+
+    def _clone(self, *, repo: str, head_sha: str, base_sha: str) -> ReadWorkspace:
+        self.clones += 1
+        self.cloning.set()
+        assert self.gate.wait(timeout=10), "el test no abrio la compuerta"
+        return super()._clone(repo=repo, head_sha=head_sha, base_sha=base_sha)
+
+
+def _gated(remote: dict[str, str]) -> _GatedManager:
+    return _GatedManager(git_bin=GIT, url_template="{repo}", timeout_s=30.0)
+
+
+def test_un_clon_lento_no_bloquea_las_lecturas_de_otro_workspace(remote) -> None:
+    # El clon corre fuera del lock: mientras uno clona, `get()` de un workspace ya
+    # abierto responde sin esperar (si no, el cliente agota sus 30 s y degrada).
+    manager = _gated(remote)
+    try:
+        manager.gate.set()
+        ready = manager.open(repo=remote["repo"], head_sha=remote["base"])
+        manager.gate.clear()
+        manager.cloning.clear()
+        slow = threading.Thread(
+            target=manager.open, kwargs={"repo": remote["repo"], "head_sha": remote["head"]}
+        )
+        slow.start()
+        assert manager.cloning.wait(timeout=10)
+        got: list[ReadWorkspace] = []
+        reader = threading.Thread(target=lambda: got.append(manager.get(ready.workspace_id)))
+        reader.start()
+        reader.join(timeout=2)
+        assert got, "get() no debe esperar a un clon ajeno"
+        manager.gate.set()
+        slow.join(timeout=10)
+    finally:
+        manager.gate.set()
+        manager.close()
+
+
+def test_dos_aperturas_simultaneas_del_mismo_par_clonan_una_vez(remote) -> None:
+    manager = _gated(remote)
+    try:
+        results: list[str] = []
+
+        def open_it() -> None:
+            info = manager.open(repo=remote["repo"], head_sha=remote["head"])
+            results.append(info.workspace_id)
+
+        first = threading.Thread(target=open_it)
+        first.start()
+        assert manager.cloning.wait(timeout=10)
+        second = threading.Thread(target=open_it)
+        second.start()
+        manager.gate.set()
+        first.join(timeout=10)
+        second.join(timeout=10)
+        assert manager.clones == 1, "la segunda apertura espera al clon en curso"
+        assert len(results) == 2 and results[0] == results[1]
+    finally:
+        manager.gate.set()
+        manager.close()
+
+
+def test_si_el_clon_falla_otra_apertura_lo_reintenta(remote) -> None:
+    manager = ReadWorkspaceManager(git_bin=GIT, url_template="{repo}", timeout_s=30.0)
+    try:
+        with pytest.raises(ReadWorkspaceUnavailable):
+            manager.open(repo=remote["repo"], head_sha=remote["unreachable"])
+        assert manager._cloning == {}, "un clon fallido no deja la marca colgada"
+        info = manager.open(repo=remote["repo"], head_sha=remote["head"])
+        assert manager.get(info.workspace_id)
+    finally:
+        manager.close()
+
+
 def test_borrar_un_workspace_lo_quita_del_registro(manager, remote) -> None:
     info = manager.open(repo=remote["repo"], head_sha=remote["head"])
     assert manager.delete(info.workspace_id) is True
@@ -307,10 +390,12 @@ def test_endpoint_de_ruta_vetada_da_403(runner_client, remote) -> None:
     assert response.status_code == 403
 
 
-def test_endpoint_de_workspace_desconocido_da_404(runner_client) -> None:
+def test_endpoint_de_workspace_desconocido_da_410(runner_client) -> None:
+    # `410` y no `404`: el lector distingue un workspace perdido de un fichero que
+    # no existe, y solo el primero gasta su reapertura (W8).
     client, _ = runner_client
     response = client.get("/workspaces/no-existe/file", params={"path": APP})
-    assert response.status_code == 404
+    assert response.status_code == 410
 
 
 def test_endpoint_grep_y_tree(runner_client, remote) -> None:
@@ -345,7 +430,7 @@ def test_endpoint_delete_borra_el_workspace(runner_client, remote) -> None:
         "/workspaces", json={"repo": remote["repo"], "head_sha": remote["head"]}
     ).json()["workspace_id"]
     assert client.delete(f"/workspaces/{workspace_id}").json() == {"deleted": True}
-    assert client.get(f"/workspaces/{workspace_id}/tree").status_code == 404
+    assert client.get(f"/workspaces/{workspace_id}/tree").status_code == 410
 
 
 def test_endpoints_exigen_token_cuando_esta_configurado(monkeypatch, remote) -> None:

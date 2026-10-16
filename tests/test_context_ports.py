@@ -95,6 +95,28 @@ def test_is_denied_casa_por_ruta_y_por_nombre() -> None:
     assert not is_denied(APP, DEFAULT_CONTEXT_DENYLIST)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [".env", "./.env", "/.env", ".env.production", "secrets/db.yaml", "./secrets/db.yaml"],
+)
+def test_is_denied_veta_las_rutas_de_la_raiz(path: str) -> None:
+    # Normalizar con `lstrip("./")` convertia `.env` en `env`, y `**/secrets/**`
+    # exigia un directorio antes de `secrets`: la raiz quedaba sin vetar (W7).
+    assert is_denied(path, DEFAULT_CONTEXT_DENYLIST)
+
+
+def test_is_denied_no_veta_por_parecido() -> None:
+    assert not is_denied("env/config.py", DEFAULT_CONTEXT_DENYLIST)
+    assert not is_denied("src/secrets.py", DEFAULT_CONTEXT_DENYLIST)
+
+
+def test_un_env_en_la_raiz_no_se_lee_ni_sale_en_un_grep(tmp_path: Path) -> None:
+    reader = build_fixture_reader(tmp_path)
+    (tmp_path / ".env").write_text("ROOT_SECRET=1\n", encoding="utf-8")
+    assert reader.read_file(".env") is None
+    assert reader.grep("ROOT_SECRET") == []
+
+
 # --- `FixtureContextReader`: arbol local, determinista (ADR-0017) ----------------
 
 

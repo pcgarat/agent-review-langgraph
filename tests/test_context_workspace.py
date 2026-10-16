@@ -1,7 +1,7 @@
 """L9: `WorkspaceContextReader`, el puerto servido por el runner (016 W5, W8).
 
 El contrato comun vive en `tests/test_context_ports.py`. Aqui se fijan las reglas
-propias del adaptador HTTP: apertura idempotente, reapertura unica ante un `404`,
+propias del adaptador HTTP: apertura idempotente, reapertura unica ante un `410`,
 traduccion de errores del runner a `TransientError`/`PermanentError` y el envio del
 bearer.
 """
@@ -72,7 +72,7 @@ def test_se_reabre_una_vez_si_el_runner_lo_perdio() -> None:
         if request.url.path.endswith("/file"):
             files["n"] += 1
             if files["n"] == 1:
-                return httpx.Response(404, json={"detail": "workspace perdido"})
+                return httpx.Response(410, json={"detail": "workspace perdido"})
         return inner(request)
 
     reader = build_workspace_reader(handler)
@@ -80,10 +80,9 @@ def test_se_reabre_una_vez_si_el_runner_lo_perdio() -> None:
     assert files["n"] == 2, "una reapertura, un reintento (W8)"
 
 
-def test_un_404_de_fichero_tras_reapertura_es_fichero_ausente() -> None:
-    # Un `404` en `file` es ambiguo: puede ser workspace perdido o fichero que no
-    # existe. Se reabre una vez; si el 404 persiste con el workspace ya reabierto,
-    # se interpreta como fichero ausente (`None`), no como error.
+def test_un_404_de_fichero_es_fichero_ausente_sin_reabrir() -> None:
+    # El `404` de `file` es un fichero que no existe en el commit: no es un
+    # workspace perdido (eso es `410`), asi que no gasta la unica reapertura.
     posts: list[str] = []
     inner = runner_handler()
 
@@ -95,13 +94,50 @@ def test_un_404_de_fichero_tras_reapertura_es_fichero_ausente() -> None:
         return inner(request)
 
     assert build_workspace_reader(handler).read_file(APP) is None
-    assert len(posts) == 2, "una apertura inicial y una reapertura"
+    assert len(posts) == 1, "solo la apertura inicial"
+
+
+def test_un_fichero_ausente_no_gasta_la_reapertura_de_una_perdida_real() -> None:
+    # Primero el modelo pide una ruta inventada (`404`); despues el runner pierde
+    # el workspace (`410`). La reapertura sigue disponible para la perdida real.
+    posts: list[str] = []
+    lost = {"value": False}
+    inner = runner_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/workspaces" and request.method == "POST":
+            posts.append(request.url.path)
+            lost["value"] = False
+        if request.url.path.endswith("/file"):
+            if request.url.params.get("path") == "src/inventado.py":
+                lost["value"] = True
+                return httpx.Response(404, json={"detail": "no existe"})
+            if lost["value"]:
+                return httpx.Response(410, json={"detail": "workspace perdido"})
+        return inner(request)
+
+    reader = build_workspace_reader(handler)
+    assert reader.read_file("src/inventado.py") is None
+    assert reader.read_file(APP) == APP_TEXT
+    assert len(posts) == 2, "apertura inicial y una reapertura por la perdida real"
+
+
+def test_si_el_workspace_sigue_perdido_en_read_file_es_error_permanente() -> None:
+    # Tras la reapertura, un `410` que persiste sube para que el lector degrade al
+    # VCS (W8); no se confunde con un fichero ausente.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/file"):
+            return httpx.Response(410, json={"detail": "workspace perdido"})
+        return runner_handler()(request)
+
+    with pytest.raises(ContextError, match="workspace no disponible"):
+        build_workspace_reader(handler).read_file(APP)
 
 
 def test_si_el_workspace_sigue_perdido_en_grep_es_error_permanente() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/grep"):
-            return httpx.Response(404, json={"detail": "workspace perdido"})
+            return httpx.Response(410, json={"detail": "workspace perdido"})
         return runner_handler()(request)
 
     with pytest.raises(ContextError, match="workspace no disponible"):

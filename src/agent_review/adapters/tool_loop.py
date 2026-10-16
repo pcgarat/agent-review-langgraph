@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_review.ports.budget import BudgetPort
+from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.context import ContextLimits, ContextReaderPort, Ref
 from agent_review.ports.llm import LlmPort
 
@@ -105,6 +105,10 @@ def run_tool_loop(
     el siguiente turno pide el objeto final sin herramientas. Un JSON invalido recibe
     **un** turno correctivo y despues se cierra. Un fallo transitorio del modelo sube
     a quien llama: el reintento es del nodo, no del bucle (ADR-0007).
+
+    Con presupuesto (017): reserva la estimacion antes de cada llamada y la confirma
+    con el `usage` real. Un `reserve` que devuelva `False` corta igual que un tope
+    (B7) y un fallo de la llamada **devuelve** la reserva (B8).
     """
     full_system = system + _BASE_SYSTEM
     result = LoopResult()
@@ -114,24 +118,47 @@ def run_tool_loop(
     while True:
         force_final = _exhausted(result, limits)
         turn_prompt = conversation + _FORCE_FINAL if force_final else conversation
-        if _budget_exhausted(budget, review_key, full_system, turn_prompt, max_tokens):
+        # B8: la estimacion se reserva antes de la llamada. Si el modelo falla, el
+        # `except` la devuelve para que el reintento del nodo no reserve dos veces.
+        reserved = _estimate_tokens(full_system, turn_prompt) + max_tokens
+        held = reserve_tokens(budget, review_key, reserved)
+        if not held:
+            # B7/D21: el `False` de `reserve` es vinculante, aunque `remaining`
+            # hubiera dado positivo: no se gasta un turno **con herramientas**. Es
+            # el unico punto que cierra la carrera entre ramas en paralelo.
             if force_final:
-                # Ya se pidio el final y aun no hay presupuesto: se cierra sin el.
+                # Ya se hizo el turno de salvamento y aun no hay presupuesto: se
+                # cierra con lo que haya.
                 result.final_forced = True
                 return result
             force_final = True
             turn_prompt = conversation + _FORCE_FINAL
+            # El turno final se hace igualmente, sin reserva efectiva (B4): es la
+            # unica llamada que puede exceder el tope, acotada por `max_tokens`
+            # (R4). Perderlo tiraria el trabajo de los turnos anteriores.
+            reserved = _estimate_tokens(full_system, turn_prompt) + max_tokens
+            held = reserve_tokens(budget, review_key, reserved)
+        # Lo que se ajusta o se devuelve es solo lo que esta llamada tiene
+        # reservado. El pendiente es comun a todas las ramas de la review: devolver
+        # una reserva que no se hizo liberaria las de las demas (017 B12).
+        held_tokens = reserved if held else 0
 
-        reserved = _reserve(budget, review_key, full_system, turn_prompt, max_tokens)
-        reply = llm.complete(
-            system=full_system,
-            prompt=turn_prompt,
-            max_tokens=max_tokens,
-            json_mode="json_object",
-        )
+        try:
+            reply = llm.complete(
+                system=full_system,
+                prompt=turn_prompt,
+                max_tokens=max_tokens,
+                json_mode="json_object",
+            )
+        except BaseException:
+            release_tokens(budget, review_key, held_tokens)
+            raise
         result.usage += reply.total_tokens
         if budget is not None and review_key:
-            budget.commit(review_key, reserved, reply.total_tokens)
+            # Confirma el gasto real. En el salvamento sin reserva (`held_tokens`
+            # = 0) se cobra el gasto sin tocar el pendiente: el contador refleja lo
+            # gastado de verdad (enmienda de B12, 2026-10-16).
+            budget.commit(review_key, held_tokens, reply.total_tokens)
         if force_final:
             result.final_forced = True
         else:
@@ -298,32 +325,6 @@ def _exhausted(result: LoopResult, limits: ContextLimits) -> bool:
 
 def _estimate_tokens(*parts: str) -> int:
     return sum(len(part) // _CHARS_PER_TOKEN for part in parts)
-
-
-def _budget_exhausted(
-    budget: BudgetPort | None,
-    review_key: str,
-    system: str,
-    prompt: str,
-    max_tokens: int,
-) -> bool:
-    if budget is None or not review_key:
-        return False
-    return budget.remaining(review_key) < _estimate_tokens(system, prompt) + max_tokens
-
-
-def _reserve(
-    budget: BudgetPort | None,
-    review_key: str,
-    system: str,
-    prompt: str,
-    max_tokens: int,
-) -> int:
-    if budget is None or not review_key:
-        return 0
-    estimate = _estimate_tokens(system, prompt) + max_tokens
-    budget.reserve(review_key, estimate)
-    return estimate
 
 
 def _parse_object(raw: str) -> dict[str, Any] | None:

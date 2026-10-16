@@ -68,7 +68,7 @@ Se quiere:
 | W5 | El `grep` sobre el árbol completo lo sirve un **workspace de lectura** en el runner: clon *bare* leído con `git show`, `git grep` y `git ls-tree`, sin *checkout* ni contenedor | [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md) |
 | W6 | El workspace se abre de forma **idempotente por `(repo, head_sha)`**, caduca por TTL (1800 s) con un máximo de 4 abiertos, y **no viaja en el estado** | Lo comparten 009 y 014 sin coordinar quién lo abre; una pausa HITL de días no deja clones vivos (cifras de 009 Q9) |
 | W7 | **Rutas vetadas en el runner** (`context_denylist:` del perfil; default `.env*`, `*.pem`, `*.key`, `**/secrets/**`) | El modelo no puede saltárselo pidiendo otra ruta |
-| W8 | **Degradación:** sin runner, o tras un `404` y una reapertura fallida, se usa `VcsContextReader`; si el VCS falla, la herramienta devuelve un error al modelo y el bucle sigue | Una pieza de contexto nunca tumba una review |
+| W8 | **Degradación:** sin runner, o tras un `410` (workspace perdido) y una reapertura fallida, se usa `VcsContextReader`; si el VCS falla, la herramienta devuelve un error al modelo y el bucle sigue. *Enmienda 2026-10-16:* decía `404`, que es también «fichero ausente»; una ruta inventada por el modelo gastaba la única reapertura y la pérdida real ya no degradaba | Una pieza de contexto nunca tumba una review |
 
 ## 5. Diseño o contrato
 
@@ -127,7 +127,7 @@ El contrato y las reglas están en
 | Método | Ruta | Qué hace |
 |---|---|---|
 | `POST` | `/workspaces` `{repo, head_sha, base_sha}` | Clona *bare* (o reutiliza el clon) y devuelve `{workspace_id, expires_at}`. Idempotente por `(repo, head_sha)` |
-| `GET` | `/workspaces/{id}/file?path=&ref=head\|base&start=&end=` | `git show <sha>:<path>`; `404` si no existe y `403` si la ruta está vetada |
+| `GET` | `/workspaces/{id}/file?path=&ref=head\|base&start=&end=` | `git show <sha>:<path>`; `404` si no existe, `403` si la ruta está vetada y `410` si el workspace no existe *(enmienda 2026-10-16)* |
 | `POST` | `/workspaces/{id}/grep` `{pattern, glob, max_matches}` | `git grep -n` sobre `head_sha`, con timeout y tope de coincidencias |
 | `GET` | `/workspaces/{id}/tree?path=` | `git ls-tree` del directorio a `head_sha` |
 | `DELETE` | `/workspaces/{id}` | Borra el clon; el TTL lo borra igualmente |

@@ -81,6 +81,15 @@ class ReviewState(TypedDict, total=False):
     # cada rama solo escribe el suyo (el fan-out escribe dicts sobre claves
     # distintas). Las claves ausentes se tratan como PRESENT.
     source_status: Annotated[dict[str, ToolingSourceStatus], _merge_status]
+    # Personas que se cortaron por presupuesto (017 B4). Reducer de union: cada rama
+    # escribe la suya en paralelo y el merge no las pierde.
+    budget_exhausted: Annotated[set[str], operator.or_]
+    # Tokens confirmados por persona. Reducer de suma: el gasto total de la review.
+    tokens_spent: Annotated[dict[str, int], _merge_tokens]
+    # Tope del contador compartido, escrito una vez por `scope`. El saldo del
+    # `ReviewOutcome` se deriva de el (`tokens_spent`) sin consultar el puerto: el
+    # hecho viaja en el estado y el `replay` sigue siendo determinista (017 B4).
+    budget_total: int | None
     # Resultado del merge: sin reducer, se sustituye (no se acumula).
     merged: list[Finding]
     # Juicio de la politica sobre cada hallazgo mergeado. Sin reducer.
@@ -119,6 +128,18 @@ def _merge_status(
     right: dict[str, ToolingSourceStatus] | None,
 ) -> dict[str, ToolingSourceStatus]:
     return {**(left or {}), **(right or {})}
+
+
+def _merge_tokens(left: dict[str, int] | None, right: dict[str, int] | None) -> dict[str, int]:
+    """Suma los tokens por persona: el fan-out escribe cada rama en su clave.
+
+    Se suma y no se sustituye porque dos ramas pueden traer el mismo nombre (una
+    persona reintentada); el gasto real es la suma de lo que gasto cada intento.
+    """
+    merged = dict(left or {})
+    for name, tokens in (right or {}).items():
+        merged[name] = merged.get(name, 0) + tokens
+    return merged
 
 
 def _merge_fixes(
@@ -387,6 +408,7 @@ def build_graph(
     scope_ignore: str = "",
     retry_policy: RetryPolicy | None = None,
     verification_enabled: bool = True,
+    budget_total: int | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review (Fase 3-E7).
 
@@ -434,6 +456,7 @@ def build_graph(
             "source_status": {},
             "fix_recipes": list(recipes),
             "fix_max_attempts": int(policy.guards.get("max_fix_attempts", 2) or 1),
+            "budget_total": budget_total,
         }
 
     def dispatch(state: ReviewState) -> list[Send]:
@@ -459,6 +482,7 @@ def build_graph(
                 pr_id=request.pr_id,
                 diff=state["diff"],
                 head_sha=request.head_sha,
+                review_key=request.review_key,
             )
         except Exception as exc:
             # Un fallo transitorio se relanza mientras queden intentos (lo reintenta
@@ -482,6 +506,10 @@ def build_graph(
         }
         if result.tooling_status is not None:
             update["source_status"] = {reviewer.name: result.tooling_status}
+        if result.budget_exhausted:
+            update["budget_exhausted"] = {reviewer.name}
+        if result.tokens_used:
+            update["tokens_spent"] = {reviewer.name: result.tokens_used}
         return update
 
     def merge(state: ReviewState) -> ReviewState:
@@ -1219,4 +1247,20 @@ def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOut
         human_decisions=state.get("human_decisions"),
         paused=paused or bool(state.get("__interrupt__")),
         fixes=state.get("fixes", {}),
+        budget_exhausted=sorted(state.get("budget_exhausted", set())),
+        tokens_spent=dict(state.get("tokens_spent", {})),
+        tokens_remaining=_remaining(state),
     )
+
+
+def _remaining(state: ReviewState) -> int | None:
+    """Saldo del contador compartido al cerrar, derivado del estado (017 B4).
+
+    `None` si el grafo no sabe el tope (tests sin presupuesto): el hecho del gasto
+    (`tokens_spent`) sigue viajando; el saldo es informativo y nunca se consulta al
+    puerto durante el `replay`.
+    """
+    total = state.get("budget_total")
+    if total is None:
+        return None
+    return max(0, total - sum(state.get("tokens_spent", {}).values()))

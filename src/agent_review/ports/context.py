@@ -26,11 +26,25 @@ def is_denied(path: str, patterns: Sequence[str]) -> bool:
     """¿La ruta esta vetada? Casa por ruta completa o por nombre de fichero.
 
     Se comprueba tambien el basename para que un `config/.env` lo cace el patron
-    `.env*`, que por si solo solo casaria el fichero en la raiz del arbol.
+    `.env*`, que por si solo solo casaria el fichero en la raiz del arbol. Un patron
+    `**/x/**` casa tambien `x/...` en la raiz: `**/` admite cero directorios.
     """
-    normalized = path.lstrip("./")
+    normalized = _normalize(path)
     name = normalized.rsplit("/", 1)[-1]
-    return matches_any(normalized, list(patterns)) or matches_any(name, list(patterns))
+    expanded = list(patterns) + [p[3:] for p in patterns if p.startswith("**/")]
+    return matches_any(normalized, expanded) or matches_any(name, expanded)
+
+
+def _normalize(path: str) -> str:
+    """Quita los prefijos `./` y `/` de una ruta, nunca el punto de `.env`.
+
+    `str.lstrip("./")` quitaria cada `.` y `/` inicial, de modo que `.env` pasaria
+    a `env` y escaparia del veto `.env*`.
+    """
+    normalized = path
+    while normalized.startswith(("./", "/")):
+        normalized = normalized[2:] if normalized.startswith("./") else normalized[1:]
+    return normalized
 
 
 class ContextLimits(BaseModel):

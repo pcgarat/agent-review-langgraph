@@ -15,11 +15,11 @@ class ContextUnavailable(TransientError):
 
 
 class ContextError(PermanentError):
-    """Peticion de lectura rechazada (4xx que no es un 404 recuperable, respuesta ilegible)."""
+    """Peticion de lectura rechazada (4xx que no es un `410` recuperable, respuesta ilegible)."""
 
 
 class _WorkspaceGone(ContextError):
-    """El workspace ya no existe (`404`): se reabre una vez y, si falla, se degrada.
+    """El workspace ya no existe (`410`): se reabre una vez y, si falla, se degrada.
 
     Hereda de `ContextError` a proposito: asi lo captura la degradacion del lector
     (`adapters/context_factory.py`) cuando la reapertura tampoco lo recupera.
@@ -34,9 +34,10 @@ class WorkspaceContextReader:
     adaptador abre el workspace de forma idempotente (el runner lo hace por
     `(repo, head_sha)`) y sirve las lecturas por HTTP.
 
-    Un `404` en una operacion se interpreta como workspace perdido (un reinicio del
-    runner): se reabre **una vez**; si vuelve a fallar, la excepcion sube y quien
-    llama degrada a `VcsContextReader`.
+    Un `410` es un workspace perdido (reinicio del runner, TTL o desalojo): se reabre
+    **una vez**; si vuelve a fallar, la excepcion sube y quien llama degrada a
+    `VcsContextReader`. Un `404` de `file` es un fichero ausente (`None`) y no gasta
+    la reapertura.
     """
 
     def __init__(
@@ -119,8 +120,9 @@ class WorkspaceContextReader:
             response = self._send(method, url, params=params, json=json)
         except httpx.HTTPError as exc:
             raise ContextUnavailable(f"el runner de lectura no respondio: {exc}") from exc
-        if response.status_code == 404 and retry_workspace and not self._reopened:
-            # El runner pudo reiniciarse y perder el clon: se reabre una sola vez.
+        if response.status_code == 410 and retry_workspace and not self._reopened:
+            # El runner pudo reiniciarse, caducar o desalojar el clon: se reabre una
+            # sola vez. Un `404` es un fichero ausente y no gasta la reapertura.
             self._reopened = True
             self._workspace_id = None
             return self._request(method, suffix, params=params, json=json, retry_workspace=False)
@@ -181,7 +183,7 @@ class WorkspaceContextReader:
             raise ContextUnavailable(
                 f"el runner de lectura devolvio {response.status_code}: {detail}"
             )
-        if response.status_code == 404:
+        if response.status_code == 410:
             raise _WorkspaceGone(f"workspace no disponible: {detail}")
         raise ContextError(f"el runner rechazo la lectura ({response.status_code}): {detail}")
 

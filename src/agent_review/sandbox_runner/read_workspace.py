@@ -183,27 +183,55 @@ class ReadWorkspaceManager:
         self._url_template = url_template
         self._open: dict[str, tuple[ReadWorkspace, float]] = {}
         self._by_key: dict[tuple[str, str], str] = {}
+        self._cloning: dict[tuple[str, str], threading.Event] = {}
         self._lock = threading.Lock()
         self._clock = time.monotonic
 
     def open(self, *, repo: str, head_sha: str, base_sha: str = "") -> WorkspaceInfo:
-        with self._lock:
-            self._reap_locked()
-            key = (repo, head_sha)
-            existing = self._by_key.get(key)
-            if existing is not None:
-                workspace, _ = self._open[existing]
-                expires = self._clock() + self._ttl
-                self._open[existing] = (workspace, expires)
-                return WorkspaceInfo(workspace_id=existing, expires_at=expires)
-            self._evict_locked()
+        """Devuelve el workspace de `(repo, head_sha)`, clonandolo si no existe.
+
+        El clon (hasta tres procesos `git` con `timeout_s` cada uno) corre **fuera**
+        del lock: con el lock tomado, cada `get()` de las demas reviews esperaria a
+        un clon ajeno y agotaria su timeout de cliente. Una marca por clave
+        (`_cloning`) mantiene la idempotencia: una segunda apertura del mismo par
+        espera al clon en curso en vez de lanzar otro.
+        """
+        key = (repo, head_sha)
+        while True:
+            with self._lock:
+                self._reap_locked()
+                existing = self._by_key.get(key)
+                if existing is not None:
+                    workspace, _ = self._open[existing]
+                    expires = self._clock() + self._ttl
+                    self._open[existing] = (workspace, expires)
+                    return WorkspaceInfo(workspace_id=existing, expires_at=expires)
+                in_progress = self._cloning.get(key)
+                if in_progress is None:
+                    done = threading.Event()
+                    self._cloning[key] = done
+                    break
+            # Otro hilo clona este par: al terminar, la vuelta lo encuentra abierto,
+            # o, si su clon fallo, este hilo lo intenta.
+            in_progress.wait()
+
+        try:
             workspace = self._clone(repo=repo, head_sha=head_sha, base_sha=base_sha)
+        except BaseException:
+            with self._lock:
+                self._cloning.pop(key, None)
+            done.set()
+            raise
+        with self._lock:
+            self._cloning.pop(key, None)
+            self._evict_locked()
             workspace_id = uuid.uuid4().hex[:12]
             expires = self._clock() + self._ttl
             self._open[workspace_id] = (workspace, expires)
             self._by_key[key] = workspace_id
-            logger.info("workspace de lectura %s abierto para %s@%s", workspace_id, repo, head_sha)
-            return WorkspaceInfo(workspace_id=workspace_id, expires_at=expires)
+        done.set()
+        logger.info("workspace de lectura %s abierto para %s@%s", workspace_id, repo, head_sha)
+        return WorkspaceInfo(workspace_id=workspace_id, expires_at=expires)
 
     def get(self, workspace_id: str) -> ReadWorkspace:
         with self._lock:

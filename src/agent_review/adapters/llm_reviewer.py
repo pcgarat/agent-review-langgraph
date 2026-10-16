@@ -12,6 +12,7 @@ from agent_review.adapters.text_utils import guess_protected_subject, shorten_ti
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import Finding, ReviewerResult, Severity
 from agent_review.errors import is_transient
+from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
 from agent_review.scope import changed_files
 
@@ -74,37 +75,63 @@ class LlmReviewer:
         name: str = "correctness",
         max_findings: int = 10,
         max_tokens: int = 4096,
-        budget_tokens_per_pr: int | None = None,
+        budget: BudgetPort | None = None,
+        budget_limit: int | None = None,
     ) -> None:
         self.name = name
         self._llm = llm
         self._max_findings = max_findings
         self._max_tokens = max_tokens
-        self._budget = budget_tokens_per_pr
+        # Presupuesto **compartido** por review (017 B1/B6): el puerto se consulta por
+        # `review_key` y el contador lo ven a la vez todas las personas. `budget_limit`
+        # es el tope blando por persona (B10) que calcula el wiring; sin el, el puerto
+        # es el unico tope (comportamiento compartido).
+        self._budget = budget
+        self._budget_limit = budget_limit
         # Tokens estimados de la ultima llamada: se expone para poder medir el
         # gasto real por review (C3) sin acoplar el puerto al proveedor. `last_usage`
         # lleva el gasto **real** que reporta el proveedor, que es la fuente de
         # verdad cuando esta disponible.
         self.last_estimated_tokens = 0
         self.last_usage: LlmReply | None = None
+        # Se corto por presupuesto: los ficheros que falten no se revisaron (017 B4).
+        # El **hecho** lo consume 012 para la cobertura; aqui solo se declara.
+        self.budget_exhausted = False
+        self.tokens_used = 0
         # Ficheros que entraron de verdad en el prompt de la ultima llamada. Sale
         # del diff ya recortado a `_MAX_DIFF_CHARS` (lo que el modelo vio, no lo
         # que el PR traia): es la cota fiel para medir cobertura (E11 de 006) sin
         # depender de una constante externa. Solo lectura.
         self.last_seen_files: tuple[str, ...] = ()
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, head_sha
+        # El worker reutiliza la instancia entre reviews: los hechos del presupuesto
+        # son **por review**, no acumulados en el objeto (017 B4).
+        self.budget_exhausted = False
+        self.tokens_used = 0
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
         # del CI, asi que su ausencia de hallazgos si es un analisis limpio.
-        reply = self._call(diff)
+        reply = self._call(diff, review_key)
         if reply is None:
-            return ReviewerResult()
+            return ReviewerResult(
+                budget_exhausted=self.budget_exhausted, tokens_used=self.tokens_used
+            )
         entries = self._entries(reply.text)
         if entries is None:
-            return ReviewerResult()
+            return ReviewerResult(
+                budget_exhausted=self.budget_exhausted, tokens_used=self.tokens_used
+            )
         files = parse_unified_diff(diff)
         findings: list[Finding] = []
         for entry in entries:
@@ -114,9 +141,13 @@ class LlmReviewer:
             finding = _to_finding(entry, files)
             if finding is not None:
                 findings.append(finding)
-        return ReviewerResult(findings=findings)
+        return ReviewerResult(
+            findings=findings,
+            budget_exhausted=self.budget_exhausted,
+            tokens_used=self.tokens_used,
+        )
 
-    def _call(self, diff: str) -> LlmReply | None:
+    def _call(self, diff: str, review_key: str = "") -> LlmReply | None:
         if len(diff) > _MAX_DIFF_CHARS:
             logger.warning(
                 "correctness: diff truncado de %d a %d chars", len(diff), _MAX_DIFF_CHARS
@@ -126,20 +157,27 @@ class LlmReviewer:
         # de modo que la cobertura mide el recorte real y no una constante aparte.
         self.last_seen_files = tuple(changed_files(window))
         prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{window}"
-        # Corte real de presupuesto (C3): no basta con loguear. Si el coste
-        # estimado de esta review (prompt + respuesta) supera el tope, no se
-        # llama al modelo: mejor 0 hallazgos de esta persona que una factura
-        # desbocada. El estimador es ~4 chars/token (conservador) y es solo una
-        # cota previa: el gasto real lo reporta el proveedor en `LlmReply`.
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
-        if self._budget is not None and estimated > self._budget:
+        # Tope blando por persona (B10): acota lo que una persona con prompt grande
+        # puede comerse del presupuesto compartido.
+        if self._budget_limit is not None and estimated > self._budget_limit:
             logger.warning(
-                "correctness: coste estimado %d tokens supera el presupuesto %d; "
+                "correctness: coste estimado %d tokens supera el tope de la persona %d; se omite",
+                estimated,
+                self._budget_limit,
+            )
+            self.budget_exhausted = True
+            return None
+        # Reserva en el contador compartido (B3/B7): un `False` corta igual que el
+        # tope blando. Es lo que ven a la vez todas las ramas del fan-out.
+        if not reserve_tokens(self._budget, review_key, estimated):
+            logger.warning(
+                "correctness: sin presupuesto compartido para esta review (%d tokens); "
                 "se omite la persona",
                 estimated,
-                self._budget,
             )
+            self.budget_exhausted = True
             return None
         try:
             reply = self._llm.complete(
@@ -149,6 +187,9 @@ class LlmReviewer:
                 json_mode="json_object",
             )
         except Exception as exc:
+            # La reserva no llego a gastarse: se devuelve antes de subir o degradar,
+            # para que el reintento del nodo no reserve dos veces (B8).
+            release_tokens(self._budget, review_key, estimated)
             # Un fallo transitorio (red, timeout, 5xx, 429) sube para que la
             # `RetryPolicy` del nodo `persona` lo reintente; si se agotan los
             # intentos, el nodo degrada a 0 hallazgos. Tragarlo aqui dejaba al
@@ -160,6 +201,10 @@ class LlmReviewer:
             else:
                 logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
             return None
+        # Ajuste con el gasto real: lo reservado de mas vuelve al contador comun.
+        if self._budget is not None and review_key:
+            self._budget.commit(review_key, estimated, reply.total_tokens)
+        self.tokens_used += reply.total_tokens
         self.last_usage = reply
         return reply
 

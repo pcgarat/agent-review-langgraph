@@ -910,6 +910,10 @@ Y qué nodos trabajan de verdad en cada caso:
 > práctica se comporta como `report`. La autonomía real es la Fase 4 (ver
 > [`arquitectura.md` §6](../arquitectura.md#6-estado-por-fase)).
 
+> **Y después.** Cómo quedaría este mismo recorrido con todas las iniciativas
+> abiertas entregadas (cascada de verificación, presupuesto por review y trazas)
+> está en [12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md).
+
 ---
 
 ## 13. Experimentos propuestos

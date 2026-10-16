@@ -161,8 +161,8 @@ flowchart TD
 
 | Nodo | Reintento de nodo | Qué hace |
 |---|---|---|
-| `scope` | Sí | `get_diff`; con `max_files_per_pr`, también `get_diffstat` y recorte por churn. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`). Vacía `findings` y `source_status`. |
-| `persona` | Sí; degrada en el último intento | Una rama por revisor. Escribe `findings`, `finding_sources` y `source_status`. |
+| `scope` | Sí | `get_diff`; con `max_files_per_pr`, también `get_diffstat` y recorte por churn. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`). Vacía `findings` y `source_status`; fija `budget_total`. |
+| `persona` | Sí; degrada en el último intento | Una rama por revisor. Escribe `findings`, `finding_sources`, `source_status` y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. |
 | `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). |
 | `policy` | No (puro) | Una `Decision` por hallazgo, con `matched_rule` y `policy_version`. |
 | `hitl` | **Nunca** | Sin pendientes o con `human_decisions` ya presente, sigue. Si no, `interrupt`. Si la decisión está incompleta o es ilegible, vuelve a pausar. |
@@ -180,6 +180,9 @@ flowchart TD
 | `request`, `diff`, `reviewer` | Sustituye | `reviewer` solo existe en cada rama del `Send` |
 | `findings` | `operator.add` | Lo escriben las personas en paralelo |
 | `finding_sources`, `source_status`, `fixes` | Merge de dict | Por `finding_id` o por persona |
+| `budget_exhausted` | `operator.or_` | Personas que se cortaron por presupuesto (017); cada rama escribe la suya en paralelo |
+| `tokens_spent` | Suma de dict | Tokens confirmados por persona: el gasto real de la review |
+| `budget_total` | Sustituye | Tope del contador compartido, escrito por `scope`; el saldo del `ReviewOutcome` se deriva de él |
 | `merged`, `decisions` | Sustituye | Si compartieran campo con `findings`, se reacumularían |
 | `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
 | `fix_wait` (wave) | Sustituye | La wave pendiente; la escribe `fix_wait` al pausar |
@@ -324,6 +327,8 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:teams:channel` | `conversation_id` (id base, sin `;messageid=`) + `service_url` del canal dedicado (C14). **Gana la primera captura**; mover el canal es borrar la clave | — |
 | Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
 | Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
+| Redis | `budget:<review_key>` / `budget:reserved:<review_key>` | Gasto confirmado y reservado sin confirmar del presupuesto de tokens de la review (017). Contador compartido por el fan-out; el script Lua reserva y confirma de forma atómica | 8 días |
+| Redis | `budget:fix:<review_key>` / `budget:fix:reserved:<review_key>` | Mismo contador para el fix (017 B11): clave aparte para que una review cara no deje sin presupuesto lo aprobado | 8 días |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
@@ -334,8 +339,11 @@ El runner sirve lecturas del repo ([016](iniciativas/archivo/016-lector-de-conte
 [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)) desde clones *bare* que
 viven en su memoria de proceso: `ReadWorkspaceManager` con
 `dict[workspace_id → (ReadWorkspace, expires_at)]` y un índice por `(repo,
-head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde
-y el adaptador reabre una vez (o degrada al VCS). Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
+head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde.
+Un workspace desconocido responde `410` (y un fichero ausente, `404`): solo el `410`
+hace que el adaptador reabra, una vez, o degrade al VCS. El clon corre **fuera** del
+lock del gestor, con una marca por `(repo, head_sha)` para que dos aperturas del mismo
+par clonen una sola vez; un clon lento no bloquea las lecturas de otros workspaces. Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
 1800 s) y un tope de abiertos (`SANDBOX_MAX_WORKSPACES`, 4) con *reaper* perezoso
 acotan el disco; el desalojo borra el más antiguo. Cada clon vive en un directorio
 temporal, **fuera** de lo que se monta en los contenedores de `/verify`.
@@ -378,7 +386,6 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. La traza por review la aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
-| D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Lo aborda la [017](iniciativas/017-presupuesto-por-pr/spec.md). |
 | D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
 | D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
 | D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |

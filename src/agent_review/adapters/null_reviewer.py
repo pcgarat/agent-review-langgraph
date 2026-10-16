@@ -9,6 +9,14 @@ class NullReviewer:
     def __init__(self, name: str = "null") -> None:
         self.name = name
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
-        del repo, pr_id, diff, head_sha
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
+        del repo, pr_id, diff, head_sha, review_key
         return ReviewerResult()

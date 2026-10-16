@@ -29,6 +29,9 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-pyyaml>=6.0",
+    # Redis falso con soporte de scripts Lua: prueba el adaptador de presupuesto
+    # (017) sin un servidor real.
+    "fakeredis[lua]>=2.26",
 ]
 
 [project.scripts]

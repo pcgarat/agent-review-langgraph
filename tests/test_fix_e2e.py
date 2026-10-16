@@ -11,7 +11,6 @@ from agent_review.domain.models import (
     FindingDecision,
     FixResolution,
     FixResolutions,
-    FixResult,
     FixStatus,
     HitlDecision,
     Owner,
@@ -92,7 +91,15 @@ class _Vcs:
 class _FindingReviewer:
     name = "correctness"
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
             findings=[
@@ -114,7 +121,14 @@ class _FindingReviewer:
 
 
 class _Fixer:
-    def propose(self, finding: Finding, *, source: str, previous: FixResult | None):
+    def propose(
+        self,
+        finding: Finding,
+        *,
+        source: str,
+        previous,
+        review_key: str = "",
+    ):
         return build_patch(
             finding, source=source, start_line=2, end_line=2, replacement="use App\\Bar;"
         )

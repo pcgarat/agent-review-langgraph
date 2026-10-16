@@ -58,6 +58,7 @@ from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from agent_review.pending_store import PendingStore, RedisPendingStore
 from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.reviewer import ReviewerPort
@@ -175,11 +176,37 @@ def build_registry(settings: Settings) -> ModelRegistry:
     return registry
 
 
+def build_budget(settings: Settings, *, key_prefix: str | None = None) -> BudgetPort:
+    """Contador de presupuesto por review (017 B2/B6).
+
+    Con URL de Redis configurada se usa el adaptador atomico; sin ella (o sin Redis),
+    el contador en memoria. El fix usa una clave distinta de la review (B11), asi que
+    el prefijo es parametro.
+    """
+    from agent_review.adapters.budget_memory import InMemoryBudget
+    from agent_review.adapters.budget_redis import KEY_PREFIX, RedisBudget
+
+    total = settings.llm_budget_tokens_per_pr
+    if not settings.redis_url.strip():
+        return InMemoryBudget(total)
+    return RedisBudget(
+        url=settings.redis_url,
+        total=total,
+        key_prefix=key_prefix or KEY_PREFIX,
+    )
+
+
+def llm_roles(settings: Settings, registry: ModelRegistry) -> list[str]:
+    """Roles LLM que de verdad van a revisar: los que tienen modelo bindeado."""
+    return [role for role in LLM_REVIEW_ROLES if registry.port_for(role) is not None]
+
+
 def build_reviewers(
     settings: Settings,
     *,
     tooling_source: ToolingOutputSource | None = None,
     registry: ModelRegistry | None = None,
+    budget: BudgetPort | None = None,
 ) -> list[ReviewerPort]:
     """Personas a partir del perfil del repo y de la configuracion.
 
@@ -188,6 +215,10 @@ def build_reviewers(
     modelo que su **rol** tenga bindeado en el registro: `correctness` y `security`
     pueden correr en modelos distintos. El artefacto de la herramienta estatica lo
     deposita el CI; el worker no ejecuta PHPStan (eso es el sandbox de Fase 3).
+
+    Cada persona LLM recibe el presupuesto **compartido** y su tope blando: el total
+    repartido con holgura (el doble del reparto justo) acota lo que una persona con
+    prompt grande se comeria del comun (017 B10).
     """
     reviewers: list[ReviewerPort] = []
     profile = load_profile(settings)
@@ -199,7 +230,13 @@ def build_reviewers(
         reviewers.append(ToolingReviewer(source=source))
 
     registry = registry if registry is not None else build_registry(settings)
-    for role in LLM_REVIEW_ROLES:
+    roles = llm_roles(settings, registry)
+    budget = budget if budget is not None else build_budget(settings)
+    # B10: «el primero que llega» sobre el contador comun, con un tope blando por
+    # persona de `2 * total / N`. Sin él, una persona con un prompt grande se lleva
+    # todo el presupuesto y las demas no revisan.
+    limit = 2 * settings.llm_budget_tokens_per_pr // len(roles) if roles else None
+    for role in roles:
         llm = registry.port_for(role)
         if llm is None:
             continue
@@ -208,7 +245,8 @@ def build_reviewers(
                 llm=llm,
                 name=role,
                 max_findings=settings.llm_max_findings,
-                budget_tokens_per_pr=settings.llm_budget_tokens_per_pr,
+                budget=budget,
+                budget_limit=limit,
             )
         )
 
@@ -286,20 +324,32 @@ def build_vcs(settings: Settings) -> VcsPort:
     )
 
 
-def build_fixer(settings: Settings, *, registry: ModelRegistry | None = None) -> FixerPort | None:
+def build_fixer(
+    settings: Settings,
+    *,
+    registry: ModelRegistry | None = None,
+    budget: BudgetPort | None = None,
+) -> FixerPort | None:
     """Fixer LLM si el rol `fixer` tiene modelo. Sin el, el nodo `fix` marca
     `NOT_VERIFIABLE` (no se puede proponer parche) en vez de fingir un fix.
 
     Usa **su propio** binding: el modelo que propone el parche no tiene por que
-    ser el que revisa el diff (uno puede querer `json_schema` estricto aqui).
+    ser el que revisa el diff (uno puede querer `json_schema` estricto aqui). El
+    presupuesto es el **del fix** (clave distinta de la review, 017 B11).
     """
     registry = registry if registry is not None else build_registry(settings)
     llm = registry.port_for("fixer")
     if llm is None:
         return None
+    from agent_review.adapters.budget_memory import InMemoryBudget
+    from agent_review.adapters.budget_redis import FIX_KEY_PREFIX
+
+    budget = budget if budget is not None else build_budget(settings, key_prefix=FIX_KEY_PREFIX)
+    if budget is None:
+        budget = InMemoryBudget(settings.llm_budget_tokens_per_pr)
     return LlmFixer(
         llm=llm,
-        budget_tokens_per_pr=settings.llm_budget_tokens_per_pr,
+        budget=budget,
         max_fix_lines=settings.max_fix_lines,
     )
 
@@ -328,8 +378,12 @@ def build_runtime(
     if chat is None:
         chat = build_chat(settings)
     registry = build_registry(settings)
+    # Un unico contador de review para todo el fan-out (017 B1/B10); su tope viaja
+    # al grafo para poder derivar el saldo del `ReviewOutcome` sin consultar al
+    # puerto durante el `replay`.
+    review_budget = build_budget(settings)
     if reviewers is None:
-        reviewers = build_reviewers(settings, registry=registry)
+        reviewers = build_reviewers(settings, registry=registry, budget=review_budget)
     validate_models(registry)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
@@ -348,6 +402,7 @@ def build_runtime(
         scope_ignore=settings.scope_ignore,
         retry_policy=node_retry_policy(settings),
         verification_enabled=verification_enabled(settings),
+        budget_total=settings.llm_budget_tokens_per_pr,
     )
     return graph.compile(checkpointer=saver)
 

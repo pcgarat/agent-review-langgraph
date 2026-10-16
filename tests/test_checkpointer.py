@@ -80,7 +80,15 @@ class _MemoryVcs:
 class _OneFinding:
     name = "standards"
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
             findings=[
@@ -368,7 +376,14 @@ def _fix_graph(vcs: _MemoryVcs, saver=None):
     from agent_review.fix.patch import build_patch
 
     class _Fixer:
-        def propose(self, finding: Finding, *, source: str, previous) -> object:
+        def propose(
+            self,
+            finding: Finding,
+            *,
+            source: str,
+            previous,
+            review_key: str = "",
+        ) -> object:
             del previous
             return build_patch(
                 finding, source=source, start_line=1, end_line=1, replacement="+use X;"
@@ -417,7 +432,15 @@ class _OneFinder:
     def __init__(self, finding: Finding) -> None:
         self._finding = finding
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(findings=[self._finding])
 

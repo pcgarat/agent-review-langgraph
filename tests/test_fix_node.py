@@ -58,8 +58,14 @@ class _Fixer:
         self.previous_seen: list[FixResult | None] = []
 
     def propose(
-        self, finding: Finding, *, source: str, previous: FixResult | None
+        self,
+        finding: Finding,
+        *,
+        source: str,
+        previous: FixResult | None,
+        review_key: str = "",
     ) -> ProposedPatch:
+        del review_key
         self.calls += 1
         self.previous_seen.append(previous)
         if self._patch is not None:

@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_review.domain.models import Finding, FixResult, ProposedPatch
 from agent_review.fix.patch import build_patch
+from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.llm import LlmPort, LlmReply
 
 logger = logging.getLogger(__name__)
@@ -50,32 +51,50 @@ class LlmFixer:
         *,
         llm: LlmPort,
         max_tokens: int = _MAX_TOKENS,
-        budget_tokens_per_pr: int | None = None,
+        budget: BudgetPort | None = None,
         max_fix_lines: int = 30,
     ) -> None:
         self._llm = llm
         self._max_tokens = max_tokens
-        self._budget = budget_tokens_per_pr
+        # Contador **propio** del fix (017 B11): el adaptador se construye con la
+        # clave `budget:fix`, distinta de la de la review. La aprobacion humana puede
+        # tardar mas que el TTL de la review y una review cara no debe dejar sin fix
+        # lo aprobado.
+        self._budget = budget
         self._max_fix_lines = max_fix_lines
         self.last_estimated_tokens = 0
         self.last_usage: LlmReply | None = None
+        self.tokens_used = 0
 
     def propose(
-        self, finding: Finding, *, source: str, previous: FixResult | None
+        self,
+        finding: Finding,
+        *,
+        source: str,
+        previous: FixResult | None,
+        review_key: str = "",
     ) -> ProposedPatch:
         prompt = self._prompt(finding, source, previous)
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
-        if self._budget is not None and estimated > self._budget:
+        if not reserve_tokens(self._budget, review_key, estimated):
             raise FixBudgetExceeded(
-                f"el coste estimado ({estimated} tokens) supera el presupuesto ({self._budget})"
+                f"el coste estimado ({estimated} tokens) no cabe en el presupuesto del fix"
             )
-        reply = self._llm.complete(
-            system=_SYSTEM,
-            prompt=prompt,
-            max_tokens=self._max_tokens,
-            json_mode="json_object",
-        )
+        try:
+            reply = self._llm.complete(
+                system=_SYSTEM,
+                prompt=prompt,
+                max_tokens=self._max_tokens,
+                json_mode="json_object",
+            )
+        except Exception:
+            # La reserva no llego a gastarse: se devuelve antes de subir (B8).
+            release_tokens(self._budget, review_key, estimated)
+            raise
+        if self._budget is not None and review_key:
+            self._budget.commit(review_key, estimated, reply.total_tokens)
+        self.tokens_used += reply.total_tokens
         self.last_usage = reply
         return self._to_patch(reply.text, finding, source)
 

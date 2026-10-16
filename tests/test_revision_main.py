@@ -284,7 +284,15 @@ class _ToolingReviewer:
     def __init__(self) -> None:
         self.status = ToolingSourceStatus.MISSING
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         findings = [] if self.status is ToolingSourceStatus.MISSING else [_escalating_finding()]
         return ReviewerResult(findings=findings, tooling_status=self.status)
@@ -342,7 +350,15 @@ class _SameTitleReviewer:
     def __init__(self, *, with_ids: bool = True) -> None:
         self._with_ids = with_ids
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
             findings=[

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
+from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
 from agent_review.domain.models import (
@@ -110,7 +111,15 @@ class FakeVcs:
 class OneShotReviewer:
     name = "standards"
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
             findings=[
@@ -311,6 +320,56 @@ def test_build_reviewers_bindea_cada_rol_a_su_modelo(tmp_path: Path) -> None:
     )
     names = [r.name for r in build_reviewers(settings)]
     assert names == ["standards", "correctness", "security"]
+
+
+def test_build_reviewers_reparte_el_tope_blando_por_persona(tmp_path: Path) -> None:
+    # B10: con 3 personas LLM y total 300.000, cada una recibe `2 * 300000 // 3`
+    # (200.000). El puerto lo comparten; el tope blando acota a cada persona.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "version: 1\n"
+        "providers:\n"
+        "  p:\n"
+        "    base_url: https://example.test/v1\n"
+        "models:\n"
+        "  m: {provider: p, kind: chat}\n"
+        "bindings:\n"
+        "  correctness: m\n"
+        "  security: m\n"
+        "  arch: m\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        repo_profile_config=str(profile),
+        llm_reviewer_enabled=True,
+        models_config=str(config),
+        llm_budget_tokens_per_pr=300_000,
+    )
+    reviewers = build_reviewers(settings)
+    limites = {r.name: r._budget_limit for r in reviewers if isinstance(r, LlmReviewer)}
+    assert limites == {"correctness": 200_000, "security": 200_000, "arch": 200_000}
+    # El contador es **uno** compartido por el fan-out, no uno por persona (B1/B10).
+    puertos = {id(r._budget) for r in reviewers if isinstance(r, LlmReviewer)}
+    assert len(puertos) == 1
+
+
+def test_build_reviewers_una_sola_persona_recibe_el_total(tmp_path: Path) -> None:
+    # N=1: `2 * total // 1` no debe recortar por debajo del total declarado.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    settings = Settings(
+        repo_profile_config=str(profile),
+        llm_reviewer_enabled=True,
+        llm_model="gpt-x",
+        llm_api_key="k",
+        models_config="",
+        llm_budget_tokens_per_pr=300_000,
+    )
+    reviewer = next(r for r in build_reviewers(settings) if r.name == "correctness")
+    assert isinstance(reviewer, LlmReviewer)
+    assert reviewer._budget_limit == 600_000, "2 * total con una sola persona da holgura"
 
 
 def test_build_registry_sin_habilitar_no_bindea_roles() -> None:
@@ -531,7 +590,15 @@ class _CountingReviewer:
         self._finding = finding
         self.calls = 0
 
-    def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
+    def review(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+    ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         self.calls += 1
         return ReviewerResult(findings=[self._finding])
@@ -984,7 +1051,14 @@ def _fix_graph(vcs: FakeVcs):
     from agent_review.fix.patch import build_patch
 
     class _Fixer:
-        def propose(self, finding: Finding, *, source: str, previous) -> object:
+        def propose(
+            self,
+            finding: Finding,
+            *,
+            source: str,
+            previous,
+            review_key: str = "",
+        ) -> object:
             return build_patch(
                 finding, source=source, start_line=1, end_line=1, replacement="+use X;"
             )

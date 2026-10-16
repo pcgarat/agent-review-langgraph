@@ -107,10 +107,16 @@ class ReviewerResult(BaseModel):
     fuente externa (LLM, nula) devuelve `None` y no aporta avisos ni degrada la
     review. Cuando una persona estatica no puede leer su salida, el estado
     viaja hasta el publish para que "sin hallazgos" no se lea como "sin errores".
+
+    `budget_exhausted` y `tokens_used` son el **hecho** del presupuesto (017 B4):
+    la persona se corto por tope o gasto real. Poblar la cobertura con ese hecho
+    (`SkipReason.BUDGET`) es de la iniciativa 012; aqui solo se declara.
     """
 
     findings: list[Finding] = Field(default_factory=list)
     tooling_status: ToolingSourceStatus | None = None
+    budget_exhausted: bool = False
+    tokens_used: int = 0
 
 
 class Decision(BaseModel):
@@ -388,6 +394,19 @@ class ReviewOutcome(BaseModel):
     paused: bool = False
     # Fase 3: resultado del fix por hallazgo, indexado por `finding_id`.
     fixes: dict[str, FixResult] = Field(default_factory=dict)
+    # 017: personas que se cortaron por presupuesto y tokens confirmados por persona.
+    # El **hecho** viaja aqui; el render en la cobertura es de 012.
+    budget_exhausted: list[str] = Field(default_factory=list)
+    tokens_spent: dict[str, int] = Field(default_factory=dict)
+    # Saldo del contador compartido al cerrar la review, si el grafo conocia el
+    # tope (`None` en tests sin presupuesto). Informativo y derivado del estado:
+    # nunca se consulta el puerto durante el `replay` (017 B4).
+    tokens_remaining: int | None = None
+
+    @property
+    def tokens_total(self) -> int:
+        """Gasto confirmado de toda la review, sumando a todas las personas."""
+        return sum(self.tokens_spent.values())
 
     @property
     def complete(self) -> bool:

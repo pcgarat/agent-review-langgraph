@@ -15,5 +15,10 @@ class FixerPort(Protocol):
     """
 
     def propose(
-        self, finding: Finding, *, source: str, previous: FixResult | None
+        self,
+        finding: Finding,
+        *,
+        source: str,
+        previous: FixResult | None,
+        review_key: str = "",
     ) -> ProposedPatch: ...
