@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # URL, el nodo `fix` puede verificar parches; sin ellas, queda `NOT_VERIFIABLE`.
     sandbox_runner_url: str = ""
     sandbox_runner_token: str = ""
+    # Bearer de **solo lectura** de la consola en vivo del runner (019 OP24): lo
+    # recibe el panel para reenviar el SSE. Solo abre `GET /verify/{run_key}/console`;
+    # no sirve para `POST /verify` ni para los workspaces, asi que el panel no puede
+    # lanzar verificaciones. Vacio: la consola solo acepta `SANDBOX_RUNNER_TOKEN`.
+    sandbox_console_token: str = ""
     # Techo de una verificacion en el sandbox, si el perfil no lo declara. Vive en
     # el perfil (`sandbox.timeout_s`); esto es el fallback sin perfil.
     sandbox_timeout_s: float = 1200.0

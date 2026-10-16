@@ -193,6 +193,12 @@ services:
       DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
       PROGRESS_KEY: ${PROGRESS_KEY:-reviews:active}
       CANCEL_TTL_S: ${CANCEL_TTL_S:-604800}
+      # Proxy de la consola en vivo del sandbox (OP24): el panel reenvia el SSE del
+      # runner con el bearer de **solo lectura** de la consola, que el navegador no
+      # recibe. No lleva `SANDBOX_RUNNER_TOKEN`: ese tambien autoriza `POST /verify`.
+      # Sin URL o sin token, la consola responde `404`.
+      SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
+      SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-500000}
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.

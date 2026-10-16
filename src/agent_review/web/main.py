@@ -129,52 +129,45 @@ def get_trace(
     return trace.model_dump(mode="json")
 
 
-def _actor_of(session: Session, body: dict[str, object]) -> str:
-    """Actor auditado del comando: el que manda el cliente, o el de la sesion."""
-    raw = str(body.get("actor", "")).strip()
-    return raw or session.user
-
-
 @app.post("/api/reviews/{review_key:path}/cancel")
-async def cancel_review(
+def cancel_review(
     review_key: str,
-    request: Request,
     session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Cancela una review (OP29/OP30): marca para lo que corre, comando para la pausa."""
-    return _run_command(commands.cancel, review_key, await _body(request), session)
+    return _run_command(commands.cancel, review_key, session)
 
 
 @app.post("/api/reviews/{review_key:path}/retry")
-async def retry_review(
+def retry_review(
     review_key: str,
-    request: Request,
     session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Reencola un descarte de la DLQ con `attempts=0` (OP31)."""
-    return _run_command(commands.retry, review_key, await _body(request), session)
+    return _run_command(commands.retry, review_key, session)
 
 
 @app.post("/api/reviews/{review_key:path}/resume")
-async def resume_review(
+def resume_review(
     review_key: str,
-    request: Request,
     session: Annotated[Session, Depends(require_command_session)],
     commands: Annotated[CommandService, Depends(get_commands)],
 ) -> dict[str, object]:
     """Reencola la reanudacion de una pausa humana (OP32)."""
-    return _run_command(commands.resume, review_key, await _body(request), session)
+    return _run_command(commands.resume, review_key, session)
 
 
 def _run_command(
     operation: Callable[..., CommandEffect],
     review_key: str,
-    body: dict[str, object],
     session: Session,
 ) -> dict[str, object]:
-    actor = _actor_of(session, body)
+    # El actor auditado es **siempre** el de la sesion autenticada: un nombre que
+    # mandara el cliente permitiria firmar el comando (y la `HitlDecision` de una
+    # reanudacion) en nombre de otro.
+    actor = session.user
     try:
         effect = operation(review_key, actor=actor)
     except CommandError as exc:
@@ -184,14 +177,6 @@ def _run_command(
         logger.exception("Comando fallido sobre %s", review_key)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     return {"review_key": review_key, "effect": effect.value, "actor": actor}
-
-
-async def _body(request: Request) -> dict[str, object]:
-    try:
-        body = await request.json()
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
 
 
 @app.get("/api/reviews/{review_key:path}/console")

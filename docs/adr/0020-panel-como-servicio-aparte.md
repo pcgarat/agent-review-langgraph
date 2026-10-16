@@ -42,6 +42,9 @@ síncrono.
 - **La consola del sandbox es un buffer efímero en el runner** (`on_line` opcional en
   `ContainerRuntime.start`, SSE en `GET /verify/{run_key}/console`), con el mismo
   bearer. El runner **no** gana acceso a Redis: mantiene su aislamiento.
+  *Corrección (2026-10-16):* el panel no recibe el bearer compartido, que también
+  autoriza `POST /verify`, sino uno de solo lectura (`SANDBOX_CONSOLE_TOKEN`) que el
+  runner acepta solo en la consola.
 
 ## Consecuencias
 

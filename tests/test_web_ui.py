@@ -168,9 +168,11 @@ def test_la_vista_global_enlaza_al_detalle(panel: Panel) -> None:
     assert f'href="/review/{_REVIEW_KEY}"' in body
 
 
-def test_el_panel_embebe_el_actor_para_los_comandos(panel: Panel) -> None:
+def test_el_panel_no_delega_el_actor_en_el_navegador(panel: Panel) -> None:
+    """El actor auditado lo pone el servidor desde la sesion, no el HTML."""
     body = panel.client.get("/").text
-    assert 'data-actor="dev"' in body
+    assert "data-actor" not in body
+    assert "Sesión: dev (operador)" in body
 
 
 # --- Detalle y recorrido (OP15) --------------------------------------------------

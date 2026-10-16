@@ -125,13 +125,21 @@ class CommandService:
         Reintentar es la orden explicita de que la review vuelva a correr, asi que
         retira antes una marca de cancelacion que pudiera quedar: si no, el worker
         abortaria el reintento al desencolarlo y el panel habria dicho `RETRIED`.
+
+        El descarte se **saca** de la DLQ (`take_dead_letter`, atomico) antes de
+        reencolar: un segundo clic ya no lo encuentra (`409`) en vez de encolar otra
+        copia. Si reencolar falla, el descarte vuelve a la DLQ para no perderlo.
         """
-        entry = _find_dead(self._queue, review_key)
+        entry = self._queue.take_dead_letter(review_key)
         if entry is None:
             raise CommandError(f"{review_key} no esta en la DLQ")
         request = ReviewRequest.model_validate(entry["request"])
-        self._cancellation.clear(review_key)
-        self._queue.enqueue(request.model_copy(update={"attempts": 0, "cancelled": False}))
+        try:
+            self._cancellation.clear(review_key)
+            self._queue.enqueue(request.model_copy(update={"attempts": 0, "cancelled": False}))
+        except Exception:
+            self._queue.dead_letter(request, reason=str(entry.get("reason", "reintento fallido")))
+            raise
         logger.info("Reintento encolado para %s (actor=%s)", review_key, actor)
         return CommandEffect.RETRIED
 
@@ -181,14 +189,6 @@ def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
         for job in paused.fix_request.jobs
     ]
     return paused.request.model_copy(update={"fix_resolution": FixResolutions(items=items)})
-
-
-def _find_dead(queue: ReviewQueue, review_key: str) -> dict[str, object] | None:
-    for entry in queue.dead_letters():
-        request = entry.get("request")
-        if str(entry.get("review_key", "")) == review_key and isinstance(request, dict):
-            return entry
-    return None
 
 
 def build_command_service(

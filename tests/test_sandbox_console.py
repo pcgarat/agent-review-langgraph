@@ -327,6 +327,36 @@ def test_endpoint_console_exige_token(
     assert response.status_code == 401
 
 
+def test_el_token_de_consola_abre_la_consola_pero_no_verify(
+    runner_client: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El panel lleva un bearer de solo lectura: lee la consola, no lanza verificaciones."""
+    from agent_review.sandbox_runner import main as runner_main
+
+    settings = runner_main.get_settings()
+    monkeypatch.setattr(settings, "sandbox_runner_token", "secreto-real")
+    monkeypatch.setattr(settings, "sandbox_console_token", "solo-consola")
+    headers = {"Authorization": "Bearer solo-consola"}
+
+    console = runner_client.get("/verify/desconocido/console", headers=headers)  # type: ignore[attr-defined]
+    verify = runner_client.post(  # type: ignore[attr-defined]
+        "/verify", headers=headers, json=_REQUEST.model_dump(mode="json")
+    )
+
+    assert console.status_code == 404, "autenticado: falla solo porque no hay buffer"
+    assert verify.status_code == 401
+
+
+def test_el_cliente_del_panel_prefiere_el_token_de_consola() -> None:
+    from agent_review.settings import Settings
+    from agent_review.web.runner_client import build_runner_client
+
+    client = build_runner_client(
+        Settings(sandbox_runner_token="compartido", sandbox_console_token="solo-consola")
+    )
+    assert client._token == "solo-consola"
+
+
 def test_un_reinicio_del_runner_da_404_y_no_toca_el_informe(runner_client: object) -> None:
     from agent_review.sandbox_runner import main as runner_main
 

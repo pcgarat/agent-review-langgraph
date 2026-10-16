@@ -86,10 +86,15 @@ def _relay(run_key: str, client: httpx.Client, response: httpx.Response) -> Iter
 def build_runner_client(settings: object) -> RunnerConsoleClient:
     """Cliente del runner desde la configuración del panel.
 
-    El runner solo publica el bearer compartido; el panel no recibe credenciales de
-    VCS ni del LLM (spec §5.8), así que este cliente es lo único que necesita.
+    El panel usa el bearer de **solo lectura** de la consola
+    (`SANDBOX_CONSOLE_TOKEN`), que no autoriza `POST /verify`; el compartido queda
+    solo como respaldo fuera de compose. El panel no recibe credenciales de VCS ni
+    del LLM (spec §5.8).
     """
+    token = str(getattr(settings, "sandbox_console_token", "") or "").strip()
+    if not token:
+        token = str(getattr(settings, "sandbox_runner_token", "") or "")
     return RunnerConsoleClient(
         base_url=str(getattr(settings, "sandbox_runner_url", "") or ""),
-        token=str(getattr(settings, "sandbox_runner_token", "") or ""),
+        token=token,
     )

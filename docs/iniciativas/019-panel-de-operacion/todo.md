@@ -149,3 +149,10 @@ tests de regresión fallan con el código anterior y `make ci` queda en verde.
   cerrar (nodo vivo o worker muerto a mitad), no `completed`.
 - [x] **OP48** El proxy de la consola resuelve la respuesta del runner antes de abrir
   el stream y da `404` en vez de un `200` vacío.
+- [x] **OP49** El servicio `web` de compose recibe `SANDBOX_RUNNER_URL` y un bearer de
+  solo lectura de la consola (`SANDBOX_CONSOLE_TOKEN`), que el runner acepta solo en
+  `GET /verify/{run_key}/console`.
+- [x] **OP50** «Reintentar» saca el descarte de la DLQ de forma atómica
+  (`take_dead_letter`) y lo devuelve si reencolar falla: un segundo clic da `409`.
+- [x] **OP51** El actor auditado de un comando es el de la sesión; el cuerpo de la
+  petición ya no puede suplantarlo.

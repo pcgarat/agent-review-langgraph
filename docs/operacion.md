@@ -115,7 +115,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
 | Progreso y panel (019) | `PROGRESS_ENABLED` (`false`: activa el progreso del worker en Redis, cierra D16), `PROGRESS_TTL_S` (3600), `PROGRESS_KEY` (`reviews:active`; el panel de operación lee de aquí el nodo en curso), `CANCEL_TTL_S` (604800: vida de la marca de cancelación, que queda como *tombstone* tras abortar; debe superar `DECISION_TTL_S`) |
-| Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (sesión `<usuario>:<lector\|operador>`; **no** es `REVIEWS_DECISION_TOKEN`; fail-closed en producción), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4) |
+| Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (sesión `<usuario>:<lector\|operador>`; **no** es `REVIEWS_DECISION_TOKEN`; fail-closed en producción), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4), `SANDBOX_RUNNER_URL` y `SANDBOX_CONSOLE_TOKEN` (proxy de la consola en vivo; sin ellos la consola da `404`) |
 | LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: tope de tokens **por review**, compartido por todas las personas y el fixer; al agotarse, lo que falte se registra como `budget_exhausted` en vez de gastar de más, §2) |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
@@ -149,6 +149,7 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 | `TEAMS_BOT_SHARED_SECRET` | Bearer del `/healthz` del bot (ingress interno) | Si `TEAMS_ENABLED` en producción | Agente |
 | `LLM_API_KEY` | Clave del proveedor LLM (la referencia `${LLM_API_KEY}` del registro de modelos) | Si `LLM_REVIEWER_ENABLED` | Agente |
 | `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre el `fix-worker` y el runner | Si `SANDBOX_ENABLED`; siempre para el `fix-worker` en producción | Agente |
+| `SANDBOX_CONSOLE_TOKEN` | Bearer de **solo lectura** de la consola del runner: lo usa el `web` y solo abre `GET /verify/{run_key}/console`, no `POST /verify` | Para la consola en vivo del panel | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Fase 4 | Agente |
@@ -172,6 +173,7 @@ Reglas de higiene:
 | `TWG_BBC_TOKEN` | 90 días o ante sospecha | Nuevo token del actor de servicio → `.env` → `docker compose up -d worker` |
 | `TOOLING_WEBHOOK_SECRET` | 90 días | **A la vez** en el agente y en la variable *secured* del CI |
 | `SANDBOX_RUNNER_TOKEN` | 90 días | Nuevo valor en `.env` → `docker compose up -d fix-worker sandbox-runner` (**a la vez**) |
+| `SANDBOX_CONSOLE_TOKEN` | 90 días o ante sospecha | Nuevo valor en `.env` → `docker compose --profile panel up -d web sandbox-runner` (**a la vez**) |
 | `SANDBOX_GIT_TOKEN` | 90 días o ante sospecha | Nuevo token de solo lectura → runner |
 | `REVIEWS_DECISION_TOKEN` | 90 días o al salir alguien con acceso | Nuevo valor → `api` → avisar a quien decide |
 | `TEAMS_NOTICES_KEY` | — (no es un secreto: es una clave de cola) | Cambiarla requiere reiniciar worker y bot a la vez |
@@ -260,7 +262,7 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
 | `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
 | `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
-| `POST` | `/api/reviews/{review_key}/retry` | `operador` | Retira la marca de cancelación, si la hay, y reencola un descarte de la DLQ con `attempts=0`; `409` si no está en la DLQ |
+| `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana; `409` si no está pausada |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
@@ -277,6 +279,9 @@ Con la sesión en la cookie, un comando solo se acepta como `fetch` JSON del mis
 origen (`Content-Type: application/json`, y `Origin`/`Sec-Fetch-Site` del propio panel
 si vienen): es la defensa contra CSRF, porque el navegador manda la cookie también en un
 formulario que dispare otra web. Con la cabecera `X-Panel-Session` no se exige.
+
+El **actor** auditado de un comando (logs y `HitlDecision.actor` de una reanudación)
+es siempre el usuario de la sesión; el cuerpo de la petición no puede cambiarlo.
 
 Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja; con uno real,
 la cabecera es obligatoria (`401` sin ella) y un rol `lector` recibe `403` en
@@ -333,8 +338,9 @@ runner: una ruta vetada da `403` y no aparece en `grep`.
 El runner expone también `GET /verify/{run_key}/console`, la **consola en vivo** de una
 verificación ([019](iniciativas/019-panel-de-operacion/spec.md) §5.6, W5/W8/W9): un
 *stream* SSE (`text/event-stream`) con el `stdout`/`stderr` del contenedor **a medida que
-se ejecuta**, que el `web` proxya y el panel pinta. Usa el mismo bearer
-`SANDBOX_RUNNER_TOKEN` que el resto del runner.
+se ejecuta**, que el `web` proxya y el panel pinta. Acepta el bearer compartido
+`SANDBOX_RUNNER_TOKEN` o el de **solo lectura** `SANDBOX_CONSOLE_TOKEN`, que es el que
+recibe el `web`: así el panel sigue una verificación sin poder lanzar otras.
 
 | Evento | `data` | Cuándo |
 |---|---|---|
@@ -399,7 +405,7 @@ firma inválida o ausente da `401`.
 | Un comando da `403` con un operador | La sesión va por cookie y la petición no es JSON del mismo origen | Usar la UI del panel o mandar la cabecera `X-Panel-Session` |
 | Cancelada pero el PR ya tiene comentarios | Publicó antes de cancelar | Es esperado (W6/R2): cancelar no despublica. La UI solo ofrece «cancelar lo pendiente» en ese estado |
 | La consola del sandbox da `404` | El `run_key` no está en el buffer del runner | Es efímero (W5): un reinicio del runner lo pierde y una verificación terminada se desaloja. El informe sigue en `POST /verify`; la consola es *best-effort* |
-| La consola no muestra nada | El runner no responde, o `SANDBOX_RUNNER_URL`/`SANDBOX_RUNNER_TOKEN` vacíos en el `web` | El proxy degrada a `404` sin tumbar el panel; revisar `docker compose logs -f sandbox-runner` |
+| La consola no muestra nada | El runner no responde, o `SANDBOX_RUNNER_URL`/`SANDBOX_CONSOLE_TOKEN` vacíos en el `web` (o el token no coincide con el del runner: el runner da `401`) | El proxy degrada a `404` sin tumbar el panel; revisar `docker compose logs -f sandbox-runner` |
 | No llegan avisos a Teams | `teams-bot` caído, sin canal capturado (C14) o `TEAMS_ENABLED=false` | `docker compose logs -f teams-bot`; `LLEN reviews:notices` (la outbox acumula); instalar el bot en el canal dedicado (T10) |
 | La tarjeta no reanuda y el CLI sí | Acción no llegó al ingress o JWT inválido | Mirar `401` en `/api/messages`; el CLI/HTTP es el respaldo (C9) |
 | La tarjeta responde «no es el canal de decisión» | La acción viene de otra conversación o de otro tenant, o aún no hay canal capturado | Buscar `Accion de tarjeta de … rechazada` en los logs del bot; `GET reviews:teams:channel` dice cuál es el canal. Si está mal, ver §5 (mover el canal) |

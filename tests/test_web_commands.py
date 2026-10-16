@@ -29,7 +29,7 @@ from agent_review.domain.models import (
 )
 from agent_review.domain.paused import PauseKind
 from agent_review.paused_store import InMemoryPausedStore
-from agent_review.queue import InMemoryReviewQueue
+from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue
 from agent_review.web import main as web_main
 from agent_review.web.commands import (
     CommandEffect,
@@ -166,6 +166,48 @@ def test_reintentar_un_descarte_lo_reencola_con_attempts_cero() -> None:
     assert queued is not None and queued.attempts == 0
 
 
+def test_reintentar_saca_el_descarte_de_la_dlq_y_un_segundo_clic_da_409() -> None:
+    service, queue, _paused, _marker = _service()
+    queue.dead_letter(_request(attempts=3), reason="intentos agotados")
+
+    service.retry(_REVIEW_KEY, actor="ana")
+
+    assert queue.dead_letters() == []
+    with pytest.raises(CommandError, match="DLQ"):
+        service.retry(_REVIEW_KEY, actor="ana")
+    assert len(queue) == 1, "una sola copia encolada"
+
+
+def test_reintentar_sobre_redis_saca_solo_el_descarte_de_la_review() -> None:
+    queue = RedisReviewQueue(url="redis://localhost:6379/0")
+    queue._client = fakeredis.FakeRedis()
+    queue.dead_letter(_request(attempts=3), reason="a")
+    queue.dead_letter(_request(pipeline_id="8", attempts=3), reason="b")
+
+    entry = queue.take_dead_letter(_REVIEW_KEY)
+
+    assert entry is not None and entry["review_key"] == _REVIEW_KEY
+    assert [e["review_key"] for e in queue.dead_letters()] == ["cqm/emotivoo-v2:42:abc:8"]
+    assert queue.take_dead_letter(_REVIEW_KEY) is None
+
+
+def test_si_reencolar_falla_el_descarte_vuelve_a_la_dlq() -> None:
+    class _BrokenQueue(InMemoryReviewQueue):
+        def enqueue(self, request: ReviewRequest) -> None:
+            raise RuntimeError("redis caido")
+
+    queue = _BrokenQueue()
+    queue.dead_letter(_request(attempts=3), reason="intentos agotados")
+    service = build_command_service(
+        queue=queue, paused=InMemoryPausedStore(), cancellation=_marker()
+    )
+
+    with pytest.raises(RuntimeError):
+        service.retry(_REVIEW_KEY, actor="ana")
+
+    assert [e["review_key"] for e in queue.dead_letters()] == [_REVIEW_KEY]
+
+
 def test_reintentar_retira_la_marca_de_una_review_cancelada() -> None:
     """Sin retirarla, el worker abortaria el reintento al desencolarlo."""
     service, queue, _paused, marker = _service()
@@ -240,6 +282,19 @@ def test_cancelar_por_http_devuelve_el_efecto_y_audita_al_actor(client: TestClie
     assert response.json()["effect"] == "cancelled"
     assert response.json()["actor"] == "ana"
     assert marker.is_cancelled(_REVIEW_KEY) is True
+
+
+def test_el_actor_del_cuerpo_no_suplanta_al_de_la_sesion(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as _c:
+        web_main.app.state.commands = service
+        response = _c.post(
+            f"/api/reviews/{_REVIEW_KEY}/cancel",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "jefe"},
+        )
+    assert response.status_code == 200
+    assert response.json()["actor"] == "ana"
 
 
 def test_un_comando_que_no_aplica_responde_409(client: TestClient) -> None:

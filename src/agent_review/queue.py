@@ -45,6 +45,14 @@ class ReviewQueue(Protocol):
         """Jobs descartados, para inspeccion o reinyeccion manual."""
         ...
 
+    def take_dead_letter(self, review_key: str) -> dict[str, object] | None:
+        """Saca de la DLQ el primer descarte de `review_key`, o `None` si no hay.
+
+        Es la reclamacion del reintento (019 OP31): quien lo saca es el unico que lo
+        reencola, asi que dos clics seguidos no encolan dos copias.
+        """
+        ...
+
 
 class RedisReviewQueue:
     def __init__(
@@ -101,6 +109,17 @@ class RedisReviewQueue:
                 parsed.append(entry)
         return parsed
 
+    def take_dead_letter(self, review_key: str) -> dict[str, object] | None:
+        """`LREM` de la entrada cruda: atomico, solo un llamante concurrente la gana."""
+        for item in self._client.lrange(self._dead_key, 0, -1):
+            raw = item.decode() if isinstance(item, bytes) else str(item)
+            entry = _parse_dead_letter(raw)
+            if entry is None or str(entry.get("review_key", "")) != review_key:
+                continue
+            if self._client.lrem(self._dead_key, 1, raw):
+                return entry
+        return None
+
 
 class InMemoryReviewQueue:
     """Cola compartible en tests y fallback sin Redis."""
@@ -126,12 +145,31 @@ class InMemoryReviewQueue:
 
         return [json.loads(item) for item in self._dead]
 
+    def take_dead_letter(self, review_key: str) -> dict[str, object] | None:
+        for index, item in enumerate(self._dead):
+            entry = _parse_dead_letter(item)
+            if entry is not None and str(entry.get("review_key", "")) == review_key:
+                del self._dead[index]
+                return entry
+        return None
+
     def __len__(self) -> int:
         return len(self._items)
 
     @property
     def dead_letter_count(self) -> int:
         return len(self._dead)
+
+
+def _parse_dead_letter(item: str | bytes) -> dict[str, object] | None:
+    """Entrada de la DLQ como `dict`, o `None` si es ilegible."""
+    import json
+
+    try:
+        entry = json.loads(item)
+    except ValueError:
+        return None
+    return entry if isinstance(entry, dict) else None
 
 
 def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:

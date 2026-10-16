@@ -122,6 +122,13 @@ def test_el_web_no_hereda_el_env_entero_ni_credenciales() -> None:
     assert "PANEL_SESSION_SECRET" in env, "necesita su propia sesion"
 
 
+def test_el_web_recibe_la_url_y_el_token_de_solo_lectura_de_la_consola() -> None:
+    """Sin ellos, la consola en vivo del panel siempre responde `404` (OP24)."""
+    env = _compose()["services"]["web"].get("environment", {})
+    assert "SANDBOX_RUNNER_URL" in env
+    assert "SANDBOX_CONSOLE_TOKEN" in env
+
+
 def test_las_variables_del_panel_estan_en_env_example() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
     for key in (
@@ -129,5 +136,7 @@ def test_las_variables_del_panel_estan_en_env_example() -> None:
         "PANEL_PORT",
         "PANEL_SESSION_SECRET",
         "SANDBOX_CONSOLE_BUFFER_LINES",
+        "SANDBOX_CONSOLE_TOKEN",
+        "CANCEL_TTL_S",
     ):
         assert f"{key}=" in text, f"falta {key} en .env.example"

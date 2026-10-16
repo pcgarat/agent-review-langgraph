@@ -52,6 +52,25 @@ def _verify_token(settings: Settings, authorization: str | None) -> None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token del runner invalido")
 
 
+def _verify_console_token(settings: Settings, authorization: str | None) -> None:
+    """Bearer de la consola: el compartido o el de solo lectura del panel (019 OP24).
+
+    `SANDBOX_CONSOLE_TOKEN` abre **solo** la consola, para que el panel pueda seguir
+    una verificacion sin recibir el token que tambien autoriza `POST /verify`. Se
+    relaja igual que `_verify_token` (sin token compartido real, en dev).
+    """
+    token = settings.sandbox_runner_token.strip()
+    if not token or token in _INSECURE_TOKENS:
+        return
+    accepted = [token]
+    console_token = settings.sandbox_console_token.strip()
+    if console_token and console_token not in _INSECURE_TOKENS:
+        accepted.append(console_token)
+    provided = authorization or ""
+    if not any(hmac.compare_digest(f"Bearer {item}", provided) for item in accepted):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token de la consola invalido")
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -321,7 +340,7 @@ def verify_console(
     reinicio), `404`. El informe sigue siendo `POST /verify`, el canal fiable.
     """
     settings = get_settings()
-    _verify_token(settings, authorization)
+    _verify_console_token(settings, authorization)
     console = build_console(settings)
     # El `404` se resuelve antes de abrir el stream: un `run_key` ausente no debe
     # llegar a un `200` que se cierra sin eventos (contrato congelado con el `web`).

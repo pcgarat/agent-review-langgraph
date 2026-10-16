@@ -3,8 +3,9 @@
 HTML servido en servidor (SSR) sobre el `PanelReadModel`: la vista global pinta el
 estado operativo (cola, en vuelo con su presupuesto, pausas por `kind`, descartes y
 presupuesto por review) y el detalle pinta el recorrido del hilo. Los comandos
-(cancelar, reintentar, reanudar) son botones que solo ve el rol `operador` y que
-mandan el `actor` auditado; la consola de una pausa de fix sigue el SSE del panel.
+(cancelar, reintentar, reanudar) son botones que solo ve el rol `operador`; el actor
+auditado lo pone el servidor desde la sesion, no el navegador. La consola de una
+pausa de fix sigue el SSE del panel.
 
 Sin plantillas ni CDN (018 §3.5): el HTML, el CSS y el JavaScript van embebidos y
 autocontenidos. Los datos que llegan del PR son de terceros, asi que **todo** lo que
@@ -281,8 +282,8 @@ def _buttons(review_key: str, commands: tuple[tuple[str, str], ...], session: Se
     """Botones de comando, solo para el rol `operador` (OP33).
 
     El endpoint viaja como `data-endpoint` (ya escapado) porque la `review_key` lleva
-    `/` y `:`: asi el JavaScript no tiene que recomponer la ruta. El `actor` va en el
-    `body` de la pagina y lo anade el propio JavaScript.
+    `/` y `:`: asi el JavaScript no tiene que recomponer la ruta. El actor no viaja:
+    el servidor lo toma de la sesion.
     """
     if not session.can_command():
         return ""
@@ -328,7 +329,7 @@ def _page(*, title: str, meta: str, body: str, session: Session, script: str) ->
         f"<title>{_esc(title)}</title>\n"
         f"<style>{_CSS}</style>\n"
         "</head>\n"
-        f'<body data-actor="{_esc(session.user)}">\n'
+        "<body>\n"
         "<header>\n"
         f"<h1>{_esc(title)}</h1>\n"
         f'<p class="meta">{_esc(meta)}</p>\n'
@@ -411,7 +412,6 @@ button.cmd:disabled { opacity: .5; cursor: default; }
 _COMMAND_SCRIPT = """<script>
 (() => {
   const error = document.getElementById("error");
-  const actor = document.body.dataset.actor;
   const send = async (button) => {
     button.disabled = true;
     error.hidden = true;
@@ -419,7 +419,7 @@ _COMMAND_SCRIPT = """<script>
       const response = await fetch(button.dataset.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actor: actor }),
+        body: "{}",
         credentials: "same-origin",
       });
       if (!response.ok) {

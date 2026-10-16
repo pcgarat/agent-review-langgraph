@@ -233,7 +233,9 @@ Cambios mínimos y compatibles:
 - El `Verifier` conecta `on_line` a un `ProgressSink` que guarda por `run_key` un
   **buffer circular en memoria** (p. ej. últimas N líneas) y da de alta a los
   suscriptores vivos.
-- El runner expone `GET /verify/{run_key}/console` (SSE, bearer compartido). Si el
+- El runner expone `GET /verify/{run_key}/console` (SSE, bearer compartido; *enmienda
+  2026-10-16*: también acepta `SANDBOX_CONSOLE_TOKEN`, de solo lectura, que es el que
+  recibe el panel para no poder lanzar verificaciones). Si el
   `run_key` ya terminó, sirve lo que quede en el buffer; si el runner reinició, `404`
   (efímero, como los workspaces de ADR-0018).
 
