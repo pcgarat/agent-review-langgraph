@@ -3,8 +3,8 @@
 # Todo: Canal bidireccional de Teams (bot con hilo por PR)
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
-el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T5 y T8 cerrados;
-T6, T7, T9–T11 pendientes.
+el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T6 y T8 cerrados;
+T7, T9–T11 pendientes.
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
@@ -187,7 +187,7 @@ T6, T7, T9–T11 pendientes.
     proceso, con el cliente del SDK, es T6 (`build_teams_bot`/`serve`/`run` ya lo
     dejan listo).
 
-- [ ] **T6** `teams-bot` en Compose + settings
+- [x] **T6** `teams-bot` en Compose + settings
   - Proceso propio con Teams SDK (versión fijada); servicio en `docker-compose.yml`
     en la red interna; variables `TEAMS_BOT_ID`, `TEAMS_BOT_TENANT_ID`,
     `TEAMS_BOT_TOKEN`, `TEAMS_BOT_URL`, `TEAMS_BOT_SHARED_SECRET`,
@@ -198,6 +198,23 @@ T6, T7, T9–T11 pendientes.
   - Verifica: `tests/test_settings.py`; `docker compose config`.
   - Ficheros: `docker-compose.yml`, `.env.example`, `src/agent_review/settings.py`,
     árbol del servicio `teams-bot`.
+  - **Hecho (2026-10-16).** `python -m agent_review.teams_bot.main` arranca en un
+    mismo bucle el consumidor de la outbox y el *messaging endpoint* del SDK
+    (`app.start`), con `asyncio.gather`. `SDKChannelClient` es el único punto que
+    importa `microsoft_teams` (el SDK re-exporta con `*`, así que mypy necesita las
+    rutas canónicas). `TEAMS_BOT_URL` **no** hizo falta: el bot no se llama a sí mismo
+    (el egress va por la outbox); sí `TEAMS_BOT_PORT` y `TEAMS_BOT_SHARED_SECRET`.
+  - **`/healthz` propio.** El SDK solo sirve `POST /api/messages`; el latido de
+    Compose necesita una ruta GET. Se registra en la app FastAPI del adaptador y se
+    protege con el bearer interno (`TEAMS_BOT_SHARED_SECRET`), porque el *messaging
+    endpoint* lo expone el ingress. El healthcheck de Compose lo manda.
+  - **Contrato de secretos propio:** `teams_bot_insecure_secrets` +
+    `require_teams_bot_secrets`, con `TEAMS_ENABLED=false` como no-op. Falla el
+    arranque en producción si falta `TEAMS_BOT_ID`/`_TENANT_ID`/`_TOKEN` o el bearer
+    sigue en el valor de ejemplo. El bot **no** recibe credencial de VCS ni del LLM
+    (frontera de seguridad, probada en `tests/test_teams_bot_settings.py`).
+  - **Servicio en Compose** sin `ports` (el ingress lo publica en T10) ni `env_file`
+    (no hereda el `.env` entero); depende solo de Redis.
 
 ## Bloque 3 — Ingress y retirada
 

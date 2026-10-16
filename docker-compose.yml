@@ -130,6 +130,44 @@ services:
       - reviews
     # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
 
+  # Canal de Teams (iniciativa 013): el bot con hilo por PR. Consume la outbox
+  # (`reviews:notices`) y sirve el *messaging endpoint* `POST /api/messages` del
+  # Bot Framework. Vive aislado del worker: NO tiene credencial de VCS ni clave del
+  # LLM; solo Redis y la identidad del bot. El *messaging endpoint* se expone por el
+  # ingress/TLS de operacion, no aqui (T10): sin `ports`, solo alcanzable dentro de
+  # la red de compose hasta que el ingress lo publique.
+  teams-bot:
+    build: .
+    restart: unless-stopped
+    command: python -m agent_review.teams_bot.main
+    # Sin `env_file`: el `.env` lleva todos los secretos del despliegue (token de
+    # escritura del PR, clave del LLM...). El bot solo recibe lo que lee.
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TEAMS_ENABLED: ${TEAMS_ENABLED:-false}
+      REDIS_URL: redis://redis:6379/0
+      TEAMS_NOTICES_KEY: ${TEAMS_NOTICES_KEY:-reviews:notices}
+      TEAMS_BOT_POLL_S: ${TEAMS_BOT_POLL_S:-5}
+      TEAMS_BOT_ID: ${TEAMS_BOT_ID:-}
+      TEAMS_BOT_TENANT_ID: ${TEAMS_BOT_TENANT_ID:-}
+      TEAMS_BOT_TOKEN: ${TEAMS_BOT_TOKEN:-}
+      TEAMS_BOT_PORT: ${TEAMS_BOT_PORT:-3978}
+      TEAMS_BOT_SHARED_SECRET: ${TEAMS_BOT_SHARED_SECRET:-change-me}
+      DECISION_TTL_S: ${DECISION_TTL_S:-604800}
+    depends_on:
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('TEAMS_BOT_PORT','3978'); req=urllib.request.Request(f'http://localhost:{port}/healthz', headers={'Authorization': 'Bearer ' + os.environ.get('TEAMS_BOT_SHARED_SECRET','')}); urllib.request.urlopen(req).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: el ingress/TLS de operacion es quien lo publica (T10).
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
