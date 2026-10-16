@@ -13,6 +13,7 @@ from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import Finding, ReviewerResult, Severity
 from agent_review.errors import is_transient
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
+from agent_review.scope import changed_files
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,11 @@ class LlmReviewer:
         # verdad cuando esta disponible.
         self.last_estimated_tokens = 0
         self.last_usage: LlmReply | None = None
+        # Ficheros que entraron de verdad en el prompt de la ultima llamada. Sale
+        # del diff ya recortado a `_MAX_DIFF_CHARS` (lo que el modelo vio, no lo
+        # que el PR traia): es la cota fiel para medir cobertura (E11 de 006) sin
+        # depender de una constante externa. Solo lectura.
+        self.last_seen_files: tuple[str, ...] = ()
 
     def review(self, *, repo: str, pr_id: int, diff: str, head_sha: str = "") -> ReviewerResult:
         del repo, pr_id, head_sha
@@ -115,7 +121,11 @@ class LlmReviewer:
             logger.warning(
                 "correctness: diff truncado de %d a %d chars", len(diff), _MAX_DIFF_CHARS
             )
-        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{diff[:_MAX_DIFF_CHARS]}"
+        window = diff[:_MAX_DIFF_CHARS]
+        # Los ficheros que el modelo ve de verdad: se derivan del diff ya recortado,
+        # de modo que la cobertura mide el recorte real y no una constante aparte.
+        self.last_seen_files = tuple(changed_files(window))
+        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{window}"
         # Corte real de presupuesto (C3): no basta con loguear. Si el coste
         # estimado de esta review (prompt + respuesta) supera el tope, no se
         # llama al modelo: mejor 0 hallazgos de esta persona que una factura

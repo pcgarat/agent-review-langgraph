@@ -6,7 +6,7 @@ deriva de contrato, merge o politica se ve como un fallo con el nombre del
 hallazgo que se movio.
 
 La corrida contra el modelo real *no* vive aqui: es `make eval-live` (marca `live`
-en `tests/test_live_eval.py`), fuera de CI.
+en `test_live_eval.py`), fuera de CI.
 """
 
 from __future__ import annotations
@@ -94,9 +94,15 @@ def test_el_baseline_recoge_los_numeros_de_la_auditoria() -> None:
     assert report.counts["fp_unknown"] == 0, "todo hallazgo publicado debe estar etiquetado"
     assert report.counts["fp_labeled"] == 6
     assert report.counts["tp"] == 2
+    # 7 hallazgos reales (A, I, integracion 1-3, no-detectado 1-3); solo 2 se
+    # publicaron. El recall global y el de los dos subconjuntos faltantes caen a 0.
+    assert report.counts["fn"] == 6
     assert report.metrics["precision"] == 0.25
-    assert report.metrics["recall"] == 0.4
+    assert report.metrics["recall"] == 0.25
     assert report.metrics["recall_by_subset"]["integracion"] == 0.0
+    assert report.metrics["recall_by_subset"]["no_detectado"] == 0.0
+    # A se publico como P1 pero es P2 (el TTL recupera la review): severidad mal.
+    assert report.metrics["severity_accuracy"] == 0.5
     assert report.inverted == ("A",)
 
 

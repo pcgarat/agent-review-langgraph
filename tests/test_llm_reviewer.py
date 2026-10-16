@@ -167,6 +167,23 @@ def test_presupuesto_amplio_permite_la_llamada() -> None:
     assert reviewer.last_estimated_tokens > 0
 
 
+def test_last_seen_files_expoe_lo_que_entro_en_el_prompt() -> None:
+    # E11 de 006: la cobertura se mide sobre lo que el modelo vio de verdad.
+    llm = FakeLlm(_response(_finding_json()))
+    reviewer = LlmReviewer(llm=llm)
+    reviewer.review(repo="r", pr_id=1, diff=DIFF)
+    assert TRANSFER in reviewer.last_seen_files
+    # Deduplicado y en el orden del diff (cada fichero una sola vez).
+    assert len(reviewer.last_seen_files) == len(set(reviewer.last_seen_files))
+    assert reviewer.last_seen_files == tuple(reviewer.last_seen_files)
+
+
+def test_last_seen_files_vacio_si_no_hay_diff() -> None:
+    reviewer = LlmReviewer(llm=FakeLlm(_response(_finding_json())))
+    reviewer.review(repo="r", pr_id=1, diff="   ")
+    assert reviewer.last_seen_files == ()
+
+
 # --- Integracion con el grafo: merge deduplica por (fichero, titulo) ---
 
 

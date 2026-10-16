@@ -24,6 +24,8 @@ from harness import (
     Verdict,
     case_fingerprint,
     compare,
+    coverage_of,
+    file_class,
     load_case,
     match,
     measure,
@@ -275,14 +277,21 @@ def test_expected_sin_match_falla() -> None:
 
 
 def _audit_case() -> Case:
-    """El caso de la auditoria: A e I `expected`, H `acceptable`, 6 falsos (B–G)."""
+    """El caso de la auditoria: 7 reales (`expected`), H `acceptable`, 6 falsos (B–G).
+
+    A, I e integracion-1..3 mas no-detectado-1..3 son los siete hallazgos reales
+    que fijo la revision del codigo; B–G son los falsos publicados.
+    """
     return _case(
         expected=[
-            Label(id="A", match=("mark_done",), severity="P1", subset="correctness"),
-            Label(id="I", match=("heartbeat",), severity="P1", subset="correctness"),
+            Label(id="A", match=("mark_done",), severity="P2", subset="correctness"),
+            Label(id="I", match=("heartbeat",), severity="P3", subset="correctness"),
             Label(id="integracion-1", match=("secretos",), severity="P1", subset="integracion"),
             Label(id="integracion-2", match=("arranca",), severity="P1", subset="integracion"),
             Label(id="integracion-3", match=("pisa",), severity="P1", subset="integracion"),
+            Label(id="no-detectado-1", match=("probe",), severity="P2", subset="no_detectado"),
+            Label(id="no-detectado-2", match=("json_mode",), severity="P2", subset="no_detectado"),
+            Label(id="no-detectado-3", match=("TTL",), severity="P2", subset="no_detectado"),
         ],
         must_not_report=[
             Label(id=fid, match=(fid.lower(),)) for fid in ("B", "C", "D", "E", "F", "G")
@@ -310,11 +319,18 @@ def test_precision_y_recall_de_la_auditoria() -> None:
     assert report.counts["fp"] == 6
     assert report.counts["acceptable"] == 1
     assert report.counts["fp_unknown"] == 0
-    assert report.counts["fn"] == 3
+    assert report.counts["fn"] == 6
     assert report.metrics["precision"] == 0.25
-    assert report.metrics["recall"] == 0.4
-    assert report.metrics["recall_by_subset"] == {"correctness": 1.0, "integracion": 0.0}
-    assert report.metrics["severity_accuracy"] == 1.0
+    assert report.metrics["recall"] == 0.25
+    assert report.metrics["recall_by_subset"] == {
+        "correctness": 1.0,
+        "integracion": 0.0,
+        "no_detectado": 0.0,
+    }
+    # A se publico como P1 pero es P2: casan 2 de severidad exacta (I tambien
+    # discrepa, P1 vs P3) -> 0/2. La accuracy mide casados con la severidad del
+    # `expected`, asi que con ambos mal da 0.0.
+    assert report.metrics["severity_accuracy"] == 0.0
 
 
 def test_hallazgo_sin_etiqueta_es_falso_positivo() -> None:
@@ -630,3 +646,69 @@ def test_runner_graba_y_reproduce_el_mismo_conjunto(tmp_path: Path) -> None:
     assert [finding.id for finding in segunda.published] == [
         finding.id for finding in primera.published
     ]
+
+
+# --- E10/E11: cobertura instrumentada ---
+
+
+def _case_con_clases() -> Case:
+    """Caso con un fichero de cada clase: code, config, test y docs."""
+    diff = (
+        "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n"
+        "@@ -0,0 +1 @@\n+x = 1\n"
+        "diff --git a/docker-compose.yml b/docker-compose.yml\n--- a/docker-compose.yml\n"
+        "+++ b/docker-compose.yml\n@@ -0,0 +1 @@\n+services: {}\n"
+        "diff --git a/tests/test_app.py b/tests/test_app.py\n--- a/tests/test_app.py\n"
+        "+++ b/tests/test_app.py\n@@ -0,0 +1 @@\n+def test(): ...\n"
+        "diff --git a/README.md b/README.md\n--- a/README.md\n"
+        "+++ b/README.md\n@@ -0,0 +1 @@\n+# hola\n"
+    )
+    return Case(
+        name="clases",
+        repo="r",
+        pr_id=1,
+        base_sha="b",
+        head_sha="h",
+        captured_at="2026-10-16",
+        source="s",
+        scope={},
+        diff=diff,
+    )
+
+
+def test_file_class_clasifica_por_ruta() -> None:
+    assert file_class("src/app.py") == "code"
+    assert file_class("docker-compose.yml") == "config"
+    assert file_class("config/models.yaml") == "config"
+    assert file_class(".env.example") == "config"
+    assert file_class("tests/test_app.py") == "test"
+    assert file_class("docs/adr/0001-x.md") == "docs"
+
+
+def test_cobertura_cuenta_solo_codigo_y_configuracion() -> None:
+    case = _case_con_clases()
+
+    # Vistos code + config de 2 relevantes; test y docs no cuentan en el denominador.
+    assert coverage_of(case, ["src/app.py", "docker-compose.yml"]) == 1.0
+    assert coverage_of(case, ["src/app.py"]) == 0.5
+    # Los ficheros de test/docs vistos no inflan la cobertura.
+    assert coverage_of(case, ["tests/test_app.py", "README.md"]) == 0.0
+
+
+def test_cobertura_none_si_no_hay_codigo_ni_configuracion() -> None:
+    diff = (
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -0,0 +1 @@\n+x\n"
+    )
+    case = _case_con_clases()
+    solo_docs = Case(**{**case.__dict__, "diff": diff})
+
+    assert coverage_of(solo_docs, []) is None
+
+
+def test_el_runner_expoe_los_ficheros_vistos(tmp_path: Path) -> None:
+    case = _toy_case(tmp_path)
+    port = _FakePort(_finding_payload())
+    run = run_case(case, llm=port, policy=_pipeline_policy(), vcs=CaseVcs(case))
+
+    # El diff de juguete solo trae x.py; el campo lo refleja (E11).
+    assert run.seen_files == ("x.py",)

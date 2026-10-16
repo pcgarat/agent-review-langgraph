@@ -22,10 +22,12 @@ import yaml
 from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.domain.models import Finding
+from agent_review.globs import matches_any
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.llm import JsonMode, LlmPort, LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.scope import changed_files
 
 # Tres etiquetas (E9 de la spec): lo que debe salir, lo que no, y lo tolerable.
 LBL_EXPECTED = "expected"
@@ -755,6 +757,7 @@ class Run:
     merged: tuple[Finding, ...]
     tokens: int
     inlined: int
+    seen_files: tuple[str, ...] = ()
 
 
 def run_case(case: Case, *, llm: LlmPort, policy: PolicyEngine, vcs: CaseVcs) -> Run:
@@ -792,6 +795,7 @@ def run_case(case: Case, *, llm: LlmPort, policy: PolicyEngine, vcs: CaseVcs) ->
         merged=merged,
         tokens=int(tokens),
         inlined=len(vcs.inlines),
+        seen_files=_seen_files(reviewer),
     )
 
 
@@ -816,6 +820,69 @@ def evaluate(
         run.published,
         mode=mode,
         tokens=run.tokens,
-        coverage=coverage,
+        coverage=coverage if coverage is not None else coverage_of(case, run.seen_files),
         fingerprints=fingerprints,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cobertura (E11 de la spec): lo que el `LlmReviewer` vio de verdad.
+# ---------------------------------------------------------------------------
+
+# Clases de fichero para la cobertura. La metrica solo cuenta codigo y
+# configuracion (donde vive un P0), no tests ni documentacion (012 C7).
+_CLASS_CONFIG = "config"
+_CLASS_CODE = "code"
+_CLASS_TEST = "test"
+_CLASS_DOCS = "docs"
+_COVERED_CLASSES = (_CLASS_CODE, _CLASS_CONFIG)
+
+
+def file_class(path: str) -> str:
+    """Clase de un fichero del PR: `config`, `test`, `docs` o `code`.
+
+    Se decide por nombre y ruta, no por contenido: es una heuristica estable y
+    suficiente para la metrica. `matches_any` usa el mismo glob que el filtro de
+    `scope`, de modo que un cambio de patron no diverge entre los dos.
+    """
+    if matches_any(path, _CONFIG_GLOBS):
+        return _CLASS_CONFIG
+    if matches_any(path, _TEST_GLOBS):
+        return _CLASS_TEST
+    if matches_any(path, _DOCS_GLOBS):
+        return _CLASS_DOCS
+    return _CLASS_CODE
+
+
+_CONFIG_GLOBS = [
+    "docker-compose*.yml",
+    "docker-compose*.yaml",
+    "Dockerfile*",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/*.toml",
+    ".env*",
+    "**/settings.py",
+    "**/config/**",
+]
+_TEST_GLOBS = ["tests/**", "**/test_*.py", "**/*_test.py", "**/*Test.php"]
+_DOCS_GLOBS = ["**/*.md", "docs/**", "*.md"]
+
+
+def coverage_of(case: Case, seen_files: Sequence[str]) -> float | None:
+    """Ficheros de codigo y configuracion vistos / totales de esas clases (E11).
+
+    `seen_files` son las rutas que el `LlmReviewer` metio en el prompt (ya
+    recortado); el denominador, las de esas clases que traia el PR. `None` si el
+    PR no tiene ninguna (nada que cubrir no es cobertura 0).
+    """
+    relevant = {path for path in changed_files(case.diff) if file_class(path) in _COVERED_CLASSES}
+    if not relevant:
+        return None
+    seen = {path for path in seen_files if path in relevant}
+    return round(len(seen) / len(relevant), 4)
+
+
+def _seen_files(reviewer: LlmReviewer) -> tuple[str, ...]:
+    """Ficheros que la ultima llamada de la persona metio en el prompt (E11)."""
+    return tuple(getattr(reviewer, "last_seen_files", ()))

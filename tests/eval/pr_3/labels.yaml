@@ -1,16 +1,18 @@
 # Gold set del PR #3 de agent-review-langgraph (spec 006 §5.2, E5).
 #
-# Procedencia: auditoria manual de la review publicada (comentario del agente en
-# el PR #3). El `match` son frases distintivas de cada hallazgo; se afinan solo si
-# un veredicto chirria (Q2). Las tres etiquetas: lo que debe salir (`expected`),
-# lo que no (`must_not_report`, con motivo) y lo tolerable (`acceptable`).
+# Procedencia: la review publicada en el PR #3 (hallazgos A-I) y la revision del
+# codigo en 886f8d4 (= 008da57), que fijo los 7 hallazgos reales: A (#8) y los
+# tres P1 de integracion (#1-#3) mas tres P2 de codigo (#5-#7). El `match` son
+# frases distintivas de cada hallazgo; se afinan solo si un veredicto chirria
+# (Q2). Las tres etiquetas: lo que debe salir (`expected`), lo que no
+# (`must_not_report`, con motivo) y lo tolerable (`acceptable`).
 case: pr-3-agent-review
 repo: "pcgarat/agent-review-langgraph"
 pr_id: 3
 base_sha: a8ead73
 head_sha: 008da57
 captured_at: 2026-10-16
-source: "auditoria manual de la review publicada"
+source: "auditoria manual: comentario publicado del PR #3 + revision del codigo en 886f8d4"
 
 # E10: configuracion de `scope` con la que corrio la review auditada. Con 51
 # ficheros, `max_files_per_pr: 10` (por churn) dejo fuera docker-compose.yml,
@@ -20,12 +22,14 @@ scope:
   scope_ignore: ""
 
 expected:
-  # A: real, pero descrito al reves. El arreglo es encolar la reanudacion ANTES
-  # de marcar la wave; el hallazgo publicado dice lo contrario y su titulo se
-  # corta. `must_mention` captura la direccion correcta (E16): si no aparece, el
-  # informe marca el hallazgo `tp_inverted` sin mover precision ni recall.
+  # A (#8 del audit): real, pero descrito al reves y con la severidad inflada. El
+  # arreglo es encolar la reanudacion ANTES de marcar la wave; el hallazgo
+  # publicado dice lo contrario y su titulo se corta. `must_mention` captura la
+  # direccion correcta (E16): si no aparece, el informe lo marca `tp_inverted`
+  # sin mover precision ni recall. El audit lo dejo en P2 (el TTL recupera la
+  # review); la review lo publico como P1.
   - id: A
-    severity: P1
+    severity: P2
     subset: correctness
     file: src/agent_review/fixworker/main.py
     match: ["_consume", "mark_done"]
@@ -39,8 +43,9 @@ expected:
     file: src/agent_review/fixworker/main.py
     match: ["_touch_heartbeat", "OSError"]
 
-  # #1-#3: P1 de integracion que SI estaban en el diff y NO se detectaron. No se
-  # publicaron, asi que no tienen linea: casa por contenido.
+  # integracion-1..3: los 3 P1 reales de integracion/configuracion que SI estaban
+  # en el diff y NO se detectaron (causa: cobertura, ver 012 §3.1). No se
+  # publicaron, asi que no tienen linea: casan por contenido.
   - id: integracion-1
     severity: P1
     subset: integracion
@@ -50,7 +55,7 @@ expected:
   - id: integracion-2
     severity: P1
     subset: integracion
-    why: "El fix-worker no arranca en produccion (faltan sus secretos)"
+    why: "El fix-worker no arranca en produccion (el gate de secretos exige TWG_BBC_TOKEN)"
     match: ["fixworker", "arranc"]
 
   - id: integracion-3
@@ -58,6 +63,27 @@ expected:
     subset: integracion
     why: "MODELS_CONFIG pisa las variables LLM_* del entorno"
     match: ["MODELS_CONFIG", "LLM_"]
+
+  # no_detectado-1..3: los 3 P2 reales de codigo que la review no vio. El #5 vivia
+  # en un fichero que el recorte dejo fuera (worker/main.py); el #6 y el #7, en
+  # codigo que si vio. No se publicaron: casan por contenido.
+  - id: no-detectado-1
+    severity: P2
+    subset: no_detectado
+    why: "El arranque fatal-vs-warning se decide casando el texto del mensaje de probe"
+    match: ["probe", "fatal"]
+
+  - id: no-detectado-2
+    severity: P2
+    subset: no_detectado
+    why: "Se envia json_object aunque el modelo no declare json_mode"
+    match: ["json_object", "json_mode"]
+
+  - id: no-detectado-3
+    severity: P2
+    subset: no_detectado
+    why: "SANDBOX_ENABLED ya no gatea el fix: la review espera al TTL"
+    match: ["SANDBOX_ENABLED", "TTL"]
 
 must_not_report:
   - id: B
