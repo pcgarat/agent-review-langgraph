@@ -57,7 +57,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP13** Endpoint de estado: cola (`reviews:jobs`), en vuelo (progreso), pausas
   por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:<key>`).
 - [x] **OP14** Endpoint de recorrido: expone `read_trace` (OP1) para una review.
-- [ ] **OP15** UI de lectura: vista global (cola, en vuelo, pausas, descartes) y vista
+- [x] **OP15** UI de lectura: vista global (cola, en vuelo, pausas, descartes) y vista
   de detalle con el recorrido.
 - [x] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
   nuevo.
@@ -111,7 +111,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
   con `attempts=0`.
 - [ ] **OP32** Endpoint `POST /reviews/{key}/resume`: reencola el `request` de una
   pausa (lo que hace una decisión, sin decisión).
-- [ ] **OP33** UI de comandos: botones según el estado, con el **actor** auditado.
+- [x] **OP33** UI de comandos: botones según el estado, con el **actor** auditado.
 - [ ] **OP34** Tests por estado: cancelar antes/después de publicar, reintentar un
   descarte, reanudar, y que `Cancelled` **no** se reintenta.
 - [ ] **OP35** *(Humana)* Decidir y asignar **quién** puede cancelar (Q4 de la spec);
