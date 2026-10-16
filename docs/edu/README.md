@@ -42,6 +42,7 @@ flowchart LR
     M8 --> M9[09 Streaming]
     M9 --> M10[10 Avanzados]
     M10 --> M11[11 Recorrido de una review]
+    M11 --> M12[12 Recorrido con todas las iniciativas]
     M2 -. "misma clave, varias escrituras" .-> M3
     M4 -. "pausa durable" .-> M6
     M5 -. "re-ejecución" .-> M7
@@ -115,6 +116,7 @@ Tabla de "quiero entender X → módulo donde vive X".
 | Subgrafos, `input_schema`/`output_schema`, nodos como grafos | [10 — Patrones avanzados](10-patrones-avanzados.md) |
 | `context_schema`, `store`, `durability`, `Overwrite` | [10 — Patrones avanzados](10-patrones-avanzados.md) |
 | **El grafo de `reviews` recorrido caso a caso** (sin hallazgos, report, HITL, fix, fallos, degradada) | [11 — Recorrido de una review](11-recorrido-de-una-review.md) |
+| **La foto final**: el mismo recorrido con la cascada de verificación, las trazas y el presupuesto ya entregado (prospectivo) | [12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md) |
 
 ---
 
@@ -154,7 +156,9 @@ Lo que este dibujo ya encierra (y cada módulo desarrolla):
   (comentarios en el PR) no se duplican.
 
 El recorrido completo de este grafo, caso a caso, está en
-[11 — Recorrido de una review](11-recorrido-de-una-review.md).
+[11 — Recorrido de una review](11-recorrido-de-una-review.md); cómo quedaría con
+todas las iniciativas abiertas entregadas, en
+[12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md).
 
 ---
 
