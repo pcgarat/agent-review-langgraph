@@ -79,6 +79,20 @@ class Settings(BaseSettings):
     # Clave del hash de progreso (019 §5.2). Un campo por nodo en curso.
     progress_key: str = "reviews:active"
 
+    # Panel de operacion (iniciativa 019, W1/W7). El panel es un servicio `web`
+    # aparte, opt-in por perfil de compose (`profiles: ["panel"]`): sin el perfil,
+    # `docker compose up` arranca lo de siempre (R7). `panel_enabled` lo declara el
+    # despliegue y es lo que exige su secreto de sesion en produccion.
+    panel_enabled: bool = False
+    # Puerto del panel dentro del contenedor; lo publica el perfil `panel`.
+    panel_port: int = 8090
+    # Sesion del panel: NO es el bearer de decision. Identifica a la persona y su
+    # rol en la forma `<usuario>:<lector|operador>`; un `lector` puede mirar pero
+    # no ejecutar comandos. Un secreto real por despliegue.
+    panel_session_secret: str = ""
+    # Tope de la consola en vivo por verificacion (lineas del buffer del runner).
+    sandbox_console_buffer_lines: int = 2000
+
     sandbox_enabled: bool = False
     sandbox_registry_user: str = ""
     sandbox_registry_token: str = ""
@@ -275,7 +289,25 @@ def insecure_secrets(settings: Settings) -> list[str]:
             insecure.append("SANDBOX_RUNNER_TOKEN")
         if not settings.sandbox_git_token.strip():
             insecure.append("SANDBOX_GIT_TOKEN")
+    # El secreto de sesion del panel (019 W7) solo se exige si el panel esta
+    # desplegado: un despliegue sin `web` no debe fallar por un secreto que no usa.
+    if settings.panel_enabled:
+        insecure.extend(panel_insecure_secrets(settings))
     return insecure
+
+
+def panel_insecure_secrets(settings: Settings) -> list[str]:
+    """Secreto de sesion del panel (019 W7) sin configurar o en su valor de ejemplo.
+
+    Contrato propio del proceso `web`, mucho menor que el del worker: el panel no
+    recibe credencial de VCS ni clave del LLM (solo lee estado y encola comandos),
+    asi que exigirle el contrato completo lo tumbaria en produccion. Una sesion de
+    ejemplo (`change-me`) o vacia dejaria el panel sin autenticacion: es
+    exactamente el agujero que el fail-closed debe evitar.
+    """
+    if not settings.panel_session_secret.strip() or _is_unset(settings.panel_session_secret):
+        return ["PANEL_SESSION_SECRET"]
+    return []
 
 
 def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
@@ -338,6 +370,19 @@ def require_fix_worker_secrets(settings: Settings) -> None:
     if not is_production(settings):
         return
     _raise_if_insecure(fix_worker_insecure_secrets(settings))
+
+
+def require_panel_secrets(settings: Settings) -> None:
+    """Como `require_production_secrets`, con el contrato del panel (019 W7).
+
+    El proceso `web` **es** el panel, asi que exige su sesion en produccion aunque
+    `PANEL_ENABLED` no venga declarado en el entorno: la ausencia del flag no puede
+    convertirse en un panel sin autenticacion. No exige el resto del contrato (VCS,
+    LLM), que el panel no recibe.
+    """
+    if not is_production(settings):
+        return
+    _raise_if_insecure(panel_insecure_secrets(settings))
 
 
 def require_teams_bot_secrets(settings: Settings) -> None:

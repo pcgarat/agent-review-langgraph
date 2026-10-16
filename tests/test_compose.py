@@ -77,3 +77,57 @@ def test_los_secretos_del_sandbox_estan_declarados_en_env_example() -> None:
     text = _ENV_EXAMPLE.read_text(encoding="utf-8")
     for key in ("SANDBOX_GIT_TOKEN", "SANDBOX_REGISTRY_TOKEN", "SANDBOX_RUNNER_TOKEN"):
         assert f"{key}=" in text, f"falta {key} en .env.example"
+
+
+def test_el_servicio_web_solo_arranca_con_el_perfil_panel() -> None:
+    """019 R7: el panel es un servicio mas, opt-in; el arranque de siempre no cambia."""
+    web = _compose()["services"]["web"]
+    assert web.get("profiles") == ["panel"], "el `web` solo debe existir con el perfil `panel`"
+    assert web["command"] == "python -m agent_review.web.main"
+
+
+def test_sin_el_perfil_panel_no_se_levanta_ningun_servicio_nuevo() -> None:
+    """Un `docker compose up` sin perfil no arranca el panel (los servicios con
+    `profiles` quedan fuera); los servicios de siempre siguen sin perfil."""
+    services = _compose()["services"]
+    sin_perfil = [name for name, service in services.items() if not service.get("profiles")]
+    assert "web" not in sin_perfil
+    for name in ("api", "worker", "fix-worker", "postgres", "redis", "sandbox-runner"):
+        assert name in sin_perfil, f"{name} debe seguir arrancando sin perfil"
+
+
+def test_el_web_depende_de_redis_y_postgres_y_esta_en_la_red() -> None:
+    web = _compose()["services"]["web"]
+    assert "redis" in web.get("depends_on", {})
+    assert "postgres" in web.get("depends_on", {})
+    assert "reviews" in web.get("networks", [])
+
+
+def test_el_web_no_hereda_el_env_entero_ni_credenciales() -> None:
+    """019 §5.8: el panel solo lee estado; no recibe credencial de VCS ni clave del LLM."""
+    web = _compose()["services"]["web"]
+    assert "env_file" not in web, "el panel no puede heredar el .env entero"
+    env = web.get("environment", {})
+    for secret in (
+        "TWG_BBC_TOKEN",
+        "TWG_TOKEN",
+        "GITHUB_TOKEN",
+        "REVIEWS_DECISION_TOKEN",
+        "TOOLING_WEBHOOK_SECRET",
+        "LLM_API_KEY",
+        "SANDBOX_GIT_TOKEN",
+        "SANDBOX_RUNNER_TOKEN",
+    ):
+        assert secret not in env, f"el panel no debe recibir {secret}"
+    assert "PANEL_SESSION_SECRET" in env, "necesita su propia sesion"
+
+
+def test_las_variables_del_panel_estan_en_env_example() -> None:
+    text = _ENV_EXAMPLE.read_text(encoding="utf-8")
+    for key in (
+        "PANEL_ENABLED",
+        "PANEL_PORT",
+        "PANEL_SESSION_SECRET",
+        "SANDBOX_CONSOLE_BUFFER_LINES",
+    ):
+        assert f"{key}=" in text, f"falta {key} en .env.example"

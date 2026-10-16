@@ -29,6 +29,14 @@ docker compose logs -f worker
   usuario. Es un atajo de desarrollo y **no** sirve para producción
   ([ADR-0012](adr/0012-vcs-tras-un-puerto.md)).
 
+El panel de operación (019) es un servicio aparte, opt-in por **perfil**:
+
+```bash
+docker compose --profile panel up -d      # añade `web` (panel) a lo de siempre
+```
+
+Sin el perfil, `docker compose up` arranca exactamente lo de siempre.
+
 ### Servicios de compose
 
 | Servicio | Puerto | Monta | Notas |
@@ -36,6 +44,7 @@ docker compose logs -f worker
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
+| `web` (perfil `panel`) | `PANEL_PORT` publicado | — | Panel de operación: lee estado de Redis y el recorrido del checkpointer. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
@@ -107,6 +116,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
 | Progreso y panel (019) | `PROGRESS_ENABLED` (`false`: activa el progreso del worker en Redis, cierra D16), `PROGRESS_TTL_S` (3600), `PROGRESS_KEY` (`reviews:active`; el panel de operación lee de aquí el nodo en curso) |
+| Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (sesión `<usuario>:<lector\|operador>`; **no** es `REVIEWS_DECISION_TOKEN`; fail-closed en producción), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4) |
 | LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: tope de tokens **por review**, compartido por todas las personas y el fixer; al agotarse, lo que falte se registra como `budget_exhausted` en vez de gastar de más, §2) |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
@@ -234,6 +244,26 @@ agent_review decide '<review_key>' --actor ana \
 La `review_key` lleva `/` y `:` (`cqm/emotivoo-v2:430:<sha>:<pipeline>`): ponla entre
 comillas. Exit `1` = no está pausada; exit `2` = decisión rechazada (falta algún
 pendiente, un id es ajeno o se usó `expired`).
+
+### Panel de operación (`web`, perfil `panel`)
+
+El panel es un proceso aparte (`python -m agent_review.web.main`), opt-in por el
+perfil de compose `panel`. Lee el estado operativo de Redis y el recorrido del
+checkpointer con un pool de **solo lectura**; no recibe credencial de VCS ni clave
+del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
+`X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`), **no** en
+`REVIEWS_DECISION_TOKEN`.
+
+| Método | Ruta | Auth | Respuestas |
+|---|---|---|---|
+| `GET` | `/healthz` | — | `200` |
+| `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
+| `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
+
+Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja; con uno real,
+la cabecera es obligatoria (`401` sin ella) y un rol `lector` recibe `403` en
+cualquier comando (bloque 5). La `review_key` lleva `/`: el endpoint de recorrido la
+acepta entera.
 
 ### Messaging endpoint del bot (`teams-bot`)
 
