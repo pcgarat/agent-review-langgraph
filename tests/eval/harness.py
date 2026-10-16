@@ -9,11 +9,14 @@ del modelo) y `expected_report.json` (el baseline congelado).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from agent_review.domain.models import Finding
 
 # Tres etiquetas (E9 de la spec): lo que debe salir, lo que no, y lo tolerable.
 LBL_EXPECTED = "expected"
@@ -21,6 +24,13 @@ LBL_MUST_NOT = "must_not_report"
 LBL_ACCEPTABLE = "acceptable"
 
 _WHITESPACE = re.compile(r"\s+")
+
+# Tolerancia de lineas al casar `file`/`line`: la misma que el merge entre
+# personas (ADR-0014). Un ancla no tiene por que coincidir al caracter.
+LINE_TOLERANCE = 5
+
+# Orden canonico de atribucion: severidad, luego linea, luego id (spec §5.2).
+_SEVERITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 def normalize(text: str) -> str:
@@ -139,3 +149,83 @@ def _label(item: dict[str, Any]) -> Label:
         line=item.get("line"),
         must_mention=tuple(str(value) for value in item.get("must_mention", [])),
     )
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    """Atribucion de los hallazgos publicados contra las etiquetas del caso.
+
+    Cada `expected`/`must_not_report` casa con **como mucho un** hallazgo: la
+    atribucion es 1:1 para que un matcher laxo no cuente el mismo hallazgo dos
+    veces. `acceptable` no participa en la atribucion (E9): se lista aparte.
+    """
+
+    expected: dict[str, Finding]
+    must_not: dict[str, Finding]
+    acceptable: dict[str, Finding]
+    unmatched: tuple[Finding, ...]
+    missing: tuple[str, ...]
+
+
+def match(case: Case, published: Sequence[Finding]) -> MatchResult:
+    """Atribuye `published` contra las etiquetas del caso (1:1 determinista, E2).
+
+    El orden no depende de como llegaron los hallazgos: ambos lados se ordenan en
+    forma canonica (severidad, linea, id) y, en ese orden, cada etiqueta se queda
+    con el primer hallazgo no consumido que cumpla su `match`. Dos etiquetas que
+    casarian el mismo hallazgo se reparten distintos (la segunda busca el siguiente
+    no consumido); un hallazgo que no casa ninguna etiqueta queda `unmatched`.
+    """
+    for label in case.expected + case.must_not_report:
+        if not label.match:
+            raise ValueError(f"la etiqueta {label.id!r} no declara 'match'")
+    findings = sorted(published, key=_finding_order)
+    used: set[int] = set()
+    expected = _attribute(case.expected, findings, used)
+    must_not = _attribute(case.must_not_report, findings, used)
+    acceptable = _attribute(case.acceptable, findings, used)
+    unmatched = tuple(finding for finding in findings if id(finding) not in used)
+    missing = tuple(label.id for label in case.expected if label.id not in expected)
+    return MatchResult(
+        expected=expected,
+        must_not=must_not,
+        acceptable=acceptable,
+        unmatched=unmatched,
+        missing=missing,
+    )
+
+
+def _attribute(
+    labels: tuple[Label, ...], findings: list[Finding], used: set[int]
+) -> dict[str, Finding]:
+    """Asigna a cada etiqueta su primer hallazgo no consumido, en orden canonico.
+
+    Las etiquetas con `file`/`line` exigen ese anclaje (con la tolerancia del
+    ADR-0014) y las que anclan por identificador (``file` sin `line`) solo el
+    fichero.
+    """
+    result: dict[str, Finding] = {}
+    for label in labels:
+        for finding in findings:
+            if id(finding) in used:
+                continue
+            if _matches(label, finding):
+                result[label.id] = finding
+                used.add(id(finding))
+                break
+    return result
+
+
+def _matches(label: Label, finding: Finding) -> bool:
+    """¿El hallazgo casa la etiqueta? `match` conjuntivo + anclaje opcional."""
+    if label.file is not None and finding.file != label.file:
+        return False
+    if label.line is not None and abs(finding.line - label.line) > LINE_TOLERANCE:
+        return False
+    text = normalize(f"{finding.title} {finding.why_it_matters}")
+    return all(normalize(fragment) in text for fragment in label.match)
+
+
+def _finding_order(finding: Finding) -> tuple[int, int, str]:
+    """Orden canonico de atribucion: severidad, linea, id (spec §5.2)."""
+    return (_SEVERITY_RANK.get(str(finding.severity), 9), finding.line, finding.id)

@@ -16,7 +16,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: `tests/eval/test_eval_harness.py`. ✅
   - Ficheros: `tests/eval/harness.py`, `tests/eval/test_eval_harness.py`.
 
-- [ ] **E2** Matcher 1:1 determinista
+- [x] **E2** Matcher 1:1 determinista
   - `match` conjuntivo sobre `title` + `why_it_matters` normalizados; `file`/`line`
     opcionales con tolerancia de 5 líneas (ADR-0014); orden canónico (severidad,
     línea, `id`) y el primer match no consumido gana.
