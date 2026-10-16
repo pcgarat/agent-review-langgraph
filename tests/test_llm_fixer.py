@@ -132,7 +132,9 @@ def test_presupuesto_agotado_no_llama_al_modelo() -> None:
 
 
 def test_el_fixer_usa_su_propio_contador() -> None:
-    # B11: el fix gasta contra `budget:fix:{review_key}`, no contra el de la review.
+    # B11: el fix gasta contra **su** clave, distinta de la de la review. El
+    # adaptador del worker la construye con el prefijo `budget:fix` (build_fixer);
+    # aqui se comprueba que quien cobra es el contador del fix, no el de la review.
     llm = _Llm(
         '{"start_line": 2, "end_line": 2, "replacement": "use App\\\\Bar;"}',
         prompt_tokens=100,
@@ -141,8 +143,8 @@ def test_el_fixer_usa_su_propio_contador() -> None:
     fix = InMemoryBudget(total=500_000)
     review = InMemoryBudget(total=500_000)
     fixer = LlmFixer(llm=llm, budget=fix)
-    fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="fix:r:1")
-    assert fix.spent("fix:r:1") == 120, "el fix cobra su gasto real en su contador"
+    fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="r:1")
+    assert fix.spent("r:1") == 120, "el fix cobra su gasto real en su contador"
     assert review.remaining("r:1") == 500_000, "el contador de la review no se toca"
 
 
@@ -152,5 +154,5 @@ def test_un_fallo_transitorio_devuelve_la_reserva_del_fix() -> None:
     budget = InMemoryBudget(total=500_000)
     fixer = LlmFixer(llm=llm, budget=budget)
     with pytest.raises(TransientError):
-        fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="fix:r:1")
-    assert budget.reserved("fix:r:1") == 0
+        fixer.propose(_FINDING, source=_SOURCE, previous=None, review_key="r:1")
+    assert budget.reserved("r:1") == 0

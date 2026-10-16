@@ -218,9 +218,12 @@ def test_presupuesto_amplio_permite_la_llamada() -> None:
 def test_el_gasto_real_ajusta_la_reserva() -> None:
     # B3: se reserva la estimacion y se confirma el `usage` real del proveedor.
     llm = FakeLlm(_response(_finding_json()), prompt_tokens=7, completion_tokens=3)
-    reviewer = LlmReviewer(llm=llm, budget=None)
+    budget = InMemoryBudget(total=500_000)
+    reviewer = LlmReviewer(llm=llm, budget=budget, budget_limit=500_000)
     reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
     assert reviewer.tokens_used == 10
+    assert budget.spent("r:1") == 10, "el contador confirma el gasto real, no la estimacion"
+    assert budget.reserved("r:1") == 0, "la reserva se ajusta al confirmar"
 
 
 def test_los_hechos_no_se_arrastran_entre_reviews() -> None:
