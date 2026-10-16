@@ -152,8 +152,20 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Lector degradado** | `VcsContextReader` como red de seguridad: cuando el `sandbox-runner` no está o falla, la review sigue leyendo fichero a fichero (con `grep` solo sobre lo servido y los ficheros del diff). La fábrica de lectores decide y degrada una sola vez por lote. |
 | **Bucle de herramientas** | `run_tool_loop`: bucle *ReAct* en JSON sobre `LlmPort`. Cada turno es `{"tools": [...]}` o el objeto final; como máximo 3 peticiones por turno, un turno correctivo ante JSON inválido y un turno final forzado al agotar un tope (turnos, peticiones, bytes o presupuesto). Devuelve un `LoopResult`. |
 | **`served` / `cite_served`** | Registro de lo que el bucle sirvió (`dict[path, ref]`) y la comprobación de que una cita `path:line` referencia un fichero servido. Es la validación de citas de 009 y 014, escrita una sola vez. |
-| **`BudgetPort`** | Presupuesto de tokens **por review** que el bucle consume (017): reserva antes de cada llamada y ajusta con el `usage` real. `None` = sin presupuesto. |
 | **Rutas vetadas** (`context_denylist`) | Rutas que el runner nunca sirve (default `.env*`, `*.pem`, `*.key`, `**/secrets/**`). Las declara el perfil y las aplica el runner: el modelo no puede saltárselas pidiendo otra ruta. |
+
+---
+
+## Presupuesto de tokens (iniciativa 017)
+
+| Término | Definición |
+|---|---|
+| **Presupuesto por review** | `LLM_BUDGET_TOKENS_PER_PR` es un tope **por review**, no por llamada: lo comparte todo lo que llama a un modelo en esa review (personas del fan-out, bucle de herramientas, reintentos). El fix usa un contador **propio** (`budget:fix:<review_key>`): una aprobación humana puede cruzar el TTL de la review ([ADR-0019](docs/adr/0019-presupuesto-de-tokens-por-review.md)). |
+| **`BudgetPort`** | Interfaz del contador: `reserve(review_key, tokens)`, `commit(review_key, reserved, actual)` y `remaining(review_key)`. Adaptadores `RedisBudget` (script Lua atómico, el del despliegue) e `InMemoryBudget` (tests y *replay*). `None` = sin presupuesto. |
+| **Reserva** | Antes de cada llamada se **reserva** la estimación (`len(text)//4`); al volver se **confirma** el gasto real del `usage`. Sin reserva, varias ramas en paralelo pasarían la comprobación a la vez y la superarían entre todas. Un `reserve` que devuelve `False` es **vinculante**: la llamada no se hace. |
+| **`remaining`** | Saldo = `total − confirmado − reservado sin confirmar`. Descuenta lo reservado y aún no confirmado: si solo contara lo confirmado, dos ramas verían el mismo saldo. |
+| **Tope blando por persona** | Reparto «el primero que llega» sobre el contador compartido, con un tope por persona de `2 × total / N` (`N` = personas LLM). Acota lo que una persona con *prompt* grande se come del común sin desperdiciar lo que otra no usa. |
+| **Corte por presupuesto** | Agotado el tope, la persona **no llama al modelo** y anota el hecho: `budget_exhausted` en el `ReviewerResult` y `tokens_spent`/`tokens_remaining` en el `ReviewOutcome`. La review termina con menos cobertura, nunca caída ([012](docs/iniciativas/012-cobertura-de-la-review/spec.md) lo pinta como `SkipReason.BUDGET`). |
 
 ---
 

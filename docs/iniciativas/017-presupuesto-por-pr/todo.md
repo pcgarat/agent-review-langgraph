@@ -60,7 +60,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Verifica: `tests/test_budget.py` (fakeredis o doble de cliente).
   - Ficheros: `src/agent_review/adapters/budget_redis.py`.
 
-- [ ] **P5** `LlmReviewer` y `LlmFixer` contra el puerto
+- [x] **P5** `LlmReviewer` y `LlmFixer` contra el puerto
   - `src/agent_review/adapters/llm_reviewer.py` y `llm_fixer.py`: reciben
     `budget: BudgetPort | None` y `budget_limit` (tope blando por persona) en vez del
     entero; reservan antes de llamar, confirman con el `usage` y devuelven la reserva
@@ -72,7 +72,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Ficheros: `src/agent_review/adapters/llm_reviewer.py`,
     `src/agent_review/adapters/llm_fixer.py`, `src/agent_review/worker/main.py`.
 
-- [ ] **P6** Reparto por persona (`2 × total / N`) en `build_reviewers`
+- [x] **P6** Reparto por persona (`2 × total / N`) en `build_reviewers`
   - `src/agent_review/worker/main.py`: `build_reviewers` calcula el tope blando por
     persona (`2 * total // N`, `N` = personas LLM) y lo pasa a cada `LlmReviewer` (B10).
   - Aceptación: con 3 personas y total 300 000, cada una recibe 200 000; con una sola
@@ -82,13 +82,13 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ### Checkpoint 2 (tras P4–P6)
 
-- [ ] `make ci` en verde.
+- [x] `make ci` en verde.
 - [x] Los adaptadores Redis y memoria pasan el mismo test de contrato.
-- [ ] Ningún consumidor compara su propia llamada contra `budget_tokens_per_pr`.
+- [x] Ningún consumidor compara su propia llamada contra `budget_tokens_per_pr`.
 
 ## Bloque 3 — El hecho del corte y cierre
 
-- [ ] **P7** El hecho del corte deja rastro
+- [x] **P7** El hecho del corte deja rastro
   - `src/agent_review/domain/models.py`: `ReviewerResult` gana
     `budget_exhausted: bool` y `tokens_used: int`; `ReviewOutcome` gana
     `tokens_spent` y `tokens_remaining`, derivados del estado. `LlmReviewer` los
@@ -100,7 +100,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     `src/agent_review/adapters/llm_reviewer.py`,
     `src/agent_review/graph/build.py`.
 
-- [ ] **P8** Documentación viva y cierre
+- [x] **P8** Documentación viva y cierre
   - `arquitectura.md` §5 (claves `budget:*` y TTL), §7 (**quita D17 y D21**);
     `operacion.md` §2 (semántica nueva de `LLM_BUDGET_TOKENS_PER_PR`: por review, no
     por llamada); `desarrollo.md` §3 (el puerto y sus adaptadores); `CONTEXT.md`

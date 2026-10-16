@@ -2,7 +2,7 @@
 
 # Presupuesto de tokens por PR
 
-> **Estado:** aprobada *(2026-10-16)*
+> **Estado:** implementada *(2026-10-16)*
 >
 > **Entrega objetivo:** `LLM_BUDGET_TOKENS_PER_PR` es de verdad un tope **por
 > review**. Lo comparten todas las personas, sus lotes, los bucles de herramientas,
