@@ -16,13 +16,17 @@ from agent_review.adapters.github_vcs import GithubVcsAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.null_reviewer import NullReviewer
-from agent_review.adapters.teams_webhook import TeamsWebhookAdapter
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
 from agent_review.adapters.tooling_source import (
     validate_tooling_template as validate_tooling_template_source,
 )
 from agent_review.adapters.twg_vcs import TwgVcsAdapter, check_twg
+from agent_review.chat_outbox import (
+    InMemoryChatOutbox,
+    OutboxChatAdapter,
+    RedisChatOutbox,
+)
 from agent_review.checkpointer import (
     build_checkpointer,
     latest_checkpoints,
@@ -51,7 +55,6 @@ from agent_review.graph.build import (
     build_graph,
     build_pause,
     outcome_from_state,
-    render_pause_notice,
 )
 from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
@@ -217,10 +220,20 @@ def build_reviewers(
 
 
 def build_chat(settings: Settings) -> ChatPort | None:
-    """Canal de chat si hay URL. Sin URL no hay canal: no se construye un no-op."""
-    if settings.teams_webhook_url.strip():
-        return TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
-    return None
+    """Canal de chat: egress por outbox (C10). Sin canal declarado, no hay canal.
+
+    El worker no conoce el transporte: encola el aviso en `reviews:notices` y el
+    bot de Teams lo publica. Si Redis no responde, la outbox en memoria sirve a
+    los tests; en produccion el aviso se pierde (asimetria aceptada, D6) y el
+    respaldo real es el CLI (C9).
+    """
+    if not settings.teams_enabled:
+        return None
+    outbox = RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key)
+    if outbox.available():
+        return OutboxChatAdapter(outbox=outbox)
+    logger.warning("Redis no disponible; outbox de avisos en memoria (solo util en tests)")
+    return OutboxChatAdapter(outbox=InMemoryChatOutbox())
 
 
 def node_retry_policy(settings: Settings) -> RetryPolicy:
@@ -690,11 +703,22 @@ def _on_paused(
     if redundant:
         return
     if chat is not None:
-        chat.notify_decision_pending(
-            title=f"{request.repo}#{request.pr_id}",
-            body=render_pause_notice(human),
-            link=_pr_url(vcs, request),
-        )
+        # El aviso es cosmético: un fallo del canal (o de la outbox) no puede
+        # tumbar una pausa ya registrada en el inbox y el checkpoint.
+        try:
+            chat.notify_decision_pending(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                review_key=request.review_key,
+                approval=human,
+                link=_pr_url(vcs, request),
+            )
+        except Exception as exc:
+            logger.exception("No se pudo avisar la pausa de %s", request.review_key)
+            if is_transient(exc):
+                # Un fallo transitorio que sobrevive al adaptador (p. ej. Redis
+                # caido en un cambio futuro) se reintenta con el job, como `notify`.
+                raise
     if paused is None:
         logger.info(
             "Review %s pausada con %d pendiente(s) (sin inbox configurado)",

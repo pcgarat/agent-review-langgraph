@@ -627,6 +627,9 @@ def build_graph(
         try:
             pr = vcs.get_pull_request(request.repo, request.pr_id)
             chat.notify(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                review_key=request.review_key,
                 title=f"Fix de {request.repo}#{request.pr_id}",
                 body=_render_fix_teams_body(resolved),
                 link=pr.url or None,
@@ -777,6 +780,9 @@ def build_graph(
         try:
             pr = vcs.get_pull_request(request.repo, request.pr_id)
             chat.notify(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                review_key=request.review_key,
                 title=f"Review de {request.repo}#{request.pr_id}",
                 body=_render_teams_body(
                     _merged(state),

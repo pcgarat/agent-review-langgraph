@@ -51,7 +51,8 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
-| Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_teams`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
+| Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
+| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox `reviews:notices`) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |

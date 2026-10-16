@@ -47,7 +47,8 @@ flowchart LR
     WORKER --> VAR
     WORKER -->|checkpoint| PG
     WORKER -->|"twg: diff · inline · resumen"| BB
-    WORKER -->|teaser| TEAMS
+    WORKER -->|"aviso: outbox"| REDIS
+    REDIS -.->|"teams-bot (en curso)"| TEAMS
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
     FIXW -->|verifica parche| RUNNER["sandbox-runner"]
@@ -102,8 +103,8 @@ flowchart TD
     FIXPAUSE -.->|"resume: FixResolutions"| fix_wait
     fix_wait -->|"FAILED con intentos"| fix_dispatch
     publish_fix["publish_fix<br/>sugerencia verificada"] --> notify_fix
-    notify_fix["notify_fix<br/>Teams (breve)"] --> notify
-    notify["notify<br/>Teams"] --> END([END])
+    notify_fix["notify_fix<br/>aviso del fix"] --> notify
+    notify["notify<br/>aviso (outbox)"] --> END([END])
 ```
 
 | Nodo | Responsabilidad |
@@ -117,8 +118,8 @@ flowchart TD
 | `publish` | Publica un comentario inline por hallazgo (hasta `max_inline_comments`) y un resumen general, con resolución segura de anclas. Un `PENDING` se rotula "en verificación". |
 | `fix_wait` | Pausa con `FixWaitRequest` si queda algún `PENDING`; al reanudar aplica la `FixResolutions` (la wave resuelta por el `fix-worker`). Re-propone si un `FAILED` tiene intentos; si no, sigue a `publish_fix`. |
 | `publish_fix` | Publica el resultado terminal del fix en un comentario de seguimiento con marca `:fix` (una sola vez). |
-| `notify_fix` | Aviso breve en Teams del resultado del fix (Q3: nodo propio). |
-| `notify` | Aviso en Teams. Nodo aparte para que un fallo del canal no repita `publish`. |
+| `notify_fix` | Aviso breve del resultado del fix, a la outbox del canal (Q3: nodo propio). |
+| `notify` | Aviso de review publicada, a la outbox del canal. Nodo aparte para que un fallo del canal no repita `publish`. |
 
 ## Flujo
 
@@ -128,7 +129,7 @@ flowchart TD
    (`PendingReview`). Solo cuando están los artefactos esperados **encola la review**.
 3. El `worker` consume, construye el grafo y ejecuta sobre `thread_id = review_key`.
 4. Según la política, cada hallazgo se informa, escala o corrige; se publica inline
-   + resumen en el PR y el teaser en Teams.
+   + resumen en el PR y el teaser al canal (outbox).
 
 > **Por qué no dispara el PR.** El webhook de PR llegaba *antes* de que el CI
 > produjese el artefacto, así que la review corría sin datos (`0 hallazgos`

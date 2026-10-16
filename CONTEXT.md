@@ -100,7 +100,9 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Pausa** | `interrupt` de LangGraph en el nodo `hitl` cuando hay acciones pendientes. Es durable: el estado vive en Postgres y sobrevive a un reinicio. |
 | **Solicitud de aprobación** (`ApprovalRequest`) | Carga de la pausa: los `PendingDecision` (hallazgo + acción propuesta + razón) y la orden de CLI para decidir. |
 | **Inbox** | Índice en Redis de las reviews pausadas (`reviews:paused:<review_key>`). Sirve para descubrirlas; la verdad está en el checkpoint. |
-| **Aviso de pausa** | Mensaje a Teams que avisa de una review pausada. **No lleva marca de dedupe.** |
+| **Aviso de pausa** | Aviso al canal (Teams) de que una review quedó pausada. Viaja por la **outbox** con la `ApprovalRequest` estructura; **no lleva marca de dedupe.** |
+| **Outbox del canal** | Cola Redis `reviews:notices` donde el worker **encola** los avisos (`ChatNotice`) en vez de llamar por HTTP; el bot los consume con `BLPOP`. Un bot caído no pierde el aviso: se publica al arrancar |
+| **`ChatNotice`** | Aviso del worker al canal: `kind` `published` (teaser de una review) o `pause` (tarjeta de decisión, con la `ApprovalRequest`). Lleva siempre `repo`/`pr_id`/`review_key` para resolver el hilo |
 | **Decisión humana** (`HitlDecision`) | Respuesta de una persona: `actor`, `decision_id` e `items`, con un resultado por cada hallazgo pendiente. Debe cubrir **todos** los pendientes. |
 | **Resultado** (`DecisionOutcome`) | `approved` (autoriza el arreglo), `rejected` (descarta el hallazgo), `noted` (se atiende fuera del agente), `expired` (lo emite el sistema al vencer el TTL). |
 | **Reanudación** | Job con `ReviewRequest.decision`: el worker hace `Command(resume=…)` sobre el **mismo** hilo. |
@@ -173,7 +175,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 - **«Review publicada»** significa que esta ejecución dejó su marca de resumen. Un
   aviso de pausa no cuenta como publicación.
 - **«Sin hallazgos»** solo significa «PR limpio» si la review está completa.
-- **«Teams»** es Microsoft Teams (Incoming Webhook). `twg teams` es Atlassian Teams y
+- **«Teams»** es Microsoft Teams (canal de avisos y decisión). `twg teams` es Atlassian Teams y
   no tiene nada que ver.
 - **El CLI se llama `agent_review`** (`[project.scripts]`). Las specs de Fase 2 y 3
   dicen `reviews`, que era el nombre anterior.

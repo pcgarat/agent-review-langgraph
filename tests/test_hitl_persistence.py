@@ -151,7 +151,7 @@ def test_aviso_de_pausa_lleva_el_enlace_del_pr() -> None:
 
     process_request(graph, REQUEST, paused=InMemoryPausedStore(), chat=chat, vcs=vcs)
 
-    assert chat.pending[0][2] == "https://example.test/pr"
+    assert chat.pending_links[0] == "https://example.test/pr"
 
 
 # --- Lectura del hilo y checkpointer de produccion ----------------------------

@@ -20,7 +20,8 @@ Hay dos problemas que se mezclaban: **cómo llegan** los secretos al proceso
   - la credencial del proveedor de VCS activo;
   - `TOOLING_WEBHOOK_SECRET` o `REVIEWS_DECISION_TOKEN` con un valor real (no el de
     ejemplo);
-  - `TEAMS_WEBHOOK_URL` si `TEAMS_ENABLED`;
+  - `TEAMS_NOTICES_KEY` si `TEAMS_ENABLED` (corregido en la iniciativa 013: la URL del
+    Incoming Webhook desapareció);
   - `LLM_API_KEY` si el LLM está activo;
   - `SANDBOX_RUNNER_TOKEN` y `SANDBOX_GIT_TOKEN` si el sandbox está activo.
 

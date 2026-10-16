@@ -24,7 +24,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0013](0013-secretos-por-entorno-fail-closed.md) | Secretos solo por entorno y arranque *fail-closed* en producción | Aceptado |
 | [0014](0014-criterio-de-merge-entre-personas.md) | Criterio único de dedupe y fusión entre personas | Aceptado |
 | [0015](0015-registro-declarativo-de-modelos.md) | Registro declarativo de modelos por rol, con el `LlmPort` negociando capacidades | Aceptado |
-| [0016](0016-bot-de-teams-para-el-canal-de-decision.md) | Un bot de Teams es el canal de decisión, con un hilo por PR | Propuesto |
+| [0016](0016-bot-de-teams-para-el-canal-de-decision.md) | Un bot de Teams es el canal de decisión, con un hilo por PR | Aceptado |
 | [0017](0017-replay-determinista-con-fingerprint.md) | Un *gold set* versionado se mide en CI con respuestas grabadas y *fingerprint* | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/001-diseno-base/spec.md),

@@ -4,7 +4,6 @@ import contextlib
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from agent_review.adapters.teams_webhook import TeamsWebhookAdapter
 from agent_review.domain.models import (
     AutofixClass,
     Finding,
@@ -416,12 +415,6 @@ def test_grafo_completo_cuando_la_fuente_esta_presente() -> None:
     # Fuente presente y sin hallazgos: review completa y en silencio.
     assert vcs.comments == []
     assert outcome_from_state(result).complete is True
-
-
-def test_teams_sin_webhook_no_falla() -> None:
-    adapter = TeamsWebhookAdapter(webhook_url="")
-    adapter.notify(title="t", body="b")
-    adapter.notify_decision_pending(title="t", body="b")
 
 
 def test_idempotencia_con_store_en_memoria() -> None:

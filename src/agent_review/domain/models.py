@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 CONFIDENCE_ANCHORS = (0, 25, 50, 75, 100)
 
@@ -187,6 +187,38 @@ class ApprovalRequest(BaseModel):
     head_sha: str
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
+
+
+class ChatNotice(BaseModel):
+    """Aviso del worker al canal de chat; viaja por la outbox (C10).
+
+    Es el mensaje que el worker **encola** (`reviews:notices`): durable y sin
+    conocer el transporte. `published` es el teaser de una review ya publicada en
+    el PR; `pause` es la tarjeta de decision y lleva la `ApprovalRequest`
+    **estructurada** (C12), no su render en texto. `review_key`, `repo` y `pr_id`
+    viajan siempre: son la identidad con la que el canal resuelve el hilo (C6).
+    """
+
+    kind: Literal["published", "pause"]
+    review_key: str
+    repo: str
+    pr_id: int
+    link: str | None = None
+    # `kind=published`: el teaser, ya renderizado por el grafo.
+    title: str = ""
+    body: str = ""
+    # `kind=pause`: la carga del `interrupt`; el canal pinta la tarjeta con ella.
+    approval: ApprovalRequest | None = None
+
+    @model_validator(mode="after")
+    def _check_payload(self) -> ChatNotice:
+        """Un aviso incompleto no llega a la outbox: falla al construirlo."""
+        if self.kind == "pause":
+            if self.approval is None:
+                raise ValueError("un aviso de pausa necesita la ApprovalRequest")
+        elif not self.title.strip():
+            raise ValueError("un aviso de review necesita titulo")
+        return self
 
 
 class VerifyJob(BaseModel):

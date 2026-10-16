@@ -9,6 +9,7 @@ from agent_review.adapters.diff_parser import best_line, file_key, parse_unified
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
 from agent_review.domain.models import (
+    ApprovalRequest,
     AutofixClass,
     DecisionOutcome,
     Finding,
@@ -633,14 +634,35 @@ def test_worker_doble_decision_es_noop() -> None:
 
 class _RecordingChat:
     def __init__(self) -> None:
-        self.pending: list[tuple[str, str, str | None]] = []
+        self.pending: list[ApprovalRequest] = []
+        self.pending_links: list[str | None] = []
         self.notices: list[str] = []
 
-    def notify(self, *, title: str, body: str, link: str | None = None) -> None:
+    def notify(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        title: str,
+        body: str,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key, body, link
         self.notices.append(title)
 
-    def notify_decision_pending(self, *, title: str, body: str, link: str | None = None) -> None:
-        self.pending.append((title, body, link))
+    def notify_decision_pending(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        approval: ApprovalRequest,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key
+        self.pending.append(approval)
+        self.pending_links.append(link)
 
 
 def test_pausa_escribe_el_inbox_y_avisa_sin_publicar() -> None:
@@ -659,10 +681,69 @@ def test_pausa_escribe_el_inbox_y_avisa_sin_publicar() -> None:
     assert vcs.inlines == [] and vcs.comments == [], "la pausa no publica los hallazgos"
     recorded = paused_store.get(request.review_key)
     assert recorded is not None and recorded.approval.pending[0].finding_id == "w1"
+    # El aviso lleva la `ApprovalRequest` estructurada (C12), no un texto.
     assert len(chat.pending) == 1
-    title, body, _link = chat.pending[0]
-    assert "Decision pendiente" in title or "Review pausada" in body
-    assert "decide" in body
+    approval = chat.pending[0]
+    assert approval.review_key == request.review_key
+    assert [item.finding_id for item in approval.pending] == ["w1"]
+    assert approval.command_hint.strip()
+
+
+def test_la_pausa_deja_el_aviso_en_la_outbox_sin_red() -> None:
+    """T1: el egress es una outbox, no una llamada HTTP.
+
+    El worker deja un `ChatNotice` de pausa observable en la cola (sin HTTP ni
+    SDK); el bot lo consumira despues. Es el aviso de pausa con la carga
+    **estructurada** (C12) el que viaja.
+    """
+    from agent_review.chat_outbox import InMemoryChatOutbox, OutboxChatAdapter
+    from agent_review.paused_store import InMemoryPausedStore
+
+    outbox = InMemoryChatOutbox()
+    review_key = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef").review_key
+    graph = _hitl_graph(FakeVcs(), _CountingReviewer(_escalating_finding()))
+
+    outcome = process_request(
+        graph,
+        ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef"),
+        paused=InMemoryPausedStore(),
+        chat=OutboxChatAdapter(outbox=outbox),
+    )
+
+    assert outcome.paused
+    notice = outbox.dequeue()
+    assert notice is not None
+    assert notice.kind == "pause"
+    assert notice.review_key == review_key
+    assert notice.repo == "cqm/emotivoo-v2" and notice.pr_id == 9
+    assert notice.approval is not None
+    assert [item.finding_id for item in notice.approval.pending] == ["w1"]
+    assert len(outbox) == 0
+
+
+def test_una_outbox_caida_no_tumba_la_pausa() -> None:
+    """El respaldo real es el CLI (C9): un fallo del canal no rompe el worker."""
+    import redis
+
+    from agent_review.chat_outbox import OutboxChatAdapter, RedisChatOutbox
+    from agent_review.paused_store import InMemoryPausedStore
+
+    outbox = RedisChatOutbox(url="redis://localhost:6379/0")
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise redis.exceptions.ConnectionError("redis caido")
+
+    outbox._client.rpush = _boom  # type: ignore[method-assign]
+    paused_store = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    graph = _hitl_graph(FakeVcs(), _CountingReviewer(_escalating_finding()))
+
+    outcome = process_request(
+        graph, request, paused=paused_store, chat=OutboxChatAdapter(outbox=outbox)
+    )
+
+    assert outcome.paused
+    assert paused_store.get(request.review_key) is not None, "la pausa queda registrada igual"
 
 
 def test_resume_borra_la_pausa_del_inbox() -> None:

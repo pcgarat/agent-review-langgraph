@@ -101,7 +101,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
 | Alcance | `SCOPE_IGNORE` (patrones extra, separados por comas) |
 | Política | `AUTONOMY_CONFIG`, `REPO_PROFILE_CONFIG`, `MAX_AUTONOMY_OVERRIDE` (solo puede bajar el techo) |
-| Teams | `TEAMS_WEBHOOK_URL` (sin URL no hay canal), `TEAMS_ENABLED` (la hace obligatoria en producción) |
+| Canal (Teams) | `TEAMS_ENABLED` (declara el canal), `TEAMS_NOTICES_KEY` (`reviews:notices`: outbox de avisos que consume el bot) |
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
@@ -133,7 +133,7 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 | `GITHUB_TOKEN` | PAT *fine-grained*: `pull_requests: write` + `contents: read` | Con `github` | Agente |
 | `TOOLING_WEBHOOK_SECRET` | HMAC-SHA256 del `POST /webhook/tooling` | Siempre en producción | Agente **y** CI |
 | `REVIEWS_DECISION_TOKEN` | Bearer del canal de decisión: quien lo tiene decide | Siempre en producción | Agente |
-| `TEAMS_WEBHOOK_URL` | Incoming Webhook: quien tiene la URL, publica | Si `TEAMS_ENABLED` | Agente |
+| `TEAMS_NOTICES_KEY` | Cola outbox de avisos al canal (`reviews:notices`); no es un secreto | Si `TEAMS_ENABLED` | Agente |
 | `LLM_API_KEY` | Clave del proveedor LLM (la referencia `${LLM_API_KEY}` del registro de modelos) | Si `LLM_REVIEWER_ENABLED` | Agente |
 | `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre el `fix-worker` y el runner | Si `SANDBOX_ENABLED`; siempre para el `fix-worker` en producción | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
@@ -161,7 +161,7 @@ Reglas de higiene:
 | `SANDBOX_RUNNER_TOKEN` | 90 días | Nuevo valor en `.env` → `docker compose up -d fix-worker sandbox-runner` (**a la vez**) |
 | `SANDBOX_GIT_TOKEN` | 90 días o ante sospecha | Nuevo token de solo lectura → runner |
 | `REVIEWS_DECISION_TOKEN` | 90 días o al salir alguien con acceso | Nuevo valor → `api` → avisar a quien decide |
-| `TEAMS_WEBHOOK_URL` | Al revocar el conector | Regenerar el webhook en Teams |
+| `TEAMS_NOTICES_KEY` | — (no es un secreto: es una clave de cola) | Cambiarla requiere reiniciar worker y bot a la vez |
 | `LLM_API_KEY` | Según el proveedor | Rotar en el proveedor |
 | `POSTGRES_PASSWORD` | 180 días | `ALTER ROLE` + secreto + recrear los contenedores |
 

@@ -15,7 +15,7 @@ flowchart LR
     subgraph EXT["Externos"]
         CI["CI del repo revisado<br/>(emotivoo-v2)"]
         VCS["Bitbucket (twg)<br/>o GitHub (REST)"]
-        TEAMS["Microsoft Teams<br/>Incoming Webhook"]
+        TEAMS["Microsoft Teams<br/>(bot: iniciativa 013, en curso)"]
         LLM["Proveedor LLM<br/>(compatible OpenAI)"]
         HUMAN["Persona"]
     end
@@ -25,7 +25,7 @@ flowchart LR
         WORKER["worker · grafo LangGraph"]
         FIXW["fix-worker<br/>verifica · nunca publica"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
-        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes")]
+        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
         CFG[/"./config · política + perfil + modelos"/]
@@ -40,7 +40,8 @@ flowchart LR
     WORKER --> CFG
     WORKER <-->|checkpoint| PG
     WORKER -->|"diff · inline · resumen"| VCS
-    WORKER -->|aviso| TEAMS
+    WORKER -->|"aviso: encola en la outbox"| REDIS
+    REDIS -.->|"BLPOP (teams-bot, en curso)"| TEAMS
     WORKER -->|"personas · fixer<br/>(modelo por rol)"| LLM
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
@@ -49,6 +50,12 @@ flowchart LR
     RUNNER -->|"clona (token solo lectura)"| VCS
     TEAMS -.-> HUMAN
 ```
+
+> **Canal de Teams (iniciativa 013).** El egress del worker ya es la **outbox**
+> (`reviews:notices`), no una llamada HTTP. El **bot** que la consume y publica en el
+> canal aún no está construido (tareas T5–T7): mientras tanto, el egress queda
+> durablemente encolado y el respaldo de decisión sigue siendo el CLI y `POST
+> /decision`.
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
@@ -68,7 +75,7 @@ src/agent_review/
 ├── ports/         Protocolos: VcsPort, ReviewerPort, LlmPort, ChatPort, ToolingOutputSource,
 │                  FixerPort, SandboxPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
-│                  openai_llm, teams_webhook, http_sandbox, tooling_source, diff_parser
+│                  openai_llm, http_sandbox, tooling_source, diff_parser
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
 ├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
 ├── policy/        PolicyEngine (autonomy.yaml)
@@ -148,8 +155,8 @@ flowchart TD
 | `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". |
 | `fix_wait` | **Nunca** | `interrupt(FixWaitRequest)` si hay `PENDING`; al reanudar aplica la `FixResolutions`. Re-propone si un `FAILED` tiene intentos; si no, sigue. |
 | `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
-| `notify_fix` | Sí | Aviso compacto en Teams del resultado del fix. |
-| `notify` | Sí | Avisa a Teams. Un fallo no transitorio se registra y no tumba la review. |
+| `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
+| `notify` | Sí | Avisa de una review publicada, a la outbox del canal. Un fallo no transitorio se registra y no tumba la review. |
 
 ### Estado (`ReviewState`)
 
@@ -291,6 +298,8 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:fixes:dead` | DLQ de fixes | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
+| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
+| Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13) | — |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |

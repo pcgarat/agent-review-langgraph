@@ -2,6 +2,10 @@
 .env
 .env.local
 
+# Spike desechable del canal de Teams (iniciativa 013, T0). No se versiona:
+# el código del servicio real vive en src/agent_review/teams_bot/ a partir de T5.
+spikes/
+
 # Python
 __pycache__/
 *.py[cod]

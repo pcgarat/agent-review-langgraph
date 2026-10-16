@@ -43,11 +43,11 @@ class Settings(BaseSettings):
     # Base de la API. Se cambia para GitHub Enterprise Server.
     github_api_url: str = "https://api.github.com"
 
-    teams_webhook_url: str = ""
-    # Declara que el canal de Teams es parte del despliegue. Con `true`, en
-    # produccion el arranque falla si falta la URL (evita perder el teaser en
-    # silencio). La URL en si es una capacidad: quien la tiene, publica.
+    # El canal de Teams es parte del despliegue. Con `true`, el worker encola los
+    # avisos en la outbox (`TEAMS_NOTICES_KEY`) y el bot los publica (C10).
     teams_enabled: bool = False
+    # Outbox de avisos al canal (C10). El worker encola aqui; el bot la consume.
+    teams_notices_key: str = "reviews:notices"
 
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://reviews:reviews@localhost:5432/reviews"
@@ -215,8 +215,8 @@ def insecure_secrets(settings: Settings) -> list[str]:
             insecure.append("GITHUB_TOKEN")
     elif not settings.twg_bbc_token.strip():
         insecure.append("TWG_BBC_TOKEN")
-    if settings.teams_enabled and not settings.teams_webhook_url.strip():
-        insecure.append("TEAMS_WEBHOOK_URL")
+    if settings.teams_enabled and not settings.teams_notices_key.strip():
+        insecure.append("TEAMS_NOTICES_KEY")
     if settings.llm_reviewer_enabled:
         # Con registro declarativo, el secreto es el que referencia el YAML. Sin el,
         # la via de compatibilidad exige `LLM_API_KEY` como antes.

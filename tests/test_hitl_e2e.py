@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agent_review import cli
 from agent_review.domain.models import (
+    ApprovalRequest,
     AutofixClass,
     Finding,
     Owner,
@@ -94,14 +95,31 @@ class _StaticReviewer:
 
 class _RecordingChat:
     def __init__(self) -> None:
-        self.pending: list[str] = []
+        self.pending: list[ApprovalRequest] = []
 
-    def notify(self, *, title: str, body: str, link: str | None = None) -> None:
-        del title, body, link
+    def notify(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        title: str,
+        body: str,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key, title, body, link
 
-    def notify_decision_pending(self, *, title: str, body: str, link: str | None = None) -> None:
-        del title, link
-        self.pending.append(body)
+    def notify_decision_pending(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        approval: ApprovalRequest,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key, link
+        self.pending.append(approval)
 
 
 def _escalating_policy() -> PolicyEngine:
