@@ -30,19 +30,23 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 2 — Progreso del worker (checkpoint C2)
 
-- [ ] **OP5** Puerto `ProgressPort` (`start_node`/`finish_node`) con `NullProgress` y
+- [x] **OP5** Puerto `ProgressPort` (`start_node`/`finish_node`) con `NullProgress` y
   `RedisProgress`; elección por configuración, como `build_chat`.
-- [ ] **OP6** Marca `reviews:active:<review_key>` (`node`, `started_at`, TTL holgado).
-- [ ] **OP7** *Seam* de envoltura de nodo (`node_wrapper`) compartible con la
+- [x] **OP6** Marca `reviews:active:<review_key>` (`node`, `started_at`, TTL holgado).
+- [x] **OP7** *Seam* de envoltura de nodo (`node_wrapper`) compartible con la
   [018](../018-trazas-de-la-review/spec.md) (D2 de la 018 / T3)
   - Debe **preservar** la firma del nodo, su `RetryPolicy` y el `Runtime` que recibe
     `persona`; una envoltura que los pierda rompe el fan-out o el reintento.
-- [ ] **OP8** Conectar la marca al worker (`build_runtime`) y limpiarla al cerrar el
+- [x] **OP8** Conectar la marca al worker (`build_runtime`) y limpiarla al cerrar el
   hilo (completado o pausado).
-- [ ] **OP9** Test: con `NullProgress` el grafo produce el mismo estado y los mismos
+- [x] **OP9** Test: con `NullProgress` el grafo produce el mismo estado y los mismos
   nodos que sin envoltura.
-- [ ] **OP10** Test de la envoltura: `persona` conserva su `Runtime` y los nodos su
+- [x] **OP10** Test de la envoltura: `persona` conserva su `Runtime` y los nodos su
   `RetryPolicy` (riesgo R1 del plan).
+  - Enmienda 2026-10-16 (verificado, no supuesto): el fan-out de `persona` corre en
+    **paralelo**, así que la marca es un *hash* por review con un campo y un contador
+    de ramas por nodo, no un único nodo. El sello (`started_at`) es el de la primera
+    rama; la marca del nodo desaparece cuando cierra la última.
 
 ## Bloque 3 — Servicio web, lectura (checkpoint C3)
 

@@ -9,6 +9,7 @@ from agent_review.ports.context import (
     is_denied,
 )
 from agent_review.ports.fixer import FixerPort
+from agent_review.ports.progress import ProgressPort
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.sandbox import SandboxPort, VerifyReport, VerifyRequest
 from agent_review.ports.tooling import ToolingOutputSource
@@ -22,6 +23,7 @@ __all__ = [
     "ContextLimits",
     "ContextReaderPort",
     "FixerPort",
+    "ProgressPort",
     "PullRequestInfo",
     "Ref",
     "ReviewerPort",

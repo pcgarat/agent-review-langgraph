@@ -48,7 +48,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Grafo y publicación | `test_graph`, `test_scope`, `test_e2e_tooling` |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
-| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver) |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados) |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
@@ -134,8 +134,28 @@ El proceso que lo consume construye su saver con
 `build_checkpointer` del worker. Si LangGraph cambia esa convención, lo delata
 `tests/test_trace.py::test_recorrido_coincide_con_get_state_history`.
 
-### Un lector de contexto nuevo
+### Progreso del worker y envoltura de nodo (019)
 
+El `ProgressPort` (`ports/progress.py`) anota, por review, el nodo en curso
+(`start_node`/`finish_node`) y limpia la marca (`clear`). Es **best-effort**: sus
+helpers (`start_node`, `finish_node`, `clear` del módulo) nunca propagan un fallo, y
+`RedisProgress` degrada solo. Hay dos adaptadores y ambos pasan el mismo contrato
+(`tests/test_progress.py`): `RedisProgress` (hash `reviews:active:<key>` con scripts
+Lua atómicos, cuenta ramas del fan-out) y `NullProgress` (no-op, el default del
+worker sin panel).
+
+Se elige por configuración (`build_progress`, como `build_chat`), y **no** se editan
+los nodos: se envuelven en un único punto, el *seam* de `graph/wrapper.node_wrapper`
+(019 D2), aplicado al registrar cada nodo en `build_graph`. La 018 añadirá su traza
+en ese mismo *seam*, no en una segunda envoltura. Al extenderlo, dos reglas:
+
+1. **Preservar la firma del nodo** (`functools.wraps`): LangGraph lee de ella el
+   `Runtime` que inyecta a `persona` y la `RetryPolicy` del nodo. Una envoltura que la
+   pierda rompe el fan-out o el reintento (riesgo R1 del plan; lo fija `test_progress`).
+2. **No tragarse excepciones**: el `finally` cierra la marca, pero deja pasar el
+   `interrupt` (pausa) y el error del nodo.
+
+### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
 operaciones de **solo lectura** —`read_file`, `grep` (literal) y `list_dir`— que el
 bucle `run_tool_loop` (`adapters/tool_loop.py`) sirve turno a turno. Hay tres

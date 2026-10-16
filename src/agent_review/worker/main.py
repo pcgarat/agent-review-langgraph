@@ -61,6 +61,8 @@ from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
+from agent_review.ports.progress import ProgressPort
+from agent_review.ports.progress import clear as clear_progress
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
@@ -273,6 +275,25 @@ def build_chat(settings: Settings) -> ChatPort | None:
     return OutboxChatAdapter(outbox=outbox)
 
 
+def build_progress(settings: Settings) -> ProgressPort:
+    """Puerto de progreso del worker (019 W10): `RedisProgress` o `NullProgress`.
+
+    Con `progress_enabled` el worker anota en Redis el nodo en curso de cada review;
+    sin el (o sin Redis configurado), `NullProgress`: la envoltura de nodo queda en
+    su sitio pero no toca nada. Es la misma elección por configuración que `build_chat`.
+    """
+    from agent_review.adapters.progress_null import NullProgress
+    from agent_review.adapters.progress_redis import RedisProgress
+
+    if not settings.progress_enabled or not settings.redis_url.strip():
+        return NullProgress()
+    return RedisProgress(
+        url=settings.redis_url,
+        ttl_s=settings.progress_ttl_s,
+        key_prefix=settings.progress_key,
+    )
+
+
 def node_retry_policy(settings: Settings) -> RetryPolicy:
     """Politica de reintento de nodo segun configuracion.
 
@@ -371,6 +392,7 @@ def build_runtime(
     policy: PolicyEngine | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     fixer: FixerPort | None = None,
+    progress: ProgressPort | None = None,
 ) -> Any:
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
@@ -391,6 +413,7 @@ def build_runtime(
     saver = checkpointer or build_checkpointer(
         settings.database_url, required=is_production(settings)
     )
+    progress = progress if progress is not None else build_progress(settings)
     graph = build_graph(
         vcs=vcs,
         reviewers=reviewers,
@@ -403,6 +426,7 @@ def build_runtime(
         retry_policy=node_retry_policy(settings),
         verification_enabled=verification_enabled(settings),
         budget_total=settings.llm_budget_tokens_per_pr,
+        progress=progress,
     )
     return graph.compile(checkpointer=saver)
 
@@ -1082,8 +1106,15 @@ def _consume(
     vcs: VcsPort | None = None,
     fix_queue: FixQueue | None = None,
     fix_ttl_s: float | None = None,
+    progress: ProgressPort | None = None,
 ) -> None:
-    """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
+    """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
+
+    La marca de progreso se limpia al terminar la pasada (OP8): completada o pausada,
+    no queda ningún nodo en curso y el hash de la review debe quedar vacío. El
+    `finally` cubre también el fallo: la envoltura de nodo ya cierra su propio campo,
+    esto es la garantía de que la review no deja una marca colgando.
+    """
     try:
         process_request(
             graph,
@@ -1116,6 +1147,8 @@ def _consume(
                 request.review_key,
                 request.model_dump_json(),
             )
+    finally:
+        clear_progress(progress, request.review_key)
 
 
 def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
@@ -1182,12 +1215,15 @@ def run_forever(
     queue = queue or build_queue(settings)
     fix_queue = fix_queue if fix_queue is not None else build_fix_queue(settings)
     chat = build_chat(settings)
+    # El progreso se construye aparte para poder limpiarlo al cerrar cada pasada
+    # (OP8) y para que `build_runtime` reciba el mismo objeto.
+    progress = build_progress(settings)
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.
     vcs: VcsPort | None = None
     if graph is None:
         vcs = build_vcs(settings)
-        graph = build_runtime(settings, chat=chat, vcs=vcs)
+        graph = build_runtime(settings, chat=chat, vcs=vcs, progress=progress)
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     saver = getattr(graph, "checkpointer", None)
@@ -1209,6 +1245,7 @@ def run_forever(
                 vcs=vcs,
                 fix_queue=fix_queue,
                 fix_ttl_s=settings.fix_verify_ttl_s,
+                progress=progress,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).

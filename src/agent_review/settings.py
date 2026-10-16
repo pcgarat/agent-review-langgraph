@@ -68,6 +68,17 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Progreso del worker (iniciativa 019, W10): cierra D16 («el latido mide vida,
+    # no avance»). Con `progress_enabled`, cada nodo deja en Redis el nodo en curso
+    # y su `started_at`, que es lo que el panel lee. Sin el, el worker se comporta
+    # igual que antes: `NullProgress`, sin tocar Redis por progreso (W2).
+    progress_enabled: bool = False
+    # TTL de la marca de progreso: por encima del peor caso de un nodo con
+    # reintentos. Una marca caducada no se confunde con un trabajo vivo.
+    progress_ttl_s: float = 3600.0
+    # Clave del hash de progreso (019 §5.2). Un campo por nodo en curso.
+    progress_key: str = "reviews:active"
+
     sandbox_enabled: bool = False
     sandbox_registry_user: str = ""
     sandbox_registry_token: str = ""

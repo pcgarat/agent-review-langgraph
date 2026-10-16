@@ -81,16 +81,18 @@ flowchart LR
 src/agent_review/
 ├── domain/        Modelos puros (Finding, ReviewRequest, Decision, HITL, Fix) y contrato
 ├── ports/         Protocolos: VcsPort, ReviewerPort, LlmPort, ChatPort, ToolingOutputSource,
-│                  FixerPort, SandboxPort, ContextReaderPort, BudgetPort
+│                  FixerPort, SandboxPort, ContextReaderPort, BudgetPort, ProgressPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
 │                  openai_llm, http_sandbox, tooling_source, diff_parser,
-│                  context_fixture/context_vcs/context_workspace + tool_loop (lector de contexto, 016)
+│                  context_fixture/context_vcs/context_workspace + tool_loop (lector de contexto, 016),
+│                  progress_redis/progress_null (progreso del worker, 019)
 ├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, service,
 │                  ingress, sdk_client/handlers. El worker no importa este paquete.
 ├── chat_outbox.py Outbox `reviews:notices` + `OutboxChatAdapter` (`ChatPort`)
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
 ├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)
 ├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
+│              wrapper.py (seam de nodo, 019 D2: progreso hoy, traza de 018 mañana)
 ├── policy/        PolicyEngine (autonomy.yaml)
 ├── fix/           Selección, validación local, nodo fix, formatters de entrega
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
@@ -172,6 +174,14 @@ flowchart TD
 | `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
 | `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
 | `notify` | Sí | Avisa de una review publicada, a la outbox del canal. Un fallo no transitorio se registra y no tumba la review. |
+
+**Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
+*seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
+`ProgressPort` anota la frontera de cada nodo (`reviews:active:<review_key>`, W10);
+sin él solo deja pasar los argumentos. La 018 añadirá aquí su traza, no una segunda
+envoltura. La envoltura preserva la firma del nodo (`functools.wraps`), que es lo que
+LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
+`RetryPolicy` sobre el nodo, no sobre el envoltorio.
 
 ### Estado (`ReviewState`)
 
@@ -320,6 +330,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:fixes:dead` | DLQ de fixes | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
+| Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí «qué corre ahora y desde cuándo» (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |
 | Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
 | Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome`: estado de la tarjeta, por usuario (C8) | 8 días |
@@ -385,7 +396,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
 | D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. El **recorrido** de una review (nodos, orden y punto de parada) ya se lee del checkpointer con `trace.read_trace` ([019](iniciativas/019-panel-de-operacion/spec.md), peldaño 1); las trazas con prompt/`usage`/latencia por llamada las aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
-| D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
+| D16 | **Heartbeat sin progreso** | **Acotada (019).** El latido de compose sigue midiendo solo que el proceso vive, pero el worker ya deja en `reviews:active:<review_key>` el nodo en curso y su `started_at` (hash de progreso, W10), de modo que el panel distingue «vivo» de «avanzando». Falta el panel (bloque 3 de [019](iniciativas/019-panel-de-operacion/spec.md)); el dato ya existe. |
 | D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
 | D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
 | D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |

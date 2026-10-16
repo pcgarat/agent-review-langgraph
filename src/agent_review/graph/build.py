@@ -5,7 +5,7 @@ import hashlib
 import logging
 import operator
 import shlex
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -32,9 +32,11 @@ from agent_review.domain.models import (
 from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter
 from agent_review.fix.node import apply_resolutions, build_wave, dispatch_fixes
+from agent_review.graph.wrapper import node_wrapper
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
+from agent_review.ports.progress import ProgressPort
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.vcs import ReviewMarker, VcsPort
 from agent_review.scope import filter_diff, limit_files, merge_ignore_patterns
@@ -409,6 +411,7 @@ def build_graph(
     retry_policy: RetryPolicy | None = None,
     verification_enabled: bool = True,
     budget_total: int | None = None,
+    progress: ProgressPort | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review (Fase 3-E7).
 
@@ -419,7 +422,17 @@ def build_graph(
     `fix_dispatch` es un no-op sin hallazgos aprobados con accion `fix_*`.
     `verification_enabled=False` (sin sandbox ni runner) marca los candidatos
     `NOT_VERIFIABLE` en `fix_dispatch`, de modo que `fix_wait` no llega a pausar.
+
+    `progress` (019 W10) es el puerto de progreso del worker: cada nodo se registra
+    envuelto por `wrapper.node_wrapper` (el *seam* único, D2), que anota su frontera
+    en Redis. Sin puerto, la envoltura solo deja pasar los argumentos: el grafo se
+    comporta igual que sin ella (W2).
     """
+
+    # Un solo *seam* de envoltura (019 D2): la 018 anadira aqui su traza.
+    def node(name: str, fn: Any) -> Any:
+        return node_wrapper(name, fn, progress=progress)
+
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
     recipes = fix_recipes or []
@@ -836,18 +849,19 @@ def build_graph(
     # Reintento de nodo (RetryPolicy) solo en los nodos que llaman a fuera: un
     # fallo transitorio de twg/LLM/Teams se recupera sin sacar el job de la cola.
     # `merge` y `policy` son deterministas y no lo llevan; `hitl` tampoco (un
-    # reintento re-ejecutaria `interrupt` y duplicaria la pausa).
-    graph.add_node("scope", scope, retry_policy=retry)
-    graph.add_node("persona", persona, retry_policy=retry)
-    graph.add_node("merge", merge)
-    graph.add_node("policy", apply_policy)
-    graph.add_node("hitl", hitl)
-    graph.add_node("fix_dispatch", fix_dispatch, retry_policy=retry)
-    graph.add_node("publish", publish, retry_policy=retry)
-    graph.add_node("fix_wait", fix_wait)
-    graph.add_node("publish_fix", publish_fix, retry_policy=retry)
-    graph.add_node("notify_fix", notify_fix, retry_policy=retry)
-    graph.add_node("notify", notify, retry_policy=retry)
+    # reintento re-ejecutaria `interrupt` y duplicaria la pausa). Cada funcion pasa
+    # por `node` (el *seam* de 019): la firma y la `RetryPolicy` se preservan.
+    graph.add_node("scope", node("scope", scope), retry_policy=retry)
+    graph.add_node("persona", node("persona", persona), retry_policy=retry)
+    graph.add_node("merge", node("merge", merge))
+    graph.add_node("policy", node("policy", apply_policy))
+    graph.add_node("hitl", node("hitl", hitl))
+    graph.add_node("fix_dispatch", node("fix_dispatch", fix_dispatch), retry_policy=retry)
+    graph.add_node("publish", node("publish", publish), retry_policy=retry)
+    graph.add_node("fix_wait", node("fix_wait", fix_wait))
+    graph.add_node("publish_fix", node("publish_fix", publish_fix), retry_policy=retry)
+    graph.add_node("notify_fix", node("notify_fix", notify_fix), retry_policy=retry)
+    graph.add_node("notify", node("notify", notify), retry_policy=retry)
 
     graph.add_edge(START, "scope")
     graph.add_conditional_edges("scope", dispatch, ["persona"])

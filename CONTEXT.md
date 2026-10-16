@@ -175,6 +175,8 @@ Teams. **Nunca escribe en el repositorio revisado.**
 |---|---|
 | **Recorrido** (`ReviewTrace`) | Read model derivado del checkpointer: los nodos que **corrieron** una review, en su orden real, con el sello de cada uno, más el punto de parada (`next`), el estado del hilo (`completed`/`paused`/`in_progress`) y su `pause_kind`. Se reconstruye con `trace.read_trace(saver, thread_id)` desde la API pública del `BaseCheckpointSaver`, **sin** construir el grafo. No viaja por el estado del grafo. |
 | **Checkpointer de lectura** | `checkpointer.build_reader_checkpointer`: saver de Postgres **solo lectura** (sin `setup()`, pool de una conexión) para el proceso `web` del panel, que lee los checkpoints del worker sin crearlos ni competir por escritura. Sin `DATABASE_URL` devuelve `None`, no un saver en memoria. |
+| **Progreso** | Marca en Redis (`reviews:active:<review_key>`, hash) que dice, por review, **qué nodo corre ahora y desde cuándo** (`started_at`) y cuántas **ramas** del fan-out siguen en curso. La escribe la envoltura de nodo (`graph/wrapper.py`) a través del `ProgressPort` (019 W10); es lo que cierra D16 («el latido mide vida, no avance»). `NullProgress` la desactiva: sin panel, el sistema se comporta igual. |
+| **Envoltura de nodo** | `graph/wrapper.node_wrapper`: el único *seam* que rodea los nodos del grafo (019 D2). Anota la frontera de cada nodo (progreso hoy; traza de 018 mañana) preservando la firma del nodo —de la que LangGraph lee el `Runtime` de `persona`— y su `RetryPolicy`. Sin puerto, solo deja pasar los argumentos. |
 
 ---
 
