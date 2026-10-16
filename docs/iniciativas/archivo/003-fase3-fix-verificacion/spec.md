@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Fase 3 — Fix + verificación
 
@@ -9,13 +9,13 @@ publica como **sugerencia inline** en el PR. Si no pasa tras los intentos
 permitidos, descarta el trabajo y **escala** con el log. El agente **sigue sin
 escribir en el repo**: quien aplica la sugerencia es una persona.
 
-Complementa `docs/iniciativas/001-diseno-base/spec.md` (§6.4, §8, §9, §13, §15) y
-`docs/iniciativas/002-fase2-hitl/spec.md`. El estado vivo está en `docs/iniciativas/README.md`.
+Complementa `docs/iniciativas/archivo/001-diseno-base/spec.md` (§6.4, §8, §9, §13, §15) y
+`docs/iniciativas/archivo/002-fase2-hitl/spec.md`. El estado vivo está en `docs/iniciativas/README.md`.
 
-> **Estado:** aprobada (2026-10-11) con enmiendas; en curso. Decisiones de arranque: base
+> **Estado:** implementada (2026-10-16; aprobada el 2026-10-11 con enmiendas). El smoke real y el spike R1 están en la iniciativa 015. Decisiones de arranque: base
 > pura (`F1`–`F6`) primero; runner rootless en esta máquina (Q1); la verificación
 > **no** bloquea la publicación de otras reviews (R2 revisado); P6 es
-> **precondición** del runner (Q4). Las tareas viven en `docs/iniciativas/003-fase3-fix-verificacion/todo.md`.
+> **precondición** del runner (Q4). Las tareas viven en `docs/iniciativas/archivo/003-fase3-fix-verificacion/todo.md`.
 
 ---
 

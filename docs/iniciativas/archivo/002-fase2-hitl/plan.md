@@ -2,7 +2,7 @@
 
 # Plan: Fase 2 (HITL)
 
-La especificación completa vive en `docs/iniciativas/002-fase2-hitl/spec.md`. Resumen de la
+La especificación completa vive en `docs/iniciativas/archivo/002-fase2-hitl/spec.md`. Resumen de la
 decisión y del plan:
 
 - **Objetivo:** el bucle **pausa → decisión → reanudación** durable; el grafo pausa
@@ -22,7 +22,7 @@ decisión y del plan:
   no pierde la decisión (vuelve a pausar) pero **re-ejecuta `scope` y personas**; hay
   que tratar el estado pausado explícitamente en `process_request`.
 
-Tareas en `docs/iniciativas/002-fase2-hitl/todo.md` (T1–T9 + **T10**) y riesgos en el spec §7.
+Tareas en `docs/iniciativas/archivo/002-fase2-hitl/todo.md` (T1–T9 + **T10**) y riesgos en el spec §7.
 
 - **T10 (deuda cerrada):** seam de **Strategy** para la retención de checkpoints. Los
   cuatro backends oficiales declaran `copy_thread`/`delete_for_runs`/`prune` como

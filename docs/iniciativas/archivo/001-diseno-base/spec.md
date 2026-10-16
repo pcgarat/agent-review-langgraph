@@ -713,7 +713,7 @@ matiz**: la verificación del fix ejecuta primero los **tests dirigidos** del á
 (`targeted`) y después el resto. Es la señal más barata y local, y las reglas custom de
 PHPStan (`ApplicationServiceMustHaveTestRule`) exigen el test que el fix ya debería traer:
 correr `stan` antes daría un fallo caro y redundante. El orden vive en el `verify` del
-perfil (§5.4 de `docs/iniciativas/003-fase3-fix-verificacion/spec.md`).
+perfil (§5.4 de `docs/iniciativas/archivo/003-fase3-fix-verificacion/spec.md`).
 
 Dos detalles de los hooks que el agente debe respetar:
 

@@ -24,7 +24,7 @@
    ([diseño base](../001-diseno-base/spec.md) §5.1).
 4. **Sin tocar el grafo.** El bot es **un cliente más del canal de decisión**, al
    mismo nivel que el CLI y `POST /decision`; reutiliza `build_decision` y la cola
-   única ([ADR-0008](../../adr/0008-hitl-por-cli-y-http-con-cola-unica.md)).
+   única ([ADR-0008](../../../adr/0008-hitl-por-cli-y-http-con-cola-unica.md)).
 
 ## 2. No-objetivos
 

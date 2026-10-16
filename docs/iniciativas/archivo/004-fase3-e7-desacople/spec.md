@@ -3,15 +3,15 @@
 # Fase 3-E7 — Desacople fuerte de la verificación (handoff durable)
 
 Especificación del **desacople fuerte** de la verificación de fixes que la
-Fase 3 deja explícitamente pendiente (`docs/iniciativas/003-fase3-fix-verificacion/spec.md`
-§5.3, enmienda; `docs/iniciativas/003-fase3-fix-verificacion/todo.md`, notas). **No** cambia el contrato del
+Fase 3 deja explícitamente pendiente (`docs/iniciativas/archivo/003-fase3-fix-verificacion/spec.md`
+§5.3, enmienda; `docs/iniciativas/archivo/003-fase3-fix-verificacion/todo.md`, notas). **No** cambia el contrato del
 runner (`POST /verify` sigue siendo bloqueante e idempotente por `run_key`): lo
 que cambia es **quién espera**. Hoy el que espera es el worker de reviews, que es
 secuencial; aquí el que espera es un worker de fixes dedicado.
 
-Complementa el spec de Fase 3 (aprobado) y `docs/iniciativas/002-fase2-hitl/spec.md`. El
+Complementa el spec de Fase 3 (aprobado) y `docs/iniciativas/archivo/002-fase2-hitl/spec.md`. El
 estado vivo del plan está en `docs/iniciativas/README.md`; las tareas en
-`docs/iniciativas/004-fase3-e7-desacople/todo.md`.
+`docs/iniciativas/archivo/004-fase3-e7-desacople/todo.md`.
 
 > **Estado:** implementada (2026-10-11). Las preguntas abiertas (§13) se aprueban
 > con su opción por defecto de v1: una pausa por wave (Q1), comentario general de
@@ -31,7 +31,7 @@ estado vivo del plan está en `docs/iniciativas/README.md`; las tareas en
 
 ## 1. El problema (por qué el adaptador síncrono no cumple E7)
 
-E7 (`docs/iniciativas/003-fase3-fix-verificacion/spec.md` §2.1.2) exige que la verificación
+E7 (`docs/iniciativas/archivo/003-fase3-fix-verificacion/spec.md` §2.1.2) exige que la verificación
 **no bloquee la publicación de otras reviews**. Hoy no se cumple:
 
 - `HttpSandboxAdapter.verify` es un `POST /verify` bloqueante con timeout

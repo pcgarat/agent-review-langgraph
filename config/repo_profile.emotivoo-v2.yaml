@@ -1,7 +1,7 @@
 # Perfil del repositorio emotivoo-v2.
 # Deriva de bitbucket-pipelines.yml. Es el contrato que el sandbox ejecuta.
 # La clave es EXEC_PHP="": en local es `docker compose exec php`, en CI es vacio.
-# Ver docs/iniciativas/001-diseno-base/spec.md, apartado 15.
+# Ver docs/iniciativas/archivo/001-diseno-base/spec.md, apartado 15.
 
 repo: cqm/emotivoo-v2
 language: php 8.4

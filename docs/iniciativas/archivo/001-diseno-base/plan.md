@@ -7,7 +7,7 @@
 > vive en git; este documento ya no repite su histórico. Lo que queda abierto son
 > **verificaciones humanas o externas**, no código (ver "Pendiente").
 
-El diseño de arquitectura está en `docs/iniciativas/001-diseno-base/spec.md`. El
+El diseño de arquitectura está en `docs/iniciativas/archivo/001-diseno-base/spec.md`. El
 registro de la auditoría que cerró los huecos de robustez, en
 `docs/arquitectura.md`.
 

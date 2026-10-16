@@ -281,7 +281,7 @@ El repo está **a medio camino** en HITL, y merece la pena decirlo con precisió
   el nodo `hitl` cableado en el grafo, y el inbox de pausas (`PausedStore`).
 - **Especificado, aún no cableado en el worker/API**: el endpoint de decisión, el CLI y
   la rama de resume en `process_request`. El diseño y los criterios están en
-  `docs/iniciativas/002-fase2-hitl/spec.md`.
+  `docs/iniciativas/archivo/002-fase2-hitl/spec.md`.
 
 El nodo `hitl` (implementado), en `src/agent_review/graph/build.py`:
 
@@ -290,7 +290,7 @@ El nodo `hitl` (implementado), en `src/agent_review/graph/build.py`:
         """Pausa durable si hay decisiones pendientes; si no, sigue a publish.
 
         `interrupt` no bloquea: el `invoke` retorna con el hilo pendiente y el
-        worker no espera a nadie (ver docs/iniciativas/002-fase2-hitl/spec.md, §4.2).
+        worker no espera a nadie (ver docs/iniciativas/archivo/002-fase2-hitl/spec.md, §4.2).
         """
         if state.get("human_decisions") is not None:
             return {}

@@ -2,7 +2,7 @@
 
 # Fase 2 — HITL: pausar, decidir y reanudar
 
-> **Estado:** implementada (T1–T10). D3 está sustituida por [ADR-0009](../../adr/0009-la-proteccion-manda-sobre-la-aprobacion.md).
+> **Estado:** implementada (T1–T10). D3 está sustituida por [ADR-0009](../../../adr/0009-la-proteccion-manda-sobre-la-aprobacion.md).
 
 Especificación del bucle humano-máquina. El grafo deja de ser un pipeline de una
 pasada: ante un hallazgo que la política marca como pendiente, **se pausa de forma
@@ -10,7 +10,7 @@ durable**, recibe una decisión humana por un canal externo y **reanuda el mismo
 hilo** sin duplicar publicación. Sigue sin escribir una línea de código: eso es la
 Fase 3.
 
-Complementa `docs/iniciativas/001-diseno-base/spec.md` (§3, §4, §5, §13) y
+Complementa `docs/iniciativas/archivo/001-diseno-base/spec.md` (§3, §4, §5, §13) y
 `docs/arquitectura.md` (§6, estado por fase). El estado vivo está en `docs/iniciativas/README.md`.
 
 ---

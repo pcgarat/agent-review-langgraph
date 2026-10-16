@@ -5,7 +5,7 @@
 Cierra el punto que la Fase 3 dejó explícito: **el runner síncrono no cumple E7**
 (el worker, secuencial, sigue bloqueado ~20 min por fix). No es cosmético y no se
 finge en el adaptador. La especificación completa vive en
-`docs/iniciativas/004-fase3-e7-desacople/spec.md` y las tareas en `docs/iniciativas/004-fase3-e7-desacople/todo.md`.
+`docs/iniciativas/archivo/004-fase3-e7-desacople/spec.md` y las tareas en `docs/iniciativas/archivo/004-fase3-e7-desacople/todo.md`.
 
 ## Overview
 
@@ -56,7 +56,7 @@ F1–F10 (cerrado)                                   Fase 3 actual
 
 ## Task list
 
-Ver `docs/iniciativas/004-fase3-e7-desacople/todo.md` (F14–F28). Orden por dependencia; el contrato (F14)
+Ver `docs/iniciativas/archivo/004-fase3-e7-desacople/todo.md` (F14–F28). Orden por dependencia; el contrato (F14)
 primero y el E2E (F23) antes de tocar docs. F25–F28 cierran los hallazgos de la revisión del PR #3.
 
 ## Checkpoints

@@ -50,7 +50,7 @@ ejecuta todo con `make` y `EXEC_PHP=""` dentro de una imagen de CI dedicada.
   (R7).
 - **El worker es secuencial:** una verificación de ~20 min bloquea las demás reviews.
   E7 pide una cola o consumidor de fixes aparte; el adaptador síncrono no lo cumple.
-  Propuesta en [spec de E7](../iniciativas/004-fase3-e7-desacople/spec.md).
+  Propuesta en [spec de E7](../iniciativas/archivo/004-fase3-e7-desacople/spec.md).
 - El idempotente de `run_key` vive en memoria del runner y no sobrevive a su reinicio.
 - La precondición P6 (revisar con seguridad la heurística de tema protegido) bloquea
   el smoke real del runner.

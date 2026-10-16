@@ -379,7 +379,7 @@ def process_request(
 
     El grafo se invoca con `thread_id` (= `review_key`): si el mensaje se
     reentrega, el checkpointer devuelve el estado ya terminado y no se vuelve a
-    publicar. Tres estados del hilo (ver docs/iniciativas/002-fase2-hitl/spec.md §4.3):
+    publicar. Tres estados del hilo (ver docs/iniciativas/archivo/002-fase2-hitl/spec.md §4.3):
 
     - **Pausado** (`interrupt` pendiente): con decision -> `Command(resume=...)`;
       sin decision -> no-op (no se re-ejecuta `scope` ni las personas).

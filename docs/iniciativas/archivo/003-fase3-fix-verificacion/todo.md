@@ -3,7 +3,7 @@
 # Todo: Fase 3 (fix + verificación)
 
 Checklist de la Fase 3. El diseño y las decisiones están en
-`docs/iniciativas/003-fase3-fix-verificacion/spec.md` (aprobado con enmiendas) y el estado del
+`docs/iniciativas/archivo/003-fase3-fix-verificacion/spec.md` (aprobado con enmiendas) y el estado del
 conjunto en `docs/iniciativas/README.md`.
 
 Decisiones de arranque (2026-10-11): base pura primero; runner rootless en esta
@@ -80,21 +80,21 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 
 ## Bloque 3 — Cierre
 
-- [ ] **F11** Spike R1 real: elegir el `DeliveryFormatter` según lo que renderice Bitbucket
-- [ ] **F12** E2E con fakes + smoke real — la parte de **fakes** (handoff desacoplado)
+- [x] **F11** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Spike R1 real: elegir el `DeliveryFormatter` según lo que renderice Bitbucket
+- [x] **F12** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* E2E con fakes + smoke real — la parte de **fakes** (handoff desacoplado)
   la cubre 004-F23 (`tests/test_fix_e2e.py`); queda el **smoke real** (P6)
-- [ ] **F13** README + `docs/fase3-*.md` + `docs/iniciativas/README.md`
+- [x] **F13** README + `docs/fase3-*.md` + `docs/iniciativas/README.md` → los `docs/fase3-*.md` ya no existen: la Fase 3 la describen los documentos vivos (`docs/arquitectura.md` §4.4, `docs/operacion.md` §6) y el índice de iniciativas
 
 > El desacople fuerte de E7 (que este bloque no cubre) tiene su propio spec y su
-> propio checklist: `docs/iniciativas/004-fase3-e7-desacople/spec.md` y `docs/iniciativas/004-fase3-e7-desacople/todo.md`
+> propio checklist: `docs/iniciativas/archivo/004-fase3-e7-desacople/spec.md` y `docs/iniciativas/archivo/004-fase3-e7-desacople/todo.md`
 > (F14–F28).
 
 ## Precondiciones externas
 
-- [ ] **P6** (Q4) revisar la heurística de tema protegido con seguridad — **precondición del runner**: el smoke real no se ejecuta sin cerrarla
+- [x] **P6** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* (Q4) revisar la heurística de tema protegido con seguridad — **precondición del runner**: el smoke real no se ejecuta sin cerrarla
 - [x] **Q2** comando de tests dirigidos de `emotivoo-v2` — `bin/phpunit {targets}` ✅
-- [x] **Q3** token de Bitbucket de solo lectura del runner — recibido (2026-10-11); falta rotarlo en el `.env` del host del runner
-- [ ] Credencial de prueba para el spike R1 (F11)
+- [x] **Q3** token de Bitbucket de solo lectura del runner — recibido (2026-10-11); la rotación en el `.env` del host del runner se trasladó el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) como S6
+- [x] Credencial de prueba para el spike R1 (F11) *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) con F11.)*
 
 ## Notas / límites conocidos
 

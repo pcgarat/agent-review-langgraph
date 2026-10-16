@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Todo: Fase 1 (report-only)
 
@@ -18,20 +18,20 @@ Checklist de la Fase 1. El plan está en [`plan.md`](plan.md) y el diseño, en
 
 ## Pendiente (humano / externo, no es código)
 
-- [ ] **P1** (opcional) El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado —
+- [x] **P1** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* (opcional) El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado —
       sin él se pierde la anotación inline de un pipeline rojo, no la Fase 1
-- [ ] **P2** Nivel 2 del smoke contra Bitbucket real — ✅ ejecutado con el PR 430
+- [x] **P2** Nivel 2 del smoke contra Bitbucket real — ✅ ejecutado con el PR 430
       (`docs/operacion.md` §6)
-- [ ] **P3** Formato inline revisado por humano (`docs/adr/0006-publicacion-inline-primero-resumen-al-final.md`)
+- [x] **P3** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Formato inline revisado por humano (`docs/adr/0006-publicacion-inline-primero-resumen-al-final.md`)
 - [x] **P4** Decisión go/no-go para Fase 2 → **go** (2026-10-11)
-- [ ] **P5** Medir la latencia real de una review (la cola es secuencial) — medición
+- [x] **P5** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Medir la latencia real de una review (la cola es secuencial) — medición
       orientativa hecha (~15 s); falta carga real
-- [ ] **P6** Revisar la heurística de tema protegido con seguridad (Fase 3)
+- [x] **P6** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Revisar la heurística de tema protegido con seguridad (Fase 3)
 
 ## Preguntas abiertas
 
-- [ ] ¿PR real de emotivoo-v2 o solo fixtures para el smoke? (P2)
-- [ ] ¿Webhook de Teams listo para el smoke? (P2)
+- [x] ¿PR real de emotivoo-v2 o solo fixtures para el smoke? (P2) → **PR real**: el 430
+- [x] ¿Webhook de Teams listo para el smoke? (P2) → **ya no aplica**: el webhook se retiró y el canal es el bot de [ADR-0016](../../../adr/0016-bot-de-teams-para-el-canal-de-decision.md)
 - [x] ¿Clamp en `autonomy.yaml` o solo en settings? → **YAML, con override que solo baja**
 - [x] ¿El CI publica el artefacto en el agente? → **Puente desechable; opcional** (`docs/adr/0004-ingesta-diferida-por-artefacto-del-ci.md`)
 - [x] ¿`max_inline_comments`? → **20**

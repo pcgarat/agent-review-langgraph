@@ -3,7 +3,7 @@
 # Todo: Fase 3-E7 (desacople fuerte de la verificación)
 
 Checklist del handoff durable. El diseño y las decisiones están en
-`docs/iniciativas/004-fase3-e7-desacople/spec.md`; el estado del conjunto en `docs/iniciativas/README.md`.
+`docs/iniciativas/archivo/004-fase3-e7-desacople/spec.md`; el estado del conjunto en `docs/iniciativas/README.md`.
 Orden por dependencia. Spec aprobada el 2026-10-11; F14–F15 hechas.
 
 Decisión de arranque (2026-10-11): handoff por `interrupt`; un único escritor en el
@@ -145,8 +145,8 @@ entra en esta fase.
   - Ficheros: `tests/test_fix_e2e.py`.
 
 - [x] **F24** Docs y estado
-  - README (sección E7 + diagrama del grafo), `docs/iniciativas/004-fase3-e7-desacople/spec.md`
-    (estado: implementada), `docs/iniciativas/README.md` y `docs/iniciativas/003-fase3-fix-verificacion/todo.md` (E7 cerrado).
+  - README (sección E7 + diagrama del grafo), `docs/iniciativas/archivo/004-fase3-e7-desacople/spec.md`
+    (estado: implementada), `docs/iniciativas/README.md` y `docs/iniciativas/archivo/003-fase3-fix-verificacion/todo.md` (E7 cerrado).
   - Aceptación: el README describe el handoff y el worker de fixes; el estado del
     plan refleja lo hecho.
   - Verifica: revisión manual. ✅
@@ -154,8 +154,8 @@ entra en esta fase.
     `docs/arquitectura.md` (§1–§6), `docs/operacion.md` (§1–§7), `CONTEXT.md`
     (términos E7) y `docs/desarrollo.md` (mapa de tests).
   - Ficheros: `README.md`, `docs/arquitectura.md`, `docs/operacion.md`,
-    `CONTEXT.md`, `docs/desarrollo.md`, `docs/iniciativas/004-fase3-e7-desacople/spec.md`,
-    `docs/iniciativas/README.md`, `docs/iniciativas/003-fase3-fix-verificacion/todo.md`.
+    `CONTEXT.md`, `docs/desarrollo.md`, `docs/iniciativas/archivo/004-fase3-e7-desacople/spec.md`,
+    `docs/iniciativas/README.md`, `docs/iniciativas/archivo/003-fase3-fix-verificacion/todo.md`.
   - Cierre (2026-10-16): corregida la referencia falsa de `plan.md` (el smoke real
     es el criterio 9, no F24), fechas de los tres documentos al día e índice de
     iniciativas marcado "F14–F24 cerradas". Cobertura de los criterios 1–8 del
@@ -204,9 +204,9 @@ entra en esta fase.
 
 ## Precondiciones externas
 
-- [ ] **P6** revisión de seguridad del tema protegido — precondición del smoke real
+- [x] **P6** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* revisión de seguridad del tema protegido — precondición del smoke real
       (el runner ejecuta código de PRs de terceros), igual que en Fase 3.
-- [ ] **Q1 del spec (Fase 3-E7)** forma de la wave (una por wave vs una por
+- [x] **Q1 del spec (Fase 3-E7)** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) como S3.)* forma de la wave (una por wave vs una por
       hallazgo) — se decide con la primera medición real; v1 = una por wave.
 
 ## Notas / límites conocidos

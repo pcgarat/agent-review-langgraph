@@ -7,44 +7,71 @@ Cada iniciativa tiene su carpeta `NNN-slug/` con `spec.md` (qué y por qué),
 nomenclatura están en la regla [`documentacion`](../../.agents/rules/documentacion.md).
 Las cerradas sin pendientes se mueven a `archivo/`.
 
-## Estado
+## Activas
 
-| # | Iniciativa | Spec | Estado | Lo que queda |
+| # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 001 | [Diseño base y Fase 1 (report-only)](001-diseno-base/spec.md) | implementada | ✅ Entregada; smoke real con el PR 430 | P1 (opcional), P3, P5 · [todo](001-diseno-base/todo.md) |
-| 002 | [Fase 2 — HITL](002-fase2-hitl/spec.md) | implementada | ✅ T1–T10 cerradas | Smoke del checkpointer contra Postgres real · [todo](002-fase2-hitl/todo.md) |
-| 003 | [Fase 3 — Fix + verificación](003-fase3-fix-verificacion/spec.md) | aprobada | 🟡 F1–F10 hechas | F11 (spike R1), F12 (smoke real), F13 (docs), P6 · [todo](003-fase3-fix-verificacion/todo.md) |
-| 004 | [Fase 3-E7 — Desacople fuerte de la verificación](004-fase3-e7-desacople/spec.md) | implementada | ✅ F14–F28 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](004-fase3-e7-desacople/todo.md) |
-| 005 | [Fase 3.5 — Modelos declarativos por rol](005-modelos-declarativos/spec.md) | implementada | ✅ M1–M11 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](005-modelos-declarativos/todo.md) |
-| 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | ✅ E1–E12 cerradas; archivada | Mide el resto de iniciativas |
-| 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Depende de 006 para medirse · habilita 008, 009 y 011 |
-| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | Depende de 007 y 012 |
-| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada; incluye el workspace de lectura del runner ([ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md)) | Depende de 007 · se mide con 006 · falta plan y todo |
-| 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona) depende de 007 |
-| 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | Depende de 007, 008 y 009 |
-| 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Depende de 006 para medirse · habilita 008 |
-| 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | implementada | ✅ T1–T9 y T11–T17 cerradas (outbox, tarjeta, hilo, servicio, Compose, ingress, E2E, docs y correcciones de la revisión) | T10 (alta del bot en el tenant) · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
-| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | Depende de 008, 009 (bucle y workspace de lectura) y 012 · se mide con 006 · falta plan y todo |
+| 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Sin dependencias (se mide con 006) · 5 preguntas abiertas · habilita 008, 009, 010 (fase 2) y 011 |
+| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 · 6 preguntas abiertas |
+| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | 007, 016 y 017 · falta plan y todo |
+| 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
+| 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
+| 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Sin dependencias (se mide con 006) · 4 preguntas abiertas · habilita 008 y 014 |
+| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008, 012 y 016; un segundo rol, también 017 · falta plan y todo |
+| 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
+| 016 | [Lector de contexto](016-lector-de-contexto/spec.md) | borrador | 🔵 Puerto, bucle de herramientas y workspace de lectura ([ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md)) | Sin dependencias · habilita 009 y 014 |
+| 017 | [Presupuesto de tokens por PR](017-presupuesto-por-pr/spec.md) | borrador | 🔵 Resuelve D17 | Sin dependencias · habilita 009 y el segundo rol de 014 |
+
+### Orden
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
-detectados —3 P1 de integración y 3 P2 de código—):
-medir (006), cobertura (012: el revisor vio ≈ 5 de 51 ficheros sin avisar), contrato
-(007), las capas baratas (008), la capa adversarial (009), el recall determinista
-(010) y el gate que lo cierra (011). Orden de dependencia:
-006 → 012 → 007 → (008 · 009 · 010 en paralelo) → 011. La fase 1 de 010 (gate de
-CI) puede ir en cualquier momento.
-La **014** amplía la cascada: da a las personas LLM las herramientas de lectura de
-009 y va después de 008, 009 y 012.
+detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
+y **016** y **017** son piezas compartidas que salieron de 009 y de la deuda D17.
 
-Siguiente número libre: **015**. La Fase 4 (autonomía por política, Jira, memoria,
-métricas) está esbozada en la spec de 001 §13 y aún no tiene iniciativa.
+```mermaid
+flowchart LR
+    I012["012"] --> I008["008"]
+    I007["007"] --> I008["008"]
+    I007["007"] --> I009["009"]
+    I016["016"] --> I009["009"]
+    I017["017"] --> I009["009"]
+    I008["008"] --> I011["011"]
+    I009["009"] --> I011["011"]
+    I007["007"] --> I011["011"]
+    I008["008"] --> I014["014"]
+    I012["012"] --> I014["014"]
+    I016["016"] --> I014["014"]
+    I017["017"] -. "2.º rol" .-> I014["014"]
+    I007["007"] -. "fase 2" .-> I010["010"]
+```
 
-## Pendientes humanos o externos (transversales)
+- **Aprobar primero lo que desbloquea:** 012 y 007 (9 preguntas abiertas entre las
+  dos) y después 008.
+- **Se puede empezar ya**, sin esperar a nadie: 016, 017, la fase 1 de 010 y 015.
+- **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
+  no de código.
 
-| Id | Pendiente | Bloquea a |
-|---|---|---|
-| P1 | El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado. Opcional ([ADR-0004](../adr/0004-ingesta-diferida-por-artefacto-del-ci.md)) | — |
-| P3 | Revisión humana del formato inline y del resumen ([ADR-0006](../adr/0006-publicacion-inline-primero-resumen-al-final.md)) | Dar por cerrada la 001 |
-| P5 | Medir la latencia con carga real (LLM + PR grande) | — |
-| P6 | Revisar con seguridad la heurística de tema protegido | Smoke real de 003 y 004 |
+## Archivadas
+
+Sin tareas abiertas. Lo que les quedaba (smokes y pendientes humanos) se trasladó a
+[015](015-puesta-en-marcha-real/spec.md) el 2026-10-16, conservando sus IDs.
+
+| # | Iniciativa | Spec | Entregado |
+|---|---|---|---|
+| 001 | [Diseño base y Fase 1 (report-only)](archivo/001-diseno-base/spec.md) | implementada | Fase 1 con smoke real en el PR 430 · [todo](archivo/001-diseno-base/todo.md) |
+| 002 | [Fase 2 — HITL](archivo/002-fase2-hitl/spec.md) | implementada | T1–T10 · [todo](archivo/002-fase2-hitl/todo.md) |
+| 003 | [Fase 3 — Fix + verificación](archivo/003-fase3-fix-verificacion/spec.md) | implementada | F1–F10 y F13 · [todo](archivo/003-fase3-fix-verificacion/todo.md) |
+| 004 | [Fase 3-E7 — Desacople fuerte de la verificación](archivo/004-fase3-e7-desacople/spec.md) | implementada | F14–F28 · [todo](archivo/004-fase3-e7-desacople/todo.md) |
+| 005 | [Fase 3.5 — Modelos declarativos por rol](archivo/005-modelos-declarativos/spec.md) | implementada | M1–M11 · [todo](archivo/005-modelos-declarativos/todo.md) |
+| 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | E1–E12; mide el resto de iniciativas · [todo](archivo/006-eval-de-la-review/todo.md) |
+| 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
+
+## Pendientes humanos o externos
+
+Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
+es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
+
+Siguiente número libre: **018**. La Fase 4 (autonomía por política, Jira, memoria,
+métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
+aún no tiene iniciativa.

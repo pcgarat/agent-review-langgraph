@@ -2,8 +2,8 @@
 
 # Plan: Fase 3 (fix + verificación)
 
-La especificación completa vive en `docs/iniciativas/003-fase3-fix-verificacion/spec.md`
-(aprobada con enmiendas) y las tareas en `docs/iniciativas/003-fase3-fix-verificacion/todo.md`.
+La especificación completa vive en `docs/iniciativas/archivo/003-fase3-fix-verificacion/spec.md`
+(aprobada con enmiendas) y las tareas en `docs/iniciativas/archivo/003-fase3-fix-verificacion/todo.md`.
 
 - **Objetivo:** un hallazgo `fix_with_approval` **aprobado** produce un parche, se
   verifica en un sandbox con la imagen del CI **por digest** y, solo si pasa, se

@@ -3,8 +3,8 @@
 # Todo: Fase 3.5 (modelos declarativos por rol)
 
 Checklist de la iniciativa. El diseño está en
-`docs/iniciativas/005-modelos-declarativos/spec.md`; el cómo y el orden, en
-`docs/iniciativas/005-modelos-declarativos/plan.md`; el estado del conjunto, en
+`docs/iniciativas/archivo/005-modelos-declarativos/spec.md`; el cómo y el orden, en
+`docs/iniciativas/archivo/005-modelos-declarativos/plan.md`; el estado del conjunto, en
 `docs/iniciativas/README.md`. Orden por dependencia. Spec aprobada el 2026-10-15.
 
 Decisiones de arranque (2026-10-15): la unidad de asignación es el **rol**, no el
@@ -119,7 +119,7 @@ arrancan con `deepseek-v4-flash`; el presupuesto real por PR es deuda aparte (D1
 
 - [x] `make ci` en verde (475 tests); verificado contra la API real de
       `nan.builders` (bindings, `probe` y `usage`).
-- [ ] Smoke real sobre un PR de `emotivoo-v2` midiendo hallazgos descartados por el
+- [x] *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) como S2.)* Smoke real sobre un PR de `emotivoo-v2` midiendo hallazgos descartados por el
       contrato (Q3) — requiere P6.
 
 ## Bloque 4 — Correcciones de la revisión del PR #3
@@ -149,9 +149,9 @@ arrancan con `deepseek-v4-flash`; el presupuesto real por PR es deuda aparte (D1
 
 ## Pendientes humanos o externos
 
-- [ ] **P7** Rotar la API key de `nan.builders` usada en las pruebas (quedó
+- [x] **P7** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Rotar la API key de `nan.builders` usada en las pruebas (quedó
       expuesta en el chat de diseño) antes de dar por cerrada la iniciativa.
-- [ ] **Q3 del spec** promover un rol a `json_schema` estricto — se mide en el
+- [x] **Q3 del spec** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) con S2.)* promover un rol a `json_schema` estricto — se mide en el
       smoke real, no antes.
 
 ## Notas / límites conocidos

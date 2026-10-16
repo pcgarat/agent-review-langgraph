@@ -516,7 +516,7 @@ def build_graph(
         """Pausa durable si hay decisiones pendientes; si no, sigue a publish.
 
         `interrupt` no bloquea: el `invoke` retorna con el hilo pendiente y el
-        worker no espera a nadie (ver docs/iniciativas/002-fase2-hitl/spec.md, §4.2).
+        worker no espera a nadie (ver docs/iniciativas/archivo/002-fase2-hitl/spec.md, §4.2).
         """
         if state.get("human_decisions") is not None:
             return {}

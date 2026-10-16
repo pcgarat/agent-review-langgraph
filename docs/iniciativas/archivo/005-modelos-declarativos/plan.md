@@ -3,8 +3,8 @@
 # Plan: Fase 3.5 (modelos declarativos por rol)
 
 Registro declarativo de proveedores y modelos, con asignación **por rol**. El qué y
-el porqué están en `docs/iniciativas/005-modelos-declarativos/spec.md`; las tareas en
-`docs/iniciativas/005-modelos-declarativos/todo.md`.
+el porqué están en `docs/iniciativas/archivo/005-modelos-declarativos/spec.md`; las tareas en
+`docs/iniciativas/archivo/005-modelos-declarativos/todo.md`.
 
 ## Overview
 
@@ -55,7 +55,7 @@ adaptador y consumidores a la vez para que `mypy strict` y los tests pasen).
 
 ## Task list
 
-Ver `docs/iniciativas/005-modelos-declarativos/todo.md` (M1–M11). Orden por
+Ver `docs/iniciativas/archivo/005-modelos-declarativos/todo.md` (M1–M11). Orden por
 dependencia: el contrato primero, el puerto en bloque, y el cableado y el `probe`
 después. M9–M11 cierran los hallazgos de la revisión del PR #3.
 

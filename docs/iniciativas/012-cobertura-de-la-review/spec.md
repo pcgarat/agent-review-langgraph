@@ -64,7 +64,7 @@ Diff `a8ead73..008da57` pasado por `limit_files(…, 10)` y `filter_diff`
 
 | Offset (chars) | Fichero | ¿Lo vio el modelo? |
 |---|---|---|
-| 0 | `docs/iniciativas/005-modelos-declarativos/spec.md` | Sí |
+| 0 | `docs/iniciativas/archivo/005-modelos-declarativos/spec.md` | Sí |
 | 10 536 | `src/agent_review/fix/node.py` | Sí |
 | 26 063 | `src/agent_review/fixworker/main.py` | Sí |
 | 33 237 | `src/agent_review/graph/build.py` | Sí |

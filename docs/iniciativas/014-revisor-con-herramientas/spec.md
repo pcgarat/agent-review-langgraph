@@ -7,9 +7,10 @@
 > **Entrega objetivo:** una persona LLM con las herramientas activadas revisa cada
 > lote en un **bucle acotado de turnos**: puede leer ficheros fuera del diff, hacer
 > `grep` sobre el árbol a `head_sha` y comparar con la base antes de proponer
-> hallazgos. Usa el mismo puerto, el mismo bucle y el mismo workspace de lectura que
-> el verificador de [009](../009-verificador-adversarial/spec.md). No ejecuta código y
-> sigue anclando cada hallazgo al diff.
+> hallazgos. Usa el puerto, el bucle y el workspace de lectura de
+> [016](../016-lector-de-contexto/spec.md), los mismos que el verificador de
+> [009](../009-verificador-adversarial/spec.md). No ejecuta código y sigue anclando
+> cada hallazgo al diff.
 
 ---
 
@@ -49,7 +50,8 @@ Se quiere:
 - **Un *prompt* propio por rol.** Hoy `correctness`, `security` y `arch` comparten el
   mismo *system prompt* (deuda D20 de [`arquitectura.md`](../../arquitectura.md) §7).
   Este trabajo añade el protocolo de herramientas a ese *prompt*, no lo especializa.
-- **El presupuesto global por PR (D17).** Se consume el presupuesto acumulado entre
+- **El presupuesto global por PR (D17).** Es [017](../017-presupuesto-por-pr/spec.md).
+  Mientras no esté, se consume el presupuesto acumulado entre
   lotes de 012; la acumulación entre personas y fixer sigue fuera.
 - **Sustituir a L1.** El fichero completo y los `context_docs:` de 008 siguen siendo
   el contexto de partida (Q3).
@@ -73,29 +75,28 @@ Esta tabla es la hipótesis que se mide; no es un resultado.
 
 ### 3.2 Lo que ya existe o está especificado
 
-- El bucle *ReAct*, el `ContextReaderPort` (con `ref="base"`, rangos y `list_dir`) y
-  la comprobación de «cita servida» están en
-  [009 §5.4–5.5](../009-verificador-adversarial/spec.md).
-- El **workspace de lectura** del `sandbox-runner` (clon *bare*, `git grep`, rutas
-  vetadas, TTL) está en [009 §5.4.1](../009-verificador-adversarial/spec.md).
+- El bucle de herramientas, el `ContextReaderPort` (con `ref="base"`, rangos y
+  `list_dir`), la comprobación de «cita servida» y el **workspace de lectura** del
+  `sandbox-runner` están en [016](../016-lector-de-contexto/spec.md) *(enmienda
+  2026-10-16: antes estaban en 009 §5.4)*.
 - Los **lotes** de ficheros enteros y el presupuesto acumulado entre lotes son de
   [012](../012-cobertura-de-la-review/spec.md) (C2, C6).
 - `ReviewContext`, la regla de humildad y L0 son de
   [008](../008-contexto-del-revisor/spec.md).
 
-Esta iniciativa no inventa piezas nuevas: **conecta** las de 009 al `LlmReviewer`.
+Esta iniciativa no inventa piezas nuevas: **conecta** las de 016 al `LlmReviewer`.
 
 ## 4. Decisiones
 
 | # | Decisión | Motivo |
 |---|---|---|
-| H1 | El bucle de herramientas es un **módulo compartido** con 009 (`adapters/tool_loop.py`); lo crea la primera de las dos iniciativas que se implemente | Un solo protocolo, una sola comprobación de citas y un solo juego de topes |
+| H1 | El bucle de herramientas es el **módulo compartido** de [016](../016-lector-de-contexto/spec.md) (`adapters/tool_loop.py`, W2); 014 aporta su *prompt* y su objeto final (`findings`) | Un solo protocolo, una sola comprobación de citas y un solo juego de topes |
 | H2 | Herramientas de **solo lectura**: `read_file(path, ref, start, end)`, `grep(pattern, glob)` y `list_dir(path)`. Nada que escriba, ejecute o abra red | El valor está en leer; ejecutar es L3 y tiene otro modelo de coste y de riesgo |
-| H3 | Las herramientas se sirven por `ContextReaderPort`: `WorkspaceContextReader` si el runner está disponible y `VcsContextReader` si no ([009 §5.4.1](../009-verificador-adversarial/spec.md)) | Sin runner, el revisor sigue funcionando con menos alcance (`grep` solo sobre lo servido) |
+| H3 | Las herramientas se sirven por `ContextReaderPort`: `WorkspaceContextReader` si el runner está disponible y `VcsContextReader` si no ([016](../016-lector-de-contexto/spec.md) W1, W8) | Sin runner, el revisor sigue funcionando con menos alcance (`grep` solo sobre lo servido) |
 | H4 | **Opt-in por rol** con `REVIEW_TOOLS_ROLES` (vacío por defecto). Un rol fuera de la lista hace una llamada por lote, como en 008. El primero es `correctness` (Q1); un segundo rol exige resolver antes D17 (Q7) | Se activa un rol, se mide con 006 y se amplía; sin activar, cero cambios en coste y en grabaciones |
 | H5 | Topes **por lote**: `REVIEW_TOOLS_MAX_TURNS`, `REVIEW_TOOLS_MAX_CALLS` y `REVIEW_TOOLS_MAX_BYTES`. Antes de cada turno se estima el coste contra el presupuesto acumulado de 012 (C6) | Cada turno reenvía toda la conversación: el coste crece más rápido que el número de turnos |
 | H6 | Agotado un tope, el siguiente turno es **final forzado**: se pide `findings` sin herramientas. Lo ya razonado no se pierde | Cortar sin turno final tira el trabajo de los turnos anteriores |
-| H7 | El hallazgo **se sigue anclando al diff** y pasa por L0. Lo leído fuera del diff solo sirve como evidencia: una cita a un fichero **no servido** se quita de la evidencia, como en [009 V4](../009-verificador-adversarial/spec.md) | Leer más no da permiso para comentar fuera del PR ni para inventar citas |
+| H7 | El hallazgo **se sigue anclando al diff** y pasa por L0. Lo leído fuera del diff solo sirve como evidencia: una cita a un fichero **no servido** se quita de la evidencia, con `cite_served` de [016](../016-lector-de-contexto/spec.md) (W3) | Leer más no da permiso para comentar fuera del PR ni para inventar citas |
 | H8 | El revisor sigue emitiendo `unverified` y añade `files_read` al resultado; el nodo `verify` lo reutiliza | La verificación tiene otro modelo y otro *prompt* (009 V2, V3); lo leído no se paga dos veces |
 | H9 | El contenido servido es **dato, no instrucción**: va delimitado (`<tool_result>`), el *system prompt* lo dice explícitamente y el veto de rutas lo aplica el runner | Un fichero del PR puede intentar dirigir al modelo |
 | H10 | En el *replay* de [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md) cada turno es una llamada grabada con su fingerprint, y las herramientas se sirven desde un `FixtureContextReader` con los ficheros del caso | El resultado de cada herramienta entra en el *prompt* del siguiente turno: el fingerprint ya lo cubre, siempre que el lector sea determinista |
@@ -153,7 +154,7 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
 - `build_reviewers` ([`worker/main.py`](../../../src/agent_review/worker/main.py))
   pasa la fábrica solo a los roles de `REVIEW_TOOLS_ROLES`. La fábrica elige el
   adaptador (H3); el workspace se abre de forma idempotente por `(repo, head_sha)`
-  ([009 V14](../009-verificador-adversarial/spec.md)) y no viaja en el estado.
+  ([016](../016-lector-de-contexto/spec.md) W6) y no viaja en el estado.
 - `ReviewerResult` gana `files_read` y el uso del bucle (`turns`, `tool_calls`,
   `bytes_served`), que `ReviewOutcome` expone para que
   [006](../archivo/006-eval-de-la-review/spec.md) mida el coste.
@@ -230,5 +231,6 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
   se abre cuando 009 y 014 estén medidas, solo para `P0`/`P1` sin verificar. Hoy
   competiría con los fixes por el runner y depende de P6.
 - **Q7 — ¿Cuándo entra D17?** *Resuelta (2026-10-16):* con un solo rol activado basta
-  el presupuesto acumulado entre lotes de 012. Resolver D17 es **precondición para
+  el presupuesto acumulado entre lotes de 012. Resolver D17
+  ([017](../017-presupuesto-por-pr/spec.md)) es **precondición para
   activar un segundo rol** en `REVIEW_TOOLS_ROLES` (H4).

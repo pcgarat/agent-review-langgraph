@@ -4,11 +4,11 @@
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
 el orden, en [`plan.md`](plan.md). Spec implementada el 2026-10-16 (T1–T9 y T11).
-Queda T10 (alta humana).
+T0 y T10 (alta humana) se trasladaron a [015](../../015-puesta-en-marcha-real/spec.md).
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
-- [ ] **T0** Spike: validar la fricción y lo que de verdad es arriesgado
+- [x] **T0** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md): sus comprobaciones son la aceptación de T10 en el tenant real.)* Spike: validar la fricción y lo que de verdad es arriesgado
   - Objetivo: **no** un eco, sino reducir el riesgo allí donde el diseño puede caerse.
     Con el *Teams Developer CLI* (`teams app create`) y el canal estándar dedicado, un
     bot mínimo que:
@@ -277,7 +277,7 @@ Queda T10 (alta humana).
 
 ## Bloque 4 — Pendientes humanos y documentación
 
-- [ ] **T10** Alta del bot (humano; camino recomendado: Teams Developer CLI)
+- [x] **T10** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md).)* Alta del bot (humano; camino recomendado: Teams Developer CLI)
   - **0. Prerrequisitos:** Node.js 20+, cuenta M365 *work/school*, **sideloading
     habilitado** (`teams status` debe decir `Sideloading: enabled`; si no, lo habilita
     el administrador: *Upload custom apps*), y un **canal estándar** dedicado (los

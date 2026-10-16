@@ -14,7 +14,7 @@ Un servicio nuevo `teams-bot` con dos caras: **ingress** (`POST /api/messages`, 
 (`reviews:notices`), donde el worker deja los avisos. El bot **no conoce el grafo**:
 traduce la interacción de la tarjeta a una `HitlDecision` con `build_decision` y la
 **encola** en `reviews:jobs`, igual que el CLI y `POST /decision`. La «cola única» y la
-reanudación en el worker del [ADR-0008](../../adr/0008-hitl-por-cli-y-http-con-cola-unica.md)
+reanudación en el worker del [ADR-0008](../../../adr/0008-hitl-por-cli-y-http-con-cola-unica.md)
 se mantienen intactas.
 
 ## Decisiones de arquitectura

@@ -1,8 +1,8 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Todo: Fase 2 (HITL)
 
-Especificación completa en `docs/iniciativas/002-fase2-hitl/spec.md`. Orden por dependencia;
+Especificación completa en `docs/iniciativas/archivo/002-fase2-hitl/spec.md`. Orden por dependencia;
 checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde).
 
 ## Fundación
@@ -142,7 +142,7 @@ checkpoints tras T4 y tras T9. Estado: **T1–T10 cerradas** (228 tests en verde
   - Ficheros: `src/agent_review/decision.py`, `src/agent_review/graph/build.py`,
     `src/agent_review/checkpointer.py`, `src/agent_review/worker/main.py`,
     `src/agent_review/paused_store.py`, `src/agent_review/settings.py`.
-- [ ] **Smoke del checkpointer contra Postgres real** — el pool y el fallo de
+- [x] **Smoke del checkpointer contra Postgres real** *(Trasladada el 2026-10-16 a [015](../../015-puesta-en-marcha-real/spec.md) como S1.)* — el pool y el fallo de
   arranque en producción solo están probados sin base (no había Postgres local).
 
 ## Riesgo asumido (documentado, no una tarea)
