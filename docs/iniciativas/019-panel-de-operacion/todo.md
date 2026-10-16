@@ -1,0 +1,113 @@
+Última modificación: 2026-10-16 | Creado: 2026-10-16
+
+# Todo: Panel de operación
+
+Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden y los
+checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D16 de
+[`arquitectura.md`](../../arquitectura.md) §7. Una tarea cerrada se marca `[x]` en el
+**mismo commit** que el código. Los IDs son estables dentro del repo: `OP`.
+
+---
+
+## Bloque 1 — Recorrido (checkpoint C1)
+
+- [ ] **OP1** Módulo `src/agent_review/trace.py`: `read_trace(saver, thread_id)`
+  - Reconstruye el recorrido desde `get_state_history`: nodos ejecutados, orden real,
+    `next` pendiente y `writes` de cada paso.
+  - Aceptación: un hilo completado y uno pausado devuelven el recorrido correcto.
+- [ ] **OP2** Checkpointer de **solo lectura** para un proceso sin worker
+  - `build_reader_checkpointer`, con pool pequeño y **sin** `setup()`: el `web` lee
+    los checkpoints que escribe el worker, no crea tablas ni compite por escritura.
+- [ ] **OP3** Modelo de salida del recorrido en el dominio (nodos, orden, punto de
+  parada, pausa si la hay), añadido a `checkpointer._STATE_TYPES` si viaja por estado.
+- [ ] **OP4** Test de `read_trace`: hilo completado, hilo pausado y hilo a medias.
+
+## Bloque 2 — Progreso del worker (checkpoint C2)
+
+- [ ] **OP5** Puerto `ProgressPort` (`start_node`/`finish_node`) con `NullProgress` y
+  `RedisProgress`; elección por configuración, como `build_chat`.
+- [ ] **OP6** Marca `reviews:active:<review_key>` (`node`, `started_at`, TTL holgado).
+- [ ] **OP7** *Seam* de envoltura de nodo (`node_wrapper`) compartible con la
+  [018](../018-trazas-de-la-review/spec.md) (D2 de la 018 / T3)
+  - Debe **preservar** la firma del nodo, su `RetryPolicy` y el `Runtime` que recibe
+    `persona`; una envoltura que los pierda rompe el fan-out o el reintento.
+- [ ] **OP8** Conectar la marca al worker (`build_runtime`) y limpiarla al cerrar el
+  hilo (completado o pausado).
+- [ ] **OP9** Test: con `NullProgress` el grafo produce el mismo estado y los mismos
+  nodos que sin envoltura.
+- [ ] **OP10** Test de la envoltura: `persona` conserva su `Runtime` y los nodos su
+  `RetryPolicy` (riesgo R1 del plan).
+
+## Bloque 3 — Servicio web, lectura (checkpoint C3)
+
+- [ ] **OP11** Servicio `web` (FastAPI), raíz de composición nueva, con perfil de
+  compose `panel` (W1 de la spec).
+- [ ] **OP12** Autenticación de sesión con rol (`PANEL_SESSION_SECRET`; `lector` y
+  `operador`), sin reutilizar el bearer de decisión (W7).
+- [ ] **OP13** Endpoint de estado: cola (`reviews:jobs`), en vuelo (progreso), pausas
+  por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:<key>`).
+- [ ] **OP14** Endpoint de recorrido: expone `read_trace` (OP1) para una review.
+- [ ] **OP15** UI de lectura: vista global (cola, en vuelo, pausas, descartes) y vista
+  de detalle con el recorrido.
+- [ ] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
+  nuevo.
+- [ ] **OP17** Test de auth: `401` sin sesión; el rol `lector` no ejecuta comandos.
+- [ ] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../operacion.md) §1–2
+  (servicio y variables) y §5 (endpoints del panel).
+
+## Bloque 4 — Consola del sandbox (checkpoint C4)
+
+- [ ] **OP19** `on_line` **opcional** (default `None`) en `ContainerRuntime.start`;
+  los *fakes* y el runtime actual siguen valiendo.
+- [ ] **OP20** `DockerCliRuntime` con `Popen` y un hilo lector por flujo
+  (`stdout`/`stderr`): **acumula** (el `VerifyReport` no cambia) **y** emite a
+  `on_line`
+  - Sin `stderr=STDOUT`: el informe mantiene ambos flujos separados (riesgo R5).
+- [ ] **OP21** Buffer circular en memoria del runner por `run_key`, con alta de
+  suscriptores (efímero, como los workspaces de [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md)).
+- [ ] **OP22** Endpoint SSE `GET /verify/{run_key}/console` en el runner, con el
+  bearer compartido.
+- [ ] **OP23** Test: con `on_line` el `VerifyReport` es idéntico; el timeout y la
+  destrucción del contenedor no cambian.
+- [ ] **OP24** Proxy SSE en el `web` y vista de consola en vivo en la UI.
+- [ ] **OP25** Test: `404` si el `run_key` no está en el buffer; un reinicio del
+  runner pierde el buffer y no altera el informe.
+
+## Bloque 5 — Comandos (checkpoint C5)
+
+- [ ] **OP26** `Cancelled` (hereda de `PermanentError`, D6 del plan) y marca
+  `reviews:cancel:<review_key>`.
+- [ ] **OP27** La envoltura (OP7) comprueba la marca en la **frontera de nodo** y
+  aborta; nunca a mitad de nodo (W4).
+- [ ] **OP28** El worker maneja `Cancelled`: **borra el hilo** del checkpointer,
+  limpia el inbox y **no** reencola (D5 del plan)
+  - Borrar el hilo es la guarda durable: un hilo abortado con `next` no vacío se
+    reanudaría en una reentrega.
+- [ ] **OP29** Endpoint `POST /reviews/{key}/cancel` (rol `operador`), que pone la
+  marca y encola el comando.
+- [ ] **OP30** Semántica por estado: antes de publicar → cancelación limpia; después →
+  solo «cancelar lo pendiente» (spec §5.4).
+- [ ] **OP31** Endpoint `POST /reviews/{key}/retry`: reencola un descarte de la DLQ
+  con `attempts=0`.
+- [ ] **OP32** Endpoint `POST /reviews/{key}/resume`: reencola el `request` de una
+  pausa (lo que hace una decisión, sin decisión).
+- [ ] **OP33** UI de comandos: botones según el estado, con el **actor** auditado.
+- [ ] **OP34** Tests por estado: cancelar antes/después de publicar, reintentar un
+  descarte, reanudar, y que `Cancelled` **no** se reintenta.
+- [ ] **OP35** *(Humana)* Decidir y asignar **quién** puede cancelar (Q4 de la spec);
+  sin esto el bloque no se cierra.
+
+## Bloque 6 — Cierre (checkpoint C6)
+
+- [ ] **OP36** ADR-0020: «panel como servicio aparte, *read model* + comandos,
+  progreso por marca» (Q7 de la spec).
+- [ ] **OP37** `CONTEXT.md`: «panel», «progreso», «cancelación».
+- [ ] **OP38** [`arquitectura.md`](../../arquitectura.md) §7 (D14 y D16 acotadas) y
+  §2/§5 si el servicio o las claves lo requieren.
+- [ ] **OP39** [`operacion.md`](../../operacion.md) §7 (diagnóstico del panel y de la
+  consola del sandbox).
+- [ ] **OP40** [`desarrollo.md`](../../desarrollo.md) §2 (zonas de test nuevas) y §3
+  (extensión: puerto de progreso y envoltura de nodo).
+- [ ] **OP41** `make ci` y `make docs-check` en verde.
+- [ ] **OP42** Anotar en la [018](../018-trazas-de-la-review/spec.md) la coordinación
+  del *seam* de nodos (D2 del plan).

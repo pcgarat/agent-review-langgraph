@@ -21,6 +21,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 017 | [Presupuesto de tokens por PR](017-presupuesto-por-pr/spec.md) | implementada | ✅ Tope real por review: contador compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](017-presupuesto-por-pr/todo.md) |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
+| 019 | [Panel de operación](019-panel-de-operacion/spec.md) | aprobada | 🟠 Ver el sistema en vivo, cancelar y reintentar; consola del sandbox en vivo | Frontera con 018 (operación vs análisis) · plan y todo listos · comparte el `usage` de 017 |
 
 ### Orden
 
@@ -43,6 +44,7 @@ flowchart LR
     I012["012"] --> I014["014"]
     I017["017"] -. "2.º rol" .-> I014["014"]
     I007["007"] -. "fase 2" .-> I010["010"]
+    I018["018"] -. "recorrido (Q7)" .-> I019["019"]
 ```
 
 La **016** (lector de contexto) ya está entregada: 009 y 014 la consumen, no la
