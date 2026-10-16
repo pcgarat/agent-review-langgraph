@@ -23,7 +23,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona) depende de 007 |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | Depende de 007, 008 y 009 |
 | 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Depende de 006 para medirse · habilita 008 |
-| 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | aprobada | 🟡 T1, T2 y T8 hechas (contrato `ChatNotice` + outbox; tarjeta de decisión con estado por usuario; webhook retirado); el alta del bot es ruta crítica | T3–T7, T9–T11 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
+| 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | aprobada | 🟡 T1–T8 hechas (outbox, tarjeta, hilo, servicio, Compose, ingress); faltan E2E de fakes, alta del bot y docs de cierre | T9–T11 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no

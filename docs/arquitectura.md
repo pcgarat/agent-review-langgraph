@@ -15,7 +15,7 @@ flowchart LR
     subgraph EXT["Externos"]
         CI["CI del repo revisado<br/>(emotivoo-v2)"]
         VCS["Bitbucket (twg)<br/>o GitHub (REST)"]
-        TEAMS["Microsoft Teams<br/>(bot: iniciativa 013, en curso)"]
+        TEAMS["Microsoft Teams<br/>(bot · teams-bot)"]
         LLM["Proveedor LLM<br/>(compatible OpenAI)"]
         HUMAN["Persona"]
     end
@@ -41,7 +41,8 @@ flowchart LR
     WORKER <-->|checkpoint| PG
     WORKER -->|"diff · inline · resumen"| VCS
     WORKER -->|"aviso: encola en la outbox"| REDIS
-    REDIS -.->|"BLPOP (teams-bot, en curso)"| TEAMS
+    REDIS -->|"BLPOP · teams-bot"| TEAMS
+    TEAMS -->|"Action.Execute → encola decisión"| REDIS
     WORKER -->|"personas · fixer<br/>(modelo por rol)"| LLM
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
@@ -51,11 +52,12 @@ flowchart LR
     TEAMS -.-> HUMAN
 ```
 
-> **Canal de Teams (iniciativa 013).** El egress del worker ya es la **outbox**
-> (`reviews:notices`), no una llamada HTTP. El **bot** que la consume y publica en el
-> canal aún no está construido (tareas T5–T7): mientras tanto, el egress queda
-> durablemente encolado y el respaldo de decisión sigue siendo el CLI y `POST
-> /decision`.
+> **Canal de Teams (iniciativa 013).** El worker **encola** avisos en
+> `reviews:notices`; `teams-bot` los consume, publica/edita en el hilo del PR y
+> traduce las acciones de la tarjeta a una `HitlDecision` encolada en
+> `reviews:jobs` (no reanuda el grafo). El respaldo de decisión sigue siendo el
+> CLI y `POST /decision`. Pendiente: alta del bot en el tenant (T10) y el E2E de
+> fakes (T9).
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
@@ -63,7 +65,7 @@ flowchart LR
 | `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
-| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` (T5/T6) | Canal de Teams: render de la tarjeta (T2) y, en T5–T7, consumo de la outbox e ingress del Bot Framework. **No** conoce el grafo. |
+| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
 
 ---
@@ -77,10 +79,11 @@ src/agent_review/
 │                  FixerPort, SandboxPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
 │                  openai_llm, http_sandbox, tooling_source, diff_parser
-├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, card_service
-│                  (el SDK de Teams llega en T5/T6; aqui es logica pura)
+├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, service,
+│                  ingress, sdk_client/handlers. El worker no importa este paquete.
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
-├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
+├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)
+├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
 ├── policy/        PolicyEngine (autonomy.yaml)
 ├── fix/           Selección, validación local, nodo fix, formatters de entrega
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
@@ -304,6 +307,9 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13) | — |
 | Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome` y `…:final` (actor de la primera decisión): estado de la tarjeta, por usuario (C8/C11) | 8 días |
+| Redis | `reviews:teams:channel` | `conversation_id` + `service_url` del canal dedicado (C14), capturado al instalar o ver una actividad | — |
+| Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
+| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
@@ -349,6 +355,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Pendiente de iniciativa propia. |
 | D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
 | D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
+| D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |
 
 ---
 

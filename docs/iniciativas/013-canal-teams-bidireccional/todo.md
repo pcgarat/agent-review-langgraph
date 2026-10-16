@@ -3,8 +3,7 @@
 # Todo: Canal bidireccional de Teams (bot con hilo por PR)
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
-el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T6 y T8 cerrados;
-T7, T9–T11 pendientes.
+el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T8 cerrados; T9–T11 pendientes.
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
@@ -218,13 +217,30 @@ T7, T9–T11 pendientes.
 
 ## Bloque 3 — Ingress y retirada
 
-- [ ] **T7** Ingress del Bot Framework (`POST /api/messages`) y traducción de acciones
+- [x] **T7** Ingress del Bot Framework (`POST /api/messages`) y traducción de acciones
   - Valida el JWT del Bot Framework; enruta por un **único ingress** a `teams-bot`
     (`api` no cambia, C2). Traduce `Action.Execute`/`Action.Submit` a las marcas de la
     tarjeta y dispara T3.
   - Aceptación: un JWT inválido se rechaza; una acción válida llega a T3 y encola.
-  - Verifica: `tests/test_teams_bot_service.py`; `docs/operacion.md` §5 (endpoint).
-  - Ficheros: `src/agent_review/teams_bot/` (`ingress.py`), `docs/operacion.md`.
+  - Verifica: `tests/test_teams_bot_ingress.py`; `docs/operacion.md` §5 (endpoint).
+  - Ficheros: `src/agent_review/teams_bot/` (`ingress.py`, `sdk_handlers.py`, `main.py`),
+    `docs/operacion.md`.
+  - **Hecho (2026-10-16).** `CardIngress` es la lógica **pura** (sin SDK): despacha
+    `teams.decision` / `teams.submit` al `DecisionCardService` y al
+    `DecisionSubmitter` de T3. El wiring del SDK (`sdk_handlers.py`) registra
+    `on_activity` (C14), `on_card_action_execute` y el fallback `on_message`
+    (`Action.Submit`). El JWT lo valida el propio SDK al haber `client_id` (fail-
+    closed en producción); sin identidad o con token inválido responde `401`
+    antes de los handlers (probado con el pipeline real sobre FastAPI).
+  - **Tres correcciones durante el implemento.** (1) La respuesta del
+    `Action.Execute` debe ser `AdaptiveCardActionCardResponse` con la tarjeta
+    repintada, no un mensaje: si no, se rompe C8. (2) El catch-all `on_activity`
+    **debe** llamar a `await ctx.next()`; sin eso, el SDK no llega a los
+    handlers de tarjeta (cadena de middleware). (3) Solo se recuerda el canal
+    si la conversación es `channel`: un DM no pisa el canal dedicado.
+  - Un fallo de Redis al marcar/encolar responde con aviso de reintento, no con
+    `500` (Teams reintentaría a ciegas). Un fallo al editar la tarjeta tras
+    Enviar es cosmético: la decisión ya está encolada.
 
 - [x] **T8** Retirada de `TeamsWebhookAdapter` y variables del webhook
   - Borrar `TeamsWebhookAdapter`, sus tests y `TEAMS_WEBHOOK_URL` del

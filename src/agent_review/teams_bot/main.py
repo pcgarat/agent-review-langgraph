@@ -1,14 +1,16 @@
-"""Proceso `teams-bot`: consumo de la outbox y *messaging endpoint* (T6, 013).
+"""Proceso `teams-bot`: consumo de la outbox y *messaging endpoint* (T6/T7, 013).
 
 Arranca dos cosas en un mismo bucle de eventos:
 
 1. El **consumo de la outbox** (`reviews:notices`): el bucle async que publica los
    avisos del worker en el canal (T5).
 2. La **App del SDK**, que sirve `POST /api/messages` (el *messaging endpoint* del
-   Bot Framework) y es el ingress que recibira las acciones de la tarjeta (T7).
+   Bot Framework) y es el ingress que traduce las acciones de la tarjeta a una
+   decision encolada (T7).
 
-El *messaging endpoint* lo sirve el propio SDK (`app.start`). T7 conecta los
-handlers (`on_message`, `on_card_action_execute`) y el registro del canal (C14).
+El *messaging endpoint* lo sirve el propio SDK (`app.start`). El SDK valida el JWT
+del Bot Framework cuando hay `client_id` (fail-closed en produccion); un JWT
+invalido se rechaza con `401` antes de llegar a los handlers.
 """
 
 from __future__ import annotations
@@ -20,10 +22,17 @@ from typing import Any
 
 from agent_review.chat_outbox import RedisChatOutbox
 from agent_review.paused_store import RedisPausedStore
+from agent_review.queue import RedisReviewQueue
 from agent_review.settings import Settings, get_settings, require_teams_bot_secrets
+from agent_review.teams_bot.card_service import DecisionCardService
+from agent_review.teams_bot.decisions import DecisionSubmitter
+from agent_review.teams_bot.ingress import CardIngress
 from agent_review.teams_bot.sdk_client import SDKChannelClient, build_app
+from agent_review.teams_bot.sdk_handlers import register_handlers
 from agent_review.teams_bot.service import TeamsBotService, build_teams_bot
+from agent_review.teams_bot.state import RedisCardStore
 from agent_review.teams_bot.threads import RedisChannelStore
+from agent_review.teams_bot.transport import ChannelTransport
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +50,38 @@ def run_forever(*, settings: Settings | None = None) -> None:
 
     app = build_app(settings)
     _register_healthz(app, secret=settings.teams_bot_shared_secret)
+
+    store = RedisChannelStore(url=settings.redis_url)
+    paused = RedisPausedStore(url=settings.redis_url, ttl_s=settings.decision_ttl_s)
+    cards = RedisCardStore(url=settings.redis_url, ttl_s=int(settings.decision_ttl_s))
+    client = SDKChannelClient(app)
+    transport = ChannelTransport(client=client, store=store)
+
     service = build_teams_bot(
         settings,
-        client=SDKChannelClient(app),
+        client=client,
         outbox=RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key),
-        store=RedisChannelStore(url=settings.redis_url),
-        paused=RedisPausedStore(url=settings.redis_url, ttl_s=settings.decision_ttl_s),
+        store=store,
+        paused=paused,
     )
+    # El ingress (T7) reutiliza el mismo transporte y el inbox: marca, encola y
+    # edita la tarjeta. No reanuda el grafo (C4).
+    ingress = CardIngress(
+        paused=paused,
+        cards=DecisionCardService(store=cards),
+        submitter=DecisionSubmitter(
+            paused=paused, queue=RedisReviewQueue(url=settings.redis_url), cards=cards
+        ),
+        transport=transport,
+    )
+    register_handlers(app, ingress=ingress, store=store)
 
     logger.info("Bot de Teams arrancado (Fase 4, iniciativa 013)")
     asyncio.run(serve_bot(service, app, port=settings.teams_bot_port))
 
 
 def _register_healthz(app: Any, *, secret: str) -> None:
-    """Publica `GET /healthz` en el servidor del SDK, con el bearer interno (T7).
+    """Publica `GET /healthz` en el servidor del SDK, con el bearer interno.
 
     El SDK solo sirve POST al *messaging endpoint*; el latido de Compose necesita
     una ruta propia. Se protege con el **secreto compartido** del ingress: el

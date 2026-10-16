@@ -69,6 +69,16 @@ class SDKChannelClient:
         await self._app.send(conversation_id, activity, service_url=service_url or None)
 
 
+def adaptive_card(payload: dict[str, Any]) -> AdaptiveCard:
+    """`dict` de Adaptive Card -> modelo del SDK.
+
+    Se valida aqui (ruidoso si el render produjo algo que el SDK no admite) y es el
+    unico punto que conoce el modelo de tarjeta del SDK; el render (`cards.py`) y el
+    ingress siguen devolviendo `dict`.
+    """
+    return AdaptiveCard.model_validate(payload)
+
+
 def _to_activity(payload: Any) -> Any:
     """Texto o `dict` de tarjeta -> actividad del SDK.
 
@@ -77,8 +87,7 @@ def _to_activity(payload: Any) -> Any:
     """
     if isinstance(payload, str):
         return MessageActivityInput(text=payload)
-    card = AdaptiveCard.model_validate(payload)
-    attachment = card_attachment(AdaptiveCardAttachment(content=card))
+    attachment = card_attachment(AdaptiveCardAttachment(content=adaptive_card(payload)))
     return MessageActivityInput(attachments=[attachment])
 
 
