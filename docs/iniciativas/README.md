@@ -23,6 +23,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona) depende de 007 |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | Depende de 007, 008 y 009 |
 | 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Depende de 006 para medirse · habilita 008 |
+| 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | aprobada | 🟡 T1–T11 pendientes; el alta del bot es ruta crítica | Independiente; [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 3 P1 no detectados):
@@ -32,7 +33,7 @@ medir (006), cobertura (012: el revisor vio ≈ 5 de 51 ficheros sin avisar), co
 006 → 012 → 007 → (008 · 009 · 010 en paralelo) → 011. La fase 1 de 010 (gate de
 CI) puede ir en cualquier momento.
 
-Siguiente número libre: **013**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **014**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la spec de 001 §13 y aún no tiene iniciativa.
 
 ## Pendientes humanos o externos (transversales)

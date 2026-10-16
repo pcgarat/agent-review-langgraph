@@ -70,7 +70,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: `tests/eval/test_eval_harness.py`.
   - Ficheros: `tests/eval/harness.py`.
 
-- [ ] **E7** Grabación `recorded.json` y `make eval-record`
+- [x] **E7** Grabación `recorded.json` y `make eval-record`
   - Graba contra el modelo real (marca `live`) las respuestas del rol `correctness`
     para el caso, con su fingerprint.
   - Aceptación: `make eval-record` produce `recorded.json` con una entrada por rol y
@@ -78,7 +78,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: ejecución real (`make eval-record`), fuera de CI.
   - Ficheros: `tests/eval/pr_3/recorded.json`, `scripts/eval.py`.
 
-- [ ] **E8** Regresión en CI y baseline congelado
+- [x] **E8** Regresión en CI y baseline congelado
   - `tests/eval/test_eval_pr_3.py` corre el caso en *replay* dentro de `pytest` y
     compara contra `expected_report.json`; dos ejecuciones dan el mismo JSON.
   - Aceptación: `make test` en verde sin red ni credenciales; el baseline de la spec
@@ -88,7 +88,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
 
 ## Bloque 3 — CLI, cobertura y corrida real
 
-- [ ] **E9** CLI `scripts/eval.py` y comandos `make`
+- [x] **E9** CLI `scripts/eval.py` y comandos `make`
   - `make eval` (informe *replay*; `EVAL_COMPARE` añade el delta), `make eval-live`
     (marca `live`) y `make eval-record`.
   - Aceptación: `make eval` imprime el informe con el delta contra el baseline;

@@ -1,0 +1,45 @@
+{
+  "acceptable": [
+    "H"
+  ],
+  "case": "pr-3-agent-review",
+  "counts": {
+    "acceptable": 1,
+    "fn": 3,
+    "fp": 6,
+    "fp_labeled": 6,
+    "fp_p0_p1": 3,
+    "fp_unknown": 0,
+    "published": 9,
+    "tp": 2,
+    "tp_inverted": 1
+  },
+  "fingerprints": {
+    "correctness": "sha256:0be0e7957e6005c8c67066eefdbac71edfe8f423f4b974c1c68535e27bd50e86"
+  },
+  "inverted": [
+    "A"
+  ],
+  "matched": [
+    "A",
+    "I"
+  ],
+  "metrics": {
+    "cost_per_tp_tokens": 10333.5,
+    "coverage": null,
+    "precision": 0.25,
+    "recall": 0.4,
+    "recall_by_subset": {
+      "correctness": 1.0,
+      "integracion": 0.0
+    },
+    "severity_accuracy": 1.0
+  },
+  "missing": [
+    "integracion-1",
+    "integracion-2",
+    "integracion-3"
+  ],
+  "mode": "replay",
+  "unmatched": []
+}

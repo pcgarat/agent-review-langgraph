@@ -19,8 +19,13 @@ from typing import Any
 
 import yaml
 
+from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
+from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.domain.models import Finding
-from agent_review.ports.llm import JsonMode, LlmReply
+from agent_review.graph.build import build_graph
+from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.llm import JsonMode, LlmPort, LlmReply
+from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 # Tres etiquetas (E9 de la spec): lo que debe salir, lo que no, y lo tolerable.
 LBL_EXPECTED = "expected"
@@ -538,6 +543,9 @@ class ReplayLlm:
         self._recording = recording
         self._role = role
         self._used: set[str] = set()
+        # Tokens de las respuestas servidas: es el gasto del run (E13). El `usage`
+        # real lo reporta el proveedor y viaja en la grabacion; en replay se suma.
+        self.total_tokens = 0
         current = case_fingerprint(case)
         if recording.case_fingerprint != current:
             raise FingerprintMismatch(
@@ -570,13 +578,15 @@ class ReplayLlm:
                 f"esta llamada; regraba con `make eval-record`"
             )
         self._used.add(fingerprint)
-        return LlmReply(
+        reply = LlmReply(
             text=str(entry["text"]),
             prompt_tokens=int(entry.get("prompt_tokens", 0)),
             completion_tokens=int(entry.get("completion_tokens", 0)),
             reasoning_tokens=int(entry.get("reasoning_tokens", 0)),
             finish_reason=str(entry.get("finish_reason", "")),
         )
+        self.total_tokens += reply.total_tokens
+        return reply
 
 
 def record_call(
@@ -603,3 +613,209 @@ def record_call(
         "finish_reason": reply.finish_reason,
     }
     return fingerprint
+
+
+def fingerprints_by_role(recording: Recording) -> dict[str, str]:
+    """Huellas de los prompts grabados, por rol, para el informe.
+
+    Un rol con varias llamadas las une con `,` (ordenadas): el informe declara de
+    que grabacion salio cada respuesta, de modo que un cambio de prompt se ve como
+    un diff en el baseline congelado.
+    """
+    result: dict[str, list[str]] = {}
+    for fingerprint, entry in recording.calls.items():
+        result.setdefault(str(entry.get("role", "")), []).append(fingerprint)
+    return {role: ",".join(sorted(values)) for role, values in sorted(result.items())}
+
+
+class RecordingLlm:
+    """`LlmPort` que envuelve al modelo real y graba cada respuesta (E7).
+
+    Es el puerto de `make eval-record`: delega en el modelo real y guarda la
+    respuesta bajo el fingerprint del prompt, de modo que la corrida en *replay*
+    reproduzca exactamente lo mismo. `total_tokens` acumula el gasto del run.
+    """
+
+    def __init__(self, inner: LlmPort, recording: Recording, *, role: str) -> None:
+        self._inner = inner
+        self._recording = recording
+        self._role = role
+        self.total_tokens = 0
+
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode: JsonMode | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> LlmReply:
+        reply = self._inner.complete(
+            system=system,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            response_schema=response_schema,
+        )
+        record_call(
+            self._recording,
+            role=self._role,
+            system=system,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            reply=reply,
+        )
+        self.total_tokens += reply.total_tokens
+        return reply
+
+
+# ---------------------------------------------------------------------------
+# Corrida del grafo real sobre el caso (E7/E9): el harness lo lee, no lo edita.
+# ---------------------------------------------------------------------------
+
+
+class CaseVcs:
+    """`VcsPort` falso sobre un caso versionado: publica en memoria.
+
+    Reproduce lo que el grafo publica sin tocar red. El `diff` y el `diffstat`
+    salen del caso; el `max_files_per_pr` del `scope` del caso los recorta igual
+    que en la corrida auditada (E10). Los comentarios publicados quedan en
+    `inlines` y `comments` para que el harness derive el conjunto publicado (E12).
+    """
+
+    def __init__(self, case: Case) -> None:
+        self.case = case
+        self.inlines: list[tuple[str, int, str]] = []
+        self.comments: list[str] = []
+        self._files = parse_unified_diff(case.diff)
+
+    def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
+        return PullRequestInfo(
+            repo=repo,
+            pr_id=pr_id,
+            title=self.case.name,
+            source_branch="feature",
+            destination_branch="main",
+            author="author",
+            head_sha=self.case.head_sha,
+            url="https://example.test/pr",
+        )
+
+    def get_diff(self, repo: str, pr_id: int) -> str:
+        del repo, pr_id
+        return self.case.diff
+
+    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
+        del repo, pr_id
+        stat: list[tuple[str, int, int]] = []
+        for path, file_diff in self._files.items():
+            stat.append((path, len(file_diff.added), 0))
+        return stat
+
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo, path, ref
+        return ""
+
+    def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
+        del repo, pr_id
+        return []
+
+    def resolve_inline_anchor(
+        self, repo: str, pr_id: int, *, path: str, text: str
+    ) -> InlineAnchor | None:
+        del repo, pr_id
+        file_diff = self._files.get(path)
+        if file_diff is None:
+            return None
+        line = resolve_added_line(file_diff.added, text)
+        if line is None:
+            return None
+        return InlineAnchor(path=path, line=line)
+
+    def post_inline_comment(
+        self, repo: str, pr_id: int, *, path: str, line: int, body: str, from_line=None
+    ) -> None:
+        del repo, pr_id, from_line
+        self.inlines.append((path, line, body))
+
+    def post_comment(self, repo: str, pr_id: int, body: str) -> None:
+        del repo, pr_id
+        self.comments.append(body)
+
+    def post_task(self, repo: str, pr_id: int, body: str) -> None:
+        del repo, pr_id, body
+
+
+@dataclass(frozen=True)
+class Run:
+    """Resultado de una corrida del grafo: lo publicado y el gasto del run."""
+
+    published: tuple[Finding, ...]
+    merged: tuple[Finding, ...]
+    tokens: int
+    inlined: int
+
+
+def run_case(case: Case, *, llm: LlmPort, policy: PolicyEngine, vcs: CaseVcs) -> Run:
+    """Corre el **grafo real** sobre el caso con las personas y el VCS inyectados.
+
+    Lo unico que cambia entre *replay* y real es el `LlmPort` (E7 de la spec). El
+    resultado se lee del estado del grafo y de lo que el `CaseVcs` registro: el
+    harness no reconstruye el recorte ni la publicacion a mano.
+    """
+    reviewer = LlmReviewer(
+        llm=llm,
+        name="correctness",
+        max_findings=int(case.scope.get("review_max_findings", 10)),
+    )
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[reviewer],
+        policy=policy,
+        verification_enabled=False,
+    ).compile()
+    state = graph.invoke(
+        {
+            "request": {
+                "repo": case.repo,
+                "pr_id": case.pr_id,
+                "head_sha": case.head_sha,
+            },
+            "findings": [],
+        }
+    )
+    merged = tuple(state.get("merged", []))
+    tokens = getattr(llm, "total_tokens", 0)
+    return Run(
+        published=merged,
+        merged=merged,
+        tokens=int(tokens),
+        inlined=len(vcs.inlines),
+    )
+
+
+def evaluate(
+    case: Case,
+    *,
+    llm: LlmPort,
+    policy: PolicyEngine,
+    mode: str = "replay",
+    recording: Recording | None = None,
+    coverage: float | None = None,
+) -> Report:
+    """Corre el grafo sobre el caso y devuelve el informe (E7/E9).
+
+    Ata el runner (`run_case`), las metricas (`measure`) y las huellas de la
+    grabacion para que el informe declare de donde salio cada respuesta.
+    """
+    run = run_case(case, llm=llm, policy=policy, vcs=CaseVcs(case))
+    fingerprints = fingerprints_by_role(recording) if recording is not None else {}
+    return measure(
+        case,
+        run.published,
+        mode=mode,
+        tokens=run.tokens,
+        coverage=coverage,
+        fingerprints=fingerprints,
+    )

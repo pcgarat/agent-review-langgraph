@@ -6,6 +6,7 @@ la review del PR #3 (esa vive en `pr_3/`, E5). Sin red, sin grafo.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -13,9 +14,11 @@ import pytest
 import yaml
 from harness import (
     Case,
+    CaseVcs,
     FingerprintMismatch,
     Label,
     Recording,
+    RecordingLlm,
     ReplayLlm,
     Report,
     Verdict,
@@ -26,17 +29,22 @@ from harness import (
     measure,
     normalize,
     record_call,
+    run_case,
     to_json,
 )
 
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
+from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.llm import LlmReply
 
 
 def _write_case(root: Path, labels: dict) -> Path:
     (root / "labels.yaml").write_text(yaml.safe_dump(labels), encoding="utf-8")
-    (root / "diff.patch").write_text("diff --git a/x.py b/x.py\n+amor\n", encoding="utf-8")
+    (root / "diff.patch").write_text(_TOY_DIFF, encoding="utf-8")
     return root
+
+
+_TOY_DIFF = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+amor\n"
 
 
 def _case(
@@ -545,3 +553,80 @@ def test_recording_round_trip(tmp_path: Path) -> None:
 
     assert reloaded.case_fingerprint == recording.case_fingerprint
     assert llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096).text == '{"findings": []}'
+
+
+# --- Runner: graba el modelo real y reproduce en replay por el grafo real ---
+
+
+class _FakePort:
+    """Modelo falso: devuelve un hallazgo valido anclado al diff de juguete."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+        self.calls = 0
+
+    def complete(self, *, system, prompt, max_tokens, json_mode=None, response_schema=None):
+        del system, prompt, max_tokens, json_mode, response_schema
+        self.calls += 1
+        return LlmReply(text=self._payload, prompt_tokens=100, completion_tokens=50)
+
+
+def _toy_case(tmp_path: Path) -> Case:
+    _write_case(
+        tmp_path,
+        {
+            "case": "toy",
+            "repo": "r",
+            "pr_id": 1,
+            "base_sha": "b",
+            "head_sha": "h",
+            "captured_at": "2026-10-16",
+            "source": "s",
+            "scope": {"max_files_per_pr": 10},
+        },
+    )
+    return load_case(tmp_path)
+
+
+def _pipeline_policy() -> PolicyEngine:
+    return PolicyEngine({"version": 1, "max_autonomy": "report", "guards": {}})
+
+
+def _finding_payload() -> str:
+    return json.dumps(
+        {
+            "findings": [
+                {
+                    "title": "Amor no validado",
+                    "severity": "P2",
+                    "file": "x.py",
+                    "line": 1,
+                    "why_it_matters": "Se escribe sin comprobar",
+                    "autofix_class": "advisory",
+                    "owner": "human",
+                    "requires_verification": False,
+                    "confidence": 50,
+                    "evidence": ["x.py:1 amor"],
+                }
+            ]
+        }
+    )
+
+
+def test_runner_graba_y_reproduce_el_mismo_conjunto(tmp_path: Path) -> None:
+    case = _toy_case(tmp_path)
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+
+    vivo = RecordingLlm(_FakePort(_finding_payload()), recording, role="correctness")
+    primera = run_case(case, llm=vivo, policy=_pipeline_policy(), vcs=CaseVcs(case))
+
+    assert len(recording.calls) == 1, "la corrida con modelo real debe grabar su llamada"
+    assert [finding.id for finding in primera.published] == ["correctness-x-py-1-amor-no-validado"]
+    assert primera.tokens == 150
+
+    replay = ReplayLlm(recording, case, role="correctness")
+    segunda = run_case(case, llm=replay, policy=_pipeline_policy(), vcs=CaseVcs(case))
+
+    assert [finding.id for finding in segunda.published] == [
+        finding.id for finding in primera.published
+    ]
