@@ -328,6 +328,13 @@ class ReviewRequest(BaseModel):
     # `None` en una review normal: el campo no cambia su forma.
     fix_resolution: FixResolutions | None = None
 
+    # Panel (019 W6): comando de cancelacion encolado. La marca de Redis
+    # (`reviews:cancel:<review_key>`) la ve la frontera de nodo de una review que
+    # corre o espera en la cola, pero una review **pausada** no tiene ningun nodo
+    # que la mire: este campo es la senal que el worker aplica al desencolar, sin
+    # reanudar el grafo (no se publica nada).
+    cancelled: bool = False
+
     # Pasada degradada: la encola el barrido de ingesta cuando vence la espera sin
     # todos los artefactos. Tiene su propio hilo (`thread_id`) para que, si el
     # artefacto llega tarde, la pasada completa de la misma ejecucion no encuentre

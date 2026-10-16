@@ -17,13 +17,20 @@ import logging
 from enum import StrEnum
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
 from agent_review.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+# Nombre de la cookie que lleva la sesion en el navegador. Los endpoints JSON
+# aceptan las dos vias (cabecera y cookie) porque `curl` y los tests mandan cabecera
+# y una navegacion normal, solo cookie.
+SESSION_COOKIE = "panel_session"
+# Cookie de rol legible por el servidor para pintar los botones sin repetir el
+# secreto en el HTML. No autoriza nada por si sola: la sesion se valida aparte.
+ROLE_COOKIE = "panel_role"
 # Valores de ejemplo que relajan la sesion, igual que `_verify_decision_token`.
 _INSECURE_SECRETS = {"change-me", "changeme"}
 # Usuario que se asume cuando no hay secreto ni cabecera (dev/test).
@@ -92,9 +99,16 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     return session
 
 
-def require_session(x_panel_session: str | None = Header(default=None)) -> Session:
-    """Dependencia FastAPI: exige y valida la sesion del panel."""
-    return verify_session(get_settings(), x_panel_session)
+def require_session(
+    x_panel_session: str | None = Header(default=None),
+    panel_session: str | None = Cookie(default=None),
+) -> Session:
+    """Dependencia FastAPI: exige y valida la sesion del panel.
+
+    Acepta la cabecera `X-Panel-Session` (CLI, `curl`, tests) o la cookie
+    `panel_session` (navegador: una navegacion normal no puede mandar cabeceras).
+    """
+    return verify_session(get_settings(), x_panel_session or panel_session)
 
 
 def require_operador(session: Annotated[Session, Depends(require_session)]) -> Session:

@@ -16,7 +16,7 @@ from typing import Protocol, runtime_checkable
 
 import redis
 
-from agent_review.errors import cancel_key
+from agent_review.errors import PermanentError, cancel_key
 from agent_review.redis_utils import build_redis_client
 from agent_review.settings import Settings
 
@@ -45,7 +45,7 @@ class RedisCancellation:
     def is_cancelled(self, review_key: str) -> bool:
         """¿Tiene la review marca de cancelación? `False` si Redis no responde.
 
-        Es el `CancelCheck` que instala el worker: al ser best-effort, un fallo de
+        Es el `CancelCheck` que el worker consume: al ser best-effort, un fallo de
         Redis no aborta nada; la review simplemente sigue corriendo.
         """
         try:
@@ -53,6 +53,17 @@ class RedisCancellation:
         except redis.exceptions.RedisError as exc:
             logger.debug("cancelación: fallo al consultar %s (%s); se sigue", review_key, exc)
             return False
+
+    def mark(self, review_key: str) -> None:
+        """Pone la marca de cancelación (019 OP29). La escribe el panel.
+
+        Ruidoso si falla, al contrario que la lectura: quien cancela necesita saber
+        que la marca no llegó, no un `200` sobre una cancelación que no ocurrirá.
+        """
+        try:
+            self._client.set(cancel_key(review_key), "1")
+        except redis.exceptions.RedisError as exc:
+            raise PermanentError(f"no se pudo marcar la cancelación de {review_key}") from exc
 
     def clear(self, review_key: str) -> None:
         """Retira la marca (el worker la consume al abortar)."""
