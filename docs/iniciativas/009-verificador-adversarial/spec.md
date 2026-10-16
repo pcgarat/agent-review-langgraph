@@ -5,18 +5,18 @@
 > **Estado:** borrador
 >
 > **Entrega objetivo:** entre `merge` y `policy` hay un nodo `verify` que, con un
-> **modelo distinto** al de la persona que propuso el hallazgo y con **lectura de
-> solo lectura** del repositorio al `head_sha`, intenta **refutarlo**; un hallazgo
-> del `LlmReviewer` de severidad `≥P2` que no produzca un `failure_scenario`
-> verificado baja a `P3` y ningún hallazgo se borra.
+> **modelo distinto** al de las personas que proponen hallazgos y con **acceso de
+> solo lectura** al repositorio al `head_sha`, intenta **refutarlo**; un hallazgo
+> del `LlmReviewer` cuya severidad exija verificación según el gate de
+> [011](../011-gate-de-severidad/spec.md) sale `verified_grounded`, `refuted` o
+> `unverified`, y ningún hallazgo se borra. L2 no toca la severidad.
 
 ---
 
 ## 1. Objetivo
 
-La review de un PR real produjo 9 hallazgos: **6 falsos positivos**, 1 confirmado
-con el fallo descrito **invertido** y 2 que documentaban decisiones ya tomadas.
-El revisor LLM (`LlmReviewer`) recibe solo el diff recortado y aun así afirma sobre
+La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó **6
+falsos positivos** de 9 publicados y 1 fallo real descrito **invertido**. El revisor LLM (`LlmReviewer`) recibe solo el diff recortado y aun así afirma sobre
 código que no ve: rellena el hueco con semántica inventada. Dos formas concretas de
 ese defecto son el objetivo directo de este trabajo:
 
@@ -34,7 +34,9 @@ Se quiere, por tanto:
 1. Un **segundo juicio independiente** sobre cada hipótesis del `LlmReviewer`, con
    otro modelo y con acceso al código que el proponente no tuvo.
 2. Un veredicto **anclado a citas**: lo que no se puede citar, no se afirma.
-3. Un **escenario de fallo** como precio de la severidad: sin escenario, `P3`.
+3. Un **escenario de fallo** como precio de la verificación: sin escenario no hay
+   `verified_grounded`, y el gate de [011](../011-gate-de-severidad/spec.md) hace el
+   resto.
 4. Que un hallazgo **refutado se conserve** en el estado (mide precisión y evita
    volver a proponerlo), en vez de desaparecer sin dejar rastro.
 
@@ -45,9 +47,11 @@ Se quiere, por tanto:
 - **Ejecutar código del PR.** Sigue siendo exclusivo del `sandbox-runner`
   ([ADR-0011](../../adr/0011-sandbox-runner-aislado.md)). El verificador **lee**,
   nunca ejecuta; la capa ejecutable (L3) es de otra iniciativa.
-- **El gate de publicación.** Qué acción toma `autonomy.yaml` ante un
-  `verification: unverified` (degradar o no publicar) lo define la iniciativa del
-  contrato y la política; aquí solo se **produce** el veredicto y se **conserva**.
+- **El gate de publicación ni la severidad.** Qué severidad se publica ante un
+  `unverified` o un `refuted` lo decide el gate de
+  [011](../011-gate-de-severidad/spec.md) (único dueño de la severidad,
+  [007 D11](../007-contrato-de-verificacion/spec.md)); aquí solo se **produce** el
+  veredicto y se **conserva**.
 - **El contrato de los campos.** `failure_scenario`, `verification` y
   `verification_evidence` los define [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md).
   Esta iniciativa los **consume**; no los rediseña.
@@ -105,15 +109,17 @@ techo de severidad por coste.
 | # | Decisión | Motivo |
 |---|---|---|
 | V1 | El verificador es un **puerto nuevo** (`VerifierPort`) y un **nodo** `verify` entre `merge` y `policy` | El juicio es una etapa aparte; el nodo la hace visible, reintentable y auditable en el grafo |
-| V2 | Rol `verifier` en `models.yaml` con un modelo **distinto** al de `correctness` | Mismo modelo + mismo contexto = sello de goma (§3.1); encaja con el registro por rol ([ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)) |
+| V2 | Rol `verifier` en `models.yaml` con un modelo **distinto** al de todos los roles de revisión (`correctness`, `security`, `arch`) | Mismo modelo + mismo contexto = sello de goma (§3.1); encaja con el registro por rol ([ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)) |
 | V3 | El *prompt* **refuta** en vez de aprobar, y exige `failure_scenario` | Un verificador que aprueba por defecto no verifica; el escenario obliga a recorrer la ruta |
 | V4 | El veredicto debe **citar** código; el nodo comprueba que la cita pertenece a un fichero que sirvió | Corta el defecto raíz: afirmar sobre código que no se ha visto |
-| V5 | Sin `failure_scenario` → `P3`; sin veredicto → `unverified` (nunca `refuted`) | La ausencia de prueba no es refutación; un fallo del verificador no puede degradar un P1 real |
+| V5 | Sin `failure_scenario` no hay `CONFIRMED` (queda `unverified`); sin veredicto → `unverified` (nunca `refuted`). L2 **no cambia `severity`** | La ausencia de prueba no es refutación; un fallo del verificador no puede tumbar un P1 real; la severidad es del gate (007 D11) |
 | V6 | Un hallazgo refutado **se conserva** en el estado, marcado; no se borra ni se ancla inline | Alimenta la métrica y evita re-proponerlo; no ensucia el inline con lo descartado |
-| V7 | L2 solo para hallazgos de personas **no grounded** y severidad `≥P2` | El `ToolingReviewer` ya es `verified_static`; un `P3` no merece el coste |
+| V7 | L2 solo para hallazgos de personas **no grounded** cuya severidad esté en `severity_gate.require_verified_for` | El `ToolingReviewer` ya es `verified_static`; verificar lo que el gate no exige es coste sin efecto |
 | V8 | Lectura **de solo lectura** por `VcsPort.get_file` a `head_sha`, con topes de ficheros y bytes | No ejecuta código del PR: no necesita el aislamiento del `sandbox-runner` ni P6 |
 | V9 | El nodo es **idempotente** y lleva `RetryPolicy`; un fallo permanente deja `unverified` | Es una llamada externa; un reintento no debe re-verificar lo ya verificado |
-| V10 | El umbral de severidad vive en `autonomy.yaml` (`guards.verify_min_severity`); los topes de recursos, en `Settings` | El umbral es política (cambiable sin desplegar); el coste es operación |
+| V10 | El umbral es **el mismo** que el del gate (`severity_gate.require_verified_for` de [011](../011-gate-de-severidad/spec.md)); los topes de recursos, en `Settings` | Un solo umbral: si L2 y el gate tuvieran el suyo, un P2 saldría con una severidad u otra según quién gane |
+| V11 | Tope **por review**: como máximo `VERIFIER_MAX_FINDINGS` hallazgos, los más graves primero; el resto queda `unverified` | Sin tope, 3 personas × N hallazgos × varias llamadas por hallazgo agravan D17 sin límite |
+| V12 | Si el veredicto es `CONFIRMED`, el comentario publica el `failure_scenario` **del verificador**, no el del proponente | En el caso A el proponente describió el fallo al revés; confirmar sin corregir el texto publica la dirección equivocada |
 
 ## 5. Diseño o contrato
 
@@ -123,9 +129,9 @@ techo de severidad por coste.
 flowchart LR
     scope --> persona["persona ×N<br/>(fan-out)"]
     persona --> merge["merge<br/>dedupe + estampa grounding"]
-    merge --> verify{"verify<br/>¿candidato?<br/>≥P2 y no grounded"}
+    merge --> verify{"verify<br/>¿candidato?<br/>severidad del gate y no grounded"}
     verify -->|"sí: refuta con tools"| verdict["confirmed / refuted / unverified"]
-    verify -->|"no: ya grounded o P3"| policy
+    verify -->|"no: grounded, bajo umbral o tope agotado"| policy
     verdict --> policy["policy<br/>autonomy.yaml → Decision"]
     policy --> hitl
 ```
@@ -152,7 +158,7 @@ class Verdict(StrEnum):
     UNPROVEN = "unproven"     # no se pudo probar (sin contexto, cita no servida)
 
 
-class Verification(BaseModel):
+class VerificationResult(BaseModel):   # `Verification` es el enum de 007
     finding_id: str
     verdict: Verdict
     failure_scenario: str | None = None      # contrato de 007
@@ -165,7 +171,7 @@ class Verification(BaseModel):
 class VerifierPort(Protocol):
     name: str
 
-    def verify(self, finding: Finding, *, repo: str, head_sha: str) -> Verification: ...
+    def verify(self, finding: Finding, *, repo: str, head_sha: str) -> VerificationResult: ...
 ```
 
 El `VerifierPort` recibe **un** hallazgo y devuelve **un** veredicto: aislamiento por
@@ -183,10 +189,12 @@ bindings:
   fixer: deepseek-v4-flash
 ```
 
-- `ROLES` de [`models_config.py`](../../../src/agent_review/models_registry.py) gana
+- `ROLES` de [`models_config.py`](../../../src/agent_review/models_config.py) gana
   `"verifier"`; un typo sigue fallando al arrancar.
-- **Fail-fast de independencia:** si `bindings["verifier"] == bindings["correctness"]`,
-  el registro no valida y el worker no arranca. Es la decisión V2 hecha ejecutable:
+- **Fail-fast de independencia:** si `bindings["verifier"]` coincide con el binding
+  de cualquier rol de revisión (`LLM_REVIEW_ROLES` en
+  [`worker/main.py`](../../../src/agent_review/worker/main.py): `correctness`,
+  `security`, `arch`), el registro no valida y el worker no arranca. Es la decisión V2 hecha ejecutable:
   un sello de goma silencioso es peor que un arranque roto.
 - Sin binding `verifier` (vía implícita `LLM_*`, D7 de 0015) el nodo es un
   **paso directo**: todo queda `unverified` y el grafo se comporta como hoy.
@@ -242,22 +250,23 @@ modelo:
 
 Mapeo del veredicto al contrato de 007 sobre el `Finding`:
 
-| `Verdict` | `verification` | Severidad resultante | Presencia en el estado |
+| `Verdict` | `verification` | Texto publicado | Presencia en el estado |
 |---|---|---|---|
-| `CONFIRMED` | `verified_grounded` | La propuesta | `merged`, publicable |
-| `REFUTED` | `refuted` | `P3` | `merged`, **conservado** y fuera de la publicación (007, §5.3) |
-| `UNPROVEN` | `unverified` | `P3` | `merged`, conservado; el gate decide |
+| `CONFIRMED` | `verified_grounded` | `failure_scenario` del verificador (V12) | `merged` |
+| `REFUTED` | `refuted` | — | `merged`, **conservado** |
+| `UNPROVEN` | `unverified` | El del proponente | `merged`, conservado |
 
-El gate de `autonomy.yaml` es quien traduce `verification` a «publicar, degradar o
-callar» (decisión de [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md));
-L2 solo deja el estado del hallazgo en un valor que el gate pueda leer (Q2).
+La severidad no aparece en la tabla a propósito: el gate de
+[011](../011-gate-de-severidad/spec.md) es quien traduce `verification` en
+severidad publicada y decide qué hacer con un `refuted` (`on_refuted`). L2 solo deja
+el estado del hallazgo en un valor que el gate pueda leer.
 
 ### 5.6 Estado y persistencia
 
 | Campo de `ReviewState` | Reducer | Quién lo escribe |
 |---|---|---|
 | `grounded_findings: list[str]` | Sustituye | `merge` (ids de hallazgos ya *grounded*) |
-| `verifications: dict[str, Verification]` | Sustituye | `verify`, idempotente sobre lo ya verificado |
+| `verifications: dict[str, VerificationResult]` | Sustituye | `verify`, idempotente sobre lo ya verificado |
 
 `findings`/`merged` **no** se tocan: un hallazgo refutado sigue en `merged` con su
 marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispatch` lee
@@ -273,32 +282,33 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 
 | # | Riesgo | Mitigación |
 |---|---|---|
-| R1 | **Coste**: L2 agrava la deuda D17 (presupuesto por llamada, no por PR) | Solo `LlmReviewer` y `≥P2` (V7); topes duros de llamadas y bytes (V8); decisión de D17 en las preguntas abiertas |
+| R1 | **Coste**: L2 agrava la deuda D17 (presupuesto por llamada, no por PR) | Solo `LlmReviewer` y las severidades del gate (V7); tope por review (V11); topes duros de llamadas y bytes (V8); decisión de D17 en las preguntas abiertas |
 | R2 | **Latencia**: 1–5 llamadas extra por hallazgo en la ruta caliente | Los segundos de L2 no bloquean a nadie: el flujo es asíncrono y lo caro sigue detrás del `interrupt` de E7 |
 | R3 | **Verificador agresivo que tumba recall** | `REFUTED` exige contra-evidencia citada; sin prueba es `UNPROVEN`, y el hallazgo **se conserva** (V5, V6) |
-| R4 | **Sello de goma** si el modelo acaba siendo el mismo | Fail-fast al arrancar: `verifier ≠ correctness` (§5.3) |
+| R4 | **Sello de goma** si el modelo acaba siendo el mismo | Fail-fast al arrancar: `verifier` distinto de todos los roles de revisión (§5.3) |
 | R5 | **Cita inventada** por el modelo | El nodo valida la cita contra los ficheros servidos; sin coincidencia, `UNPROVEN` (§5.5) |
 | R6 | **Fallo del verificador degrada un P1 real** | Un fallo permanente del modelo deja `unverified`, nunca `refuted` (V5); el gate decide, y aquí no se borra nada |
 | R7 | **Lecturas caras** al VCS (procesos `twg`) o límite de tasa | Reutilizar el contexto de L1; `grep` acotado a los ficheros servidos; topes de bytes y llamadas |
-| R8 | **Interacción con el gate**: sin binding `verifier`, todo es `unverified` | El paso directo es explícito y testeado; el gate debe tratar `unverified` como «degrada», no como «refutado» (decisión de 007) |
+| R8 | **Interacción con el gate**: sin binding `verifier`, todo es `unverified` | El paso directo es explícito y testeado; el gate trata `unverified` como «degrada», no como «refutado» ([011](../011-gate-de-severidad/spec.md)) |
 | R9 | **Un solo caso de referencia** (n = 1) para calibrar el *prompt* | Los casos C y A son el fixture semilla; cada falsa alarma real validada a mano añade caso, y el umbral se ajusta con el *gold set*, no a ojo |
 
 ## 7. Criterios de hecho
 
 1. `verify` existe como nodo entre `merge` y `policy`; un test de grafo afirma el
    orden y que un hallazgo refutado **sigue en `merged`** y no se publica inline.
-2. `config/models.yaml` declara el rol `verifier`; arrancar con
-   `verifier == correctness` **falla**, y sin binding `verifier` el grafo se comporta
+2. `config/models.yaml` declara el rol `verifier`; arrancar con el mismo modelo que
+   cualquier rol de revisión **falla**, y sin binding `verifier` el grafo se comporta
    como hoy (todo `unverified`, cero llamadas al verificador).
-3. **Caso C**: con el fixture del bucle de `fix_wait`, el veredicto es `refuted` y el
-   hallazgo queda `P3` en el resumen.
+3. **Caso C**: con el fixture del bucle de `fix_wait`, el veredicto es `refuted`.
 4. **Caso A**: el verificador fija la **dirección** del fallo con un
-   `failure_scenario` de tres partes y lo marca `verified_grounded`, sin refutarlo.
-5. Un `CONFIRMED` sin `failure_scenario` se degrada a `P3`; un
-   `failure_scenario` con una cita a un fichero **no servido** queda `UNPROVEN`,
-   nunca `verified_grounded`.
-6. El nodo **no llama** al verificador para hallazgos `P3` ni para hallazgos con
-   fuente grounded (`ToolingReviewer`), con test de contador de llamadas a 0.
+   `failure_scenario` de tres partes, lo marca `verified_grounded` sin refutarlo, y
+   el comentario publicado lleva ese escenario (V12).
+5. Un `CONFIRMED` sin `failure_scenario` queda `unverified`; un `failure_scenario`
+   con una cita a un fichero **no servido** queda `UNPROVEN`, nunca
+   `verified_grounded`. En ningún caso L2 cambia `severity` (test).
+6. El nodo **no llama** al verificador para hallazgos fuera de
+   `require_verified_for`, para hallazgos con fuente grounded (`ToolingReviewer`) ni
+   más allá de `VERIFIER_MAX_FINDINGS`, con test de contador de llamadas.
 7. Un fallo permanente del modelo deja `unverified` (test); un reintento del nodo no
    re-verifica lo ya verificado (idempotencia, test).
 8. Los topes `VERIFIER_MAX_TOOL_CALLS` / `VERIFIER_MAX_CONTEXT_BYTES` se respetan:
@@ -317,15 +327,17 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 - **Q1 — ¿Qué modelo?** `qwen3.6` o `gemma4` (razonan y admiten `json_schema`);
   `deepseek-v4-flash` queda descartado para `verifier` porque ya es `correctness` y
   por el 400 permanente de `json_schema`. Se decide midiendo contra el *gold set*.
-- **Q2 — ¿Un hallazgo `refuted` se publica?** Publicarlo en el resumen (marcado)
-  enseña que se comprobó y se descartó; silenciarlo es más limpio. Hoy se propone la
-  sección del resumen (§5.5) y se revisa con la medida.
+- **Q2 — ¿Un hallazgo `refuted` se publica?** Se decide en el gate:
+  `on_refuted` de [011](../011-gate-de-severidad/spec.md).
 - **Q3 — ¿Lote o por hallazgo?** Una llamada por hallazgo aísla la cita y el
   escenario, pero multiplica el coste. ¿Merece un lote por PR con N hallazgos?
 - **Q4 — ¿El verificador puede pedir ficheros fuera del diff?** Lo propuesto es sí,
   con tope; restringirlo al diff es más barato y también más ciego.
 - **Q5 — ¿D17 entra aquí?** L2 hace más agudo el presupuesto por llamada; ¿se
   arregla en esta iniciativa o sigue siendo una iniciativa aparte?
-- **Q6 — ¿`unverified` degrada a `P3` o va a una sección «posibles»?** Es una
-  decisión del gate (007), pero el umbral que se elija obliga a revisar el *prompt*
-  de L2: si degradar pierde recall, el verificador debe ser menos conservador.
+- **Q6 — ¿`unverified` degrada a `P3` o va a una sección «posibles»?** Se decide en
+  [011 Q1](../011-gate-de-severidad/spec.md); lo que se elija obliga a revisar el
+  *prompt* de L2: si degradar pierde recall, el verificador debe ser menos
+  conservador.
+- **Q7 — ¿Valor de `VERIFIER_MAX_FINDINGS`?** Se propone 5 por review y se ajusta
+  con el coste medido en [006](../006-eval-de-la-review/spec.md).

@@ -3,8 +3,8 @@
 # Evaluación de la review: gold set y métricas
 
 Un *gold set* versionado y un harness offline que corre el grafo real y traduce una
-review en cinco números (precisión, recall, *accuracy* de severidad, falsos positivos
-`P0`/`P1` y coste por hallazgo verificado). Es el punto de partida de cualquier
+review en seis números (precisión, recall, *accuracy* de severidad, falsos positivos
+`P0`/`P1`, coste por hallazgo verificado y cobertura). Es el punto de partida de cualquier
 cambio de prompt, contrato o modelo: sin esto, «mejora» es una opinión.
 
 > **Estado:** borrador
@@ -16,10 +16,12 @@ cambio de prompt, contrato o modelo: sin esto, «mejora» es una opinión.
 
 ## 1. Objetivo
 
-La review del PR #3 del repo revisado publicó **9 hallazgos**: **6** se rechazaron a
-mano, **1** describía un fallo real **invertido**, **2** documentaban decisiones ya
-tomadas, y **no detectó 3 `P1`** de integración y configuración que no estaban en
-ningún diff. Ese juicio —hecho por una persona, hallazgo a hallazgo— es valiosísimo y
+La review del PR #3 de este repositorio (`agent-review-langgraph`, commit `008da57`)
+publicó **9 hallazgos**: **6** se rechazaron a mano, **1** describía un fallo real
+**invertido**, **1** confirmaba una decisión ya documentada y **1** era cierto en
+parte; y **no detectó 3 `P1`** de integración y configuración. Los tres estaban en el
+diff del PR, pero el `scope` y el recorte del prompt los dejaron fuera de lo que vio
+el modelo (ver [012](../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona, hallazgo a hallazgo— es valiosísimo y
 hoy no está en ninguna parte: se pierde al cerrar la pestaña. Y sin un número no hay
 forma de saber si un *prompt* nuevo mejora o solo cambia el ruido.
 
@@ -29,14 +31,16 @@ iniciativas hermanas (007 en adelante) se aprueben con un número delante.
 Se quiere:
 
 1. Un ***gold set* versionado** en `tests/eval/`: un caso por PR auditado a mano, con
-   el diff, el artefacto del CI, la lista de hallazgos que **sí** deben salir
-   (`expected`) y la de los que **no** (`must_not_report`, cada uno con su motivo).
+   el diff, la configuración de `scope` con la que corrió, el artefacto del CI si lo
+   hubo, la lista de hallazgos que **sí** deben salir (`expected`), la de los que
+   **no** (`must_not_report`, cada uno con su motivo) y la de los tolerables
+   (`acceptable`).
 2. Un **harness offline** que corre el **grafo real** sobre el caso y calcula las
    métricas sobre lo que se habría **publicado**, no sobre lo que el modelo propuso.
-3. **Cinco métricas** con definición cerrada (§5.4): precisión, recall, *accuracy* de
-   severidad, falsos positivos `P0`/`P1` y coste por hallazgo verificado.
-4. El **baseline actual registrado** y reproducible: precisión **3/9 ≈ 0,33** y recall
-   **0/3** en los `P1` de integración.
+3. **Seis métricas** con definición cerrada (§5.4): precisión, recall, *accuracy* de
+   severidad, falsos positivos `P0`/`P1`, coste por hallazgo verificado y cobertura.
+4. El **baseline actual registrado** y reproducible (§3.3). Esta spec es la **fuente
+   única** del baseline: las demás iniciativas enlazan aquí, no copian los números.
 5. Una **comparación explícita** entre corridas: dónde mejora, dónde empeora, con un
    criterio de dominancia que no se pueda satisfacer moviendo una sola métrica.
 
@@ -45,8 +49,10 @@ Se quiere:
 - **Arreglar la calidad.** Filtrar hallazgos, dar contexto al revisor, gatear la
   severidad o añadir personas es de las iniciativas 007 en adelante. Aquí solo se lee
   y se mide: el harness **no** modifica el grafo, el contrato ni la política.
-- **Sustituir al `ToolingReviewer` ni depurar sus hallazgos.** Un hallazgo de PHPStan
-  está *grounded*; entra en `expected` como verdad, no como sospecha.
+- **Sustituir al `ToolingReviewer` ni depurar sus hallazgos.** Un hallazgo de
+  herramienta está *grounded*; si un caso trae artefacto, sus hallazgos entran en
+  `subset: tooling` (Q6). El caso semilla, de un repo Python sin artefacto PHPStan,
+  no tiene.
 - **Un panel de observabilidad.** `docs/arquitectura.md` §7 mantiene D14 abierto: el
   *gold set* mide calidad sobre fixtures versionados, no tráfico real ni trazas.
 - **Ejecutar código del PR.** No se toca el `sandbox-runner` ni se ejecutan tests del
@@ -74,20 +80,23 @@ La auditoría manual del PR #3 dejó un veredicto por hallazgo. Es, tal cual, el
 | E | Tope de intentos del grafo ≠ worker | `must_not_report` | Confunde `max_fix_attempts` con `max_fix_attempts_job` |
 | F | `build_fix_wait` fuerza `targets=[]` | `must_not_report` | Afirma una regresión sin comparar con el `base_sha` |
 | G | Wave parcial vs job perdido | `must_not_report` | Requisito inventado sin leer `verify_job` |
-| H | `env_for` expone `Settings` | `expected` | Confirma una decisión ya tomada |
+| H | `env_for` expone `Settings` | `acceptable` | Cierto, pero es una decisión ya documentada: ni acierto ni falso positivo |
 | I | `_touch_heartbeat` silencia `OSError` | `expected` | Real en parte |
-| #1 | Secretos por entorno mal resueltos | `expected` (`P1`, integración) | **No detectado**: vive en `settings`/`docker-compose` |
-| #2 | El `fix-worker` no arranca en producción | `expected` (`P1`, integración) | **No detectado**: vive en `docker-compose` |
-| #3 | `MODELS_CONFIG` pisa `LLM_*` | `expected` (`P1`, integración) | **No detectado**: vive en `settings`/`models_config` |
+| #1 | El `fix-worker` recibe todos los secretos (`env_file: .env`) | `expected` (`P1`, integración) | **No detectado**: `docker-compose.yml` lo descartó `max_files_per_pr` |
+| #2 | El `fix-worker` no arranca en producción | `expected` (`P1`, integración) | **No detectado**: `fixworker/main.py` se vio, su par en `docker-compose.yml` no |
+| #3 | `MODELS_CONFIG` pisa `LLM_*` | `expected` (`P1`, integración) | **No detectado**: `settings.py` lo descartó `max_files_per_pr` |
 
-Los tres últimos son el caso incómodo: **ningún diff los contiene**. Un diff no puede
-medir lo que no ve, y el *gold set* tiene que poder decir eso en un número (`recall`
-del subconjunto `integracion`).
+Los tres últimos **sí estaban en el diff del PR**, pero no en lo que vio el modelo:
+de 51 ficheros, `max_files_per_pr: 10` dejó 10 (ordenados por churn) y el corte a
+60 000 caracteres dejó ≈ 5 (reproducción en
+[012 §3.1](../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
+decir eso en dos números: el `recall` del subconjunto `integracion` y la cobertura.
 
-La causa raíz es única y conocida: el revisor solo recibe el diff recortado y aun así
-afirma sobre código que no ve. Los falsos positivos **fabrican** el contexto que falta;
-los falsos negativos **carecen** del que existe. Medir los dos signos a la vez es
-justamente lo que separa «menos ruido» de «menos ruido y menos recall».
+Las causas son dos y se miden por separado. Primero, **cobertura**: el revisor no vio
+la mayor parte del PR y la review no lo dijo. Segundo, **contexto**: sobre lo que sí
+vio, afirma sobre código que no ve; los falsos positivos **fabrican** el contexto que
+falta y los falsos negativos **carecen** del que existe. Medir los dos signos a la vez
+es justamente lo que separa «menos ruido» de «menos ruido y menos recall».
 
 ### 3.2 Piezas que ya existen
 
@@ -97,7 +106,8 @@ El harness no necesita nada nuevo del grafo:
 |---|---|---|
 | Grafo real con revisores inyectables | [`build_graph`](../../../src/agent_review/graph/build.py) | Corre scope→personas→merge→policy→publish sobre el caso |
 | Persona LLM con puerto inyectable | [`LlmReviewer`](../../../src/agent_review/adapters/llm_reviewer.py) | Sustituir el puerto por grabaciones sin tocar la persona |
-| Persona estática desde artefacto | [`ToolingReviewer`](../../../src/agent_review/adapters/tooling_reviewer.py) | Ingerir el `analysis.json` del caso |
+| Persona estática desde artefacto | [`ToolingReviewer`](../../../src/agent_review/adapters/tooling_reviewer.py) | Ingerir el artefacto de un caso que lo traiga (el semilla no) |
+| Filtro y tope de ficheros | [`scope.py`](../../../src/agent_review/scope.py) | Reproducir lo que vio el modelo con la configuración del caso |
 | Puerto de modelo | [`LlmPort`/`LlmReply`](../../../src/agent_review/ports/llm.py) | El *replay* y el modelo real son el mismo puerto |
 | `FakeVcs` + `FakeLlm` como patrón | [`test_llm_reviewer.py`](../../../tests/test_llm_reviewer.py) | El VCS falso que registra lo publicado no hay que inventarlo |
 | Fixtures mínimos | [`diff_emotivoo.diff`](../../../tests/fixtures/diff_emotivoo.diff), [`analysis.json`](../../../tests/fixtures/phpstan/analysis.json) | Son *smoke* de forma, **no** el PR #3: el caso real se captura una vez (§5.2) |
@@ -109,9 +119,10 @@ El harness no necesita nada nuevo del grafo:
 
 | Métrica | Baseline (PR #3) |
 |---|---|
-| Precisión | **3/9 ≈ 0,33** |
+| Precisión | **2/8 = 0,25** (H es `acceptable` y no cuenta; contando H como acierto, 3/9 ≈ 0,33) |
 | Recall en `P1` de integración | **0/3 = 0,00** |
-| Recall global | Se registra en la primera corrida *replay* |
+| Recall global | **2/5 = 0,40** (A e I de 5 `expected`) |
+| Cobertura | **≈ 5/51 ficheros** con algo visto; código y configuración sin revisar: `docker-compose.yml`, `settings.py`, `.env.example`, `worker/main.py`… |
 | *Accuracy* de severidad | Se registra en la primera corrida *replay* |
 | Falsos positivos `P0`/`P1` | Se registra en la primera corrida *replay* (6 falsos positivos en total) |
 | Coste por hallazgo verificado | Se registra en la primera corrida *replay* |
@@ -129,7 +140,9 @@ ahí, cualquier deriva de las métricas se ve como un diff.
 | E3 | CI corre con **respuestas grabadas** (*replay*); el modelo real corre fuera de CI | Determinismo dentro, fidelidad fuera. Un CI que llama al modelo es un test *flaky* que además se paga |
 | E4 | La grabación lleva el **fingerprint del prompt y del caso**, y CI falla si no coinciden | Un *prompt* nuevo con grabación vieja mediría el pasado en silencio: se fuerza a regrabar, y esa regrabación es un diff revisable |
 | E5 | Las métricas tienen **definición cerrada** (§5.4) y un hallazgo no etiquetado cuenta como falso positivo | Un matcher laxo infla la precisión; dejarlo explícito evita discutir el número en vez del hallazgo |
-| E6 | «Mejora» es una relación de **dominancia**: precisión y recall no bajan, los falsos `P0`/`P1` no suben, y algo sube estrictamente | Sin esto, se «mejora» subiendo recall a base de publicar basura, o precisión callando |
+| E6 | «Mejora» es una relación de **dominancia**: precisión, recall y cobertura no bajan, los falsos `P0`/`P1` no suben, y algo sube estrictamente | Sin esto, se «mejora» subiendo recall a base de publicar basura, o precisión callando o mirando menos código |
+| E9 | Tres etiquetas: `expected`, `must_not_report` y `acceptable` (cierto pero sin valor, p. ej. una decisión ya documentada); `acceptable` no cuenta ni como `tp` ni como `fp` | Forzar H a acierto infla la precisión; forzarlo a error castiga un hallazgo cierto |
+| E10 | El caso congela la configuración de `scope` (`max_files_per_pr`, ignorados) con la que corrió | Sin ella, el *replay* no reproduce lo que vio el modelo |
 | E7 | El harness usa el **grafo real** con un VCS falso; lo único que cambia entre *replay* y real es el `LlmPort` | Mide el sistema, no una copia del sistema; y deja una sola variable que comparar |
 | E8 | Este checkpoint **no toca** prompt, contrato ni política: solo lee | Separar la medida del arreglo es lo que hace creíble la medida |
 
@@ -142,10 +155,9 @@ tests/eval/
   harness.py            carga del caso, matcher, métricas, comparación (sin red)
   test_eval_pr_3.py     regresión en CI (replay) + corrida real (marca live)
   pr_3/
-    labels.yaml         procedencia + expected + must_not_report
+    labels.yaml         procedencia + config de scope + expected + must_not_report + acceptable
     diff.patch          diff del PR auditado (copiado una vez)
-    phpstan.json        artefacto del CI del PR auditado
-    recorded.json       respuestas del modelo, con fingerprint
+    recorded.json       respuestas del modelo por rol, con fingerprint
     expected_report.json  informe congelado = baseline
 scripts/eval.py         CLI: informe, comparación y regrabación
 ```
@@ -159,12 +171,16 @@ La procedencia va dentro del caso, para que el fixture no sea un fichero huérfa
 repo, `pr_id`, `head_sha`, fecha de captura y de dónde salió (auditoría manual).
 
 ```yaml
-case: pr-3-emotivoo-v2
-repo: "<repo>"
+case: pr-3-agent-review
+repo: "pcgarat/agent-review-langgraph"
 pr_id: 3
-head_sha: "<sha auditado>"
+base_sha: a8ead73
+head_sha: 008da57
 captured_at: 2026-10-16
 source: "auditoria manual de la review publicada"
+scope:                                   # E10: lo que vio el modelo
+  max_files_per_pr: 10
+  scope_ignore: ""
 
 expected:
   - id: A
@@ -181,6 +197,11 @@ must_not_report:
   - id: B
     match: ["requeue_or_drop"]
     why: "semantica inventada de verifier.py, fuera del diff"
+
+acceptable:
+  - id: H
+    match: ["env_for", "Settings"]
+    why: "cierto, pero es una decision ya documentada"
 ```
 
 - `match` son frases **conjuntivas** (todas deben aparecer) sobre `title` +
@@ -197,9 +218,9 @@ must_not_report:
   el primer match no consumido gana, igual que el merge no depende del orden del
   fan-out.
 
-El diff y el artefacto **no** se generan en el test: se capturan una vez del PR (VCS y
-`var/tooling`) y se versionan. Los fixtures actuales son de juguete; el caso real es
-otro.
+El diff (y el artefacto, si un caso lo trae) **no** se genera en el test: se captura
+una vez del PR (VCS y `var/tooling`) y se versiona. Los fixtures actuales son de
+juguete; el caso real es otro.
 
 ### 5.3 Modos de ejecución
 
@@ -207,7 +228,7 @@ otro.
 flowchart LR
     subgraph FX["Fixture versionado"]
         D["diff.patch"] --> G
-        P["phpstan.json"] --> G
+        P["labels.yaml (scope)"] --> G
         R["recorded.json"] --> PRT
     end
     G["build_graph<br/>(revisores inyectados)"] --> M["merged publicado"]
@@ -225,8 +246,16 @@ flowchart LR
 
 En `replay`, el puerto devuelve el `text` y el `usage` grabados y **aborta** si el
 fingerprint del prompt o del caso no coincide con la grabación (E4). Así, la corrida
-de CI reproduce el baseline exacto y cualquier mejora posterior de las iniciativas
-hermanas (filtros, humildad, gate de severidad) se ve **sin gastar un token**.
+de CI reproduce el baseline exacto y las mejoras que actúan **después** del modelo
+(L0 de [008](../008-contexto-del-revisor/spec.md), merge, gate de
+[011](../011-gate-de-severidad/spec.md)) se ven **sin gastar un token**.
+
+Las que cambian **lo que recibe** el modelo (lotes de
+[012](../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
+verificador de [009](../009-verificador-adversarial/spec.md)) invalidan el
+fingerprint: exigen regrabar con `make eval-record`, y esa regrabación es parte del
+PR que las introduce. Las grabaciones se guardan **por rol y por llamada**
+(`correctness`, `verifier`…), de modo que regrabar un rol no invalida los demás.
 
 En `real`, la corrida es comparativa, no un gate: se ejecuta el caso, se emite el
 informe y se compara con el baseline. Es el paso previo a aprobar un *prompt* nuevo.
@@ -240,23 +269,27 @@ informe y se compara con el baseline. Es el paso previo a aprobar un *prompt* nu
 | ***Accuracy* de severidad** | casados con la severidad del `expected` / `tp` | Un `P1` publicado como `P3` sigue siendo `tp`, pero con la severidad mal |
 | **Falsos positivos `P0`/`P1`** | nº de `fp` con severidad `P0` o `P1` | El fallo caro: la rúbrica ya dice que un falso `P0` quema la confianza antes que diez `P3` |
 | **Coste por hallazgo verificado** | tokens del `usage` del run / `tp` | `None` si `tp = 0`. En *replay* usa el `usage` grabado; sin él, la estimación |
+| **Cobertura** | ficheros de código y configuración revisados / total de esas clases en el PR | Sale del `ReviewCoverage` de [012](../012-cobertura-de-la-review/spec.md); hasta entonces, se reconstruye con `scope` y el corte de caracteres |
+
+Los hallazgos que casan con `acceptable` se listan en el informe pero no entran en
+ninguna métrica (E9).
 
 El informe es un JSON estable y se congela en `expected_report.json`:
 
 ```json
 {
-  "case": "pr-3-emotivoo-v2",
+  "case": "pr-3-agent-review",
   "mode": "replay",
   "prompt_fingerprint": "sha256:...",
   "counts": {
-    "published": 9, "tp": 3, "fp": 6, "fp_labeled": 6, "fp_unknown": 0,
-    "fn": 3, "fp_p0_p1": 6
+    "published": 9, "tp": 2, "fp": 6, "acceptable": 1, "fp_labeled": 6,
+    "fp_unknown": 0, "fn": 3, "fp_p0_p1": 6
   },
   "metrics": {
-    "precision": 0.333, "recall": 0.5, "recall_subset_integracion": 0.0,
-    "severity_accuracy": 1.0, "cost_per_tp_tokens": 12345
+    "precision": 0.25, "recall": 0.4, "recall_subset_integracion": 0.0,
+    "severity_accuracy": 1.0, "cost_per_tp_tokens": 12345, "coverage": 0.1
   },
-  "matched": [], "unmatched": [], "missing": []
+  "matched": [], "unmatched": [], "missing": [], "acceptable": []
 }
 ```
 
@@ -264,8 +297,8 @@ El informe es un JSON estable y se congela en `expected_report.json`:
 **qué** hallazgo se movió, no solo que un número cambió.
 
 La comparación (`harness.compare`) dice **mejora** si y solo si, contra el baseline,
-la precisión y el recall no bajan, los falsos `P0`/`P1` no suben y al menos una mejora
-estrictamente; **empeora** si lo contrario en cualquier métrica; y **no concluyente**
+la precisión, el recall y la cobertura no bajan, los falsos `P0`/`P1` no suben y al
+menos una mejora estrictamente; **empeora** si lo contrario en cualquier métrica; y **no concluyente**
 en el resto (por ejemplo, sube el recall y bajan los `P0`/`P1`, pero cae la precisión).
 
 ### 5.5 CI y comandos
@@ -288,17 +321,17 @@ en el resto (por ejemplo, sube el recall y bajan los `P0`/`P1`, pero cae la prec
 | **Grabaciones obsoletas**: medir el pasado en silencio | El fingerprint del prompt y del caso aborta la corrida en CI (E4) |
 | **El modelo real es no determinista**: dos corridas del mismo prompt dan números distintos | La corrida real es comparativa y no bloquea CI; el informe declara la varianza (Q4) |
 | **Coste de medir**: la corrida real consume tokens (agrava D17) | Un caso, un PR, fuera de CI y bajo demanda; en CI, coste cero |
-| **Medir de más**: acabar midiendo anclaje, formato o latencia | El alcance son las cinco métricas de §5.4; lo demás va a Q8 y a las iniciativas que corresponda |
+| **Medir de más**: acabar midiendo anclaje, formato o latencia | El alcance son las seis métricas de §5.4; lo demás va a Q8 y a las iniciativas que corresponda |
 | **Confundir el fixture de juguete con el caso** | Bright line en §5.2: el caso es el PR auditado, capturado y versionado, no `tests/fixtures/` |
 
 ## 7. Criterios de hecho
 
-- [ ] `tests/eval/pr_3/` existe con diff, artefacto, `labels.yaml` (con procedencia,
-      `expected` y `must_not_report` con motivo) y `recorded.json`.
+- [ ] `tests/eval/pr_3/` existe con diff, `labels.yaml` (con procedencia,
+      configuración de `scope`, `expected`, `must_not_report` y `acceptable` con
+      motivo) y `recorded.json`.
 - [ ] La corrida *replay* es determinista: dos ejecuciones dan el mismo
       `expected_report.json`, byte a byte.
-- [ ] El baseline queda registrado y reproducible: precisión **3/9 ≈ 0,33** y recall
-      **0/3** en `integracion`.
+- [ ] El baseline de §3.3 queda registrado y reproducible, incluida la cobertura.
 - [ ] La triaje inicial es **exhaustivo**: ningún hallazgo publicado del caso se queda
       sin etiqueta (`fp_unknown == 0`), o está documentado por qué.
 - [ ] Ningún hallazgo que case con un `must_not_report` cuenta como acierto, y cada
