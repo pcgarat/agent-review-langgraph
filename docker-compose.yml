@@ -173,6 +173,43 @@ services:
       - reviews
     # Sin `ports`: el ingress/TLS de operacion es quien lo publica (T10).
 
+  # Panel de operacion (iniciativa 019, W1). Servicio de lectura y comandos, opt-in
+  # por el perfil `panel`: sin el perfil, `docker compose up` arranca lo de siempre
+  # (R7). Como el `fix-worker` y el `teams-bot`, NO hereda el `.env` entero (nada de
+  # `env_file`): el panel lee estado y encola comandos, asi que no recibe credencial
+  # de VCS ni clave del LLM (§5.8). Solo Redis, Postgres (lectura) y su sesion.
+  web:
+    build: .
+    restart: unless-stopped
+    profiles: ["panel"]
+    command: python -m agent_review.web.main
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PANEL_ENABLED: ${PANEL_ENABLED:-true}
+      PANEL_PORT: ${PANEL_PORT:-8090}
+      PANEL_SESSION_SECRET: ${PANEL_SESSION_SECRET:-}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
+      PROGRESS_KEY: ${PROGRESS_KEY:-reviews:active}
+      LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-500000}
+    ports:
+      # Solo se publica cuando el perfil `panel` esta activo.
+      - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('PANEL_PORT','8090'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

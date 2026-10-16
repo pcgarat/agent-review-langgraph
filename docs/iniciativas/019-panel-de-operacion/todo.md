@@ -50,20 +50,26 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 
 ## Bloque 3 — Servicio web, lectura (checkpoint C3)
 
-- [ ] **OP11** Servicio `web` (FastAPI), raíz de composición nueva, con perfil de
+- [x] **OP11** Servicio `web` (FastAPI), raíz de composición nueva, con perfil de
   compose `panel` (W1 de la spec).
-- [ ] **OP12** Autenticación de sesión con rol (`PANEL_SESSION_SECRET`; `lector` y
+- [x] **OP12** Autenticación de sesión con rol (`PANEL_SESSION_SECRET`; `lector` y
   `operador`), sin reutilizar el bearer de decisión (W7).
-- [ ] **OP13** Endpoint de estado: cola (`reviews:jobs`), en vuelo (progreso), pausas
+- [x] **OP13** Endpoint de estado: cola (`reviews:jobs`), en vuelo (progreso), pausas
   por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:<key>`).
-- [ ] **OP14** Endpoint de recorrido: expone `read_trace` (OP1) para una review.
+- [x] **OP14** Endpoint de recorrido: expone `read_trace` (OP1) para una review.
 - [ ] **OP15** UI de lectura: vista global (cola, en vuelo, pausas, descartes) y vista
   de detalle con el recorrido.
 - [ ] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
   nuevo.
 - [ ] **OP17** Test de auth: `401` sin sesión; el rol `lector` no ejecuta comandos.
-- [ ] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../operacion.md) §1–2
+- [x] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../operacion.md) §1–2
   (servicio y variables) y §5 (endpoints del panel).
+  - Enmienda 2026-10-16: el secreto del panel entra en el contrato fail-closed de
+    producción con contrato **propio** (`settings.panel_insecure_secrets` /
+    `require_panel_secrets`): el proceso `web` no recibe credencial de VCS ni clave
+    del LLM, así que no se le puede exigir el contrato del worker. En el listado
+    compartido (`insecure_secrets`) solo aparece si `PANEL_ENABLED=true`, para no
+    tumbar un despliegue sin panel.
 
 ## Bloque 4 — Consola del sandbox (checkpoint C4)
 
