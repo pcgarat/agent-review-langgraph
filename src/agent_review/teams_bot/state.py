@@ -43,8 +43,12 @@ class CardStore(Protocol):
         """Quien decidio primero (C11), o `None` si la decision sigue abierta."""
         ...
 
-    def close(self, review_key: str, *, actor: str) -> None:
-        """Sella la decision: la tarjeta pasa a «decidido por X» y se cierra."""
+    def close(self, review_key: str, *, actor: str) -> bool:
+        """Sella la decision. `True` si esta llamada gano (la primera es final, C11)."""
+        ...
+
+    def release(self, review_key: str) -> None:
+        """Deshace un sello cuyo encolado fallo, para no perder la decision."""
         ...
 
 
@@ -104,9 +108,15 @@ class RedisCardStore:
             return None
         return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
-    def close(self, review_key: str, *, actor: str) -> None:
-        """Marca la tarjeta como decidida. `SETNX`-like: gana la primera decision."""
-        self._client.set(self._final_key(review_key), actor, ex=self._ttl_s, nx=True)
+    def close(self, review_key: str, *, actor: str) -> bool:
+        """Marca la tarjeta como decidida. `SETNX`: gana la primera decision.
+
+        El booleano es la guarda de C11: quien no gana no debe encolar la suya.
+        """
+        return bool(self._client.set(self._final_key(review_key), actor, ex=self._ttl_s, nx=True))
+
+    def release(self, review_key: str) -> None:
+        self._client.delete(self._final_key(review_key))
 
 
 class InMemoryCardStore:
@@ -133,8 +143,14 @@ class InMemoryCardStore:
     def final(self, review_key: str) -> str | None:
         return self._final.get(review_key)
 
-    def close(self, review_key: str, *, actor: str) -> None:
-        self._final.setdefault(review_key, actor)
+    def close(self, review_key: str, *, actor: str) -> bool:
+        if review_key in self._final:
+            return False
+        self._final[review_key] = actor
+        return True
+
+    def release(self, review_key: str) -> None:
+        self._final.pop(review_key, None)
 
 
 def _parse_marks(

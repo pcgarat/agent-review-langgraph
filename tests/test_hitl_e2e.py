@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 from agent_review import cli
+from agent_review.chat_outbox import InMemoryChatOutbox, OutboxChatAdapter
 from agent_review.domain.models import (
     ApprovalRequest,
     AutofixClass,
+    DecisionOutcome,
     Finding,
     Owner,
     ReviewerResult,
@@ -15,7 +19,20 @@ from agent_review.paused_store import InMemoryPausedStore
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from agent_review.queue import InMemoryReviewQueue
+from agent_review.teams_bot.card_service import DecisionCardService
+from agent_review.teams_bot.cards import SUBMIT_ACTION
+from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitStatus
+from agent_review.teams_bot.state import InMemoryCardStore
 from agent_review.worker.main import process_request
+
+
+def _submit_enabled(card: dict[str, Any]) -> bool:
+    """Si el boton Enviar de la tarjeta esta habilitado (C3)."""
+    return bool(
+        next(action for action in card["actions"] if action["data"].get("action") == SUBMIT_ACTION)[
+            "isEnabled"
+        ]
+    )
 
 
 class _Vcs:
@@ -203,3 +220,59 @@ def test_e2e_rechazo_descarta_el_hallazgo_del_inline(monkeypatch) -> None:
     assert vcs.inlines == [], "un hallazgo descartado no se anota inline"
     assert vcs.comments, "pero si figura en el resumen"
     assert "Descartado por una persona" in vcs.comments[0]
+
+
+def test_e2e_la_decision_de_la_tarjeta_reanuda_sin_duplicar() -> None:
+    """Ciclo completo por el canal nuevo: aviso en la outbox -> tarjeta -> decision.
+
+    El chat del worker es la **outbox** real (`OutboxChatAdapter`), no un fake con
+    memoria propia: se afirma que el aviso de pausa queda encolado con la
+    `ApprovalRequest` estructurada (C12) y que el `review_key`/`repo` viajan para
+    que el bot resuelva el hilo (C6). La decision se envia como lo hara el bot:
+    marcas en el estado de la tarjeta y `DecisionSubmitter` (C4), sin reanudar el
+    grafo desde el canal.
+    """
+    vcs = _Vcs()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+    cards = InMemoryCardStore()
+    paused_store = InMemoryPausedStore()
+    queue = InMemoryReviewQueue()
+    graph = _graph(vcs)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=3, head_sha="ghi", pipeline_id="9")
+
+    # 1) La review pausa y deja el aviso en la outbox; no se publica nada.
+    first = process_request(graph, request, paused=paused_store, chat=chat)
+    assert first.paused
+    assert vcs.inlines == [] and vcs.comments == []
+
+    notice = outbox.dequeue()
+    assert notice is not None and notice.kind == "pause"
+    assert notice.approval is not None
+    assert notice.review_key == request.review_key
+    assert (notice.repo, notice.pr_id) == ("cqm/emotivoo-v2", 3)
+
+    # 2) El bot pinta la tarjeta y la persona marca el pendiente.
+    approval = notice.approval
+    card = DecisionCardService(store=cards).apply_mark(
+        approval, user_id="entra-u1", finding_id="f1", outcome=DecisionOutcome.APPROVED
+    )
+    assert _submit_enabled(card) is True, "con todo marcado, Enviar se habilita (C3)"
+
+    # 3) Enviar encola el resume por la cola unica (C4), sin reanudar el grafo.
+    outcome = DecisionSubmitter(paused=paused_store, queue=queue, cards=cards).submit(
+        request.review_key, user_id="entra-u1", actor="Paco Garat"
+    )
+    assert outcome.status is SubmitStatus.ENQUEUED
+
+    # 4) El worker recoge el job y publica; una reentrega no republica.
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    resumed = process_request(graph, job, paused=paused_store, chat=chat)
+    assert not resumed.paused
+    assert len(vcs.inlines) == 1 and len(vcs.comments) == 1
+    assert "Decision: aprobado · Paco Garat" in vcs.inlines[0]
+    assert paused_store.get(request.review_key) is None, "el inbox se limpia al decidir"
+
+    process_request(graph, job, paused=paused_store, chat=chat)
+    assert len(vcs.inlines) == 1, "la reentrega no duplica la publicacion"

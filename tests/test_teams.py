@@ -1,4 +1,8 @@
-"""T2 (iniciativa 013): tarjeta de decision, estado por usuario y Enviar bloqueado."""
+"""T2/T3 (iniciativa 013): tarjeta de decision, estado por usuario y envio.
+
+T2 cubre el render y el estado por usuario; T3, la traduccion de las marcas a la
+`HitlDecision` con `build_decision` y su encolado (sin Teams real: fakes).
+"""
 
 from __future__ import annotations
 
@@ -8,9 +12,14 @@ from agent_review.domain.models import (
     ApprovalRequest,
     DecisionOutcome,
     FindingAction,
+    FixWaitRequest,
     PendingDecision,
+    ReviewRequest,
     Severity,
 )
+from agent_review.domain.paused import PauseKind
+from agent_review.paused_store import InMemoryPausedStore
+from agent_review.queue import InMemoryReviewQueue
 from agent_review.teams_bot.card_service import DecisionCardService
 from agent_review.teams_bot.cards import (
     DECISION_ACTION,
@@ -21,6 +30,7 @@ from agent_review.teams_bot.cards import (
     render_decided_card,
     render_decision_card,
 )
+from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitStatus
 from agent_review.teams_bot.state import InMemoryCardStore
 
 
@@ -242,3 +252,137 @@ def test_tras_cerrar_la_tarjeta_queda_decidida_y_no_se_reabre() -> None:
     )
     assert "Decidido por Paco" in _texts(card)
     assert store.final("r:1:abc") == "Paco"
+
+
+# ---------------------------------------------------------------------------
+# T3: decision -> build_decision -> encolar
+# ---------------------------------------------------------------------------
+
+
+class _QueueBoom(InMemoryReviewQueue):
+    """Cola que falla al encolar, para probar la vuelta atras del sello (C11)."""
+
+    def enqueue(self, request: ReviewRequest) -> None:
+        del request
+        raise ConnectionError("redis reiniciando")
+
+
+def _pause(store: InMemoryPausedStore, *pending: PendingDecision) -> str:
+    """Registra una pausa humana con esos pendientes y devuelve su `review_key`."""
+    approval = _approval(*pending)
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=1, head_sha="abc", pipeline_id="7")
+    store.pause(request, approval.model_copy(update={"review_key": request.review_key}))
+    return request.review_key
+
+
+def _submitter(
+    paused: InMemoryPausedStore, queue: InMemoryReviewQueue, cards: InMemoryCardStore
+) -> DecisionSubmitter:
+    return DecisionSubmitter(paused=paused, queue=queue, cards=cards)
+
+
+def test_enviar_una_decision_completa_encola_el_resume_y_sella_la_tarjeta() -> None:
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+    key = _pause(paused, _pending("f1"), _pending("f2"))
+    cards.mark(key, user_id="u1", finding_id="f1", outcome=DecisionOutcome.APPROVED)
+    cards.mark(key, user_id="u1", finding_id="f2", outcome=DecisionOutcome.REJECTED)
+
+    outcome = _submitter(paused, queue, cards).submit(key, user_id="u1", actor="Paco")
+
+    assert outcome.status is SubmitStatus.ENQUEUED
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.actor == "Paco"
+    assert job.decision.review_key == key
+    assert {item.finding_id: item.outcome for item in job.decision.items} == {
+        "f1": DecisionOutcome.APPROVED,
+        "f2": DecisionOutcome.REJECTED,
+    }
+    assert cards.final(key) == "Paco", "la tarjeta queda sellada (C11)"
+    assert queue.dequeue() is None, "no se encola nada mas"
+
+
+def test_una_decision_incompleta_se_rechaza_sin_tocar_la_cola() -> None:
+    """Misma regla que el 409 de la API: no se reanuda con pendientes sin decidir."""
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+    key = _pause(paused, _pending("f1"), _pending("f2"))
+    cards.mark(key, user_id="u1", finding_id="f1", outcome=DecisionOutcome.APPROVED)
+
+    outcome = _submitter(paused, queue, cards).submit(key, user_id="u1", actor="Paco")
+
+    assert outcome.status is SubmitStatus.INCOMPLETE
+    assert "f2" in outcome.reason
+    assert queue.dequeue() is None, "no se encola nada"
+    assert cards.final(key) is None, "la tarjeta sigue abierta"
+
+
+def test_una_segunda_decision_no_encola_otra_reanudacion() -> None:
+    """C11: la primera decision es final; la segunda es no-op."""
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+    key = _pause(paused, _pending("f1"))
+    cards.mark(key, user_id="u1", finding_id="f1", outcome=DecisionOutcome.APPROVED)
+    submitter = _submitter(paused, queue, cards)
+
+    assert submitter.submit(key, user_id="u1", actor="Paco").status is SubmitStatus.ENQUEUED
+    second = submitter.submit(key, user_id="u2", actor="Ana")
+
+    assert second.status is SubmitStatus.ALREADY_DECIDED
+    assert second.actor == "Paco", "se informa de quien gano, no de quien llego tarde"
+    assert queue.dequeue() is not None and queue.dequeue() is None, "una sola reanudacion"
+
+
+def test_una_review_que_ya_no_esta_pausada_no_encola() -> None:
+    """Un `expired` del TTL o una decision por CLI dejan la tarjeta obsoleta."""
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+
+    outcome = _submitter(paused, queue, cards).submit("ajena:1:x", user_id="u1", actor="Paco")
+
+    assert outcome.status is SubmitStatus.NOT_PAUSED
+    assert queue.dequeue() is None
+
+
+def test_una_pausa_de_fix_no_tiene_decision_humana() -> None:
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc")
+    paused.pause(
+        request,
+        FixWaitRequest(review_key=request.review_key, repo="r", pr_id=1, head_sha="abc"),
+        kind=PauseKind.FIX,
+    )
+
+    outcome = _submitter(paused, queue, cards).submit(
+        request.review_key, user_id="u1", actor="Paco"
+    )
+
+    assert outcome.status is SubmitStatus.NOT_PAUSED
+
+
+def test_si_el_encolado_falla_el_sello_se_suelta_para_poder_reintentar() -> None:
+    """Sin la vuelta atras, un fallo de Redis dejaria la tarjeta cerrada y sin job."""
+    paused, cards = InMemoryPausedStore(), InMemoryCardStore()
+    queue = _QueueBoom()
+    key = _pause(paused, _pending("f1"))
+    cards.mark(key, user_id="u1", finding_id="f1", outcome=DecisionOutcome.APPROVED)
+
+    try:
+        _submitter(paused, queue, cards).submit(key, user_id="u1", actor="Paco")
+    except ConnectionError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("un fallo de encolado debe propagarse")
+
+    assert cards.final(key) is None, "el sello se suelta para reintentar"
+
+
+def test_una_marca_de_una_pausa_anterior_no_entra_en_la_decision() -> None:
+    """El estado de UI puede arrastrar restos; solo cuentan los pendientes de hoy."""
+    paused, queue, cards = InMemoryPausedStore(), InMemoryReviewQueue(), InMemoryCardStore()
+    key = _pause(paused, _pending("f1"))
+    cards.mark(key, user_id="u1", finding_id="viejo", outcome=DecisionOutcome.NOTED)
+    cards.mark(key, user_id="u1", finding_id="f1", outcome=DecisionOutcome.APPROVED)
+
+    outcome = _submitter(paused, queue, cards).submit(key, user_id="u1", actor="Paco")
+
+    assert outcome.status is SubmitStatus.ENQUEUED
+    assert outcome.decision is not None
+    assert [item.finding_id for item in outcome.decision.items] == ["f1"]

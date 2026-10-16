@@ -3,7 +3,8 @@
 # Todo: Canal bidireccional de Teams (bot con hilo por PR)
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
-el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todavía.
+el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T3 y T8 cerrados;
+T4–T7, T9–T11 pendientes.
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
@@ -106,7 +107,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
     discriminante (`teams.decision`/`teams.submit`), así que añadir una acción de
     «preguntar» no toca el resto del contrato.
 
-- [ ] **T3** Decisión → `build_decision` → encolar
+- [x] **T3** Decisión → `build_decision` → encolar
   - Traducción de las marcas de la tarjeta a `HitlDecision` con `build_decision`
     (mismo camino que el CLI): lee el inbox `reviews:paused:<key>`, valida que cubre
     todos los pendientes y encola en `reviews:jobs`. `actor` = identidad de Entra ID.
@@ -115,6 +116,18 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
   - Verifica: `tests/test_teams.py`, `tests/test_hitl_e2e.py` (con fakes).
   - Ficheros: `src/agent_review/teams_bot/` (`card_service.py`, `decisions.py`),
     `src/agent_review/decision.py` (si hace falta un ctor).
+  - **Hecho (2026-10-16).** `DecisionSubmitter` traduce las marcas a la `HitlDecision`
+    con `build_decision` y **encola** en `reviews:jobs`; no reanuda (C4). El bot no
+    necesitó un ctor nuevo en `decision.py`: reutiliza el mismo `build_decision` que
+    el CLI y la API. La **primera decision es final** se hace con el `SETNX` de
+    `CardStore.close` (C11), que devuelve si esta llamada ganó: dos personas pulsando
+    Enviar no encolan dos reanudaciones. Si el `enqueue` falla **tras** sellar, se
+    suelta el sello (`CardStore.release`): sin esa vuelta atrás, un Redis caído
+    dejaría la tarjeta cerrada y la decisión sin llegar a la cola. El `SubmitOutcome`
+    distingue `enqueued`/`incomplete`/`already_decided`/`not_paused` para que el
+    ingress (T7) responda al canal. Se filtra la marca a los **pendientes de esta
+    pausa**: el hash de UI puede arrastrar restos de una pausa anterior del mismo
+    `review_key` y `build_decision` rechazaría un `finding_id` ajeno.
 
 ## Bloque 2 — Hilo por PR y egress
 
