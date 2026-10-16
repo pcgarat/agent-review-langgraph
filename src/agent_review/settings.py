@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     teams_enabled: bool = False
     # Outbox de avisos al canal (C10). El worker encola aqui; el bot la consume.
     teams_notices_key: str = "reviews:notices"
+    # Espera de la lectura bloqueante de la outbox por parte del bot. Vencida, el
+    # bucle vuelve a intentarlo (no distingue "sin avisos" de un Redis caido).
+    teams_bot_poll_s: float = 5.0
 
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://reviews:reviews@localhost:5432/reviews"

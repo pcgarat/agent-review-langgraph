@@ -3,8 +3,8 @@
 # Todo: Canal bidireccional de Teams (bot con hilo por PR)
 
 Checklist del bot. El diseño y las decisiones (C1–C11) están en [`spec.md`](spec.md);
-el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T3 y T8 cerrados;
-T4–T7, T9–T11 pendientes.
+el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. T1–T5 y T8 cerrados;
+T6, T7, T9–T11 pendientes.
 
 ## Bloque 0 — Spike de viabilidad (con el alta, antes de T1)
 
@@ -161,7 +161,7 @@ T4–T7, T9–T11 pendientes.
     SDK y las variables de settings son T6. Se activó `asyncio_mode = "auto"` en
     `pyproject.toml` (el paquete es async).
 
-- [ ] **T5** Servicio `teams-bot`: consumo de la outbox y `ChatTransport`
+- [x] **T5** Servicio `teams-bot`: consumo de la outbox y `ChatTransport`
   - `ChatTransport` (capa HTTP interna del bot, con bearer) y el bucle que consume
     `reviews:notices` (`BLPOP`) y despacha por `kind`: publica el aviso de review
     (`published`) o la tarjeta de decisión (`pause`, desde la `ApprovalRequest`
@@ -171,6 +171,21 @@ T4–T7, T9–T11 pendientes.
     pausa vencida no publica; reiniciar el bot con avisos pendientes los publica.
   - Verifica: `tests/test_teams_bot_service.py` (transporte y cola falsos).
   - Ficheros: `src/agent_review/teams_bot/` (`service.py`), `src/agent_review/settings.py`.
+  - **Hecho (2026-10-16).** `TeamsBotService` consume la outbox y despacha por `kind`
+    con el transporte de T4 y el render de T2. **No reanuda** el grafo (C4): solo
+    publica. El **drenado** (C13) descarta a la DLQ un aviso de una pausa que ya no
+    está vigente en el inbox (expirada o decidida por CLI) y reencola el que no tiene
+    destino todavía; un fallo de publicación (Teams caído) también va a la DLQ para
+    reinyectar, porque el canal es UI y la verdad sigue en Postgres.
+  - **Corrección de diseño durante el implemento.** La primera versión reencolaba el
+    aviso *dentro* de `drain`, lo que habría girado sin fin si no hay canal capturado
+    (C14). Se separa en `DispatchResult` (`published`/`discarded`/`deferred`): `drain`
+    se **para** en el primer `deferred` y no sigue sacando avisos sin destino.
+  - `run_forever` espera con el `BLPOP` del `dequeue`; solo duerme un instante si la
+    outbox responde al instante sin nada (Redis caído), para no girar en vacío.
+  - Nueva variable `TEAMS_BOT_POLL_S` (espera de la lectura). El arranque real del
+    proceso, con el cliente del SDK, es T6 (`build_teams_bot`/`serve`/`run` ya lo
+    dejan listo).
 
 - [ ] **T6** `teams-bot` en Compose + settings
   - Proceso propio con Teams SDK (versión fijada); servicio en `docker-compose.yml`
