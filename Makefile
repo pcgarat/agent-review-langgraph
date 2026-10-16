@@ -1,39 +1,99 @@
 UV ?= uv
 EXTRAS ?= dev
+# Plugin (`docker compose`) o binario (`docker-compose`); igual que scripts/smoke-nivel2.sh.
+COMPOSE ?= docker compose
 
-.PHONY: install lint format-check typecheck test docs-check ci eval eval-live eval-record
+.DEFAULT_GOAL := help
+.PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
+	eval eval-live eval-record bootstrap twg-credentials up panel down logs ps smoke clean
 
-install:
+##@ Dependencias
+
+install: ## Sincroniza el entorno con los extras de desarrollo
 	$(UV) sync --extra $(EXTRAS)
 
-lint:
+##@ Calidad
+
+lint: ## Ruff (solo comprueba)
 	$(UV) run --extra $(EXTRAS) ruff check src tests scripts
 
-format-check:
+format: ## Aplica el formato (ruff format)
+	$(UV) run --extra $(EXTRAS) ruff format src tests scripts
+
+format-check: ## Comprueba el formato sin escribir
 	$(UV) run --extra $(EXTRAS) ruff format --check src tests scripts
 
-typecheck:
+typecheck: ## Mypy (strict)
 	$(UV) run --extra $(EXTRAS) mypy
 
-test:
-	$(UV) run --extra $(EXTRAS) pytest
+fix: ## Arregla lint y formato automaticamente
+	$(UV) run --extra $(EXTRAS) ruff check --fix src tests scripts
+	$(UV) run --extra $(EXTRAS) ruff format src tests scripts
+
+# `T=` acota a un fichero o expresion: `make test T=tests/test_web.py`.
+test: ## Tests (T=<ruta o -k expr> para acotar)
+	$(UV) run --extra $(EXTRAS) pytest $(T)
+
+# El marcador `live` sale a la red y necesita credenciales reales; pytest lo
+# excluye por defecto (addopts), asi que aqui se pide en positivo.
+test-live: ## Tests marcados `live` (red y credenciales reales)
+	$(UV) run --extra $(EXTRAS) pytest -m live
 
 # Estructura, nombres, cabeceras y enlaces de la documentacion (.agents/rules/).
-docs-check:
+docs-check: ## Comprueba estructura, cabeceras y enlaces de la documentacion
 	$(UV) run --extra $(EXTRAS) python scripts/check_docs.py
 
 # Mismo orden y comandos que .github/workflows/ci.yml
-ci: lint format-check typecheck test docs-check
+ci: lint format-check typecheck test docs-check ## Lint + formato + tipos + tests + docs (igual que el CI)
 
-# Evaluacion de la review (iniciativa 006). `EVAL_COMPARE` anade el delta contra
-# el baseline congelado. `eval-live` y `eval-record` salen a la red (modelo real).
+##@ Evaluacion de la review (iniciativa 006)
+
+# `EVAL_COMPARE` anade el delta contra el baseline congelado. `eval-live` y
+# `eval-record` salen a la red (modelo real).
 EVAL_COMPARE ?=
 
-eval:
+eval: ## Informe del gold set (replay, sin red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py report $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
 
-eval-live:
+eval-live: ## Mide contra el modelo real (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py live
 
-eval-record:
+eval-record: ## Regraba las respuestas del gold set (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py record
+
+##@ Entorno local (docker compose)
+
+bootstrap: ## Crea .env desde .env.example y resume lo que falta
+	scripts/bootstrap-env.sh
+
+twg-credentials: ## Copia tu sesion twg al .env (solo desarrollo)
+	scripts/sync-twg-credentials.sh
+
+up: ## Levanta el stack (build incluido)
+	$(COMPOSE) up --build -d
+
+panel: ## Levanta el stack con el panel de operacion (perfil `panel`)
+	$(COMPOSE) --profile panel up --build -d
+
+down: ## Para el stack
+	$(COMPOSE) down
+
+# `S=` elige el servicio: `make logs S=api`.
+logs: ## Sigue los logs (S=<servicio>, por defecto worker)
+	$(COMPOSE) logs -f $(if $(S),$(S),worker)
+
+ps: ## Estado de los servicios
+	$(COMPOSE) ps
+
+# Smoke Nivel 2 real: deposita el artefacto del CI y espera la review en el PR.
+smoke: ## Smoke Nivel 2 contra un PR real (PR=<id> [PIPELINE=<id>])
+	scripts/smoke-nivel2.sh $(PR) $(PIPELINE)
+
+##@ Utilidades
+
+help: ## Muestra esta ayuda
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2} /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)}' $(MAKEFILE_LIST)
+
+clean: ## Borra caches (pytest, ruff, mypy, __pycache__)
+	rm -rf .pytest_cache .ruff_cache .mypy_cache
+	find src tests scripts -type d -name __pycache__ -prune -exec rm -rf {} +

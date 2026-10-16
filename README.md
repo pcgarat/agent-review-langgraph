@@ -334,9 +334,11 @@ docker compose up --build -d
 ## Desarrollo
 
 ```bash
+make help        # todos los atajos, agrupados
 make install     # uv sync con extras dev
 make ci          # ruff + mypy (strict) + pytest + docs-check, igual que el CI
 make eval        # evaluación de la review contra el gold set (replay, sin red)
+make up          # levanta el stack (docker compose up --build -d); `make panel` añade el panel
 ```
 
 Cómo añadir un revisor, un adaptador o un proveedor, y qué invariantes no se

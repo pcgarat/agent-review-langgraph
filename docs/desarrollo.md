@@ -10,12 +10,26 @@ tocar nada, lee [`CONTEXT.md`](../CONTEXT.md) y los ADR de la zona que vas a cam
 ## 1. Puesta en marcha
 
 ```bash
+make help        # lista todos los atajos, agrupados
 make install     # uv sync --extra dev (Python 3.12; el CI fija UV_FROZEN=true)
 make ci          # ruff check + ruff format --check + mypy (strict) + pytest + docs-check
 ```
 
 `make ci` ejecuta lo mismo y en el mismo orden que `.github/workflows/ci.yml`. Los
-tests `live` (contra Bitbucket real) quedan excluidos por defecto (`-m 'not live'`).
+tests `live` (contra Bitbucket real) quedan excluidos por defecto (`-m 'not live'`);
+`make test-live` los pide en positivo (red y credenciales reales).
+
+El `Makefile` es el índice de tareas del repo, no solo de calidad. Además de `make ci`:
+
+```bash
+make test T=tests/test_web.py     # acota la suite a una ruta o a -k
+make fix                          # arregla lint y formato
+make bootstrap                    # crea .env desde .env.example (idempotente, permisos 600)
+make up                           # levanta el stack (docker compose up --build -d)
+make panel                        # ídem con el perfil `panel` (panel de operación)
+make logs S=api                   # sigue los logs de un servicio (por defecto worker)
+make smoke PR=417                 # smoke Nivel 2 real contra un PR (docs/operacion.md §6)
+```
 
 `tests/conftest.py` aísla la suite del host: desactiva el `.env` en `Settings` y
 borra del proceso las variables que el modelo conoce. Los tests parten siempre de los
