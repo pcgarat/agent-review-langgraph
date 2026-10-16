@@ -1,5 +1,5 @@
 from agent_review.domain.models import CommandResult
-from agent_review.ports.budget import BudgetPort
+from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.context import (
     DEFAULT_CONTEXT_DENYLIST,
@@ -31,4 +31,6 @@ __all__ = [
     "VerifyReport",
     "VerifyRequest",
     "is_denied",
+    "release_tokens",
+    "reserve_tokens",
 ]
