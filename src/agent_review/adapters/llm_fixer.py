@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_review.domain.models import Finding, FixResult, ProposedPatch
 from agent_review.fix.patch import build_patch
-from agent_review.ports.llm import LlmPort
+from agent_review.ports.llm import LlmPort, LlmReply
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ class LlmFixer:
         self._budget = budget_tokens_per_pr
         self._max_fix_lines = max_fix_lines
         self.last_estimated_tokens = 0
+        self.last_usage: LlmReply | None = None
 
     def propose(
         self, finding: Finding, *, source: str, previous: FixResult | None
@@ -69,8 +70,14 @@ class LlmFixer:
             raise FixBudgetExceeded(
                 f"el coste estimado ({estimated} tokens) supera el presupuesto ({self._budget})"
             )
-        raw = self._llm.complete(system=_SYSTEM, prompt=prompt, max_tokens=self._max_tokens)
-        return self._to_patch(raw, finding, source)
+        reply = self._llm.complete(
+            system=_SYSTEM,
+            prompt=prompt,
+            max_tokens=self._max_tokens,
+            json_mode="json_object",
+        )
+        self.last_usage = reply
+        return self._to_patch(reply.text, finding, source)
 
     def _prompt(self, finding: Finding, source: str, previous: FixResult | None) -> str:
         parts = [

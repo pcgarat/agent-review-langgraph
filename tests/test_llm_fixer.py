@@ -12,6 +12,7 @@ from agent_review.domain.models import (
     Owner,
     Severity,
 )
+from agent_review.ports.llm import LlmReply
 
 
 class _Llm:
@@ -19,10 +20,18 @@ class _Llm:
         self.reply = reply
         self.calls: list[str] = []
 
-    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
-        del system, max_tokens
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode=None,
+        response_schema=None,
+    ) -> LlmReply:
+        del system, max_tokens, json_mode, response_schema
         self.calls.append(prompt)
-        return self.reply
+        return LlmReply(text=self.reply)
 
 
 _FINDING = Finding(

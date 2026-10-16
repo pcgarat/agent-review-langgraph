@@ -8,8 +8,11 @@ from agent_review.domain.models import (
     Finding,
     FindingAction,
     FindingDecision,
+    FixResolution,
+    FixResolutions,
     FixResult,
     FixStatus,
+    FixWaitRequest,
     HitlDecision,
     Owner,
     ProposedPatch,
@@ -18,7 +21,12 @@ from agent_review.domain.models import (
     Severity,
 )
 from agent_review.fix.delivery import DiffFormatter, SuggestionFormatter
-from agent_review.fix.node import run_fixes
+from agent_review.fix.node import (
+    apply_resolutions,
+    build_wave,
+    dispatch_fixes,
+    run_key_for,
+)
 from agent_review.fix.patch import build_patch
 from agent_review.policy.engine import PolicyEngine
 
@@ -47,45 +55,19 @@ class _Fixer:
     def __init__(self, *, patch: ProposedPatch | None = None) -> None:
         self.calls = 0
         self._patch = patch
+        self.previous_seen: list[FixResult | None] = []
 
     def propose(
         self, finding: Finding, *, source: str, previous: FixResult | None
     ) -> ProposedPatch:
         self.calls += 1
+        self.previous_seen.append(previous)
         if self._patch is not None:
             return self._patch
+        replacement = "use App\\Bar;" if previous is None else "use App\\Baz;"
         return build_patch(
-            finding, source=source, start_line=2, end_line=2, replacement="use App\\Bar;"
+            finding, source=source, start_line=2, end_line=2, replacement=replacement
         )
-
-
-class _Sandbox:
-    def __init__(self, *, passed: bool = True, error: Exception | None = None) -> None:
-        self.passed = passed
-        self.error = error
-        self.requests: list[str] = []
-
-    def verify(self, request):  # noqa: ANN001 - fake
-        self.requests.append(request.run_key)
-        if self.error is not None:
-            raise self.error
-        result = CommandResult(
-            recipe="typecheck",
-            argv=["make", "stan"],
-            exit_code=0 if self.passed else 1,
-            duration_s=1.0,
-            stderr_tail="" if self.passed else "boom",
-        )
-        return type(
-            "Report",
-            (),
-            {
-                "run_key": request.run_key,
-                "image_digest": "sha256:abc",
-                "results": [result],
-                "passed": self.passed,
-            },
-        )()
 
 
 _FINDING = Finding(
@@ -127,46 +109,71 @@ def _policy(guards: dict | None = None) -> PolicyEngine:
     )
 
 
-def _run(
+def _dispatch(
     *,
     fixer,
-    sandbox,
     human=None,
     decisions=None,
     guards=None,
     policy: PolicyEngine | None = None,
     finding: Finding | None = None,
+    existing=None,
 ) -> dict[str, FixResult]:
-    return run_fixes(
+    return dispatch_fixes(
         request=_REQUEST,
         findings=[finding or _FINDING],
         decisions=decisions or [_decision("f1")],
         human=human or _human(),
         vcs=_Vcs(),  # type: ignore[arg-type]
         fixer=fixer,
-        sandbox=sandbox,
         policy=policy or _policy(guards),
         recipes=["typecheck"],
         targets=[],
+        existing=existing,
     )
 
 
-def test_fix_verificado_cuando_el_sandbox_pasa() -> None:
-    results = _run(fixer=_Fixer(), sandbox=_Sandbox(passed=True))
-    assert results["f1"].status is FixStatus.VERIFIED
+def _resolution(
+    outcome: str,
+    *,
+    attempt: int = 1,
+    checks: list[CommandResult] | None = None,
+    error: str = "",
+) -> FixResolutions:
+    return FixResolutions(
+        items=[
+            FixResolution(
+                run_key=run_key_for(_REQUEST.review_key, "f1", attempt),
+                outcome=outcome,  # type: ignore[arg-type]
+                checks=checks or [],
+                error=error,
+            )
+        ]
+    )
+
+
+def _check(ok: bool, recipe: str = "typecheck") -> CommandResult:
+    return CommandResult(
+        recipe=recipe,
+        argv=["make", "stan"],
+        exit_code=0 if ok else 1,
+        duration_s=1.0,
+        stderr_tail="" if ok else "boom",
+    )
+
+
+# --- Dispatch: propone y valida, nunca verifica ------------------------------
+
+
+def test_dispatch_deja_pending_sin_sandbox() -> None:
+    """Un candidato verificable acaba `PENDING`; la verificacion no ocurre aqui."""
+    results = _dispatch(fixer=_Fixer())
+    assert results["f1"].status is FixStatus.PENDING
     assert results["f1"].patch is not None
-    assert results["f1"].image_digest == "sha256:abc"
+    assert results["f1"].attempts == 1
 
 
-def test_fix_fallido_tras_agotar_intentos() -> None:
-    results = _run(fixer=_Fixer(), sandbox=_Sandbox(passed=False))
-    result = results["f1"]
-    assert result.status is FixStatus.FAILED
-    assert result.attempts == 2, "reintenta con el stderr del primero"
-    assert "typecheck" in result.reason
-
-
-def test_parche_invalido_no_llama_al_sandbox() -> None:
+def test_parche_invalido_es_terminal_sin_sandbox() -> None:
     bad = ProposedPatch(
         finding_id="f1",
         file="src/Foo.php",
@@ -175,60 +182,29 @@ def test_parche_invalido_no_llama_al_sandbox() -> None:
         end_line=99,
         replacement="x",
     )
-    sandbox = _Sandbox()
-    results = _run(fixer=_Fixer(patch=bad), sandbox=sandbox)
+    results = _dispatch(fixer=_Fixer(patch=bad))
     assert results["f1"].status is FixStatus.INVALID_PATCH
-    assert sandbox.requests == [], "un parche invalido no gasta sandbox"
 
 
 def test_escalate_aprobado_no_genera_fix() -> None:
-    results = _run(
-        fixer=_Fixer(),
-        sandbox=_Sandbox(),
-        decisions=[_decision("f1", FindingAction.ESCALATE)],
-    )
+    results = _dispatch(fixer=_Fixer(), decisions=[_decision("f1", FindingAction.ESCALATE)])
     assert results == {}
 
 
 def test_sin_fixer_es_no_verificable() -> None:
-    results = _run(fixer=None, sandbox=_Sandbox())
+    results = _dispatch(fixer=None)
     assert results["f1"].status is FixStatus.NOT_VERIFIABLE
-
-
-def test_sandbox_rechaza_el_parche_es_no_verificable() -> None:
-    """Un fallo permanente del runner (perfil sin digest, targets invalidos) no es
-    `FAILED`: la verificacion no llego a ejecutarse, es `NOT_VERIFIABLE`."""
-    from agent_review.adapters.http_sandbox import SandboxError
-
-    results = _run(
-        fixer=_Fixer(),
-        sandbox=_Sandbox(error=SandboxError("el runner rechazo el parche")),
-    )
-    assert results["f1"].status is FixStatus.NOT_VERIFIABLE
-    assert "rechazo" in results["f1"].reason
-
-
-def test_sandbox_no_disponible_es_transitorio_y_sube() -> None:
-    """Un runner caido (red, 5xx) se reintenta en el nodo, no se marca como fallo."""
-    import pytest
-
-    from agent_review.adapters.http_sandbox import SandboxUnavailable
-
-    with pytest.raises(SandboxUnavailable):
-        _run(fixer=_Fixer(), sandbox=_Sandbox(error=SandboxUnavailable("runner caido")))
 
 
 def test_tope_de_fixes_marca_skipped() -> None:
-    results = _run(
+    results = _dispatch(
         fixer=_Fixer(),
-        sandbox=_Sandbox(),
         guards={"max_fixes_per_pr": 0, "max_fix_attempts": 2, "max_fix_lines": 30},
     )
     assert results["f1"].status is FixStatus.SKIPPED
 
 
 def test_ruta_nunca_auto_bloquea_el_fix_aunque_lo_aprueben() -> None:
-    sandbox = _Sandbox()
     fixer = _Fixer()
     policy = _policy(
         {
@@ -238,29 +214,122 @@ def test_ruta_nunca_auto_bloquea_el_fix_aunque_lo_aprueben() -> None:
             "never_auto_paths": ["src/Foo.php"],
         }
     )
-    results = _run(
-        fixer=fixer,
-        sandbox=sandbox,
-        policy=policy,
-        human=_human(outcome=DecisionOutcome.APPROVED),
-    )
+    results = _dispatch(fixer=fixer, policy=policy)
     assert results["f1"].status is FixStatus.BLOCKED
     assert "nunca-auto" in results["f1"].reason
     assert fixer.calls == 0, "una ruta protegida no gasta fixer"
-    assert sandbox.requests == [], "una ruta protegida no gasta sandbox"
 
 
 def test_tema_protegido_bloquea_el_fix_aunque_lo_aprueben() -> None:
     finding = _FINDING.model_copy(
         update={"protected_subject": ProtectedSubject.AUTHORIZATION_AUTHENTICATION}
     )
-    sandbox = _Sandbox()
     fixer = _Fixer()
-    results = _run(fixer=fixer, sandbox=sandbox, finding=finding)
+    results = _dispatch(fixer=fixer, finding=finding)
     assert results["f1"].status is FixStatus.BLOCKED
     assert "tema protegido" in results["f1"].reason
     assert fixer.calls == 0
-    assert sandbox.requests == []
+
+
+# --- Aplicacion de la wave ---------------------------------------------------
+
+
+def test_resolucion_passed_es_verified() -> None:
+    pending = _dispatch(fixer=_Fixer())
+    applied = apply_resolutions(
+        request=_REQUEST, fixes=pending, resolutions=_resolution("passed", checks=[_check(True)])
+    )
+    assert applied["f1"].status is FixStatus.VERIFIED
+    assert applied["f1"].checks[0].ok
+
+
+def test_resolucion_failed_guarda_el_check_y_la_razon() -> None:
+    pending = _dispatch(fixer=_Fixer())
+    applied = apply_resolutions(
+        request=_REQUEST, fixes=pending, resolutions=_resolution("failed", checks=[_check(False)])
+    )
+    assert applied["f1"].status is FixStatus.FAILED
+    assert "typecheck" in applied["f1"].reason
+
+
+def test_resolucion_error_es_no_verificable() -> None:
+    """Un fallo del runner no es `FAILED`: la verificacion no llego a ejecutarse."""
+    pending = _dispatch(fixer=_Fixer())
+    applied = apply_resolutions(
+        request=_REQUEST,
+        fixes=pending,
+        resolutions=_resolution("error", error="runner caido"),
+    )
+    assert applied["f1"].status is FixStatus.NOT_VERIFIABLE
+    assert "runner caido" in applied["f1"].reason
+
+
+def test_resolucion_ausente_no_deja_el_fix_colgado() -> None:
+    pending = _dispatch(fixer=_Fixer())
+    applied = apply_resolutions(
+        request=_REQUEST, fixes=pending, resolutions=FixResolutions(items=[])
+    )
+    assert applied["f1"].status is FixStatus.NOT_VERIFIABLE
+
+
+def test_apply_resolutions_es_reejecutable() -> None:
+    """Al reanudar el nodo se re-ejecuta: aplicar la misma wave dos veces no cambia."""
+    pending = _dispatch(fixer=_Fixer())
+    resolutions = _resolution("failed", checks=[_check(False)])
+    once = apply_resolutions(request=_REQUEST, fixes=pending, resolutions=resolutions)
+    twice = apply_resolutions(request=_REQUEST, fixes=once, resolutions=resolutions)
+    assert twice == {}, "un fix ya terminal no se re-aplica"
+
+
+# --- Reintento: el grafo vuelve a `fix_dispatch` tras un `failed` ------------
+
+
+def test_failed_con_intentos_re_propone_con_el_log_previo() -> None:
+    fixer = _Fixer()
+    pending = _dispatch(fixer=fixer)
+    failed = apply_resolutions(
+        request=_REQUEST, fixes=pending, resolutions=_resolution("failed", checks=[_check(False)])
+    )
+    # Visita de reintento: el grafo vuelve a `fix_dispatch` con el `FAILED` en el estado.
+    retried = _dispatch(fixer=fixer, existing=failed)
+    assert retried["f1"].status is FixStatus.PENDING
+    assert retried["f1"].attempts == 2
+    assert fixer.previous_seen[-1] is not None, "el 2º intento ve el fallo anterior"
+
+
+def test_failed_sin_intentos_no_re_propone() -> None:
+    fixer = _Fixer()
+    pending = _dispatch(
+        fixer=_Fixer(),
+        guards={"max_fixes_per_pr": 3, "max_fix_attempts": 1, "max_fix_lines": 30},
+    )
+    exhausted = apply_resolutions(
+        request=_REQUEST, fixes=pending, resolutions=_resolution("failed", checks=[_check(False)])
+    )
+    retried = _dispatch(
+        fixer=fixer,
+        existing=exhausted,
+        guards={"max_fixes_per_pr": 3, "max_fix_attempts": 1, "max_fix_lines": 30},
+    )
+    assert retried == {}, "sin intentos no hay otra wave"
+    assert fixer.calls == 0
+
+
+def test_build_wave_lista_los_pending() -> None:
+    pending = _dispatch(fixer=_Fixer())
+    wave = build_wave(_REQUEST, pending, recipes=["typecheck"], targets=[])
+    assert isinstance(wave, FixWaitRequest)
+    assert wave.jobs[0].run_key == run_key_for(_REQUEST.review_key, "f1", 1)
+    assert wave.jobs[0].recipes == ["typecheck"]
+
+
+def test_build_wave_sin_pendientes_no_es_una_pausa() -> None:
+    from agent_review.graph.build import build_fix_wait
+
+    assert build_fix_wait({"request": _REQUEST, "fixes": {}}) is None
+
+
+# --- Delivery (E6) -----------------------------------------------------------
 
 
 def test_delivery_diff_usa_el_bloque_diff() -> None:

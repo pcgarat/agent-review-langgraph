@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-15 | Creado: 2026-10-11
 
 # Operación
 
@@ -35,6 +35,7 @@ docker compose logs -f worker
 |---|---|---|---|
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
+| `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `docker.sock`, `TWG_*`, Postgres ni `REVIEWS_DECISION_TOKEN` |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
 | `redis` | — | — | Sin auth; solo red interna |
@@ -47,7 +48,7 @@ docker compose logs -f worker
 ## 2. Configuración
 
 Toda la configuración entra por entorno (`settings.py`); `.env.example` es la
-plantilla comentada. Además hay dos ficheros versionados:
+plantilla comentada. Además hay tres ficheros versionados:
 
 - **[`config/autonomy.yaml`](../config/autonomy.yaml)**: la política
   ([ADR-0003](adr/0003-autonomia-como-politica-por-hallazgo.md)). `max_autonomy` es
@@ -60,6 +61,29 @@ plantilla comentada. Además hay dos ficheros versionados:
 - **[`config/repo_profile.emotivoo-v2.yaml`](../config/repo_profile.emotivoo-v2.yaml)**:
   el perfil del repo. Su contrato se valida al arrancar (`profile.validate_profile`):
   una clave desconocida o un tipo erróneo se registran como aviso.
+- **[`config/models.yaml`](../config/models.yaml)**: el registro de modelos
+  ([ADR-0015](adr/0015-registro-declarativo-de-modelos.md)). Declara proveedores,
+  modelos (con sus capacidades) y a qué modelo apunta cada **rol**. Un rol es la
+  unidad de asignación: `correctness`, `security`, `arch` (personas del fan-out) y
+  `fixer`. Cambiar de modelo es editar este fichero y **reiniciar el worker**: no
+  hay recarga en caliente.
+
+  ```yaml
+  bindings:
+    correctness: deepseek-v4-flash
+    fixer: qwen3.6            # json_schema estricto para el parche
+  ```
+
+  Los secretos **no** van en el YAML, solo su referencia (`${LLM_API_KEY}`), que se
+  resuelve contra los campos de `Settings`. Una referencia sin resolver cuenta como
+  secreto inseguro y falla el arranque en producción. Para añadir un proveedor con
+  su propia clave, se añade el campo a `Settings` y se referencia desde el YAML;
+  el test `tests/test_live_models.py` (`-m live`) comprueba contra la API que las
+  capacidades declaradas (`json_mode`, contexto) se cumplen.
+
+  Sin registro declarativo (`MODELS_CONFIG` vacío), se sintetiza uno implícito
+  desde `LLM_MODEL`/`LLM_BASE_URL`/`LLM_API_KEY`: un solo modelo para todos los
+  roles. Es la vía de compatibilidad y no tiene fecha de retirada.
 
 ### Variables por tema
 
@@ -73,14 +97,17 @@ plantilla comentada. Además hay dos ficheros versionados:
 | Política | `AUTONOMY_CONFIG`, `REPO_PROFILE_CONFIG`, `MAX_AUTONOMY_OVERRIDE` (solo puede bajar el techo) |
 | Teams | `TEAMS_WEBHOOK_URL` (sin URL no hay canal), `TEAMS_ENABLED` (la hace obligatoria en producción) |
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
+| Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
-| LLM | `LLM_REVIEWER_ENABLED` (`false`), `LLM_MODEL` (sin él no hay persona ni fixer), `LLM_BASE_URL` (vacío = OpenAI; cualquier endpoint compatible), `LLM_API_KEY`, `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: no llama si la estimación lo supera) |
+| LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (`config/models.yaml`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: no llama si la estimación lo supera) |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
+| Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
 
 **Para activar la Fase 3** hacen falta las cinco cosas:
 
 1. `max_autonomy` ≥ `fix_with_approval`.
-2. `LLM_REVIEWER_ENABLED=true` + `LLM_MODEL` (el fixer usa el mismo LLM).
+2. `LLM_REVIEWER_ENABLED=true` y un modelo para los roles `correctness` y `fixer`
+   (en `config/models.yaml`, o vía `LLM_MODEL`).
 3. `SANDBOX_ENABLED=true` + `SANDBOX_RUNNER_URL`.
 4. `ci_image_digest: sha256:…` en el perfil.
 5. Haber cerrado P6.
@@ -101,7 +128,7 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 | `TOOLING_WEBHOOK_SECRET` | HMAC-SHA256 del `POST /webhook/tooling` | Siempre en producción | Agente **y** CI |
 | `REVIEWS_DECISION_TOKEN` | Bearer del canal de decisión: quien lo tiene decide | Siempre en producción | Agente |
 | `TEAMS_WEBHOOK_URL` | Incoming Webhook: quien tiene la URL, publica | Si `TEAMS_ENABLED` | Agente |
-| `LLM_API_KEY` | Clave del proveedor | Si `LLM_REVIEWER_ENABLED` | Agente |
+| `LLM_API_KEY` | Clave del proveedor LLM (la referencia `${LLM_API_KEY}` del registro de modelos) | Si `LLM_REVIEWER_ENABLED` | Agente |
 | `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre worker y runner | Si `SANDBOX_ENABLED` | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
@@ -231,8 +258,9 @@ firma inválida o ausente da `401`.
 | Review pausada que nadie ve | El inbox se perdió (Redis) | La reconciliación horaria la repone; también basta reentregar el job |
 | Decisión «descartada: el hilo ya estaba completado» | Ganó el `expired` del TTL | Es esperado: la review ya se publicó como «sin decisión» |
 | Worker reiniciándose en bucle | Faltan secretos en producción, falta `twg` o Postgres no responde | Mirar el primer error del arranque: dice el **nombre** del secreto que falta |
-| Fix `not_verifiable` | Sin digest, sin runner, sin fixer, o el runner rechazó la petición | La razón aparece en el inline y en el log `Fase 3:` |
-| Worker «sano» pero sin avanzar | Verificación larga en el sandbox (secuencial) o `twg` lento | El latido solo mide que el proceso vive; mirar el último `Procesando review` |
+| Fix `not_verifiable` | Sin digest, sin runner, sin fixer, o el runner rechazó la petición | La razón aparece en el inline y en el log `Fase 3:`. Si vino de un TTL (`FIX_VERIFY_TTL_S`), revisa que el `fix-worker` esté arriba |
+| La review pausa "en verificación" y no cierra | La wave no vuelve: `fix-worker` caído o runner sin responder | `docker compose logs -f fix-worker`; la wave vence por TTL y queda `NOT_VERIFIABLE` |
+| Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
 
 Fallos históricos que solo afloraron con Docker y ya están corregidos:
 

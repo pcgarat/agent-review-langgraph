@@ -16,7 +16,13 @@ from agent_review.domain.models import (
     Severity,
 )
 from agent_review.fix.delivery import DiffFormatter
-from agent_review.graph.build import _render_inline, _render_summary
+from agent_review.graph.build import (
+    _fix_token,
+    _render_fix,
+    _render_fix_followup,
+    _render_inline,
+    _render_summary,
+)
 
 
 def _finding() -> Finding:
@@ -129,3 +135,98 @@ def test_resumen_incluye_la_seccion_fixes() -> None:
     )
     assert "### Fixes" in summary
     assert "verified: 1" in summary
+
+
+# ---------------------------------------------------------------------------
+# Fase 3-E7 (F22): render del `PENDING`, dedupe del seguimiento y log acotado.
+# ---------------------------------------------------------------------------
+
+
+def _pending_fix() -> FixResult:
+    patch = ProposedPatch(
+        finding_id="f1",
+        file="src/Foo.php",
+        diff="diff --git a/src/Foo.php b/src/Foo.php\n@@ -1,2 +1,2 @@\n-a\n+b\n",
+        start_line=2,
+        end_line=2,
+        replacement="use App\\Bar;",
+    )
+    return FixResult(finding_id="f1", status=FixStatus.PENDING, attempts=1, patch=patch)
+
+
+def test_inline_pendiente_se_rotula_en_verificacion() -> None:
+    # E7: hay parche valido y la wave esta despachada; no es un fix resuelto ni un
+    # fallo, asi que el inline lo rotula y no cae en "no verificado".
+    body = _render_inline(
+        _finding(), _decision(), human=_human(), fix=_pending_fix(), delivery=DiffFormatter()
+    )
+    assert "en verificacion" in body
+    assert "no verificado" not in body
+    assert "```diff" not in body, "aun no hay resultado verificado que entregar"
+
+
+def test_render_fix_pendiente_no_cae_en_la_rama_de_fallo() -> None:
+    text = _render_fix(_pending_fix(), delivery=DiffFormatter())
+    assert "en verificacion" in text
+    assert "no verificado" not in text
+
+
+def test_resumen_refleja_el_pendiente_como_en_verificacion() -> None:
+    summary = _render_summary(
+        [_finding()],
+        [_decision()],
+        inlined=[_finding()],
+        fixes={"f1": _pending_fix()},
+        human=_human(),
+    )
+    assert "en verificacion" in summary
+
+
+def test_seguimiento_lleva_marca_propia_y_no_duplica() -> None:
+    from agent_review.domain.models import ReviewRequest
+
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    body = _render_fix_followup(
+        request, {"f1": _verified_fix()}, [_finding()], delivery=DiffFormatter()
+    )
+    assert _fix_token(request.dedupe_token) in body
+    assert body.count(_fix_token(request.dedupe_token)) == 1
+    assert "## Fix verificado" in body
+    assert "```diff" in body
+
+
+def test_fallo_lleva_el_log_acotado_al_limite() -> None:
+    fix = FixResult(
+        finding_id="f1",
+        status=FixStatus.FAILED,
+        attempts=2,
+        checks=[
+            CommandResult(
+                recipe="typecheck",
+                argv=["make", "stan"],
+                exit_code=1,
+                duration_s=1.0,
+                stderr_tail="linea\n" * 5000,
+            )
+        ],
+    )
+    text = _render_fix(fix, delivery=DiffFormatter())
+    # El log se acota a `_MAX_TAIL_CHARS` (1500): nunca se vuelca un stderr entero.
+    assert len(text) < 2000
+    assert text.count("linea") <= 260
+
+
+def test_seguimiento_de_fallo_no_dice_verificado() -> None:
+    from agent_review.domain.models import ReviewRequest
+
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    fix = FixResult(
+        finding_id="f1",
+        status=FixStatus.NOT_VERIFIABLE,
+        attempts=1,
+        reason="runner inalcanzable",
+    )
+    body = _render_fix_followup(request, {"f1": fix}, [_finding()], delivery=DiffFormatter())
+    assert "## Resultado del fix" in body
+    assert "Fix verificado" not in body
+    assert "no verificable" in body

@@ -81,7 +81,8 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
 ## Bloque 3 — Cierre
 
 - [ ] **F11** Spike R1 real: elegir el `DeliveryFormatter` según lo que renderice Bitbucket
-- [ ] **F12** E2E con fakes + smoke real
+- [ ] **F12** E2E con fakes + smoke real — la parte de **fakes** (handoff desacoplado)
+  la cubre 004-F23 (`tests/test_fix_e2e.py`); queda el **smoke real** (P6)
 - [ ] **F13** README + `docs/fase3-*.md` + `docs/iniciativas/README.md`
 
 > El desacople fuerte de E7 (que este bloque no cubre) tiene su propio spec y su
@@ -103,7 +104,8 @@ presente, para que la barrera de ingesta no vuelva a romperse en silencio.
   test (`ApplicationServiceMustHaveTestRule`): candidato a Fase 4 (multi-fichero).
 - Runner **síncrono**: un `POST /verify` bloqueante con `run_key` idempotente (sin
   `run_id`, sin sondeo). Ver F7.
-- **E7 (desacople fuerte) sigue pendiente.** El `POST` síncrono no saca la
-  verificación de la ruta de la review: como el worker es secuencial, sigue
-  ocupado ~20 min por fix. El desacople real (cola/consumidor de fixes aparte) es
-  un diseño en sí mismo y no se finge con el adaptador síncrono.
+- **E7 (desacople fuerte) implementado** en la iniciativa
+  [004](../004-fase3-e7-desacople/spec.md): la verificación sale de la ruta de la
+  review. El worker propone, valida y pausa (`fix_wait`); un `fix-worker` dedicado
+  consume la wave, llama al runner y encola la reanudación con la resolución. Así el
+  worker de reviews deja de estar ocupado ~20 min por fix.

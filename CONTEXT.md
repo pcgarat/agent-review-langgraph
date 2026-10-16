@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-15 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -66,6 +66,10 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **`standards`** | Persona estática (`ToolingReviewer`): convierte el artefacto de PHPStan en hallazgos anclados al diff. No ejecuta la herramienta. |
 | **`correctness`** | Persona LLM (`LlmReviewer`), opt-in. Sus hallazgos se validan contra el contrato; una línea inventada se descarta. |
 | **`null`** | Persona nula (`NullReviewer`): se usa si no hay ninguna otra. |
+| **Rol** | La unidad con la que se asigna modelo: `correctness`, `security`, `arch` (personas), `fixer`. Cada rol se bindea a un modelo en `config/models.yaml`. No es lo mismo que un nodo del grafo: `persona` es un fan-out y todas sus ramas comparten closure. |
+| **Registro de modelos** | `config/models.yaml` ([ADR-0015](docs/adr/0015-registro-declarativo-de-modelos.md)): proveedores, modelos con sus capacidades y el binding de cada rol. Se lee al arrancar. |
+| **Binding** | La asignación rol → modelo dentro del registro. |
+| **Capacidad** | Lo que un modelo declara saber hacer (`json_mode`, contexto). Se declara en el registro porque `/v1/models` no lo publica; el adaptador pide al modelo solo lo que declara. |
 | **Estado de la fuente** | `present` / `missing` / `unreadable`. Separa «análisis limpio» de «no se pudo leer la salida». |
 | **Review incompleta** | Alguna fuente estática declarada no estaba `present`. Su «0 hallazgos» **no** significa «PR limpio» y se publica con aviso. |
 | **Merge** | Paso que deduplica: mismo `(fichero, línea, título)`, o mismo `(fichero, título)` a ≤5 líneas visto por **personas distintas**. Conserva la evidencia más rica. |
@@ -102,7 +106,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Reanudación** | Job con `ReviewRequest.decision`: el worker hace `Command(resume=…)` sobre el **mismo** hilo. |
 | **Expiración** | Pasado `DECISION_TTL_S` (7 días), el barrido reanuda con `expired` y `actor=system:ttl`. Una review nunca se queda colgada. |
 | **Reconciliación** | El worker vuelve a meter en el inbox los hilos pausados que el checkpointer conoce y el inbox ha perdido. |
-| **Poda** | Borrado de hilos **completados** más antiguos que `CHECKPOINT_RETENTION_DAYS`. Un hilo pausado nunca se poda. |
+| **Poda** | Borrado de hilos **completados** más antiguos que `CHECKPOINT_RETENTION_DAYS`. Un hilo pausado **humano** nunca se poda; uno pausado en `fix_wait` sí, con `FIX_WAIT_MAX_AGE_S` (`FixWaitRetention`). |
 
 ---
 
@@ -121,6 +125,13 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **`run_key`** | `review_key:finding_id:intento`. Una reentrega con el mismo `run_key` devuelve el informe previo y no vuelve a ejecutar. |
 | **Estado del fix** (`FixStatus`) | `verified`, `failed` (agotó intentos), `invalid_patch`, `not_verifiable` (sin digest, sin runner o sin fixer), `skipped` (tope), `blocked` (ruta nunca-auto o tema protegido). |
 | **Entrega** | Cómo aparece un fix verificado en el inline: un bloque ` ```diff ` (por defecto) o ` ```suggestion `. La elige un `DeliveryFormatter`. |
+| **Handoff del fix (E7)** | La verificación no vive en el worker de reviews: `fix_dispatch` propone y valida, `fix_wait` **pausa** con la *wave* y el `fix-worker` la verifica y reanuda. Desacople por cola (`reviews:fixes`), no por llamada. |
+| **`FixWaitRequest` (wave)** | `interrupt` de la pausa de fix (`kind="fix"`): el `review_key` y los `VerifyJob` (`run_key`, fichero, parche, recetas) que el `fix-worker` debe verificar. |
+| **`PENDING`** | Estado del fix con parche válido y verificación despachada: el inline lo rotula "en verificación" y no se entrega sugerencia hasta que llegue la resolución. |
+| **`fix-worker`** | Servicio que consume `reviews:fixes`, llama al `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. |
+| **`FixResolutions`** | Resultado de una wave: una `FixResolution` por `run_key` (`passed`/`failed`/`error`), con los checks y el `image_digest`. Reanuda el hilo. |
+| **Dedupe del fix** | El `run_key` se marca en `reviews:fixes:done`: una reentrega no relanza la verificación; el worker solo aplica una resolución cuyo `run_key` esperaba. |
+| **TTL del handoff** | `FIX_VERIFY_TTL_S`: una wave sin resolver vence y `sweep_fix_expired` reanuda con `outcome="error"` → el fix queda `NOT_VERIFIABLE`, nunca colgado. |
 
 ---
 

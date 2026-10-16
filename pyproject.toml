@@ -49,7 +49,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-m 'not live'"
 markers = [
-    "live: requiere twg autenticado y red contra Bitbucket (excluido por defecto)",
+    "live: requiere credenciales reales y red (twg autenticado, LLM_API_KEY); excluido por defecto",
 ]
 
 [tool.mypy]

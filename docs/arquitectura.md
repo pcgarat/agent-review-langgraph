@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-15 | Creado: 2026-10-11
 
 # Arquitectura
 
@@ -23,11 +23,12 @@ flowchart LR
     subgraph PLAT["docker compose"]
         API["api · FastAPI :8000"]
         WORKER["worker · grafo LangGraph"]
+        FIXW["fix-worker<br/>verifica · nunca publica"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
-        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox")]
+        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
-        CFG[/"./config · política + perfil"/]
+        CFG[/"./config · política + perfil + modelos"/]
     end
 
     CI -->|"POST /webhook/tooling (HMAC)"| API
@@ -40,8 +41,11 @@ flowchart LR
     WORKER <-->|checkpoint| PG
     WORKER -->|"diff · inline · resumen"| VCS
     WORKER -->|aviso| TEAMS
-    WORKER -->|"personas · fixer"| LLM
-    WORKER -->|"POST /verify (bearer)"| RUNNER
+    WORKER -->|"personas · fixer<br/>(modelo por rol)"| LLM
+    WORKER -->|"wave de fix"| REDIS
+    REDIS -->|dequeue| FIXW
+    FIXW -->|"POST /verify (bearer)"| RUNNER
+    FIXW -->|"reanudacion + resolucion"| REDIS
     RUNNER -->|"clona (token solo lectura)"| VCS
     TEAMS -.-> HUMAN
 ```
@@ -49,7 +53,8 @@ flowchart LR
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
 | `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
-| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. |
+| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
+| `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
 
@@ -64,19 +69,48 @@ src/agent_review/
 │                  FixerPort, SandboxPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
 │                  openai_llm, teams_webhook, http_sandbox, tooling_source, diff_parser
-├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
+├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
+├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
 ├── policy/        PolicyEngine (autonomy.yaml)
 ├── fix/           Selección, validación local, nodo fix, formatters de entrega
+├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
 ├── sandbox_runner/ Servicio de verificación (verifier, workspace, runtime, recipes)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
     paused_store.py checkpointer.py scope.py decision.py
 ```
 
-Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**,
-**Strategy** (`FixerPort`, `DeliveryFormatter`, `RetentionPolicy`), **map-reduce**
+Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
+(`autonomy.yaml` y `models.yaml`), **Strategy** (`FixerPort`, `DeliveryFormatter`,
+`RetentionPolicy`), **Registry** (`ModelRegistry`: rol → puerto), **map-reduce**
 (fan-out de personas con `Send` + reducer) y **ejecución durable** (checkpoint +
 `interrupt`).
+
+### Modelos por rol
+
+El modelo de cada persona y del fixer no vive en el código: se declara por **rol**
+en [`config/models.yaml`](../config/models.yaml) y lo resuelve `ModelRegistry`
+([ADR-0015](adr/0015-registro-declarativo-de-modelos.md)). El registro se lee **al
+arrancar** y el worker contrasta los modelos bindeados contra `GET /v1/models`
+antes de procesar el primer job.
+
+```mermaid
+flowchart LR
+    Y["config/models.yaml"] --> R[ModelRegistry]
+    S[".env · secretos"] -->|"${VAR}"| R
+    R -->|"port_for('correctness')"| P1["LlmPort · deepseek-v4-flash"]
+    R -->|"port_for('fixer')"| P2["LlmPort · qwen3.6"]
+    P1 --> PA["nodo persona (fan-out)"]
+    P2 --> FD["nodo fix_dispatch"]
+```
+
+El `LlmPort` devuelve un `LlmReply` con el `usage` real del proveedor
+(`prompt_tokens`, `completion_tokens`, `reasoning_tokens`) y acepta `json_mode`: el
+adaptador pide al modelo solo la salida estructurada que su especificación declara,
+porque un `json_schema` no soportado es un 400 permanente que la `RetryPolicy` no
+recupera. Un `finish_reason: length` con contenido vacío (un razonador que gasta el
+presupuesto en `reasoning_tokens`) se convierte en `LlmError` trazable, no en 0
+hallazgos silenciosos.
 
 ---
 
@@ -86,14 +120,20 @@ Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-dat
 flowchart TD
     START([START]) --> scope
     scope["scope<br/>diff · filtro de ruido · max_files_per_pr"] -->|"Send ×N"| persona
-    persona["persona<br/>standards · correctness · null"] --> merge
+    persona["persona<br/>fan-out: un rol por rama<br/>(standards · correctness · security…)<br/>modelo segun models.yaml"] --> merge
     merge["merge<br/>(fichero, línea, título) + fusión entre personas"] --> policy
     policy["policy<br/>autonomy.yaml → Decision"] --> hitl
-    hitl{"hitl<br/>¿acciones pendientes?"} -->|no| fix
+    hitl{"hitl<br/>¿acciones pendientes?"} -->|no| fix_dispatch
     hitl -.->|"sí: interrupt(ApprovalRequest)"| PAUSE(["pausa durable"])
     PAUSE -.->|"Command(resume=HitlDecision)"| hitl
-    fix["fix<br/>no-op sin aprobados fix_*"] --> publish
-    publish["publish<br/>inline + resumen con marca"] --> notify
+    fix_dispatch["fix_dispatch<br/>propone + valida (sin sandbox)"] --> publish
+    publish["publish<br/>inline + resumen con marca"] --> fix_wait
+    fix_wait{"fix_wait<br/>¿PENDING?"} -->|no| publish_fix
+    fix_wait -.->|"sí: interrupt(FixWaitRequest)"| FIXPAUSE(["reviews:fixes<br/>(fix-worker)"])
+    FIXPAUSE -.->|"Command(resume=FixResolutions)"| fix_wait
+    fix_wait -->|"FAILED con intentos"| fix_dispatch
+    publish_fix["publish_fix<br/>seguimiento con marca :fix"] --> notify_fix
+    notify_fix["notify_fix<br/>Teams (breve)"] --> notify
     notify["notify<br/>Teams, solo si publish publicó"] --> END([END])
 ```
 
@@ -104,8 +144,11 @@ flowchart TD
 | `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). |
 | `policy` | No (puro) | Una `Decision` por hallazgo, con `matched_rule` y `policy_version`. |
 | `hitl` | **Nunca** | Sin pendientes o con `human_decisions` ya presente, sigue. Si no, `interrupt`. Si la decisión está incompleta o es ilegible, vuelve a pausar. |
-| `fix` | Sí | `fix/node.run_fixes`: selección → bloqueo de seguridad → fixer → validación → sandbox. |
-| `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. |
+| `fix_dispatch` | Sí | Selección → bloqueo de seguridad → fixer → validación **local**. Deja `PENDING` (con el `VerifyJob`) o terminal, sin tocar el sandbox. |
+| `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". |
+| `fix_wait` | **Nunca** | `interrupt(FixWaitRequest)` si hay `PENDING`; al reanudar aplica la `FixResolutions`. Re-propone si un `FAILED` tiene intentos; si no, sigue. |
+| `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
+| `notify_fix` | Sí | Aviso compacto en Teams del resultado del fix. |
 | `notify` | Sí | Avisa a Teams. Un fallo no transitorio se registra y no tumba la review. |
 
 ### Estado (`ReviewState`)
@@ -117,6 +160,7 @@ flowchart TD
 | `finding_sources`, `source_status`, `fixes` | Merge de dict | Por `finding_id` o por persona |
 | `merged`, `decisions` | Sustituye | Si compartieran campo con `findings`, se reacumularían |
 | `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
+| `fix_wait` (wave) | Sustituye | La wave pendiente; la escribe `fix_wait` al pausar |
 | `published`, `inlined_count` | Sustituye | Señal de `publish` a `notify` |
 
 `pending_approvals` no se guarda: se deriva de `decisions`.
@@ -162,8 +206,10 @@ loop:
   si la cola está vacía:
     cada 30 s  → sweep_pending  (TTL de ingesta → pasada degradada :partial)
                  sweep_expired  (TTL de decisión → reanudación expired)
-    cada 1 h   → reconcile_paused (repone pausas perdidas del inbox)
+                 sweep_fix_expired (TTL del handoff → reanudación con outcome=error)
+    cada 1 h   → reconcile_paused (repone pausas perdidas del inbox; re-encola la wave)
                  prune_completed_threads (CHECKPOINT_RETENTION_DAYS)
+                 prune_fix_threads (FIX_WAIT_MAX_AGE_S; nunca poda un `human`)
   hilo aparte  → latido /tmp/reviews-worker-heartbeat cada 10 s (healthcheck)
 ```
 
@@ -197,9 +243,10 @@ Al publicar con una decisión humana:
 
 ```mermaid
 sequenceDiagram
-    participant F as nodo fix
+    participant F as fix_dispatch
     participant V as VcsPort
     participant L as LlmFixer
+    participant FW as fix-worker
     participant S as sandbox-runner
     F->>F: select_candidates (approved ∧ fix_*) · tope max_fixes_per_pr
     F->>F: blocked_reason → BLOCKED (ruta nunca-auto / tema protegido)
@@ -207,12 +254,23 @@ sequenceDiagram
     loop hasta max_fix_attempts
         F->>L: propose(finding, source, previous)
         F->>F: validate_patch → INVALID_PATCH
-        F->>S: POST /verify {run_key, repo, head_sha, patch, recipes, targets}
-        S->>S: imagen@digest · clone · git apply · targets del fichero tocado
-        S->>S: setup_network · setup/checks --network none (targeted … tests) · destroy
-        S-->>F: VerifyReport → VERIFIED | FAILED (reintenta con stderr_tail)
+        F->>F: deja PENDING + VerifyJob (sin sandbox)
     end
+    Note over F,FW: fix_wait pausa con la wave (FixWaitRequest)
+    FW->>S: POST /verify {run_key, repo, head_sha, patch, recipes, targets}
+    S->>S: imagen@digest · clone · git apply · targets del fichero tocado
+    S->>S: setup_network · setup/checks --network none (targeted … tests) · destroy
+    S-->>FW: VerifyReport → VERIFIED | FAILED (reintenta con stderr_tail) | error
+    FW->>FW: marca run_key en reviews:fixes:done
+    FW->>F: encola reanudacion con FixResolutions
+    Note over F: resume → aplica → publish_fix + notify_fix
 ```
+
+El worker de reviews **no** llama al sandbox (E7): propone y valida localmente,
+pausa y deja que el `fix-worker` verifique. La idempotencia del handoff vive en
+`reviews:fixes:done` (por `run_key`) y el vencimiento en `sweep_fix_expired`
+(`FIX_VERIFY_TTL_S` → `NOT_VERIFIABLE`). La pausa de fix se poda con
+`FixWaitRetention`; las pausas `human` nunca.
 
 ---
 
@@ -222,12 +280,15 @@ sequenceDiagram
 |---|---|---|---|
 | Redis | `<repo:pr:sha:tool>` / `<review_key>` | Claim de idempotencia | 7 días |
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
-| Redis | `reviews:jobs` | Cola (`ReviewRequest` en JSON) | — |
+| Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
-| Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox) | 8 días |
-| Postgres | `thread_id` | Checkpoints de LangGraph | Poda de completados a los 30 días |
+| Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |
+| Redis | `reviews:fixes:dead` | DLQ de fixes | — |
+| Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
+| Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
+| Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
-| PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>` | Marcas de publicación | Lo que viva el PR |
+| PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 
 ---
 
@@ -237,7 +298,7 @@ sequenceDiagram
 |---|---|---|
 | 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1) |
 | 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación) | Smoke contra infraestructura real. Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
-| 3 — Fix + verificación | Base pura (F1–F6) y runner (F7–F10) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), desacople E7, P6 (revisión de seguridad; precondición) |
+| 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10) y **desacople E7** (F14–F24) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), P6 (revisión de seguridad; precondición) |
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
 El estado vivo de cada iniciativa y sus tareas están en
@@ -261,12 +322,13 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D8 | **`observe` no atómico** | `RedisPendingStore.observe` lee, modifica y escribe sin `WATCH`. Además guarda payloads de hasta 5 MB (R4). |
 | D9 | **Una sola fuente de tooling** | `ToolingReviewer` solo entiende PHPStan; añadir `deptrac` exige tocarlo (P3 de la revisión). |
 | D10 | **Raíces de composición duplicadas** | `build_queue`/`build_paused`/`build_pending` existen en `api`, `worker` y `cli`, con diferencias (por ejemplo, el TTL del inbox). |
-| D11 | **Worker secuencial** | Una verificación de ~20 min bloquea la cola. E7 está en curso; diseño aprobado en la [spec de E7](iniciativas/004-fase3-e7-desacople/spec.md). |
+| D11 | **Worker secuencial** | La verificación de ~20 min ya no bloquea la cola: E7 desacopla por el `fix-worker` y un `interrupt`. Queda secuencial solo el resto del grafo (LLM, publicación). |
 | D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
 | D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas de coste o de falsos positivos; solo logs. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
+| D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Pendiente de iniciativa propia. |
 
 ---
 

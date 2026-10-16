@@ -8,6 +8,7 @@ from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.domain.models import ReviewRequest
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.llm import LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -130,29 +131,39 @@ class _FakeLlm:
     def __init__(self, title: str) -> None:
         self._title = title
 
-    def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
-        del system, prompt, max_tokens
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode=None,
+        response_schema=None,
+    ) -> LlmReply:
+        del system, prompt, max_tokens, json_mode, response_schema
         import json
 
-        return json.dumps(
-            {
-                "findings": [
-                    {
-                        "title": self._title,
-                        "severity": "P2",
-                        "file": "src/BackOffice/Application/Wallet/Transfer.php",
-                        "line": 13,
-                        "why_it_matters": "El saldo puede ser nulo antes de retirar",
-                        "autofix_class": "gated_auto",
-                        "owner": "downstream-resolver",
-                        "requires_verification": True,
-                        "confidence": 75,
-                        "evidence": [
-                            "src/BackOffice/Application/Wallet/Transfer.php:13 $balance->frozen"
-                        ],
-                    }
-                ]
-            }
+        return LlmReply(
+            text=json.dumps(
+                {
+                    "findings": [
+                        {
+                            "title": self._title,
+                            "severity": "P2",
+                            "file": "src/BackOffice/Application/Wallet/Transfer.php",
+                            "line": 13,
+                            "why_it_matters": "El saldo puede ser nulo antes de retirar",
+                            "autofix_class": "gated_auto",
+                            "owner": "downstream-resolver",
+                            "requires_verification": True,
+                            "confidence": 75,
+                            "evidence": [
+                                "src/BackOffice/Application/Wallet/Transfer.php:13 $balance->frozen"
+                            ],
+                        }
+                    ]
+                }
+            )
         )
 
 

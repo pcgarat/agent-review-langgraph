@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Fase 3-E7 — Desacople fuerte de la verificación (handoff durable)
 
@@ -13,10 +13,18 @@ Complementa el spec de Fase 3 (aprobado) y `docs/iniciativas/002-fase2-hitl/spec
 estado vivo del plan está en `docs/iniciativas/README.md`; las tareas en
 `docs/iniciativas/004-fase3-e7-desacople/todo.md`.
 
-> **Estado:** aprobada (2026-10-11). Las preguntas abiertas (§13) se aprueban con
-> su opción por defecto de v1: una pausa por wave (Q1), comentario general de
+> **Estado:** implementada (2026-10-11). Las preguntas abiertas (§13) se aprueban
+> con su opción por defecto de v1: una pausa por wave (Q1), comentario general de
 > seguimiento hasta que F11 confirme la respuesta al hilo (Q2) y un aviso compacto en
 > `notify_fix` (Q3). Q1 se revisa con la primera medición real.
+
+> **Entrega:** el handoff por cola está en marcha: el worker de reviews ya no toca
+> el sandbox (`fix_dispatch` → `publish` → `fix_wait`); un `fix-worker` consume la
+> wave, verifica y reanuda. Idempotencia por `run_key` (`reviews:fixes:done`), TTL
+> (`FIX_VERIFY_TTL_S`) y poda (`FixWaitRetention`) cubiertas en `tests/`.
+>
+> **Cierre (2026-10-16):** F14–F24 cerradas; docs vivas, README e índice al día
+> (F24). Queda solo el smoke real (criterio 9), precondicionado por **P6**.
 
 ---
 

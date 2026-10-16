@@ -27,6 +27,7 @@ class PausedStore(Protocol):
         *,
         kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
+        ttl_s: float | None = None,
     ) -> PausedReview: ...
 
     def get(self, review_key: str) -> PausedReview | None: ...
@@ -111,16 +112,23 @@ class RedisPausedStore:
         *,
         kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
+        ttl_s: float | None = None,
     ) -> PausedReview:
         if not self.available():
-            return self._fallback.pause(request, approval, kind=kind, created_at=created_at)
+            return self._fallback.pause(
+                request, approval, kind=kind, created_at=created_at, ttl_s=ttl_s
+            )
         review = PausedReview(
             review_key=request.review_key, request=request, kind=kind, approval=approval
         )
         if created_at is not None:
             # Re-registro de una pausa perdida: el TTL cuenta desde la pausa real.
             review.created_at = created_at
-        if self._ttl_s is not None:
+        # Un `ttl_s` explicito (pausa de fix, `FIX_VERIFY_TTL_S`) manda sobre el
+        # default del store; sin el, se usa el de decision.
+        if ttl_s is not None:
+            review.ttl_s = ttl_s
+        elif self._ttl_s is not None:
             review.ttl_s = self._ttl_s
         self._client.set(self._entry_key(review.key), review.model_dump_json(), ex=self._key_ttl_s)
         return review
@@ -195,13 +203,16 @@ class InMemoryPausedStore:
         *,
         kind: PauseKind = PauseKind.HUMAN,
         created_at: datetime | None = None,
+        ttl_s: float | None = None,
     ) -> PausedReview:
         review = PausedReview(
             review_key=request.review_key, request=request, kind=kind, approval=approval
         )
         if created_at is not None:
             review.created_at = created_at
-        if self._ttl_s is not None:
+        if ttl_s is not None:
+            review.ttl_s = ttl_s
+        elif self._ttl_s is not None:
             review.ttl_s = self._ttl_s
         self._items[review.key] = review
         return review

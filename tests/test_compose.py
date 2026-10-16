@@ -15,8 +15,27 @@ def _compose() -> dict:
 
 def test_compose_es_yaml_valido_con_servicios_esperados() -> None:
     services = _compose()["services"]
-    for name in ("api", "worker", "postgres", "redis", "sandbox-runner"):
+    for name in ("api", "worker", "fix-worker", "postgres", "redis", "sandbox-runner"):
         assert name in services, f"falta el servicio {name}"
+
+
+def test_el_worker_de_fixes_no_monta_socket_ni_publica_puertos() -> None:
+    """Fase 3-E7: el fix-worker vive aislado; no crea contenedores ni publica."""
+    service = _compose()["services"]["fix-worker"]
+    volumes = service.get("volumes", [])
+    assert not any("docker.sock" in str(volume) for volume in volumes)
+    assert "ports" not in service, "el fix-worker no expone nada al host"
+
+
+def test_el_worker_de_fixes_no_tiene_credenciales_de_vcs_ni_postgres() -> None:
+    """Frontera de seguridad: solo Redis + token del runner; nunca publica."""
+    service = _compose()["services"]["fix-worker"]
+    env = service.get("environment", {})
+    assert env.get("TWG_BBC_TOKEN") == "", "sin credencial de Bitbucket"
+    assert env.get("TWG_TOKEN") == "", "sin token de Atlassian"
+    assert "DATABASE_URL" not in env, "no habla con Postgres (no hay grafo)"
+    # No publica: la unica pluma es el worker de reviews.
+    assert "REVIEWS_DECISION_TOKEN" not in env
 
 
 def test_el_worker_no_monta_ningun_socket_de_docker() -> None:

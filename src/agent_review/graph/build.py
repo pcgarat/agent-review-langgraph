@@ -18,8 +18,10 @@ from agent_review.domain.models import (
     Decision,
     DecisionOutcome,
     Finding,
+    FixResolutions,
     FixResult,
     FixStatus,
+    FixWaitRequest,
     HitlDecision,
     PendingDecision,
     ReviewOutcome,
@@ -29,12 +31,11 @@ from agent_review.domain.models import (
 )
 from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter
-from agent_review.fix.node import run_fixes
+from agent_review.fix.node import apply_resolutions, build_wave, dispatch_fixes
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.reviewer import ReviewerPort
-from agent_review.ports.sandbox import SandboxPort
 from agent_review.ports.vcs import ReviewMarker, VcsPort
 from agent_review.scope import filter_diff, limit_files, merge_ignore_patterns
 
@@ -97,6 +98,16 @@ class ReviewState(TypedDict, total=False):
     # Fase 3: resultado del fix por hallazgo. Reducer de merge por `finding_id`
     # (como `_merge_sources`): un fix no re-ejecutado conserva su resultado.
     fixes: Annotated[dict[str, FixResult], _merge_fixes]
+    # Recetas de la verificacion (las fija `scope` desde el perfil). Viajan en el
+    # estado para que `build_fix_wait` (a nivel de modulo, la usa el worker) arme el
+    # `VerifyJob` de cada `PENDING` sin conocer el perfil ni la configuracion.
+    fix_recipes: list[str]
+    # Tope de intentos del fix (de `guards.max_fix_attempts`). Lo necesita el
+    # enrutado de `fix_wait` para decidir si un `FAILED` merece otra wave.
+    fix_max_attempts: int
+    # Valor del `Command(resume=...)` de `fix_wait`: la wave resuelta por el worker
+    # de fixes. Al reanudar, el nodo lo lee; una reentrega sin resolucion no lo toca.
+    fix_resolution: FixResolutions | None
 
 
 def _merge_sources(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
@@ -160,6 +171,68 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
             + " ".join(f"--approve {shlex.quote(item.finding_id)}" for item in pending)
         ),
     )
+
+
+def apply_hitl(state: ReviewState, resume_value: object) -> ReviewState:
+    """Valida la decision humana y, si cubre los pendientes, la sella en el estado.
+
+    Nivel de modulo (no dentro de `build_graph`) porque el worker la usa para saber
+    si un `resume` dejo la pausa atras: sin la decision completa, el hilo sigue
+    pausado. El nodo `hitl` la llama con el valor del `interrupt`; al re-lanzar tras
+    una decision incompleta, la pausa se renueva (el `interrupt` vuelve a dispararse).
+    """
+    approval = build_approval(state)
+    if approval is None:
+        return {}
+    try:
+        decision = (
+            resume_value
+            if isinstance(resume_value, HitlDecision)
+            else HitlDecision.model_validate(resume_value)
+        )
+    except ValidationError as exc:
+        logger.warning(
+            "Decision ilegible sobre %s (%d error(es)); se vuelve a pausar",
+            approval.review_key,
+            exc.error_count(),
+        )
+        return {}
+    missing = [p.finding_id for p in approval.pending if decision.outcome_for(p.finding_id) is None]
+    if missing:
+        logger.warning(
+            "Decision incompleta de %s sobre %s (faltan: %s); se vuelve a pausar",
+            decision.actor,
+            approval.review_key,
+            ", ".join(sorted(missing)),
+        )
+        return {}
+    return {"human_decisions": decision}
+
+
+def build_pause(
+    state: ReviewState,
+) -> tuple[ApprovalRequest | None, FixWaitRequest | None]:
+    """Pausas vigentes: `(human, fix)`. Como mucho una no nula (un hilo, una pausa).
+
+    El canal (`worker._on_paused`) y el dispatch de la reanudacion (`process_request`)
+    la usan para saber que espera la review y por que `kind` reanudar.
+    """
+    return build_approval(state), build_fix_wait(state)
+
+
+def build_fix_wait(state: ReviewState) -> FixWaitRequest | None:
+    """Wave de verificaciones pendientes, o `None` si no hay `PENDING`.
+
+    Nivel de modulo porque el worker la necesita al pausar: es lo que registra en el
+    inbox y lo que encola en la cola de fixes (§8 de la E7).
+    """
+    request = ReviewRequest.model_validate(state["request"])
+    fixes = state.get("fixes", {})
+    pending = [r for r in fixes.values() if r.status is FixStatus.PENDING and r.patch is not None]
+    if not pending:
+        return None
+    recipes = state.get("fix_recipes") or []
+    return build_wave(request, fixes, recipes=recipes, targets=[])
 
 
 def render_pause_notice(approval: ApprovalRequest) -> str:
@@ -305,18 +378,19 @@ def build_graph(
     reviewers: list[ReviewerPort],
     policy: PolicyEngine,
     chat: ChatPort | None = None,
-    sandbox: SandboxPort | None = None,
     fixer: FixerPort | None = None,
     delivery: DeliveryFormatter | None = None,
     fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
     retry_policy: RetryPolicy | None = None,
 ) -> StateGraph[ReviewState]:
-    """Construye el grafo de review.
+    """Construye el grafo de review (Fase 3-E7).
 
-    scope -> fan-out -> merge -> policy -> hitl -> fix -> publish (inline +
-    resumen) -> notify (Teams). `fix` es un no-op si no hay hallazgos aprobados
-    con accion `fix_*`.
+    scope -> fan-out -> merge -> policy -> hitl -> fix_dispatch -> publish ->
+    fix_wait -> publish_fix -> notify_fix -> notify. El grafo **no** recibe un
+    `SandboxPort`: la verificacion vive en el worker de fixes, detras del
+    `interrupt` de `fix_wait`; la ruta de la review nunca espera al sandbox.
+    `fix_dispatch` es un no-op sin hallazgos aprobados con accion `fix_*`.
     """
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
@@ -344,7 +418,17 @@ def build_graph(
                     )
                 allowed = kept
         diff = filter_diff(diff, merge_ignore_patterns(scope_ignore), allowed=allowed)
-        return {"request": request, "diff": diff, "findings": [], "source_status": {}}
+        # Las recetas y targets se fijan aqui (una vez por review, del perfil) y
+        # viajan en el estado: `build_fix_wait` los necesita para armar la wave sin
+        # conocer la configuracion.
+        return {
+            "request": request,
+            "diff": diff,
+            "findings": [],
+            "source_status": {},
+            "fix_recipes": list(recipes),
+            "fix_max_attempts": int(policy.guards.get("max_fix_attempts", 2) or 1),
+        }
 
     def dispatch(state: ReviewState) -> list[Send]:
         """Fan-out: una rama por persona, sobre el mismo diff."""
@@ -440,61 +524,118 @@ def build_graph(
         # Se vuelve a pausar y la siguiente decision responde al nuevo `interrupt`.
         while True:
             resume_value = interrupt(approval)
-            try:
-                decision = (
-                    resume_value
-                    if isinstance(resume_value, HitlDecision)
-                    else HitlDecision.model_validate(resume_value)
-                )
-            except ValidationError as exc:
-                logger.warning(
-                    "Decision ilegible sobre %s (%d error(es)); se vuelve a pausar",
-                    approval.review_key,
-                    exc.error_count(),
-                )
-                continue
-            missing = [
-                p.finding_id for p in approval.pending if decision.outcome_for(p.finding_id) is None
-            ]
-            if not missing:
-                return {"human_decisions": decision}
-            logger.warning(
-                "Decision incompleta de %s sobre %s (faltan: %s); se vuelve a pausar",
-                decision.actor,
-                approval.review_key,
-                ", ".join(sorted(missing)),
-            )
+            update = apply_hitl(state, resume_value)
+            if update:
+                return update
 
-    def apply_fixes(state: ReviewState) -> ReviewState:
-        """Fase 3: arregla los hallazgos aprobados con `fix_*`; no-op si no hay.
+    def fix_dispatch(state: ReviewState) -> ReviewState:
+        """Fase 3-E7: despacha el fix de los aprobados con `fix_*`; no toca sandbox.
 
-        El fixer **propone** y el sandbox **verifica**: si algo falla, el parche
-        nunca llega al PR (§5). No escribe el repo en ningun caso.
+        Propone y valida localmente los candidatos y deja `PENDING` los
+        verificables; **no** llama al sandbox. El `existing` del estado hace la
+        funcion idempotente entre visitas: una resuelta se conserva y solo se
+        re-propone un `FAILED` con intentos disponibles (otra wave). No-op sin
+        candidatos: el grafo de Fase 2 queda igual.
         """
         request = ReviewRequest.model_validate(state["request"])
-        decisions = state.get("decisions", [])
-        human = state.get("human_decisions")
-        fixes = run_fixes(
+        fixes = dispatch_fixes(
             request=request,
             findings=_merged(state),
-            decisions=decisions,
-            human=human,
+            decisions=state.get("decisions", []),
+            human=state.get("human_decisions"),
             vcs=vcs,
             fixer=fixer,
-            sandbox=sandbox,
             policy=policy,
             recipes=recipes,
             targets=[],
+            existing=state.get("fixes", {}),
         )
         if fixes:
-            verified = sum(1 for result in fixes.values() if result.status is FixStatus.VERIFIED)
+            pending = sum(1 for r in fixes.values() if r.status is FixStatus.PENDING)
             logger.info(
-                "Fase 3: %d fix(es), %d verificado(s) en %s",
+                "Fase 3-E7: despachados %d fix(es), %d en verificacion en %s",
                 len(fixes),
-                verified,
+                pending,
                 request.review_key,
             )
         return {"fixes": fixes} if fixes else {}
+
+    def fix_wait(state: ReviewState) -> ReviewState:
+        """Pausa durable esperando la wave; al reanudar, aplica la resolucion.
+
+        No verifica: el `POST /verify` vive en el worker de fixes. La primera visita
+        (los `PENDING` que dejo `fix_dispatch`) pausa con la wave. Al reanudar
+        (el worker de reviews invoca con la wave), LangGraph vuelve a ejecutar el
+        nodo desde el inicio y `interrupt` devuelve la wave resuelta **en la misma
+        ejecucion**: se aplica aqui abajo. Una wave sin resolucion para algun
+        `PENDING` lo deja `NOT_VERIFIABLE`, nunca colgado.
+
+        `state["fix_resolution"]` permite inyectar la wave sin `Command` (lo usa el
+        worker en F17 y los tests); si ya viene, no se vuelve a pausar.
+        """
+        fixes = state.get("fixes", {})
+        resolutions = state.get("fix_resolution")
+        if resolutions is None:
+            wave = build_fix_wait(state)
+            if wave is None:
+                return {}
+            resolutions = interrupt(wave)
+        wave_value = (
+            resolutions
+            if isinstance(resolutions, FixResolutions)
+            else FixResolutions.model_validate(resolutions)
+        )
+        request = ReviewRequest.model_validate(state["request"])
+        applied = apply_resolutions(request=request, fixes=fixes, resolutions=wave_value)
+        # Reset del valor: una re-pausa posterior espera otra wave (otro `Command`).
+        update: ReviewState = {"fix_resolution": None}
+        if applied:
+            update["fixes"] = applied
+        return update
+
+    def publish_fix(state: ReviewState) -> ReviewState:
+        """Publica el resultado del fix resuelto como comentario de seguimiento.
+
+        **No** publica en el inline (esa pluma vive en `publish`); es un comentario
+        general con marca de dedupe propia (`:fix`), una sola vez por review.
+        """
+        request = ReviewRequest.model_validate(state["request"])
+        fixes = state.get("fixes", {})
+        resolved = {k: v for k, v in fixes.items() if _is_terminal_fix(v.status)}
+        if not resolved:
+            return {}
+        marker = _fix_token(request.dedupe_token)
+        if _has_marker(_published_markers(vcs, request), marker):
+            return {}
+        body = _render_fix_followup(request, resolved, _merged(state), delivery=delivery)
+        vcs.post_comment(request.repo, request.pr_id, body)
+        return {}
+
+    def notify_fix(state: ReviewState) -> ReviewState:
+        """Aviso compacto en Teams del resultado del fix (Q3: nodo propio, breve)."""
+        if chat is None:
+            return {}
+        fixes = state.get("fixes", {})
+        resolved = {k: v for k, v in fixes.items() if _is_terminal_fix(v.status)}
+        if not resolved:
+            return {}
+        request = ReviewRequest.model_validate(state["request"])
+        try:
+            pr = vcs.get_pull_request(request.repo, request.pr_id)
+            chat.notify(
+                title=f"Fix de {request.repo}#{request.pr_id}",
+                body=_render_fix_teams_body(resolved),
+                link=pr.url or None,
+            )
+        except Exception as exc:
+            if is_transient(exc):
+                raise
+            logger.exception(
+                "No se pudo avisar el fix de %s#%s; la review ya esta publicada",
+                request.repo,
+                request.pr_id,
+            )
+        return {}
 
     def publish(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
@@ -660,8 +801,11 @@ def build_graph(
     graph.add_node("merge", merge)
     graph.add_node("policy", apply_policy)
     graph.add_node("hitl", hitl)
-    graph.add_node("fix", apply_fixes, retry_policy=retry)
+    graph.add_node("fix_dispatch", fix_dispatch, retry_policy=retry)
     graph.add_node("publish", publish, retry_policy=retry)
+    graph.add_node("fix_wait", fix_wait)
+    graph.add_node("publish_fix", publish_fix, retry_policy=retry)
+    graph.add_node("notify_fix", notify_fix, retry_policy=retry)
     graph.add_node("notify", notify, retry_policy=retry)
 
     graph.add_edge(START, "scope")
@@ -669,9 +813,19 @@ def build_graph(
     graph.add_edge("persona", "merge")
     graph.add_edge("merge", "policy")
     graph.add_edge("policy", "hitl")
-    graph.add_edge("hitl", "fix")
-    graph.add_edge("fix", "publish")
-    graph.add_edge("publish", "notify")
+    graph.add_edge("hitl", "fix_dispatch")
+    # `fix_dispatch` despacha y `publish` publica los hallazgos; despues la review
+    # pausa en `fix_wait` esperando la wave. Al reanudar, vuelve a `fix_dispatch`:
+    # si queda algun `FAILED`, re-propone (otra wave) y re-pausa; si ya son
+    # terminales, `fix_wait` lo deja pasar a `publish_fix`. Con `PENDING` en la
+    # primera visita, `fix_dispatch` sella la guarda para no repetir la propuesta.
+    graph.add_edge("fix_dispatch", "publish")
+    graph.add_edge("publish", "fix_wait")
+    graph.add_conditional_edges(
+        "fix_wait", _route_fix_wait, {"fix_dispatch": "fix_dispatch", "publish_fix": "publish_fix"}
+    )
+    graph.add_edge("publish_fix", "notify_fix")
+    graph.add_edge("notify_fix", "notify")
     graph.add_edge("notify", END)
 
     return graph
@@ -818,6 +972,11 @@ def _render_fix(fix: FixResult | None, *, delivery: DeliveryFormatter | None) ->
     """
     if fix is None:
         return ""
+    if fix.status is FixStatus.PENDING:
+        # E7: el parche es valido y la verificacion esta despachada; el resultado
+        # llega en un comentario de seguimiento. Se rotula para que nadie lo
+        # confunda con un fix resuelto ni con un fallo.
+        return "_Fix en verificacion (runner); se publicara como respuesta_"
     if fix.status is FixStatus.VERIFIED and fix.patch is not None and delivery is not None:
         return delivery.render(fix.patch, checks=fix.checks, image_digest=fix.image_digest or "")
     if fix.status in (FixStatus.SKIPPED, FixStatus.NOT_VERIFIABLE, FixStatus.BLOCKED):
@@ -842,6 +1001,7 @@ def _fix_reason_line(fix: FixResult | None) -> str:
     if fix is None:
         return ""
     icons = {
+        FixStatus.PENDING: "en verificacion",
         FixStatus.VERIFIED: "sugerencia verificada",
         FixStatus.FAILED: "fix no verificado",
         FixStatus.INVALID_PATCH: "parche invalido",
@@ -945,6 +1105,86 @@ def _render_teams_body(
     for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])[:5]:
         lines.append(f"{finding.severity.value} · {finding.title} ({finding.file})")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Fase 3-E7: despacho del fix, wave de verificacion y comentario de seguimiento.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_FIX = frozenset(
+    {
+        FixStatus.VERIFIED,
+        FixStatus.FAILED,
+        FixStatus.INVALID_PATCH,
+        FixStatus.NOT_VERIFIABLE,
+        FixStatus.SKIPPED,
+        FixStatus.BLOCKED,
+    }
+)
+
+
+def _is_terminal_fix(status: FixStatus) -> bool:
+    """Un fix deja de esperar a la wave (`PENDING` no es terminal)."""
+    return status in _TERMINAL_FIX
+
+
+def _route_fix_wait(state: ReviewState) -> str:
+    """Tras `fix_wait`, elige otra wave de reintento o el cierre de la publicacion.
+
+    Se vuelve a `fix_dispatch` mientras quede algun `FAILED` con intentos
+    disponibles (el tope viaja en `fix_max_attempts`); en cualquier otro caso se
+    sigue a `publish_fix`, que publica lo terminal (o no hace nada, si no hay nada
+    que publicar). El bucle siempre avanza: cada vuelta consume un intento.
+    """
+    fixes = state.get("fixes", {})
+    max_attempts = int(state.get("fix_max_attempts", 2) or 1)
+    for result in fixes.values():
+        if result.status is FixStatus.FAILED and result.attempts < max_attempts:
+            return "fix_dispatch"
+    return "publish_fix"
+
+
+def _fix_token(token: str) -> str:
+    """Marca de dedupe del comentario de seguimiento del fix (propia de E7)."""
+    return f"<!-- {token}:fix -->"
+
+
+def _render_fix_followup(
+    request: ReviewRequest,
+    fixes: dict[str, FixResult],
+    findings: list[Finding],
+    *,
+    delivery: DeliveryFormatter | None,
+) -> str:
+    """Comentario general con el resultado ya resuelto de los fixes de la review.
+
+    No re-publica: lleva la marca `:fix` y el `publish_fix` la lee antes de escribir.
+    """
+    by_id = {_finding_id(finding): finding for finding in findings}
+    header = "## Fix verificado" if _all_verified(fixes) else "## Resultado del fix"
+    lines = [header, ""]
+    for finding_id in sorted(fixes):
+        result = fixes[finding_id]
+        finding = by_id.get(finding_id)
+        title = finding.title if finding is not None else finding_id
+        lines.append(f"### `{finding_id}` · {title}")
+        lines.append("")
+        lines.append(_render_fix(result, delivery=delivery))
+        lines.append("")
+    body = "\n".join(lines).rstrip()
+    return f"{body}\n\n{_fix_token(request.dedupe_token)}"
+
+
+def _all_verified(fixes: dict[str, FixResult]) -> bool:
+    return bool(fixes) and all(result.status is FixStatus.VERIFIED for result in fixes.values())
+
+
+def _render_fix_teams_body(fixes: dict[str, FixResult]) -> str:
+    counts: dict[FixStatus, int] = {}
+    for result in fixes.values():
+        counts[result.status] = counts.get(result.status, 0) + 1
+    detail = ", ".join(f"{status.value}: {count}" for status, count in sorted(counts.items()))
+    return f"{len(fixes)} fix(es) resuelto(s): {detail}"
 
 
 def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOutcome:

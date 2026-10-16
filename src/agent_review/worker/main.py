@@ -13,11 +13,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
 from agent_review.adapters.github_vcs import GithubVcsAdapter
-from agent_review.adapters.http_sandbox import HttpSandboxAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.null_reviewer import NullReviewer
-from agent_review.adapters.openai_llm import OpenAiCompatibleLlm
 from agent_review.adapters.teams_webhook import TeamsWebhookAdapter
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
@@ -29,11 +27,17 @@ from agent_review.checkpointer import (
     build_checkpointer,
     latest_checkpoints,
     paused_thread_ids,
+    paused_thread_kinds,
     prune_completed_threads,
+    prune_fix_threads,
 )
 from agent_review.domain.models import (
     DecisionOutcome,
     FindingDecision,
+    FixJob,
+    FixResolution,
+    FixResolutions,
+    FixWaitRequest,
     HitlDecision,
     ReviewOutcome,
     ReviewRequest,
@@ -44,29 +48,32 @@ from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter, DiffFormatter, SuggestionFormatter
 from agent_review.graph.build import (
     ReviewState,
-    build_approval,
     build_graph,
+    build_pause,
     outcome_from_state,
     render_pause_notice,
 )
+from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from agent_review.pending_store import PendingStore, RedisPendingStore
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
-from agent_review.ports.llm import LlmPort
 from agent_review.ports.reviewer import ReviewerPort
-from agent_review.ports.sandbox import SandboxPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
-from agent_review.profile import expected_tools, fix_recipes, load_profile, sandbox_timeout_s
-from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
+from agent_review.profile import expected_tools, fix_recipes, load_profile
+from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, is_production, require_production_secrets
 
 logger = logging.getLogger(__name__)
 
 # Grafo de review ya compilado (lo que consume el worker).
 ReviewGraph = CompiledStateGraph[ReviewState]
+
+# Roles que el worker construye como personas de revision. `fixer` no esta aqui:
+# no es una persona del fan-out, es el FixerPort de `fix_dispatch`.
+LLM_REVIEW_ROLES = ("correctness", "security", "arch")
 
 # Fichero de latido que refleja que el worker sigue vivo (healthcheck de compose).
 HEARTBEAT_PATH = "/tmp/reviews-worker-heartbeat"
@@ -94,6 +101,17 @@ def build_queue(settings: Settings) -> ReviewQueue:
     return InMemoryReviewQueue()
 
 
+def build_fix_queue(settings: Settings) -> FixQueue:
+    """Cola de waves de fix (E7): la consume el worker de fixes, no este."""
+    from agent_review.queue import InMemoryFixQueue, RedisFixQueue
+
+    queue = RedisFixQueue(url=settings.redis_url)
+    if queue.available():
+        return queue
+    logger.warning("Redis no disponible en worker; cola de fixes en memoria")
+    return InMemoryFixQueue()
+
+
 def build_paused(settings: Settings) -> PausedStore:
     """Inbox de reviews pausadas: lo escribe el worker al pausar, lo lee el canal."""
     store = RedisPausedStore(url=settings.redis_url, ttl_s=settings.decision_ttl_s)
@@ -115,29 +133,58 @@ def validate_tooling_template(settings: Settings) -> None:
     )
 
 
-def build_llm(settings: Settings) -> LlmPort | None:
-    """Proveedor LLM si esta habilitado y configurado. Si no, None (sin ruido)."""
-    if not settings.llm_reviewer_enabled:
-        return None
-    if not settings.llm_model:
-        logger.warning("Persona LLM habilitada sin LLM_MODEL; se omite")
-        return None
-    return OpenAiCompatibleLlm(
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        base_url=settings.llm_base_url,
-    )
+def validate_models(registry: ModelRegistry) -> None:
+    """Contrasta los modelos bindeados contra el catalogo del proveedor.
+
+    Un `LLM_MODEL` con typo o retirado hoy se descubre en la primera review, con la
+    persona degradando a 0 hallazgos. Un binding que no resuelve se arranca aqui.
+    Un proveedor inalcanzable **no** bloquea el arranque: un modelo es un binding
+    declarado, no una dependencia dura (el worker debe poder arrancar en un
+    despliegue sin salida a internet).
+    """
+    if not registry.config.bindings:
+        return
+    problems = registry.probe()
+    if not problems:
+        return
+    # Solo es fatal lo que no depende de la red: un modelo declarado que el
+    # proveedor no lista. Un fallo de consulta se registra como aviso.
+    unresolved = [p for p in problems if "no se pudo consultar" not in p.message]
+    if unresolved:
+        raise RuntimeError("Registro de modelos invalido: " + "; ".join(str(p) for p in unresolved))
+    for problem in problems:
+        logger.warning("Registro de modelos: %s", problem)
+
+
+def build_registry(settings: Settings) -> ModelRegistry:
+    """Registro de modelos del despliegue (declarativo o implicito).
+
+    Se construye una sola vez: los bindings se leen al arrancar y no cambian en
+    caliente (D2 de la iniciativa 005).
+    """
+    registry = ModelRegistry.from_settings(settings)
+    if registry.config.models:
+        logger.info(
+            "Modelos por rol: %s",
+            ", ".join(f"{role}={model}" for role, model in registry.config.bindings.items())
+            or "sin bindings",
+        )
+    return registry
 
 
 def build_reviewers(
-    settings: Settings, *, tooling_source: ToolingOutputSource | None = None
+    settings: Settings,
+    *,
+    tooling_source: ToolingOutputSource | None = None,
+    registry: ModelRegistry | None = None,
 ) -> list[ReviewerPort]:
     """Personas a partir del perfil del repo y de la configuracion.
 
-    Fase 1: la persona estatica arranca por defecto; la persona LLM `correctness`
-    es opcional (opt-in) para no gastar tokens hasta validar el publish E2E. El
-    artefacto de la herramienta estatica lo deposita el CI; el worker no ejecuta
-    PHPStan (eso es el sandbox de Fase 3).
+    Fase 1: la persona estatica arranca por defecto; las personas LLM son opt-in
+    para no gastar tokens hasta validar el publish E2E. Cada persona LLM usa el
+    modelo que su **rol** tenga bindeado en el registro: `correctness` y `security`
+    pueden correr en modelos distintos. El artefacto de la herramienta estatica lo
+    deposita el CI; el worker no ejecuta PHPStan (eso es el sandbox de Fase 3).
     """
     reviewers: list[ReviewerPort] = []
     profile = load_profile(settings)
@@ -148,11 +195,15 @@ def build_reviewers(
         )
         reviewers.append(ToolingReviewer(source=source))
 
-    llm = build_llm(settings)
-    if llm is not None:
+    registry = registry if registry is not None else build_registry(settings)
+    for role in LLM_REVIEW_ROLES:
+        llm = registry.port_for(role)
+        if llm is None:
+            continue
         reviewers.append(
             LlmReviewer(
                 llm=llm,
+                name=role,
                 max_findings=settings.llm_max_findings,
                 budget_tokens_per_pr=settings.llm_budget_tokens_per_pr,
             )
@@ -221,10 +272,15 @@ def build_vcs(settings: Settings) -> VcsPort:
     )
 
 
-def build_fixer(settings: Settings) -> FixerPort | None:
-    """Fixer LLM si el modelo esta configurado. Sin el, el nodo `fix` marca
-    `NOT_VERIFIABLE` (no se puede proponer parche) en vez de fingir un fix."""
-    llm = build_llm(settings)
+def build_fixer(settings: Settings, *, registry: ModelRegistry | None = None) -> FixerPort | None:
+    """Fixer LLM si el rol `fixer` tiene modelo. Sin el, el nodo `fix` marca
+    `NOT_VERIFIABLE` (no se puede proponer parche) en vez de fingir un fix.
+
+    Usa **su propio** binding: el modelo que propone el parche no tiene por que
+    ser el que revisa el diff (uno puede querer `json_schema` estricto aqui).
+    """
+    registry = registry if registry is not None else build_registry(settings)
+    llm = registry.port_for("fixer")
     if llm is None:
         return None
     return LlmFixer(
@@ -242,18 +298,6 @@ def build_delivery(settings: Settings) -> DeliveryFormatter:
     return DiffFormatter()
 
 
-def build_sandbox(settings: Settings) -> SandboxPort | None:
-    """Adaptador HTTP del `sandbox-runner` (Fase 3). `None` si no esta habilitado:
-    en ese caso el nodo `fix` marca `NOT_VERIFIABLE` y no se ejecuta nada (F7)."""
-    if not settings.sandbox_enabled or not settings.sandbox_runner_url.strip():
-        return None
-    return HttpSandboxAdapter(
-        base_url=settings.sandbox_runner_url,
-        token=settings.sandbox_runner_token,
-        timeout_s=sandbox_timeout_s(settings),
-    )
-
-
 def build_runtime(
     settings: Settings,
     *,
@@ -263,14 +307,16 @@ def build_runtime(
     policy: PolicyEngine | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     fixer: FixerPort | None = None,
-    sandbox: SandboxPort | None = None,
 ) -> Any:
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
     if chat is None:
         chat = build_chat(settings)
-    reviewers = reviewers if reviewers is not None else build_reviewers(settings)
+    registry = build_registry(settings)
+    if reviewers is None:
+        reviewers = build_reviewers(settings, registry=registry)
+    validate_models(registry)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
     )
@@ -282,8 +328,7 @@ def build_runtime(
         reviewers=reviewers,
         policy=policy,
         chat=chat,
-        sandbox=sandbox if sandbox is not None else build_sandbox(settings),
-        fixer=fixer if fixer is not None else build_fixer(settings),
+        fixer=fixer if fixer is not None else build_fixer(settings, registry=registry),
         delivery=build_delivery(settings),
         fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
@@ -299,6 +344,8 @@ def process_request(
     paused: PausedStore | None = None,
     chat: ChatPort | None = None,
     vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -328,7 +375,15 @@ def process_request(
     snapshot = _thread_snapshot(graph, config)
     if snapshot is not None and snapshot.interrupts:
         return _resume_paused(
-            graph, request, config=config, paused_state=snapshot, paused=paused, chat=chat, vcs=vcs
+            graph,
+            request,
+            config=config,
+            paused_state=snapshot,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
         )
     if snapshot is not None and not snapshot.next:
         logger.info(
@@ -368,7 +423,15 @@ def process_request(
         )
     outcome = _log_outcome(result)
     if outcome.paused:
-        _on_paused(result, outcome.request, paused=paused, chat=chat, vcs=vcs)
+        _on_paused(
+            result,
+            outcome.request,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
+        )
     else:
         # Un resume que fallo y se completa en el reintento (rama a medias) tambien
         # debe salir del inbox.
@@ -385,14 +448,35 @@ def _resume_paused(
     paused: PausedStore | None = None,
     chat: ChatPort | None = None,
     vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
 ) -> ReviewOutcome:
-    """Reanuda un hilo pausado. Sin decision no repite el trabajo.
+    """Reanuda un hilo pausado, despachando por tipo de pausa (F17).
 
-    Sin decision, solo comprueba que la pausa siga en el inbox: si el registro se
-    perdio (Redis caido al pausar, el job se reencolo), lo repone. Sin esa entrada
-    nadie la ve ni el TTL la vence nunca.
+    ``human``: reanuda con la decision; sin ella, no repite el trabajo.
+    ``fix``: reanuda con la wave resuelta por el worker de fixes; sin ella, no-op
+    (la reentrega no relanza la verificacion).
+
+    Sin carga, solo comprueba que la pausa siga en el inbox: si el registro se
+    perdio (Redis caido al pausar, el job se reencolo), lo repone y, si es de fix,
+    re-encola la wave. Sin esa entrada nadie la ve ni el TTL la vence nunca.
     """
     state = cast("ReviewState", paused_state.values)
+    human, fix = build_pause(state)
+    if fix is not None:
+        return _resume_fix_pause(
+            graph,
+            request,
+            config=config,
+            paused_state=paused_state,
+            state=state,
+            fix=fix,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
+        )
     if request.decision is None:
         logger.info(
             "Review %s esta pausada esperando decision; la reentrega no la re-ejecuta",
@@ -400,14 +484,115 @@ def _resume_paused(
         )
         _ensure_registered(paused_state, paused=paused, chat=chat, vcs=vcs)
         return outcome_from_state(state, paused=True)
+    del human  # la carga humana ya viene validada en `request.decision`
     result = cast("ReviewState", graph.invoke(Command(resume=request.decision), config=config))
     logger.info(
         "Review %s reanudada con decision de %s", request.review_key, request.decision.actor
     )
+    return _finish_resume(
+        result, request, paused=paused, chat=chat, vcs=vcs, fix_queue=fix_queue, fix_ttl_s=fix_ttl_s
+    )
+
+
+def _resume_fix_pause(
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    config: RunnableConfig,
+    paused_state: Any,
+    state: ReviewState,
+    fix: FixWaitRequest,
+    paused: PausedStore | None,
+    chat: ChatPort | None,
+    vcs: VcsPort | None,
+    fix_queue: FixQueue | None,
+    fix_ttl_s: float | None = None,
+) -> ReviewOutcome:
+    """Reanuda una pausa de fix con la wave resuelta, o no-op si no la hay.
+
+    Antes de invocar, comprueba que la wave pendiente del hilo contenga de verdad
+    los `run_key` de la resolucion (R2): si el hilo ya avanzo (o la resolucion es
+    de otra wave), no-op. Aplicar una resolucion que el hilo ya no espera
+    corromperia el estado del fix.
+    """
+    if request.fix_resolution is None:
+        logger.info(
+            "Review %s esta pausada esperando la wave de fix; la reentrega no la re-ejecuta",
+            request.review_key,
+        )
+        _ensure_registered(
+            paused_state,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
+        )
+        return outcome_from_state(state, paused=True)
+    pending = {job.run_key for job in fix.jobs}
+    if not _resolution_matches(pending, request.fix_resolution):
+        logger.warning(
+            "Resolucion de fix de %s no corresponde a la wave pendiente; no-op",
+            request.review_key,
+        )
+        return outcome_from_state(state, paused=True)
+    result = cast(
+        "ReviewState", graph.invoke(Command(resume=request.fix_resolution), config=config)
+    )
+    resolved = len(request.fix_resolution.items)
+    logger.info("Review %s reanudada con %d resolucion(es) de fix", request.review_key, resolved)
+    return _finish_resume(
+        result,
+        request,
+        paused=paused,
+        chat=chat,
+        vcs=vcs,
+        fix_queue=fix_queue,
+        fix_ttl_s=fix_ttl_s,
+    )
+
+
+def _resolution_matches(pending: set[str], resolutions: FixResolutions) -> bool:
+    """¿La resolucion cubre la wave pendiente del hilo? (guarda contra R3).
+
+    Sin `pending` (el estado no expone la wave, p. ej. un hilo ya resuelto) se
+    acepta: la reanudacion la valida el propio `fix_wait` al aplicar. Con `pending`,
+    debe haber al menos un `run_key` comun: una resolucion de otra wave no se aplica.
+    """
+    if not pending:
+        return True
+    return any(item.run_key in pending for item in resolutions.items)
+
+
+def _finish_resume(
+    result: ReviewState,
+    request: ReviewRequest,
+    *,
+    paused: PausedStore | None,
+    chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
+) -> ReviewOutcome:
+    """Cierra una reanudacion: registra la nueva pausa o limpia el inbox.
+
+    Una reanudacion puede volver a pausar (un `hitl` con decision incompleta, o un
+    `fix_wait` que pasa a esperar la wave): la pausa nueva hay que registrarla con
+    su `kind` y, si es de fix, encolar su wave. Si ya no queda pausa, se limpia el
+    inbox; el estado durable del hilo sigue en el checkpointer.
+    """
     outcome = _log_outcome(result)
-    if not outcome.paused:
-        # Aplicada la decision, el inbox deja de mostrarla. El estado durable del
-        # hilo sigue en el checkpointer.
+    if outcome.paused:
+        _on_paused(
+            result,
+            request,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
+        )
+    else:
         _clear_paused(paused, request)
     return outcome
 
@@ -433,36 +618,88 @@ def _on_paused(
     paused: PausedStore | None,
     chat: ChatPort | None,
     vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
     paused_at: datetime | None = None,
 ) -> None:
-    """Registra la pausa en el inbox y avisa, sin publicar los hallazgos (spec §4.4)."""
-    approval = build_approval(result)
-    if approval is None:
+    """Registra la pausa en el inbox y, si es de fix, encola la wave (F17).
+
+    Una pausa humana avisa en Teams y espera decision; una de fix registra el
+    `FixWaitRequest` **sin** aviso de decision y encola la wave para el worker de
+    fixes. En ambos casos la review **no** ha publicado aun sus hallazgos aqui.
+
+    El registro es idempotente por `review_key`: una repo reposicion de una pausa
+    perdida no duplica la wave en la cola (`_needs_registration` filtra antes).
+    """
+    human, fix = build_pause(result)
+    if human is None and fix is None:
         # No deberia ocurrir: se pauso con pendientes. Se registra para no quedar mudo.
-        logger.warning("Review %s pausada sin ApprovalRequest en el estado", request.review_key)
+        logger.warning("Review %s pausada sin carga reconocible en el estado", request.review_key)
         return
-    if paused is not None:
-        if _superseded(paused.get(request.review_key), request):
-            # La pasada completa ya esta pausada: manda ella. La degradada queda
-            # superada y `reconcile_paused` borra su hilo.
+    current = paused.get(request.review_key) if paused is not None else None
+    if _superseded(current, request):
+        # La pasada completa ya esta pausada: manda ella. La degradada queda
+        # superada y `reconcile_paused` borra su hilo.
+        logger.info(
+            "Pausa degradada de %s superada por la pasada completa; no se registra",
+            request.review_key,
+        )
+        return
+    new_kind = PauseKind.FIX if fix is not None else PauseKind.HUMAN
+    new_pause = fix if fix is not None else human
+    # Redundante: misma pausa ya registrada (p. ej. una decision incompleta que
+    # vuelve a pausar con los mismos pendientes). No se re-registra ni se re-avisa,
+    # para no resetear el `created_at` (TTL) ni duplicar el aviso.
+    redundant = (
+        current is not None
+        and current.request.thread_id == request.thread_id
+        and current.kind is new_kind
+        and current.approval == new_pause
+    )
+    if paused is not None and not redundant:
+        assert new_pause is not None
+        paused.pause(
+            request,
+            new_pause,
+            kind=new_kind,
+            created_at=paused_at,
+            ttl_s=fix_ttl_s if fix is not None else None,
+        )
+    if fix is not None:
+        if not redundant:
+            _enqueue_wave(fix_queue, request, fix)
             logger.info(
-                "Pausa degradada de %s superada por la pasada completa; no se registra",
+                "Review %s pausada con %d verificacion(es) de fix en la cola",
                 request.review_key,
+                len(fix.jobs),
             )
-            return
-        paused.pause(request, approval, created_at=paused_at)
+        return
+    assert human is not None  # exclusivo con `fix`
+    if redundant:
+        return
     if chat is not None:
         chat.notify_decision_pending(
             title=f"{request.repo}#{request.pr_id}",
-            body=render_pause_notice(approval),
+            body=render_pause_notice(human),
             link=_pr_url(vcs, request),
         )
     if paused is None:
         logger.info(
             "Review %s pausada con %d pendiente(s) (sin inbox configurado)",
             request.review_key,
-            len(approval.pending),
+            len(human.pending),
         )
+
+
+def _enqueue_wave(fix_queue: FixQueue | None, request: ReviewRequest, wave: FixWaitRequest) -> None:
+    """Encola la wave para el worker de fixes. Sin cola, se registra y nada mas."""
+    if fix_queue is None:
+        logger.warning(
+            "Review %s pausada de fix sin cola de fixes configurada; nadie la verificara",
+            request.review_key,
+        )
+        return
+    fix_queue.enqueue(FixJob(review_key=request.review_key, request=request, wave=wave))
 
 
 def _ensure_registered(
@@ -471,11 +708,15 @@ def _ensure_registered(
     paused: PausedStore | None,
     chat: ChatPort | None,
     vcs: VcsPort | None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
 ) -> bool:
     """Repone en el inbox un hilo pausado que no esta en el; `True` si lo repuso.
 
     El hilo es la verdad durable y el inbox solo su indice. `paused_at` sale del
     checkpoint para que el TTL cuente desde la pausa real, no desde que se repone.
+    Reponer una pausa de fix re-encola su wave (idempotente: el worker de fixes la
+    salta si su `run_key` ya esta en el set `done`).
     """
     if paused is None:
         return False
@@ -490,6 +731,8 @@ def _ensure_registered(
         paused=paused,
         chat=chat,
         vcs=vcs,
+        fix_queue=fix_queue,
+        fix_ttl_s=fix_ttl_s,
         paused_at=_snapshot_ts(snapshot),
     )
     return True
@@ -523,12 +766,16 @@ def reconcile_paused(
     *,
     chat: ChatPort | None = None,
     vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
     thread_ids: list[str] | None = None,
 ) -> list[str]:
     """Repone en el inbox los hilos pausados que el checkpointer conoce y el inbox no.
 
     Cubre la caida del worker entre el checkpoint del `interrupt` y `_on_paused`:
     el job ya salio de la cola (`BLPOP`), asi que ninguna reentrega lo arreglaria.
+    Reponer una pausa de fix re-encola su wave: el worker de fixes la salta si su
+    `run_key` ya esta en el set `done`, asi que la repo reposicion es idempotente.
 
     Tambien borra los hilos degradados (`:partial`) pausados cuya entrada del
     inbox ocupa la pasada completa: nadie puede decidirlos ni el TTL los vence, y
@@ -553,7 +800,14 @@ def reconcile_paused(
                 )
                 saver.delete_thread(thread_id)
                 continue
-            if _ensure_registered(snapshot, paused=paused, chat=chat, vcs=vcs):
+            if _ensure_registered(
+                snapshot,
+                paused=paused,
+                chat=chat,
+                vcs=vcs,
+                fix_queue=fix_queue,
+                fix_ttl_s=fix_ttl_s,
+            ):
                 restored.append(thread_id)
         except Exception:
             logger.exception("No se pudo reponer la pausa del hilo %s", thread_id)
@@ -625,6 +879,44 @@ def sweep_expired(
     return enqueued
 
 
+def sweep_fix_expired(
+    paused: PausedStore,
+    queue: ReviewQueue,
+    *,
+    now: datetime | None = None,
+) -> list[ReviewRequest]:
+    """Reencola una reanudacion `error` para cada pausa de fix vencida (F20, R4).
+
+    Si el worker de fixes esta apagado o el runner nunca responde, la wave no se
+    resuelve. Al vencer `FIX_VERIFY_TTL_S` (el `ttl_s` de la propia entrada) se
+    encola una reanudacion con `outcome="error"` por cada `VerifyJob`: el fix queda
+    `NOT_VERIFIABLE` y publicado, nunca colgado. No borra el inbox: lo limpia el
+    resume. Idempotente como el barrido del HITL (`mark_expired_enqueued`).
+    """
+    enqueued: list[ReviewRequest] = []
+    for review in paused.sweep(now=now):
+        if review.kind is not PauseKind.FIX:
+            continue
+        items = [
+            FixResolution(
+                run_key=job.run_key,
+                outcome="error",
+                error="la wave vencio sin resolverse (worker de fixes o runner caido)",
+            )
+            for job in review.fix_request.jobs
+        ]
+        request = review.request.model_copy(update={"fix_resolution": FixResolutions(items=items)})
+        queue.enqueue(request)
+        paused.mark_expired_enqueued(review.review_key, now=now)
+        enqueued.append(request)
+        logger.warning(
+            "Pausa de fix de %s vencida; se reanuda como no verificable (%d job(s))",
+            review.review_key,
+            len(items),
+        )
+    return enqueued
+
+
 def _log_outcome(result: ReviewState) -> ReviewOutcome:
     outcome = outcome_from_state(result)
     if outcome.paused:
@@ -675,10 +967,20 @@ def _consume(
     paused: PausedStore | None = None,
     chat: ChatPort | None = None,
     vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta."""
     try:
-        process_request(graph, request, paused=paused, chat=chat, vcs=vcs)
+        process_request(
+            graph,
+            request,
+            paused=paused,
+            chat=chat,
+            vcs=vcs,
+            fix_queue=fix_queue,
+            fix_ttl_s=fix_ttl_s,
+        )
     except Exception as exc:
         if is_transient(exc):
             logger.warning(
@@ -756,6 +1058,7 @@ def run_forever(
     graph: ReviewGraph | None = None,
     pending: PendingStore | None = None,
     paused: PausedStore | None = None,
+    fix_queue: FixQueue | None = None,
     poll_s: float = 5.0,
     sweep_s: float = 30.0,
     prune_s: float = 3600.0,
@@ -764,6 +1067,7 @@ def run_forever(
     require_production_secrets(settings)
     logging.basicConfig(level=settings.log_level)
     queue = queue or build_queue(settings)
+    fix_queue = fix_queue if fix_queue is not None else build_fix_queue(settings)
     chat = build_chat(settings)
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.
@@ -790,6 +1094,8 @@ def run_forever(
                 paused=paused_store,
                 chat=chat,
                 vcs=vcs,
+                fix_queue=fix_queue,
+                fix_ttl_s=settings.fix_verify_ttl_s,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
@@ -797,6 +1103,7 @@ def run_forever(
         if now - last_sweep >= sweep_s:
             sweep_pending(settings, queue, pending=pending_store)
             sweep_expired(paused_store, queue)
+            sweep_fix_expired(paused_store, queue)
             last_sweep = now
         # La poda lista todos los hilos (escaneo caro en Postgres): va con su propio
         # intervalo, mucho mas largo que los TTL.
@@ -811,12 +1118,23 @@ def run_forever(
                     paused_store,
                     chat=chat,
                     vcs=vcs,
+                    fix_queue=fix_queue,
+                    fix_ttl_s=settings.fix_verify_ttl_s,
                     thread_ids=paused_thread_ids(saver, latest=latest),
                 )
+                # Dos estrategias sobre el mismo listado: los completados antiguos
+                # (politica por defecto) y los `fix_wait` vencidos (F21). Los
+                # `human` que sobreviven a la primera quedan intocables en ambas.
                 prune_completed_threads(
                     saver,
                     older_than_days=settings.checkpoint_retention_days,
                     paused_threads=[review.review_key for review in paused_store.all()],
+                    latest=latest,
+                )
+                prune_fix_threads(
+                    saver,
+                    max_age_s=settings.fix_wait_max_age_s,
+                    paused_kinds=paused_thread_kinds(saver, latest=latest),
                     latest=latest,
                 )
             last_prune = now
