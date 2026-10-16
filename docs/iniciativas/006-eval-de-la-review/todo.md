@@ -7,13 +7,13 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
 
 ## Bloque 1 — Harness puro (sin red, sin grafo)
 
-- [ ] **E1** Esqueleto del harness y del caso
+- [x] **E1** Esqueleto del harness y del caso
   - `tests/eval/harness.py`: carga de un caso (`labels.yaml` + `diff.patch`), tipos
     del informe (`Case`, `Report`, `Label`) y normalización de texto. Sin
     `__init__.py`; el módulo se importa hermano desde el test.
   - Aceptación: un caso de juguete mínimo (en memoria) se carga y expone
     procedencia, `scope` y las tres listas de etiquetas.
-  - Verifica: `tests/eval/test_eval_harness.py`.
+  - Verifica: `tests/eval/test_eval_harness.py`. ✅
   - Ficheros: `tests/eval/harness.py`, `tests/eval/test_eval_harness.py`.
 
 - [ ] **E2** Matcher 1:1 determinista
