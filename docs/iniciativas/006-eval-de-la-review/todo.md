@@ -49,7 +49,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
 
 ## Bloque 2 — Caso y grabación
 
-- [ ] **E5** Caso `pr_3`: `labels.yaml` + `diff.patch`
+- [x] **E5** Caso `pr_3`: `labels.yaml` + `diff.patch`
   - Captura una vez el diff del PR #3 (`a8ead73..008da57`, 51 ficheros) y versiona
     `labels.yaml` con procedencia, `scope` (E10: `max_files_per_pr: 10`), `expected`
     (A, I, integración 1–3), `must_not_report` (B–G, con motivo) y `acceptable` (H),
