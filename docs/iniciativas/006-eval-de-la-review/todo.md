@@ -3,7 +3,8 @@
 # Todo: Evaluación de la review (gold set y métricas)
 
 Checklist de la medición. El diseño y las decisiones están en [`spec.md`](spec.md); el
-orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todavía.
+orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Los doce bloques están
+cerrados (E1–E12).
 
 ## Bloque 1 — Harness puro (sin red, sin grafo)
 
@@ -31,8 +32,8 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
     *accuracy* de severidad; falsos `P0`/`P1`; coste en tokens del `usage` (E13);
     `tp_inverted` por `must_mention` fallido (E16). Serialización con claves
     ordenadas y floats a 4 decimales.
-  - Aceptación: con los números de la auditoría (8 publicados, A e I `expected`, H
-    `acceptable`, 6 falsos) la precisión es 0,25 y el recall 0,4; el JSON es estable
+  - Aceptación: con los números de la auditoría (9 publicados, A e I `expected`, H
+    `acceptable`, 6 falsos) la precisión es 0,25 y el recall 0,25; el JSON es estable
     entre dos serializaciones.
   - Verifica: `tests/eval/test_eval_harness.py`.
   - Ficheros: `tests/eval/harness.py`.
@@ -52,11 +53,11 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
 - [x] **E5** Caso `pr_3`: `labels.yaml` + `diff.patch`
   - Captura una vez el diff del PR #3 (`a8ead73..008da57`, 51 ficheros) y versiona
     `labels.yaml` con procedencia, `scope` (E10: `max_files_per_pr: 10`), `expected`
-    (A, I, integración 1–3), `must_not_report` (B–G, con motivo) y `acceptable` (H),
-    más el `must_mention` de A.
+    (los 7 hallazgos reales: A en `P2`, I, integración 1–3 y no-detectado 1–3),
+    `must_not_report` (B–G, con motivo) y `acceptable` (H), más el `must_mention` de A.
   - Aceptación: `labels.yaml` cubre los 9 hallazgos publicados (`fp_unknown == 0`)
-    y los 3 `P1` de integración no detectados; `diff.patch` es el del PR, no un
-    fixture de juguete.
+    y los 6 hallazgos reales no detectados (3 `P1` de integración y 3 `P2` de código);
+    `diff.patch` es el del PR, no un fixture de juguete.
   - Verifica: `make eval` (informe) y revisión humana de las etiquetas.
   - Ficheros: `tests/eval/pr_3/labels.yaml`, `tests/eval/pr_3/diff.patch`.
 
@@ -96,25 +97,26 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: los tres comandos a mano; `make ci` en verde.
   - Ficheros: `scripts/eval.py`, `Makefile`.
 
-- [ ] **E10** Cobertura instrumentada del `LlmReviewer` (E11)
+- [x] **E10** Cobertura instrumentada del `LlmReviewer` (E11)
   - Campo de solo lectura `last_seen_files` con los ficheros que entraron en el
     prompt; el harness calcula la cobertura sobre las clases de código/configuración
     del PR.
-  - Aceptación: la cobertura refleja el recorte real (§3.1: ≈ 5 de 51) y no depende
-    del corte de `_MAX_DIFF_CHARS` como constante externa.
+  - Aceptación: la cobertura refleja el recorte real (4/20 = 0,20 sobre código y
+    configuración) y no depende del corte de `_MAX_DIFF_CHARS` como constante externa.
   - Verifica: `tests/test_llm_reviewer.py` (el campo expone lo enviado) y `make eval`.
   - Ficheros: `src/agent_review/adapters/llm_reviewer.py`, `tests/eval/harness.py`.
 
-- [ ] **E11** Corrida real (`make eval-live`)
+- [x] **E11** Corrida real (`make eval-live`)
   - Corre el caso contra el modelo real y compara con el baseline; n=1, sin
     repeticiones, con la varianza declarada como **no medida** (E15).
-  - Aceptación: `make eval-live` emite el informe y el delta sin bloquear CI.
+  - Aceptación: `make eval-live` emite el informe y el delta sin bloquear CI (test
+    `live` deseleccionado por defecto).
   - Verifica: ejecución manual; `make ci` intacto sin credenciales.
-  - Ficheros: `scripts/eval.py`, `tests/eval/test_eval_pr_3.py`.
+  - Ficheros: `scripts/eval.py`, `tests/eval/test_live_eval.py`.
 
 ## Bloque 4 — Documentación
 
-- [ ] **E12** ADR y documentos vivos
+- [x] **E12** ADR y documentos vivos
   - ADR nuevo (siguiente número libre) para E3/E4 (replay en CI + fingerprint);
     `desarrollo.md` §1–2 (comandos y zona `eval`); `arquitectura.md` §7 (D14 pasa a
     parcial); `CONTEXT.md` si nace «*gold set*», «caso de evaluación» o «mejora

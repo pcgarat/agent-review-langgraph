@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -145,6 +145,21 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Reintento de job** | El worker reencola la review entera (`attempts+1`); al agotar `MAX_REVIEW_ATTEMPTS` la manda a la DLQ. |
 | **DLQ** | `reviews:jobs:dead`: jobs descartados, con su `review_key`, intentos y motivo. |
 | **Continuar desde el checkpoint** | Un hilo a medias se reanuda con `invoke(None)` desde el nodo que falló, nunca con una pasada nueva desde `START`. |
+
+---
+
+## Evaluación de la review (gold set)
+
+| Término | Definición |
+|---|---|
+| ***Gold set*** | El conjunto versionado de casos auditados a mano (`tests/eval/pr_3/`), con diff, `scope`, etiquetas y grabaciones. La fuente única del baseline es la spec [006](docs/iniciativas/006-eval-de-la-review/spec.md). |
+| **Caso de evaluación** | Un directorio del *gold set*: `labels.yaml` (procedencia, `scope`, etiquetas), `diff.patch`, `recorded.json` y `expected_report.json`. |
+| **Etiqueta (`expected`/`must_not_report`/`acceptable`)** | Veredicto humano por hallazgo: debe salir, no debe salir (con motivo) o es cierto pero sin valor. Un hallazgo no etiquetado cuenta como falso positivo. |
+| ***Replay*** | Correr el grafo real con un `LlmPort` que devuelve las respuestas grabadas, abortando si el *fingerprint* del prompt o del caso no casa. Es el modo de CI. |
+| ***Fingerprint*** | Huella del prompt (rol + `system` + prompt + `max_tokens`) y del caso (nombre + diff + `scope`). Una grabación vieja con un prompt nuevo aborta en vez de medir el pasado ([ADR-0017](docs/adr/0017-replay-determinista-con-fingerprint.md)). |
+| **Mejora (dominancia)** | Relación entre dos corridas: precisión, recall y cobertura no bajan, los falsos `P0`/`P1` no suben y algo sube estrictamente. Lo demás es *no concluyente*. |
+| **Cobertura** | Ficheros de código y configuración que el `LlmReviewer` vio / los de esas clases en el PR. Sale de `last_seen_files`. |
+| **`tp_inverted`** | `expected` cuyo fallo se describió al revés (`must_mention` no cumplido). Sigue siendo `tp`: no mueve precisión ni recall. |
 
 ---
 

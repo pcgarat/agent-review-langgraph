@@ -7,7 +7,7 @@ review en seis números (precisión, recall, *accuracy* de severidad, falsos pos
 `P0`/`P1`, coste por hallazgo verificado y cobertura). Es el punto de partida de cualquier
 cambio de prompt, contrato o modelo: sin esto, «mejora» es una opinión.
 
-> **Estado:** aprobada (2026-10-16)
+> **Estado:** implementada (2026-10-16)
 > **Entrega objetivo:** que `make test` corra un caso real de punta a punta y que el
 > informe diga, con criterio explícito, si un cambio de contrato o de modelo mejora,
 > empeora o no es concluyente.
@@ -18,12 +18,15 @@ cambio de prompt, contrato o modelo: sin esto, «mejora» es una opinión.
 
 La review del PR #3 de este repositorio (`agent-review-langgraph`, commit `008da57`)
 publicó **9 hallazgos**: **6** se rechazaron a mano, **1** describía un fallo real
-**invertido**, **1** confirmaba una decisión ya documentada y **1** era cierto en
-parte; y **no detectó 3 `P1`** de integración y configuración. Los tres estaban en el
-diff del PR, pero el `scope` y el recorte del prompt los dejaron fuera de lo que vio
-el modelo (ver [012](../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona, hallazgo a hallazgo— es valiosísimo y
-hoy no está en ninguna parte: se pierde al cerrar la pestaña. Y sin un número no hay
-forma de saber si un *prompt* nuevo mejora o solo cambia el ruido.
+**invertido** y con la severidad inflada, **1** confirmaba una decisión ya documentada
+y **1** era cierto en parte. La revisión del código a mano fijó **7 hallazgos reales**
+en total: además de ese fallo invertido y del cierto en parte, **no detectó 3 `P1`** de
+integración y configuración **ni 3 `P2`** de código. Los seis estaban en el diff del
+PR, pero el `scope` y el recorte del prompt los dejaron fuera de lo que vio el modelo
+(ver [012](../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona,
+hallazgo a hallazgo— es valiosísimo y hoy no está en ninguna parte: se pierde al cerrar
+la pestaña. Y sin un número no hay forma de saber si un *prompt* nuevo mejora o solo
+cambia el ruido.
 
 Este checkpoint **no arregla** la calidad: la **mide**, para que los arreglos de las
 iniciativas hermanas (007 en adelante) se aprueben con un número delante.
@@ -73,7 +76,7 @@ La auditoría manual del PR #3 dejó un veredicto por hallazgo. Es, tal cual, el
 
 | Caso | Qué afirma el hallazgo | Etiqueta | Motivo del veredicto |
 |---|---|---|---|
-| A | El de `mark_done`/`enqueue` se ordena mal | `expected` (`P1`) | Real, pero el fallo se describió **invertido** |
+| A | El de `mark_done`/`enqueue` se ordena mal | `expected` (`P2`) | Real, pero el fallo se describió **invertido** y con la severidad inflada (el TTL recupera la review) |
 | B | `_requeue_or_drop` reverifica | `must_not_report` | Semántica inventada de `verifier.py`, fuera del diff |
 | C | `_route_fix_wait` bucle infinito | `must_not_report` | El propio texto admite que el bucle es finito |
 | D | `run_key` cambia de valor | `must_not_report` | Topología del grafo deducida de un fragmento |
@@ -81,16 +84,21 @@ La auditoría manual del PR #3 dejó un veredicto por hallazgo. Es, tal cual, el
 | F | `build_fix_wait` fuerza `targets=[]` | `must_not_report` | Afirma una regresión sin comparar con el `base_sha` |
 | G | Wave parcial vs job perdido | `must_not_report` | Requisito inventado sin leer `verify_job` |
 | H | `env_for` expone `Settings` | `acceptable` | Cierto, pero es una decisión ya documentada: ni acierto ni falso positivo |
-| I | `_touch_heartbeat` silencia `OSError` | `expected` | Real en parte |
+| I | `_touch_heartbeat` silencia `OSError` | `expected` (`P3`) | Real en parte |
 | #1 | El `fix-worker` recibe todos los secretos (`env_file: .env`) | `expected` (`P1`, integración) | **No detectado**: `docker-compose.yml` lo descartó `max_files_per_pr` |
 | #2 | El `fix-worker` no arranca en producción | `expected` (`P1`, integración) | **No detectado**: `fixworker/main.py` se vio, su par en `docker-compose.yml` no |
 | #3 | `MODELS_CONFIG` pisa `LLM_*` | `expected` (`P1`, integración) | **No detectado**: `settings.py` lo descartó `max_files_per_pr` |
+| #5 | El arranque fatal-vs-warning se decide casando el texto del mensaje | `expected` (`P2`, no detectado) | **No detectado**: su fichero, `worker/main.py`, quedó fuera del recorte |
+| #6 | Se envía `json_object` aunque el modelo no declare `json_mode` | `expected` (`P2`, no detectado) | **No detectado**: en código que sí se vio |
+| #7 | `SANDBOX_ENABLED` ya no gatea el fix | `expected` (`P2`, no detectado) | **No detectado**: en código que sí se vio |
 
-Los tres últimos **sí estaban en el diff del PR**, pero no en lo que vio el modelo:
-de 51 ficheros, `max_files_per_pr: 10` dejó 10 (ordenados por churn) y el corte a
+Los seis últimos **sí estaban en el diff del PR**, pero no en lo que vio el modelo: El
+#1, #2, #3 y #5 por **cobertura**, el #6 y #7 por **contexto**: de 51 ficheros,
+`max_files_per_pr: 10` dejó 10 (ordenados por churn) y el corte a
 60 000 caracteres dejó ≈ 5 (reproducción en
 [012 §3.1](../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
-decir eso en dos números: el `recall` del subconjunto `integracion` y la cobertura.
+decir eso en dos números: el `recall` del subconjunto `integracion`/`no_detectado` y la
+cobertura.
 
 Las causas son dos y se miden por separado. Primero, **cobertura**: el revisor no vio
 la mayor parte del PR y la review no lo dijo. Segundo, **contexto**: sobre lo que sí
@@ -121,10 +129,10 @@ El harness no necesita nada nuevo del grafo:
 |---|---|
 | Precisión | **2/8 = 0,25** (H es `acceptable` y no cuenta; contando H como acierto, 3/9 ≈ 0,33) |
 | Recall en `P1` de integración | **0/3 = 0,00** |
-| Recall global | **2/5 = 0,40** (A e I de 5 `expected`) |
-| Cobertura | **≈ 5/51 ficheros** con algo visto; código y configuración sin revisar: `docker-compose.yml`, `settings.py`, `.env.example`, `worker/main.py`… |
-| *Accuracy* de severidad | Se registra en la primera corrida *replay* |
-| Falsos positivos `P0`/`P1` | Se registra en la primera corrida *replay* (6 falsos positivos en total) |
+| Recall global | **2/8 = 0,25** (A e I de 8 `expected`: A, I, integración 1–3 y no-detectado 1–3) |
+| Cobertura | **4/20 = 0,20** (código y configuración vistos por el `LlmReviewer`; sin revisar: `docker-compose.yml`, `settings.py`, `.env.example`, `worker/main.py`, `models_registry.py`, `llm_reviewer.py`…) |
+| *Accuracy* de severidad | **1/2 = 0,50** (A se publicó `P1` pero es `P2`; I coincide en `P3`) |
+| Falsos positivos `P0`/`P1` | **3** (de 6 falsos) |
 | Coste por hallazgo verificado | Se registra en la primera corrida *replay* |
 
 Los números «se registran en la primera corrida» no son un hueco: son la salida
@@ -150,7 +158,7 @@ ahí, cualquier deriva de las métricas se ve como un diff.
 | E13 | El coste se mide en **tokens** (`usage` del proveedor), no en dinero | El registro de modelos no declara tarifa; añadirla amplía el alcance sin necesidad |
 | E14 | Los hallazgos de tooling van a `subset: tooling` **aparte** de las métricas globales | Que PHPStan suba la precisión no dice nada de la mejora del LLM |
 | E15 | La corrida real es **a mano** (`make eval-live`), sin *nightly* en 006, con n=1 y la varianza declarada como no medida | Un gate de CI contra un modelo no determinista sería *flaky* y se pagaría; repetir es de otra iniciativa |
-| E16 | Un `expected` cuyo `match` casa pero cuyo `must_mention` no: el informe lo marca `tp_inverted` y **no** mueve precisión ni recall | Mantiene el baseline (A es `tp`, 2/5) y conserva el hecho «descrito invertido» sin castigarlo dos veces |
+| E16 | Un `expected` cuyo `match` casa pero cuyo `must_mention` no: el informe lo marca `tp_inverted` y **no** mueve precisión ni recall | Mantiene el baseline (A es `tp`, 2/8) y conserva el hecho «descrito invertido» sin castigarlo dos veces |
 
 ## 5. Diseño o contrato
 
@@ -190,7 +198,7 @@ scope:                                   # E10: lo que vio el modelo
 
 expected:
   - id: A
-    severity: P1
+    severity: P2
     subset: correctness
     match: ["mark_done", "enqueue"]      # frases distintivas del hallazgo
     must_mention: ["..."]                # opcional: dirección correcta del fallo
@@ -198,6 +206,10 @@ expected:
     severity: P1
     subset: integracion
     match: ["secretos", "entorno"]
+  - id: no-detectado-1
+    severity: P2
+    subset: no_detectado
+    match: ["probe", "fatal"]
 
 must_not_report:
   - id: B
@@ -215,9 +227,9 @@ acceptable:
 - `file` y `line` son **opcionales**: cuando están, el hallazgo debe caer en el mismo
   fichero y a ≤ 5 líneas (misma tolerancia que el merge entre personas,
   [ADR-0014](../../adr/0014-criterio-de-merge-entre-personas.md)). Cuando no están,
-  casa por contenido: es lo que permite etiquetar los `#1`–`#3`, que no tienen línea.
-- `subset` agrupa para reportar (`correctness`, `integracion`, `tooling`…) y permite
-  el `recall` por subconjunto sin duplicar casos.
+  casa por contenido: es lo que permite etiquetar los `#1`–`#7`, que no tienen línea.
+- `subset` agrupa para reportar (`correctness`, `integracion`, `no_detectado`,
+  `tooling`…) y permite el `recall` por subconjunto sin duplicar casos.
 - `must_mention` es opcional y solo lo usa el caso **A**: captura que el fallo se
   describió invertido, cosa que la severidad no ve.
 - La atribución es **1:1 y determinista**: orden canónico (severidad, línea, `id`) y
@@ -297,11 +309,12 @@ se congela en `expected_report.json`:
   "fingerprints": {"case": "sha256:...", "correctness": "sha256:..."},
   "counts": {
     "published": 9, "tp": 2, "fp": 6, "acceptable": 1, "fp_labeled": 6,
-    "fp_unknown": 0, "fn": 3, "fp_p0_p1": 6, "tp_inverted": 1
+    "fp_unknown": 0, "fn": 6, "fp_p0_p1": 3, "tp_inverted": 1
   },
   "metrics": {
-    "precision": 0.25, "recall": 0.4, "recall_by_subset": {"integracion": 0.0},
-    "severity_accuracy": 1.0, "cost_per_tp_tokens": 12345, "coverage": 0.1
+    "precision": 0.25, "recall": 0.25,
+    "recall_by_subset": {"correctness": 1.0, "integracion": 0.0, "no_detectado": 0.0},
+    "severity_accuracy": 0.5, "cost_per_tp_tokens": 10333.5, "coverage": 0.2
   },
   "matched": [], "unmatched": [], "missing": [], "acceptable": [], "inverted": []
 }

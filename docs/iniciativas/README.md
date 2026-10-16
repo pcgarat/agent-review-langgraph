@@ -16,7 +16,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 003 | [Fase 3 — Fix + verificación](003-fase3-fix-verificacion/spec.md) | aprobada | 🟡 F1–F10 hechas | F11 (spike R1), F12 (smoke real), F13 (docs), P6 · [todo](003-fase3-fix-verificacion/todo.md) |
 | 004 | [Fase 3-E7 — Desacople fuerte de la verificación](004-fase3-e7-desacople/spec.md) | implementada | ✅ F14–F28 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](004-fase3-e7-desacople/todo.md) |
 | 005 | [Fase 3.5 — Modelos declarativos por rol](005-modelos-declarativos/spec.md) | implementada | ✅ M1–M11 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](005-modelos-declarativos/todo.md) |
-| 006 | [Evaluación de la review: *gold set* y métricas](006-eval-de-la-review/spec.md) | aprobada | 🟡 Plan y todo escritos; E1–E12 pendientes | La miden 007–011 |
+| 006 | [Evaluación de la review: *gold set* y métricas](006-eval-de-la-review/spec.md) | implementada | 🟢 E1–E12 hechas; gold set alineado con los 7 hallazgos reales | Mide el resto de iniciativas |
 | 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Depende de 006 para medirse · habilita 008, 009 y 011 |
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | Depende de 007 y 012 |
 | 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | borrador | 🔵 Capa de pago de la cascada | Depende de 007 · se mide con 006 |
@@ -26,7 +26,8 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | aprobada | 🟡 T1–T11 pendientes; el alta del bot es ruta crítica | Independiente; [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
-la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 3 P1 no detectados):
+la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
+detectados —3 P1 de integración y 3 P2 de código—):
 medir (006), cobertura (012: el revisor vio ≈ 5 de 51 ficheros sin avisar), contrato
 (007), las capas baratas (008), la capa adversarial (009), el recall determinista
 (010) y el gate que lo cierra (011). Orden de dependencia:

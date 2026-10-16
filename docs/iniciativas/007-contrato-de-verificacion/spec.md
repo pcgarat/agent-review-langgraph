@@ -79,9 +79,11 @@ contrato expresa *cuánto* se ha verificado el hallazgo.
 
 La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó 9
 hallazgos publicados: **6 falsos positivos**, 1 confirmado con el fallo descrito
-**invertido**, 1 que confirmaba una decisión ya documentada y 1 cierto en parte; y
-**no detectó 3 P1 reales**. Los P1 perdidos son sobre todo de cobertura (el modelo no
-vio esos ficheros, [012](../012-cobertura-de-la-review/spec.md)). Los falsos
+**invertido** y con la severidad inflada, 1 que confirmaba una decisión ya documentada
+y 1 cierto en parte; y la revisión a mano fijó **6 hallazgos reales no detectados**
+(3 `P1` de integración y 3 `P2` de código). Los no detectados son sobre todo de
+cobertura (el modelo no vio esos ficheros,
+[012](../012-cobertura-de-la-review/spec.md)). Los falsos
 positivos tienen otra causa, que es la que ataca este contrato: sobre lo que sí ve,
 el revisor afirma sobre código que no ve y **fabrica** el contexto que falta.
 

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -21,6 +21,23 @@ tests `live` (contra Bitbucket real) quedan excluidos por defecto (`-m 'not live
 borra del proceso las variables que el modelo conoce. Los tests parten siempre de los
 valores por defecto. Añadir un campo a `Settings` no obliga a tocar el `conftest`.
 
+### Evaluación de la review (gold set)
+
+El caso del PR #3 (`tests/eval/pr_3/`) se mide en *replay* dentro de `make test` (sin
+red). Los comandos son:
+
+```bash
+make eval                  # informe replay por consola
+EVAL_COMPARE=tests/eval/pr_3/expected_report.json make eval   # + delta por dominancia
+make eval-live             # corrida real (marca live, a mano, fuera de CI)
+make eval-record           # regraba recorded.json contra el modelo real
+```
+
+`make eval-record` es el **único** camino que produce grabaciones. Un cambio que
+altera lo que recibe el modelo invalida el fingerprint y CI **falla** pidiendo
+regrabar (ver [ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)). El
+harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.py`.
+
 ## 2. Mapa de tests
 
 | Zona | Tests |
@@ -38,6 +55,7 @@ valores por defecto. Añadir un campo a `Settings` no obliga a tocar el `conftes
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
+| Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay*), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
 
 Regla de estilo: ningún test depende de red, de `twg` real ni de Docker. Los puertos
 se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
