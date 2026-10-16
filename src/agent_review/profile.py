@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST
 from agent_review.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,8 @@ _FLAT_KEYS = {
     "source",
 }
 _MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox"}
-_LIST_KEYS = {"setup", "setup_network", "verify", "expected_tools"}
-_LIST_OF_STR_KEYS = {"setup", "setup_network", "verify", "expected_tools"}
+_LIST_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
+_LIST_OF_STR_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
 
 
 def validate_profile(profile: dict[str, Any]) -> list[str]:
@@ -143,6 +144,21 @@ def sandbox_timeout_s(settings: Settings, profile: dict[str, Any] | None = None)
         if isinstance(declared, (int, float)) and declared > 0:
             return float(declared)
     return settings.sandbox_timeout_s
+
+
+def context_denylist(profile: dict[str, Any] | None) -> tuple[str, ...]:
+    """Rutas que el runner nunca sirve a un lector de contexto (016 W7).
+
+    Las declara `context_denylist:` del perfil; sin perfil o sin declarar, el
+    default cubre ficheros de entorno, claves y directorios de secretos. El veto lo
+    aplica el runner, no el adaptador: el modelo no puede saltarselo pidiendo otra
+    ruta.
+    """
+    if profile:
+        declared = profile.get("context_denylist")
+        if isinstance(declared, list) and declared:
+            return tuple(str(item) for item in declared)
+    return DEFAULT_CONTEXT_DENYLIST
 
 
 def ci_image_digest(profile: dict[str, Any]) -> str:

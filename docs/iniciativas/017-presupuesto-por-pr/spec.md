@@ -72,7 +72,7 @@ class BudgetPort(Protocol):
 - Clave `budget:{review_key}`, con el mismo TTL que la review. La fila nueva va a
   [`arquitectura.md`](../../arquitectura.md) §5.
 - `LlmReviewer`, `LlmFixer`, el bucle de
-  [016](../016-lector-de-contexto/spec.md) y el verificador de 009 reciben el
+  [016](../archivo/016-lector-de-contexto/spec.md) y el verificador de 009 reciben el
   `BudgetPort` en su construcción, en lugar del entero `budget_tokens_per_pr`.
 - `ReviewOutcome` expone lo gastado y lo que quedó, para que
   [006](../archivo/006-eval-de-la-review/spec.md) mida el coste por review.

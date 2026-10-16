@@ -51,6 +51,7 @@ flowchart LR
     REDIS -->|dequeue| FIXW
     FIXW -->|"POST /verify (bearer)"| RUNNER
     FIXW -->|"reanudacion + resolucion"| REDIS
+    WORKER -->|"POST /workspaces (bearer)"| RUNNER
     RUNNER -->|"clona (token solo lectura)"| VCS
     TEAMS -.-> HUMAN
 ```
@@ -68,7 +69,7 @@ flowchart LR
 | `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
 | `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
-| `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
+| `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
 
@@ -80,9 +81,10 @@ flowchart LR
 src/agent_review/
 ├── domain/        Modelos puros (Finding, ReviewRequest, Decision, HITL, Fix) y contrato
 ├── ports/         Protocolos: VcsPort, ReviewerPort, LlmPort, ChatPort, ToolingOutputSource,
-│                  FixerPort, SandboxPort
+│                  FixerPort, SandboxPort, ContextReaderPort, BudgetPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
-│                  openai_llm, http_sandbox, tooling_source, diff_parser
+│                  openai_llm, http_sandbox, tooling_source, diff_parser,
+│                  context_fixture/context_vcs/context_workspace + tool_loop (lector de contexto, 016)
 ├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, service,
 │                  ingress, sdk_client/handlers. El worker no importa este paquete.
 ├── chat_outbox.py Outbox `reviews:notices` + `OutboxChatAdapter` (`ChatPort`)
@@ -92,7 +94,8 @@ src/agent_review/
 ├── policy/        PolicyEngine (autonomy.yaml)
 ├── fix/           Selección, validación local, nodo fix, formatters de entrega
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
-├── sandbox_runner/ Servicio de verificación (verifier, workspace, runtime, recipes)
+├── sandbox_runner/ Servicio de verificación y workspace de lectura (verifier, workspace,
+│                  read_workspace, runtime, recipes)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
     paused_store.py checkpointer.py scope.py decision.py
@@ -101,8 +104,9 @@ src/agent_review/
 Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
 (`autonomy.yaml` y `models.yaml`), **Strategy** (`FixerPort`, `DeliveryFormatter`,
 `RetentionPolicy`), **Registry** (`ModelRegistry`: rol → puerto), **map-reduce**
-(fan-out de personas con `Send` + reducer) y **ejecución durable** (checkpoint +
-`interrupt`).
+(fan-out de personas con `Send` + reducer), **ejecución durable** (checkpoint +
+`interrupt`) y **degradación por capas** (el lector de contexto cae del workspace del
+runner al VCS sin tumbar la review).
 
 ### Modelos por rol
 
@@ -324,6 +328,18 @@ vencimiento vive en `sweep_fix_expired`
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 
+### Workspaces de lectura (memoria del `sandbox-runner`)
+
+El runner sirve lecturas del repo ([016](iniciativas/archivo/016-lector-de-contexto/spec.md),
+[ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)) desde clones *bare* que
+viven en su memoria de proceso: `ReadWorkspaceManager` con
+`dict[workspace_id → (ReadWorkspace, expires_at)]` y un índice por `(repo,
+head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde
+y el adaptador reabre una vez (o degrada al VCS). Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
+1800 s) y un tope de abiertos (`SANDBOX_MAX_WORKSPACES`, 4) con *reaper* perezoso
+acotan el disco; el desalojo borra el más antiguo. Cada clon vive en un directorio
+temporal, **fuera** de lo que se monta en los contenedores de `/verify`.
+
 ---
 
 ## 6. Estado por fase
@@ -359,7 +375,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D11 | **Worker secuencial** | La verificación de ~20 min ya no bloquea la cola: E7 desacopla por el `fix-worker` y un `interrupt`. Queda secuencial solo el resto del grafo (LLM, publicación). |
 | D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
-| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. |
+| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. La traza por review la aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
 | D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Lo aborda la [017](iniciativas/017-presupuesto-por-pr/spec.md). |

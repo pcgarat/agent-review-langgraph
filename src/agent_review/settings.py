@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Techo de una verificacion en el sandbox, si el perfil no lo declara. Vive en
     # el perfil (`sandbox.timeout_s`); esto es el fallback sin perfil.
     sandbox_timeout_s: float = 1200.0
+    # Workspace de lectura (iniciativa 016): clon *bare* que el runner sirve para
+    # que un modelo lea ficheros y haga `grep` sin ejecutar codigo del PR. TTL de un
+    # workspace abierto y tope de abiertos a la vez (reaper perezoso).
+    sandbox_workspace_ttl_s: float = 1800.0
+    sandbox_max_workspaces: int = 4
     # Formato de entrega del parche verificado: `diff` (fallback seguro) o
     # `suggestion` (si Bitbucket lo renderiza). E6.
     fix_delivery: str = "diff"

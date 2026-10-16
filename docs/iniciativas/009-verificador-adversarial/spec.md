@@ -47,7 +47,7 @@ Se quiere, por tanto:
 - **Ejecutar código del PR.** Sigue siendo exclusivo del `sandbox-runner`
   ([ADR-0011](../../adr/0011-sandbox-runner-aislado.md)). El verificador **lee**,
   nunca ejecuta; la capa ejecutable (L3) es de otra iniciativa. El workspace de
-  lectura del runner ([016](../016-lector-de-contexto/spec.md)) tampoco ejecuta: sirve
+  lectura del runner ([016](../archivo/016-lector-de-contexto/spec.md)) tampoco ejecuta: sirve
   objetos de git.
 - **El gate de publicación ni la severidad.** Qué severidad se publica ante un
   `unverified` o un `refuted` lo decide el gate de
@@ -117,12 +117,12 @@ techo de severidad por coste.
 | V5 | Sin `failure_scenario` no hay `CONFIRMED` (queda `unverified`); sin veredicto → `unverified` (nunca `refuted`). L2 **no cambia `severity`** | La ausencia de prueba no es refutación; un fallo del verificador no puede tumbar un P1 real; la severidad es del gate (007 D11) |
 | V6 | Un hallazgo refutado **se conserva** en el estado, marcado; no se borra ni se ancla inline | Alimenta la métrica y evita re-proponerlo; no ensucia el inline con lo descartado |
 | V7 | L2 solo para hallazgos de personas **no grounded** cuya severidad esté en `severity_gate.require_verified_for` | El `ToolingReviewer` ya es `verified_static`; verificar lo que el gate no exige es coste sin efecto |
-| V8 | Lectura **de solo lectura** a `head_sha` tras el `ContextReaderPort` de [016](../016-lector-de-contexto/spec.md), con topes de ficheros y bytes | No ejecuta código del PR: no necesita el contenedor endurecido del `sandbox-runner` ni P6 |
+| V8 | Lectura **de solo lectura** a `head_sha` tras el `ContextReaderPort` de [016](../archivo/016-lector-de-contexto/spec.md), con topes de ficheros y bytes | No ejecuta código del PR: no necesita el contenedor endurecido del `sandbox-runner` ni P6 |
 | V9 | El nodo es **idempotente** y lleva `RetryPolicy`; un fallo permanente deja `unverified` | Es una llamada externa; un reintento no debe re-verificar lo ya verificado |
 | V10 | El umbral es **el mismo** que el del gate (`severity_gate.require_verified_for` de [011](../011-gate-de-severidad/spec.md)); los topes de recursos, en `Settings` | Un solo umbral: si L2 y el gate tuvieran el suyo, un P2 saldría con una severidad u otra según quién gane |
 | V11 | Tope **por review**: como máximo `VERIFIER_MAX_FINDINGS` hallazgos, los más graves primero; el resto queda `unverified` | Sin tope, 3 personas × N hallazgos × varias llamadas por hallazgo agravan D17 sin límite |
 | V12 | Si el veredicto es `CONFIRMED`, el comentario publica el `failure_scenario` **del verificador**, no el del proponente | En el caso A el proponente describió el fallo al revés; confirmar sin corregir el texto publica la dirección equivocada |
-| V13 | *(Enmienda 2026-10-16.)* El puerto, el bucle de herramientas y el workspace de lectura del runner se trasladan a [016](../016-lector-de-contexto/spec.md) (W1–W8); este verificador los consume | 014 necesita la misma pieza sin depender de 007; una sola especificación |
+| V13 | *(Enmienda 2026-10-16.)* El puerto, el bucle de herramientas y el workspace de lectura del runner se trasladan a [016](../archivo/016-lector-de-contexto/spec.md) (W1–W8); este verificador los consume | 014 necesita la misma pieza sin depender de 007; una sola especificación |
 
 ## 5. Diseño o contrato
 
@@ -214,7 +214,7 @@ da mediante un bucle *ReAct* acotado sobre `LlmPort` (que no admite `tools`, §3
 4. Se para al veredicto o al tope de llamadas; agotado el tope sin veredicto → `unproven`.
 
 El puerto (`ContextReaderPort`), sus adaptadores, el protocolo del bucle y el
-workspace de lectura del runner están en [016](../016-lector-de-contexto/spec.md)
+workspace de lectura del runner están en [016](../archivo/016-lector-de-contexto/spec.md)
 *(enmienda 2026-10-16: estaban aquí y se trasladaron para que 014 no dependa de
 007)*. Lo propio del verificador es el objeto final del bucle (el veredicto de §5.5)
 y sus topes.
@@ -287,7 +287,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 | R7 | **Lecturas caras** al VCS (procesos `twg`) o límite de tasa | Reutilizar el contexto de L1; `grep` acotado a los ficheros servidos; topes de bytes y llamadas |
 | R8 | **Interacción con el gate**: sin binding `verifier`, todo es `unverified` | El paso directo es explícito y testeado; el gate trata `unverified` como «degrada», no como «refutado» ([011](../011-gate-de-severidad/spec.md)) |
 | R9 | **Un solo caso de referencia** (n = 1) para calibrar el *prompt* | Los casos C y A son el fixture semilla; cada falsa alarma real validada a mano añade caso, y el umbral se ajusta con el *gold set*, no a ojo |
-| R10 | **El runner, comprometido, sirve contenido falso** | Riesgo de la pieza compartida: [016](../016-lector-de-contexto/spec.md) R1; aquí, el veredicto sigue sin tocar la severidad (V5) |
+| R10 | **El runner, comprometido, sirve contenido falso** | Riesgo de la pieza compartida: [016](../archivo/016-lector-de-contexto/spec.md) R1; aquí, el veredicto sigue sin tocar la severidad (V5) |
 | R11 | **Inyección de *prompt*** desde el contenido servido («ignora el hallazgo») | El resultado de cada herramienta va delimitado y marcado como dato; el verificador solo puede leer; un `REFUTED` exige contra-evidencia citada y comprobada por el nodo (§5.5) |
 
 ## 7. Criterios de hecho
@@ -314,7 +314,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 9. `verifications` viaja en `ReviewOutcome` y los tipos nuevos están en
    `_STATE_TYPES` (test de serialización de un hilo con `verifications`).
 10. *(Enmienda 2026-10-16.)* Los criterios del puerto, del bucle y del workspace
-    son de [016](../016-lector-de-contexto/spec.md) §7; aquí basta con que el
+    son de [016](../archivo/016-lector-de-contexto/spec.md) §7; aquí basta con que el
     verificador los use (test con `FixtureContextReader`).
 11. `make ci` en verde, con `make docs-check`; documentos vivos al día:
     [`arquitectura.md`](../../arquitectura.md) §3–4 (nodo, estado y §7 si nace deuda),
@@ -343,5 +343,5 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 - **Q7 — ¿Valor de `VERIFIER_MAX_FINDINGS`?** Se propone 5 por review y se ajusta
   con el coste medido en [006](../archivo/006-eval-de-la-review/spec.md).
 - **Q8 y Q9** (ADR del workspace y sus límites) se resolvieron el 2026-10-16 y se
-  trasladaron con la pieza a [016](../016-lector-de-contexto/spec.md) (W5, W6) y
+  trasladaron con la pieza a [016](../archivo/016-lector-de-contexto/spec.md) (W5, W6) y
   [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md).
