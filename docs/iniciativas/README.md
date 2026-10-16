@@ -19,7 +19,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Sin dependencias (se mide con 006) · 4 preguntas abiertas · habilita 008 y 014 |
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008, 012 y 016; un segundo rol, también 017 · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
-| 016 | [Lector de contexto](016-lector-de-contexto/spec.md) | implementada | 🟢 Puerto, bucle de herramientas y workspace de lectura ([ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md)) · [plan](016-lector-de-contexto/plan.md) · [todo](016-lector-de-contexto/todo.md) | Sin dependencias · habilita 009 y 014 |
 | 017 | [Presupuesto de tokens por PR](017-presupuesto-por-pr/spec.md) | borrador | 🔵 Resuelve D17 | Sin dependencias · habilita 009 y el segundo rol de 014 |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 
@@ -28,24 +27,26 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
 detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
-y **016** y **017** son piezas compartidas que salieron de 009 y de la deuda D17.
+y **017** es la pieza compartida que salió de la deuda D17. La **016** (lector de
+contexto) ya está entregada y archivada.
 
 ```mermaid
 flowchart LR
     I012["012"] --> I008["008"]
     I007["007"] --> I008["008"]
     I007["007"] --> I009["009"]
-    I016["016"] --> I009["009"]
     I017["017"] --> I009["009"]
     I008["008"] --> I011["011"]
     I009["009"] --> I011["011"]
     I007["007"] --> I011["011"]
     I008["008"] --> I014["014"]
     I012["012"] --> I014["014"]
-    I016["016"] --> I014["014"]
     I017["017"] -. "2.º rol" .-> I014["014"]
     I007["007"] -. "fase 2" .-> I010["010"]
 ```
+
+La **016** (lector de contexto) ya está entregada: 009 y 014 la consumen, no la
+esperan.
 
 - **Aprobar primero lo que desbloquea:** 012 y 007 (9 preguntas abiertas entre las
   dos) y después 008.
@@ -67,12 +68,13 @@ Sin tareas abiertas. Lo que les quedaba (smokes y pendientes humanos) se traslad
 | 005 | [Fase 3.5 — Modelos declarativos por rol](archivo/005-modelos-declarativos/spec.md) | implementada | M1–M11 · [todo](archivo/005-modelos-declarativos/todo.md) |
 | 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | E1–E12; mide el resto de iniciativas · [todo](archivo/006-eval-de-la-review/todo.md) |
 | 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
+| 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **018**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **019**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

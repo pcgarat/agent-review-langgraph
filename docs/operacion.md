@@ -260,7 +260,7 @@ del bot en el canal nuevo.
 ### Workspaces del `sandbox-runner`
 
 El runner expone, además de `/verify`, los endpoints de **workspace de lectura**
-([016](iniciativas/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)).
+([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)).
 Los usa el worker (y en el futuro el verificador de 009) con el mismo bearer
 `SANDBOX_RUNNER_TOKEN`; no están publicados al exterior (el runner no publica
 puertos). Una petición sin bearer —cuando hay uno configurado— da `401`.

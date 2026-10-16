@@ -6,8 +6,8 @@ Una pieza compartida, sin consumidor todavía: el *qué y por qué* vive en
 [`spec.md`](spec.md) y las tareas, en [`todo.md`](todo.md). Este plan fija el **orden**,
 las dependencias y los checkpoints. 016 **no** toca el grafo ni el contrato de
 hallazgo: entrega el puerto, el bucle, los adaptadores y el workspace, probados con
-fakes, para que [009](../009-verificador-adversarial/spec.md) y
-[014](../014-revisor-con-herramientas/spec.md) los consuman después.
+fakes, para que [009](../../009-verificador-adversarial/spec.md) y
+[014](../../014-revisor-con-herramientas/spec.md) los consuman después.
 
 ## Overview
 
@@ -19,7 +19,7 @@ Tres piezas:
 2. `adapters/tool_loop.py`: un bucle *ReAct* en JSON sobre `LlmPort` con topes y
    comprobación de citas, compartido por 009 y 014.
 3. El **workspace de lectura** del `sandbox-runner`
-   ([ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md)): clon *bare*
+   ([ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md)): clon *bare*
    servido por `git show`/`git grep`/`git ls-tree`, con TTL, tope de workspaces y
    rutas vetadas.
 
@@ -61,7 +61,7 @@ Nada de esto ejecuta código del PR ni entra en la ruta del fix.
   cae a `VcsContextReader`. Un fallo del lector dentro del bucle se sirve al modelo
   como error y la review sigue.
 - **Sin consumidor todavía**: 016 no cablea el bucle en el grafo. La fábrica y los
-  adaptadores se prueban directamente; [014](../014-revisor-con-herramientas/spec.md)
+  adaptadores se prueban directamente; [014](../../014-revisor-con-herramientas/spec.md)
   los conecta a `LlmReviewer`.
 
 ## Dependency graph
@@ -121,10 +121,10 @@ docs con el código.
 
 ## Dependencias externas
 
-- [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md) fija el contrato del
+- [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md) fija el contrato del
   workspace; pasa a `Aceptado` con L11.
-- [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md): el bucle y los
+- [ADR-0017](../../../adr/0017-replay-determinista-con-fingerprint.md): el bucle y los
   adaptadores deben ser **deterministas** (lo que se sirve entra en el *prompt* del
   siguiente turno y el *fingerprint* ya lo cubre).
-- El presupuesto real es de [017](../017-presupuesto-por-pr/spec.md); 016 solo define
+- El presupuesto real es de [017](../../017-presupuesto-por-pr/spec.md); 016 solo define
   el puerto mínimo que consume.

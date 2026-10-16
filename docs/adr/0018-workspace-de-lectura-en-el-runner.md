@@ -20,7 +20,7 @@ solo verificar parches.
 - El `sandbox-runner` amplía su alcance: **verifica parches y sirve lecturas**. Lo
   hace con endpoints `/workspaces` para abrir, leer un fichero, hacer `grep`, listar
   el árbol y borrar. El contrato está en
-  [016 §5.3](../iniciativas/016-lector-de-contexto/spec.md).
+  [016 §5.3](../iniciativas/archivo/016-lector-de-contexto/spec.md).
 - **Clon *bare*, sin *checkout* ni contenedor.** Las lecturas salen de los objetos de
   git (`git show`, `git grep`, `git ls-tree`) a `head_sha` y `base_sha`. Al no haber
   árbol de trabajo, no se ejecutan *hooks* ni filtros y ningún *symlink* puede apuntar

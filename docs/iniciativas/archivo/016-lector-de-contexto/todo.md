@@ -134,7 +134,7 @@ aprobada el 2026-10-16. Sin consumidor todavía: no se toca el grafo.
     `operacion.md` §2 (variables nuevas) y §6 (endpoints `/workspaces`);
     `desarrollo.md` §3 (el puerto, los adaptadores y la fábrica); `CONTEXT.md`
     («lector de contexto», «workspace de lectura», «bucle de herramientas»);
-    [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md) pasa a
+    [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md) pasa a
     `Aceptado` y su fila en `docs/adr/README.md`.
   - Aceptación: `make docs-check` en verde; cada documento describe lo entregado.
   - Verifica: `make docs-check`.
