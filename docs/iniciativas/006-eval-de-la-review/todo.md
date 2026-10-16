@@ -26,7 +26,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: `tests/eval/test_eval_harness.py`.
   - Ficheros: `tests/eval/harness.py`.
 
-- [ ] **E3** Métricas y JSON determinista
+- [x] **E3** Métricas y JSON determinista
   - Precisión y recall **excluyendo** `subset: tooling` (E14) y por subconjunto;
     *accuracy* de severidad; falsos `P0`/`P1`; coste en tokens del `usage` (E13);
     `tp_inverted` por `must_mention` fallido (E16). Serialización con claves
@@ -37,7 +37,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: `tests/eval/test_eval_harness.py`.
   - Ficheros: `tests/eval/harness.py`.
 
-- [ ] **E4** `harness.compare` (dominancia, E6)
+- [x] **E4** `harness.compare` (dominancia, E6)
   - Tres veredictos: **mejora** si precisión, recall y cobertura no bajan, los falsos
     `P0`/`P1` no suben y algo sube estrictamente; **empeora** si lo contrario en
     cualquier métrica; **no concluyente** en el resto.

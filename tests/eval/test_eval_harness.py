@@ -11,7 +11,18 @@ from pathlib import Path
 
 import pytest
 import yaml
-from harness import Case, Label, load_case, match, normalize
+from harness import (
+    Case,
+    Label,
+    Report,
+    Verdict,
+    compare,
+    load_case,
+    match,
+    measure,
+    normalize,
+    to_json,
+)
 
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
 
@@ -244,3 +255,195 @@ def test_expected_sin_match_falla() -> None:
     case = _case(expected=[Label(id="A", match=())])
     with pytest.raises(ValueError, match="no declara 'match'"):
         match(case, [])
+
+
+# --- E3: metricas y JSON determinista ---
+
+
+def _audit_case() -> Case:
+    """El caso de la auditoria: A e I `expected`, H `acceptable`, 6 falsos (B–G)."""
+    return _case(
+        expected=[
+            Label(id="A", match=("mark_done",), severity="P1", subset="correctness"),
+            Label(id="I", match=("heartbeat",), severity="P1", subset="correctness"),
+            Label(id="integracion-1", match=("secretos",), severity="P1", subset="integracion"),
+            Label(id="integracion-2", match=("arranca",), severity="P1", subset="integracion"),
+            Label(id="integracion-3", match=("pisa",), severity="P1", subset="integracion"),
+        ],
+        must_not_report=[
+            Label(id=fid, match=(fid.lower(),)) for fid in ("B", "C", "D", "E", "F", "G")
+        ],
+        acceptable=[Label(id="H", match=("documentada",))],
+    )
+
+
+def _audit_published() -> list[Finding]:
+    findings = [
+        _finding(fid="a", title="mark_done", severity=Severity.P1, line=1),
+        _finding(fid="i", title="heartbeat", severity=Severity.P1, line=2),
+        _finding(fid="h", title="documentada", severity=Severity.P3, line=3),
+    ]
+    for index, fid in enumerate(("B", "C", "D", "E", "F", "G")):
+        findings.append(_finding(fid=fid, title=fid.lower(), severity=Severity.P2, line=10 + index))
+    return findings
+
+
+def test_precision_y_recall_de_la_auditoria() -> None:
+    report = measure(_audit_case(), _audit_published())
+
+    assert report.counts["published"] == 9
+    assert report.counts["tp"] == 2
+    assert report.counts["fp"] == 6
+    assert report.counts["acceptable"] == 1
+    assert report.counts["fp_unknown"] == 0
+    assert report.counts["fn"] == 3
+    assert report.metrics["precision"] == 0.25
+    assert report.metrics["recall"] == 0.4
+    assert report.metrics["recall_by_subset"] == {"correctness": 1.0, "integracion": 0.0}
+    assert report.metrics["severity_accuracy"] == 1.0
+
+
+def test_hallazgo_sin_etiqueta_es_falso_positivo() -> None:
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+    stray = _finding(fid="z", title="ruido", line=3)
+
+    report = measure(case, [_finding(fid="a", title="mark_done", line=1), stray])
+
+    assert report.counts["fp"] == 1
+    assert report.counts["fp_unknown"] == 1
+    assert report.counts["fp_labeled"] == 0
+
+
+def test_tooling_queda_fuera_de_precision_y_recall_globales() -> None:
+    case = _case(
+        expected=[
+            Label(id="A", match=("mark_done",), subset="correctness"),
+            Label(id="T", match=("phpstan",), subset="tooling"),
+        ]
+    )
+    published = [
+        _finding(fid="a", title="mark_done", line=1),
+        _finding(fid="t", title="phpstan", line=2),
+        _finding(fid="z", title="ruido", line=3),
+    ]
+
+    report = measure(case, published)
+
+    # 1 tp de correctness de 1 esperado, 1 fp: el tp de tooling no infla el numero.
+    assert report.metrics["precision"] == 0.5
+    assert report.metrics["recall"] == 1.0
+    assert report.metrics["recall_by_subset"]["tooling"] == 1.0
+
+
+def test_falsos_p0_p1_y_tp_inverted() -> None:
+    case = _case(
+        expected=[
+            Label(id="A", match=("mark_done",), severity="P1", must_mention=("antes",)),
+        ],
+        must_not_report=[Label(id="B", match=("inventado",))],
+    )
+    published = [
+        _finding(
+            fid="a",
+            title="mark_done se ordena mal",
+            why="corre despues",
+            severity=Severity.P1,
+        ),
+        _finding(fid="B", title="dato inventado", severity=Severity.P0, line=2),
+    ]
+
+    report = measure(case, published)
+
+    assert report.counts["fp_p0_p1"] == 1
+    assert report.inverted == ("A",)
+    assert report.counts["tp_inverted"] == 1
+    # El invertido sigue siendo tp: no mueve precision ni recall (E16).
+    assert report.counts["tp"] == 1
+    assert report.metrics["precision"] == 0.5
+    assert report.metrics["recall"] == 1.0
+
+
+def test_coste_y_cobertura() -> None:
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+    published = [_finding(fid="a", title="mark_done", line=1)]
+
+    report = measure(case, published, tokens=1000, coverage=0.1)
+
+    assert report.metrics["cost_per_tp_tokens"] == 1000.0
+    assert report.metrics["coverage"] == 0.1
+
+
+def test_coste_none_sin_tp_y_cobertura_none_no_medida() -> None:
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+
+    report = measure(case, [], tokens=1000)
+
+    assert report.metrics["cost_per_tp_tokens"] is None
+    assert report.metrics["coverage"] is None
+
+
+def test_json_estable_entre_serializaciones() -> None:
+    report = measure(_audit_case(), _audit_published())
+
+    first = to_json(report)
+    second = to_json(measure(_audit_case(), _audit_published()))
+
+    assert first == second
+    # Claves ordenadas: `case` antes que `counts` antes que `metrics`.
+    assert first.index('"case"') < first.index('"counts"') < first.index('"metrics"')
+
+
+# --- E4: harness.compare (dominancia, tres veredictos) ---
+
+
+def _report(*, metrics: dict, fp_p0_p1: int = 0) -> Report:
+    return Report(case="c", mode="replay", counts={"fp_p0_p1": fp_p0_p1}, metrics=metrics)
+
+
+def test_compare_mejora_si_nada_baja_y_algo_sube() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.25, "recall": 0.6, "coverage": 0.1}, fp_p0_p1=6)
+
+    assert compare(current, baseline) is Verdict.MEJORA
+
+
+def test_compare_mejora_bajando_los_p0_p1() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=2)
+
+    assert compare(current, baseline) is Verdict.MEJORA
+
+
+def test_compare_empeora_si_nada_mejora_y_algo_baja() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.2, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+
+    assert compare(current, baseline) is Verdict.EMPEORA
+
+
+def test_compare_empeora_si_suben_los_p0_p1() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=8)
+
+    assert compare(current, baseline) is Verdict.EMPEORA
+
+
+def test_compare_no_concluyente_si_sube_recall_bajan_p0_p1_y_cae_precision() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.2, "recall": 0.6, "coverage": 0.1}, fp_p0_p1=2)
+
+    assert compare(current, baseline) is Verdict.NO_CONCLUYENTE
+
+
+def test_compare_iguales_es_no_concluyente() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": 0.1}, fp_p0_p1=6)
+
+    assert compare(current, baseline) is Verdict.NO_CONCLUYENTE
+
+
+def test_compare_coverage_none_no_cuenta_como_caida() -> None:
+    baseline = _report(metrics={"precision": 0.25, "recall": 0.4, "coverage": None}, fp_p0_p1=6)
+    current = _report(metrics={"precision": 0.25, "recall": 0.5, "coverage": None}, fp_p0_p1=6)
+
+    assert compare(current, baseline) is Verdict.MEJORA

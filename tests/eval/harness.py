@@ -8,9 +8,11 @@ del modelo) y `expected_report.json` (el baseline congelado).
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -229,3 +231,214 @@ def _matches(label: Label, finding: Finding) -> bool:
 def _finding_order(finding: Finding) -> tuple[int, int, str]:
     """Orden canonico de atribucion: severidad, linea, id (spec §5.2)."""
     return (_SEVERITY_RANK.get(str(finding.severity), 9), finding.line, finding.id)
+
+
+# El subconjunto de tooling mide a la herramienta, no al LLM: queda fuera de la
+# precision y el recall globales y se reporta aparte (E14 de la spec).
+SUBSET_TOOLING = "tooling"
+
+
+def measure(
+    case: Case,
+    published: Sequence[Finding],
+    *,
+    mode: str = "replay",
+    tokens: int | None = None,
+    coverage: float | None = None,
+    fingerprints: Mapping[str, str] | None = None,
+) -> Report:
+    """Traduce una corrida en el informe de seis metricas (E3, spec §5.4).
+
+    `tokens` es el gasto del run (del `usage` del proveedor, E13) y `coverage` la
+    fraccion de ficheros vistos por el `LlmReviewer` (E11); ambos llegan de fuera
+    porque el harness puro no corre el grafo. Hasta que exista la instrumentacion,
+    `coverage=None` (nunca 0: «no medido» no es «no visto»).
+    """
+    result = match(case, published)
+    inverted = _inverted(case.expected, result.expected)
+    all_tp = result.expected
+    tooling_tp = [label for label, _ in all_tp.items() if _subset(label, case) == SUBSET_TOOLING]
+    tp_global = len(all_tp) - len(tooling_tp)
+    fps = _fps(result, case)
+    fp_global = [item for item in fps if item[1] != SUBSET_TOOLING]
+    expected_global = [label for label in case.expected if label.subset != SUBSET_TOOLING]
+
+    counts = {
+        "published": len(published),
+        "tp": len(all_tp),
+        "fp": len(fps),
+        "acceptable": len(result.acceptable),
+        "fp_labeled": len(result.must_not),
+        "fp_unknown": len(result.unmatched),
+        "fn": len(result.missing),
+        "fp_p0_p1": sum(1 for _, _, finding in fps if str(finding.severity) in ("P0", "P1")),
+        "tp_inverted": len(inverted),
+    }
+    metrics: dict[str, float | None] = {
+        "precision": _ratio(tp_global, tp_global + len(fp_global)),
+        "recall": _ratio(tp_global, len(expected_global)),
+        "recall_by_subset": _recall_by_subset(case, all_tp),
+        "severity_accuracy": _severity_accuracy(case, all_tp, len(all_tp)),
+        "cost_per_tp_tokens": _cost(tokens, len(all_tp)),
+        "coverage": round(coverage, 4) if coverage is not None else None,
+    }
+    return Report(
+        case=case.name,
+        mode=mode,
+        fingerprints=dict(sorted((fingerprints or {}).items())),
+        counts=counts,
+        metrics=metrics,
+        matched=tuple(sorted(all_tp)),
+        unmatched=tuple(sorted(finding.id for finding in result.unmatched)),
+        missing=tuple(sorted(result.missing)),
+        acceptable=tuple(sorted(result.acceptable)),
+        inverted=tuple(sorted(inverted)),
+    )
+
+
+def to_json(report: Report) -> str:
+    """Serializa el informe de forma **determinista** (E6): claves ordenadas, 4 decimales.
+
+    Dos corridas del mismo caso dan el mismo texto byte a byte, de modo que el
+    baseline congelado en `expected_report.json` se puede comparar con un `==`.
+    """
+    return json.dumps(asdict(report), sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+
+
+def _subset(label_id: str, case: Case) -> str:
+    for label in case.expected:
+        if label.id == label_id:
+            return label.subset
+    return SUBSET_TOOLING
+
+
+def _fps(result: MatchResult, case: Case) -> list[tuple[str, str, Finding]]:
+    """Falsos positivos: `(id, subset, hallazgo)`. Un no etiquetado es `fp` (E5).
+
+    Los `must_not_report` traen su subset (por defecto `correctness`); un hallazgo
+    sin etiqueta no puede declararse tooling, asi que cuenta como global.
+    """
+    subsets = {label.id: label.subset for label in case.must_not_report}
+    labeled = [
+        (label_id, subsets.get(label_id, "correctness"), finding)
+        for label_id, finding in result.must_not.items()
+    ]
+    unknown = [(finding.id, "correctness", finding) for finding in result.unmatched]
+    return labeled + unknown
+
+
+def _inverted(expected: Sequence[Label], matched: Mapping[str, Finding]) -> list[str]:
+    """`expected` casados cuyo `must_mention` no se cumple (E16).
+
+    Cuenta el hecho «descrito al reves» sin castigarlo: sigue siendo un `tp` y no
+    mueve precision ni recall.
+    """
+    by_id = {label.id: label for label in expected}
+    inverted: list[str] = []
+    for label_id, finding in matched.items():
+        label = by_id.get(label_id)
+        if label is None or not label.must_mention:
+            continue
+        text = normalize(f"{finding.title} {finding.why_it_matters}")
+        if not all(normalize(fragment) in text for fragment in label.must_mention):
+            inverted.append(label_id)
+    return inverted
+
+
+def _recall_by_subset(case: Case, matched: Mapping[str, Finding]) -> dict[str, float]:
+    """Recall por `subset` (incluye `tooling`, que se reporta aparte; E14)."""
+    totals: dict[str, int] = {}
+    hits: dict[str, int] = {}
+    for label in case.expected:
+        totals[label.subset] = totals.get(label.subset, 0) + 1
+        if label.id in matched:
+            hits[label.subset] = hits.get(label.subset, 0) + 1
+    return {subset: _ratio(hits.get(subset, 0), total) for subset, total in sorted(totals.items())}
+
+
+def _severity_accuracy(case: Case, matched: Mapping[str, Finding], tp: int) -> float | None:
+    """Casados con la severidad del `expected` / `tp` (spec §5.4)."""
+    by_id = {label.id: label for label in case.expected}
+    correct = sum(
+        1
+        for label_id, finding in matched.items()
+        if by_id[label_id].severity is not None
+        and str(finding.severity) == by_id[label_id].severity
+    )
+    return _ratio(correct, tp)
+
+
+def _cost(tokens: int | None, tp: int) -> float | None:
+    """Coste por hallazgo verificado en tokens: `None` si no hay `tp` o no hay gasto."""
+    if tokens is None or tp == 0:
+        return None
+    return round(tokens / tp, 4)
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    """Cociente redondeado a 4 decimales; `None` si el denominador es 0."""
+    if denominator == 0:
+        return None
+    return round(numerator / denominator, 4)
+
+
+class Verdict(StrEnum):
+    """Resultado de comparar una corrida con el baseline (E6 de la spec)."""
+
+    MEJORA = "mejora"
+    EMPEORA = "empeora"
+    NO_CONCLUYENTE = "no concluyente"
+
+
+class _Trend(StrEnum):
+    """Sentido del cambio de una metrica entre baseline y corrida."""
+
+    MEJOR = "mejor"
+    IGUAL = "igual"
+    PEOR = "peor"
+    DESCONOCIDO = "desconocido"
+
+
+# Metricas donde subir es mejorar (spec §5.4). `fp_p0_p1` va aparte: menor es mejor.
+_METRICS_HIGHER_BETTER = ("precision", "recall", "coverage")
+
+
+def compare(current: Report, baseline: Report) -> Verdict:
+    """Dominancia entre una corrida y el baseline (E6), sin poder hacer trampa.
+
+    **Mejora** solo si ninguna metrica empeora (precision, recall y cobertura no
+    bajan; los falsos `P0`/`P1` no suben) y al menos una mejora estrictamente.
+    **Empeora** solo si ninguna mejora y al menos una empeora. El resto es **no
+    concluyente**: subir el recall publicando ruido cae aqui, no en «mejora».
+    Una metrica sin medir (`None`, p. ej. `coverage`) no cuenta como caida (E11).
+    """
+    trends = [
+        _trend(baseline.metrics.get(name), current.metrics.get(name), higher_better=True)
+        for name in _METRICS_HIGHER_BETTER
+    ]
+    trends.append(
+        _trend(
+            baseline.counts.get("fp_p0_p1"),
+            current.counts.get("fp_p0_p1"),
+            higher_better=False,
+        )
+    )
+    if all(trend is not _Trend.PEOR for trend in trends) and any(
+        trend is _Trend.MEJOR for trend in trends
+    ):
+        return Verdict.MEJORA
+    if all(trend is not _Trend.MEJOR for trend in trends) and any(
+        trend is _Trend.PEOR for trend in trends
+    ):
+        return Verdict.EMPEORA
+    return Verdict.NO_CONCLUYENTE
+
+
+def _trend(baseline: float | None, current: float | None, *, higher_better: bool) -> _Trend:
+    """Compara una metrica. Un valor ausente en cualquiera de los dos es desconocido."""
+    if baseline is None or current is None:
+        return _Trend.DESCONOCIDO
+    if current == baseline:
+        return _Trend.IGUAL
+    improves = current > baseline if higher_better else current < baseline
+    return _Trend.MEJOR if improves else _Trend.PEOR
