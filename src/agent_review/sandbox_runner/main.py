@@ -256,15 +256,17 @@ _verifier: Verifier | None = None
 _console: ConsoleBuffer | None = None
 
 
-def build_console() -> ConsoleBuffer:
+def build_console(settings: Settings | None = None) -> ConsoleBuffer:
     """Buffer de consola unico del proceso (memoria del runner; efimero, 019 W5).
 
-    El tope de lineas es una constante del modulo: `SANDBOX_CONSOLE_BUFFER_LINES` es
-    config del panel (bloque 3), no del runner, que no la necesita para funcionar.
+    El tope de lineas por verificacion lo fija `SANDBOX_CONSOLE_BUFFER_LINES`: es el
+    unico mando util del panel sobre el runner (cuantas lineas retiene), y el resto
+    del buffer (maximo de runs, cadencia de sondeo) son constantes del modulo.
     """
     global _console
     if _console is None:
-        _console = ConsoleBuffer()
+        resolved = settings if settings is not None else get_settings()
+        _console = ConsoleBuffer(max_lines=resolved.sandbox_console_buffer_lines)
     return _console
 
 
@@ -278,7 +280,7 @@ def build_verifier(settings: Settings) -> Verifier:
             runtime=DockerCliRuntime(docker_bin=settings.sandbox_docker_bin),
             registry_user=settings.sandbox_registry_user,
             registry_token=settings.sandbox_registry_token,
-            console=build_console(),
+            console=build_console(settings),
         )
     return _verifier
 
@@ -320,7 +322,7 @@ def verify_console(
     """
     settings = get_settings()
     _verify_token(settings, authorization)
-    console = build_console()
+    console = build_console(settings)
     # El `404` se resuelve antes de abrir el stream: un `run_key` ausente no debe
     # llegar a un `200` que se cierra sin eventos (contrato congelado con el `web`).
     if not console.subscribe(run_key):
