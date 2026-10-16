@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Operación
 
@@ -35,7 +35,7 @@ docker compose logs -f worker
 |---|---|---|---|
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
-| `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `docker.sock`, `TWG_*`, Postgres ni `REVIEWS_DECISION_TOKEN` |
+| `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
 | `redis` | — | — | Sin auth; solo red interna |
@@ -81,9 +81,15 @@ plantilla comentada. Además hay tres ficheros versionados:
   el test `tests/test_live_models.py` (`-m live`) comprueba contra la API que las
   capacidades declaradas (`json_mode`, contexto) se cumplen.
 
-  Sin registro declarativo (`MODELS_CONFIG` vacío), se sintetiza uno implícito
-  desde `LLM_MODEL`/`LLM_BASE_URL`/`LLM_API_KEY`: un solo modelo para todos los
-  roles. Es la vía de compatibilidad y no tiene fecha de retirada.
+  Sin registro declarativo (`MODELS_CONFIG` sin declarar o vacío, que es el valor
+  por defecto), se sintetiza uno implícito desde `LLM_MODEL`/`LLM_BASE_URL`/
+  `LLM_API_KEY`: un solo modelo para todos los roles. Es la vía de compatibilidad y
+  no tiene fecha de retirada. `.env.example` declara `MODELS_CONFIG`, así que un
+  `.env` nuevo usa el registro y uno existente con solo `LLM_*` no cambia.
+
+  Al arrancar, el worker contrasta cada modelo bindeado con `GET /models` del
+  proveedor. Un modelo que el proveedor no lista o una credencial rechazada
+  (401/403) fallan el arranque; un proveedor que no responde solo deja un aviso.
 
 ### Variables por tema
 
@@ -99,7 +105,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
-| LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (`config/models.yaml`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: no llama si la estimación lo supera) |
+| LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (500000: no llama si la estimación lo supera) |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
 
@@ -129,11 +135,15 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 | `REVIEWS_DECISION_TOKEN` | Bearer del canal de decisión: quien lo tiene decide | Siempre en producción | Agente |
 | `TEAMS_WEBHOOK_URL` | Incoming Webhook: quien tiene la URL, publica | Si `TEAMS_ENABLED` | Agente |
 | `LLM_API_KEY` | Clave del proveedor LLM (la referencia `${LLM_API_KEY}` del registro de modelos) | Si `LLM_REVIEWER_ENABLED` | Agente |
-| `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre worker y runner | Si `SANDBOX_ENABLED` | Agente |
+| `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre el `fix-worker` y el runner | Si `SANDBOX_ENABLED`; siempre para el `fix-worker` en producción | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Fase 4 | Agente |
 | `POSTGRES_PASSWORD` | Credencial de Postgres | En producción | Infra |
+
+El `fix-worker` tiene su propio contrato, mucho menor: en producción solo exige
+`SANDBOX_RUNNER_URL` y un `SANDBOX_RUNNER_TOKEN` real, porque no recibe ningún otro
+secreto (compose le pasa las variables una a una, sin `env_file`).
 
 Reglas de higiene:
 
@@ -148,7 +158,7 @@ Reglas de higiene:
 |---|---|---|
 | `TWG_BBC_TOKEN` | 90 días o ante sospecha | Nuevo token del actor de servicio → `.env` → `docker compose up -d worker` |
 | `TOOLING_WEBHOOK_SECRET` | 90 días | **A la vez** en el agente y en la variable *secured* del CI |
-| `SANDBOX_RUNNER_TOKEN` | 90 días | **A la vez** en el worker y en el runner |
+| `SANDBOX_RUNNER_TOKEN` | 90 días | Nuevo valor en `.env` → `docker compose up -d fix-worker sandbox-runner` (**a la vez**) |
 | `SANDBOX_GIT_TOKEN` | 90 días o ante sospecha | Nuevo token de solo lectura → runner |
 | `REVIEWS_DECISION_TOKEN` | 90 días o al salir alguien con acceso | Nuevo valor → `api` → avisar a quien decide |
 | `TEAMS_WEBHOOK_URL` | Al revocar el conector | Regenerar el webhook en Teams |

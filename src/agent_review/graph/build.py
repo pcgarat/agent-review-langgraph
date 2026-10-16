@@ -383,6 +383,7 @@ def build_graph(
     fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
     retry_policy: RetryPolicy | None = None,
+    verification_enabled: bool = True,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review (Fase 3-E7).
 
@@ -391,6 +392,8 @@ def build_graph(
     `SandboxPort`: la verificacion vive en el worker de fixes, detras del
     `interrupt` de `fix_wait`; la ruta de la review nunca espera al sandbox.
     `fix_dispatch` es un no-op sin hallazgos aprobados con accion `fix_*`.
+    `verification_enabled=False` (sin sandbox ni runner) marca los candidatos
+    `NOT_VERIFIABLE` en `fix_dispatch`, de modo que `fix_wait` no llega a pausar.
     """
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
@@ -549,6 +552,7 @@ def build_graph(
             recipes=recipes,
             targets=[],
             existing=state.get("fixes", {}),
+            verification_enabled=verification_enabled,
         )
         if fixes:
             pending = sum(1 for r in fixes.values() if r.status is FixStatus.PENDING)

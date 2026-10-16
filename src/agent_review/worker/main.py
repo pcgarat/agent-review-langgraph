@@ -137,7 +137,8 @@ def validate_models(registry: ModelRegistry) -> None:
     """Contrasta los modelos bindeados contra el catalogo del proveedor.
 
     Un `LLM_MODEL` con typo o retirado hoy se descubre en la primera review, con la
-    persona degradando a 0 hallazgos. Un binding que no resuelve se arranca aqui.
+    persona degradando a 0 hallazgos. Un binding que no resuelve, o una credencial
+    que el proveedor rechaza (401/403), falla el arranque aqui.
     Un proveedor inalcanzable **no** bloquea el arranque: un modelo es un binding
     declarado, no una dependencia dura (el worker debe poder arrancar en un
     despliegue sin salida a internet).
@@ -147,9 +148,10 @@ def validate_models(registry: ModelRegistry) -> None:
     problems = registry.probe()
     if not problems:
         return
-    # Solo es fatal lo que no depende de la red: un modelo declarado que el
-    # proveedor no lista. Un fallo de consulta se registra como aviso.
-    unresolved = [p for p in problems if "no se pudo consultar" not in p.message]
+    # Solo es fatal lo que no depende de la red (un modelo que el proveedor no
+    # lista, una credencial rechazada); lo decide `probe` en `Problem.fatal`. Un
+    # proveedor que no responde se registra como aviso.
+    unresolved = [p for p in problems if p.fatal]
     if unresolved:
         raise RuntimeError("Registro de modelos invalido: " + "; ".join(str(p) for p in unresolved))
     for problem in problems:
@@ -333,8 +335,18 @@ def build_runtime(
         fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
         retry_policy=node_retry_policy(settings),
+        verification_enabled=verification_enabled(settings),
     )
     return graph.compile(checkpointer=saver)
+
+
+def verification_enabled(settings: Settings) -> bool:
+    """¿Hay quien verifique un parche? `SANDBOX_ENABLED` y la URL del runner.
+
+    Sin ellas el worker de fixes no podria resolver la wave: el fix se marca
+    `NOT_VERIFIABLE` al despacharlo en vez de pausar la review hasta el TTL.
+    """
+    return settings.sandbox_enabled and bool(settings.sandbox_runner_url.strip())
 
 
 def process_request(

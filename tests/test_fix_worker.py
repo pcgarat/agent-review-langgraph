@@ -10,9 +10,10 @@ from agent_review.domain.models import (
     ReviewRequest,
     VerifyJob,
 )
-from agent_review.fixworker.main import _consume, verify_job
+from agent_review.fixworker.main import _consume, poll_once, verify_job
 from agent_review.ports.sandbox import VerifyReport
 from agent_review.queue import InMemoryFixQueue, InMemoryReviewQueue
+from agent_review.settings import Settings, require_fix_worker_secrets
 
 
 class _Sandbox:
@@ -161,3 +162,68 @@ def test_verify_job_resuelve_toda_la_wave(ids: list[str]) -> None:
 
     assert len(resolutions.items) == len(ids)
     assert sandbox.calls == [f"r:1:abc:p1:{fid}:1" for fid in ids]
+
+
+class _BrokenReviewQueue(InMemoryReviewQueue):
+    """Cola de reviews cuyo `enqueue` falla, como un Redis caido."""
+
+    def enqueue(self, request: ReviewRequest) -> None:
+        raise ConnectionError("redis caido")
+
+
+def test_consume_no_marca_la_wave_si_falla_el_encolado_de_la_reanudacion() -> None:
+    """La marca va despues de la reanudacion: si esta falla, la wave sigue viva.
+
+    Al reves, una reentrega veria la wave marcada y saldria sin reanudar, y la
+    review quedaria pausada hasta el TTL del handoff.
+    """
+    queue = InMemoryFixQueue()
+    job = _job()
+
+    with pytest.raises(ConnectionError):
+        _consume(queue, _BrokenReviewQueue(), _Sandbox(), job, max_attempts=3)
+
+    assert not queue.is_done(job.wave.jobs[0].run_key)
+
+
+def test_poll_once_sobrevive_a_un_fallo_al_encolar_la_reanudacion() -> None:
+    queue = InMemoryFixQueue()
+    job = _job()
+    queue.enqueue(job)
+
+    poll_once(queue, _BrokenReviewQueue(), _Sandbox(), poll_s=0, max_attempts=3)
+
+    assert not queue.is_done(job.wave.jobs[0].run_key)
+
+
+def test_poll_once_sin_jobs_no_hace_nada() -> None:
+    review_queue = InMemoryReviewQueue()
+    poll_once(InMemoryFixQueue(), review_queue, _Sandbox(), poll_s=0, max_attempts=3)
+    assert review_queue.dequeue() is None
+
+
+def test_el_worker_de_fixes_arranca_en_produccion_sin_credenciales_de_vcs() -> None:
+    """Su contrato es Redis + runner: sin `TWG_*` ni token de decision arranca."""
+    settings = Settings(
+        environment="production",
+        twg_bbc_token="",
+        sandbox_runner_url="http://sandbox-runner:8099",
+        sandbox_runner_token="token-real",
+    )
+    require_fix_worker_secrets(settings)
+
+
+@pytest.mark.parametrize(
+    ("url", "token", "missing"),
+    [
+        ("", "token-real", "SANDBOX_RUNNER_URL"),
+        ("http://sandbox-runner:8099", "change-me", "SANDBOX_RUNNER_TOKEN"),
+        ("http://sandbox-runner:8099", "", "SANDBOX_RUNNER_TOKEN"),
+    ],
+)
+def test_el_worker_de_fixes_exige_runner_en_produccion(url: str, token: str, missing: str) -> None:
+    settings = Settings(
+        environment="production", sandbox_runner_url=url, sandbox_runner_token=token
+    )
+    with pytest.raises(RuntimeError, match=missing):
+        require_fix_worker_secrets(settings)

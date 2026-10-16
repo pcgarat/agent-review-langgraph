@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-15
+Última modificación: 2026-10-16 | Creado: 2026-10-15
 
 # Todo: Fase 3.5 (modelos declarativos por rol)
 
@@ -121,6 +121,31 @@ arrancan con `deepseek-v4-flash`; el presupuesto real por PR es deuda aparte (D1
       `nan.builders` (bindings, `probe` y `usage`).
 - [ ] Smoke real sobre un PR de `emotivoo-v2` midiendo hallazgos descartados por el
       contrato (Q3) — requiere P6.
+
+## Bloque 4 — Correcciones de la revisión del PR #3
+
+- [x] **M9** `MODELS_CONFIG` vacío por defecto (D7)
+  - Con el valor por defecto `config/models.yaml`, un despliegue con solo `LLM_*`
+    pasaba en silencio al registro versionado (otro proveedor, otra clave). Ahora
+    el registro se activa declarando `MODELS_CONFIG`, como hace `.env.example`.
+  - Verifica: `tests/test_worker.py` (`LLM_MODEL` sin `MODELS_CONFIG` usa el
+    registro implícito). ✅
+  - Ficheros: `src/agent_review/settings.py`, `docs/operacion.md` §2.
+- [x] **M10** `Problem.fatal` decide qué problema del `probe` falla el arranque
+  - Antes se decidía comparando el texto del mensaje. Un 401/403 de `/models` pasa
+    a ser fatal (la clave no vale); un proveedor que no responde sigue siendo aviso.
+  - Verifica: `tests/test_models_registry.py`, `tests/test_worker.py`
+    (`validate_models`). ✅
+  - Ficheros: `src/agent_review/models_registry.py`, `src/agent_review/worker/main.py`.
+- [x] **M11** Sin `json_mode` declarado no se envía `response_format`
+  - El adaptador mandaba `json_object` cuando la persona lo pedía aunque el modelo
+    no lo declarase (incluida la vía implícita de `LLM_*`).
+  - Verifica: `tests/test_openai_llm.py`. ✅
+  - Ficheros: `src/agent_review/adapters/openai_llm.py`.
+
+### Checkpoint: tras M9–M11
+
+- [x] `make ci` en verde.
 
 ## Pendientes humanos o externos
 

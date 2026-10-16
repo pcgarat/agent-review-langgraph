@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-15
+Última modificación: 2026-10-16 | Creado: 2026-10-15
 
 # Fase 3.5 — Modelos declarativos por rol
 
@@ -223,6 +223,16 @@ llm = registry.port_for("fixer")         # fixer
 - [ ] `finish_reason == "length"` con contenido vacío produce `LlmError` trazable.
 - [ ] `make ci` en verde, con `make docs-check`.
 - [ ] Test `live` que comprueba las capacidades declaradas contra la API.
+
+> **Enmienda (2026-10-16, revisión del PR #3).** El código se había desviado de
+> D7: `MODELS_CONFIG` tenía `config/models.yaml` por defecto, de modo que un
+> despliegue con solo `LLM_*` usaba el registro versionado sin tocar su `.env`.
+> Ahora el valor por defecto es vacío y `.env.example` declara el registro. En el
+> contraste de D6, una credencial rechazada (401/403) por `GET /v1/models` también
+> falla el arranque: no es la red, es configuración rota. Un proveedor que no
+> responde sigue siendo solo un aviso. Además, el adaptador no envía
+> `response_format` a un modelo sin `json_mode` declarado, aunque la persona lo
+> pida (D5).
 
 ## 8. Preguntas abiertas
 

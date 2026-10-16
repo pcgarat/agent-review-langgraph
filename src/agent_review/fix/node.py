@@ -64,6 +64,7 @@ def dispatch_fixes(
     recipes: list[str],
     targets: list[str],
     existing: dict[str, FixResult] | None = None,
+    verification_enabled: bool = True,
 ) -> dict[str, FixResult]:
     """Propone y valida localmente el parche de cada hallazgo aprobado (§5, E7).
 
@@ -75,6 +76,9 @@ def dispatch_fixes(
     `existing` lleva los resultados ya presentes en el estado para que una visita
     de reintento (el grafo vuelve aqui tras un `failed`) **solo** re-proponga los
     que agotaron intentos y no repita a los ya resueltos.
+
+    `verification_enabled=False` (sin `SANDBOX_ENABLED` o sin runner) deja los
+    candidatos `NOT_VERIFIABLE` sin pedir parche: no habria quien los verificase.
     """
     guards = policy.guards
     max_fixes = int(guards.get("max_fixes_per_pr", 3) or 0)
@@ -118,6 +122,16 @@ def dispatch_fixes(
                 finding_id=candidate.finding.id,
                 status=FixStatus.NOT_VERIFIABLE,
                 reason="no hay fixer configurado",
+            )
+        return results
+    if not verification_enabled:
+        # Sin sandbox/runner nadie resolveria la wave: dejarlo `PENDING` pausaria la
+        # review hasta el TTL del handoff para acabar igual, `NOT_VERIFIABLE`.
+        for candidate in actionable:
+            results[candidate.finding.id] = FixResult(
+                finding_id=candidate.finding.id,
+                status=FixStatus.NOT_VERIFIABLE,
+                reason="no hay sandbox/runner configurado",
             )
         return results
 
