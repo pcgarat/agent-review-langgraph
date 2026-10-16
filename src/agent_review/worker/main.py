@@ -16,13 +16,13 @@ from agent_review.adapters.github_vcs import GithubVcsAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.null_reviewer import NullReviewer
-from agent_review.adapters.teams_webhook import TeamsWebhookAdapter
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
 from agent_review.adapters.tooling_source import (
     validate_tooling_template as validate_tooling_template_source,
 )
 from agent_review.adapters.twg_vcs import TwgVcsAdapter, check_twg
+from agent_review.chat_outbox import OutboxChatAdapter, RedisChatOutbox
 from agent_review.checkpointer import (
     build_checkpointer,
     latest_checkpoints,
@@ -32,6 +32,7 @@ from agent_review.checkpointer import (
     prune_fix_threads,
 )
 from agent_review.domain.models import (
+    ApprovalRequest,
     DecisionOutcome,
     FindingDecision,
     FixJob,
@@ -39,6 +40,7 @@ from agent_review.domain.models import (
     FixResolutions,
     FixWaitRequest,
     HitlDecision,
+    PendingDecision,
     ReviewOutcome,
     ReviewRequest,
 )
@@ -51,7 +53,6 @@ from agent_review.graph.build import (
     build_graph,
     build_pause,
     outcome_from_state,
-    render_pause_notice,
 )
 from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
@@ -217,10 +218,21 @@ def build_reviewers(
 
 
 def build_chat(settings: Settings) -> ChatPort | None:
-    """Canal de chat si hay URL. Sin URL no hay canal: no se construye un no-op."""
-    if settings.teams_webhook_url.strip():
-        return TeamsWebhookAdapter(webhook_url=settings.teams_webhook_url)
-    return None
+    """Canal de chat: egress por outbox (C10). Sin canal declarado, no hay canal.
+
+    El worker no conoce el transporte: encola el aviso en `reviews:notices` y el
+    bot de Teams lo publica. La outbox es **siempre** la de Redis, aunque Redis no
+    responda al arrancar: el adaptador registra y descarta cada aviso que no puede
+    encolar (asimetria aceptada, D6; el respaldo real es el CLI, C9), y en cuanto
+    Redis vuelve los avisos fluyen. Una outbox en memoria aqui los perderia todos
+    hasta reiniciar el worker, porque nadie la consume.
+    """
+    if not settings.teams_enabled:
+        return None
+    outbox = RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key)
+    if not outbox.available():
+        logger.warning("Redis no disponible al arrancar; los avisos se perderan hasta que vuelva")
+    return OutboxChatAdapter(outbox=outbox)
 
 
 def node_retry_policy(settings: Settings) -> RetryPolicy:
@@ -690,11 +702,22 @@ def _on_paused(
     if redundant:
         return
     if chat is not None:
-        chat.notify_decision_pending(
-            title=f"{request.repo}#{request.pr_id}",
-            body=render_pause_notice(human),
-            link=_pr_url(vcs, request),
-        )
+        # El aviso es cosmético: un fallo del canal (o de la outbox) no puede
+        # tumbar una pausa ya registrada en el inbox y el checkpoint.
+        try:
+            chat.notify_decision_pending(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                review_key=request.review_key,
+                approval=_with_code_links(human, vcs=vcs),
+                link=_pr_url(vcs, request),
+            )
+        except Exception as exc:
+            logger.exception("No se pudo avisar la pausa de %s", request.review_key)
+            if is_transient(exc):
+                # Un fallo transitorio que sobrevive al adaptador (p. ej. Redis
+                # caido en un cambio futuro) se reintenta con el job, como `notify`.
+                raise
     if paused is None:
         logger.info(
             "Review %s pausada con %d pendiente(s) (sin inbox configurado)",
@@ -848,6 +871,29 @@ def _pr_url(vcs: VcsPort | None, request: ReviewRequest) -> str | None:
             "No se pudo resolver la URL del PR %s#%s para el aviso", request.repo, request.pr_id
         )
         return None
+
+
+def _with_code_links(approval: ApprovalRequest, *, vcs: VcsPort | None) -> ApprovalRequest:
+    """Anade a cada pendiente el permalink a su trozo de codigo.
+
+    El canal solo pinta lo que recibe: quien conoce el formato de permalink del
+    host es el worker. Nunca aborta la pausa: un fallo del VCS (o un doble de test
+    que no implemente `file_url`) deja el pendiente sin enlace y se sigue.
+    """
+    resolvers = getattr(vcs, "file_url", None) if vcs is not None else None
+    if resolvers is None:
+        return approval
+    enriched: list[PendingDecision] = []
+    for item in approval.pending:
+        url = None
+        try:
+            url = resolvers(approval.repo, item.file, ref=approval.head_sha, line=item.line)
+        except Exception:
+            logger.exception(
+                "No se pudo resolver el enlace al codigo de %s:%s", item.file, item.line
+            )
+        enriched.append(item.model_copy(update={"code_url": url}) if url else item)
+    return approval.model_copy(update={"pending": enriched})
 
 
 def sweep_expired(

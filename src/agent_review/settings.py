@@ -43,11 +43,25 @@ class Settings(BaseSettings):
     # Base de la API. Se cambia para GitHub Enterprise Server.
     github_api_url: str = "https://api.github.com"
 
-    teams_webhook_url: str = ""
-    # Declara que el canal de Teams es parte del despliegue. Con `true`, en
-    # produccion el arranque falla si falta la URL (evita perder el teaser en
-    # silencio). La URL en si es una capacidad: quien la tiene, publica.
+    # El canal de Teams es parte del despliegue. Con `true`, el worker encola los
+    # avisos en la outbox (`TEAMS_NOTICES_KEY`) y el bot los publica (C10).
     teams_enabled: bool = False
+    # Outbox de avisos al canal (C10). El worker encola aqui; el bot la consume.
+    teams_notices_key: str = "reviews:notices"
+    # Espera de la lectura bloqueante de la outbox por parte del bot. Vencida, el
+    # bucle vuelve a intentarlo (no distingue "sin avisos" de un Redis caido).
+    teams_bot_poll_s: float = 5.0
+    # Identidad y secreto del bot (T6). El SDK elige el metodo de auth: con
+    # `client_secret` usa *client secret*; sin el, identidad gestionada. Los lee
+    # SOLO el proceso `teams-bot`.
+    teams_bot_id: str = ""
+    teams_bot_tenant_id: str = ""
+    teams_bot_token: str = ""
+    # Puerto del *messaging endpoint* (`POST /api/messages`) dentro del contenedor.
+    teams_bot_port: int = 3978
+    # Bearer del **ingress interno** del bot (T7): protege `/healthz` y la
+    # observabilidad. El egress no lo usa (va por la outbox).
+    teams_bot_shared_secret: str = "change-me"
 
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://reviews:reviews@localhost:5432/reviews"
@@ -215,8 +229,8 @@ def insecure_secrets(settings: Settings) -> list[str]:
             insecure.append("GITHUB_TOKEN")
     elif not settings.twg_bbc_token.strip():
         insecure.append("TWG_BBC_TOKEN")
-    if settings.teams_enabled and not settings.teams_webhook_url.strip():
-        insecure.append("TEAMS_WEBHOOK_URL")
+    if settings.teams_enabled and not settings.teams_notices_key.strip():
+        insecure.append("TEAMS_NOTICES_KEY")
     if settings.llm_reviewer_enabled:
         # Con registro declarativo, el secreto es el que referencia el YAML. Sin el,
         # la via de compatibilidad exige `LLM_API_KEY` como antes.
@@ -264,6 +278,30 @@ def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
     return insecure
 
 
+def teams_bot_insecure_secrets(settings: Settings) -> list[str]:
+    """Secretos que necesita el servicio `teams-bot` y siguen sin configurar (T6).
+
+    Contrato propio: el bot recibe el trafico del Bot Framework (valida su JWT con
+    la identidad del bot) y publica proactivamente, pero **no** tiene credencial de
+    VCS ni clave del LLM. Solo con `TEAMS_ENABLED=true`; sin el canal, el servicio
+    no debe arrancar, asi que su ausencia no es un fallo.
+    """
+    insecure: list[str] = []
+    if not settings.teams_enabled:
+        return insecure
+    if not settings.teams_bot_id.strip():
+        insecure.append("TEAMS_BOT_ID")
+    if not settings.teams_bot_tenant_id.strip():
+        insecure.append("TEAMS_BOT_TENANT_ID")
+    # El token es el secreto del bot (client secret). Sin el, el SDK no valida el
+    # JWT del Bot Framework: en produccion no puede quedarse vacio ni de ejemplo.
+    if not settings.teams_bot_token.strip() or _is_unset(settings.teams_bot_token):
+        insecure.append("TEAMS_BOT_TOKEN")
+    if _is_unset(settings.teams_bot_shared_secret):
+        insecure.append("TEAMS_BOT_SHARED_SECRET")
+    return insecure
+
+
 def is_production(settings: Settings) -> bool:
     return settings.environment.strip().lower() in {"production", "prod"}
 
@@ -284,6 +322,13 @@ def require_fix_worker_secrets(settings: Settings) -> None:
     if not is_production(settings):
         return
     _raise_if_insecure(fix_worker_insecure_secrets(settings))
+
+
+def require_teams_bot_secrets(settings: Settings) -> None:
+    """Como `require_production_secrets`, con el contrato del bot de Teams (T6)."""
+    if not is_production(settings):
+        return
+    _raise_if_insecure(teams_bot_insecure_secrets(settings))
 
 
 def _raise_if_insecure(insecure: list[str]) -> None:

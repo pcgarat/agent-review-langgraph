@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 CONFIDENCE_ANCHORS = (0, 25, 50, 75, 100)
 
@@ -162,7 +162,13 @@ class HitlDecision(BaseModel):
 
 
 class PendingDecision(BaseModel):
-    """Lo que el nodo `hitl` pide a una persona: contexto + accion propuesta."""
+    """Lo que el nodo `hitl` pide a una persona: contexto + accion propuesta.
+
+    Lleva lo justo para decidir sin abrir el PR: el hallazgo (`title`,
+    `severity`), donde esta (`file:line`) y por que importa (`why_it_matters`).
+    El canal pinta la tarjeta con esto; no lee el inbox ni el diffs
+    (C12). Con default `""` para leer sin romper las pausas ya en Redis.
+    """
 
     finding_id: str
     proposed_action: FindingAction  # escalate | fix_with_approval
@@ -173,6 +179,10 @@ class PendingDecision(BaseModel):
     file: str
     line: int = Field(ge=1)
     severity: Severity
+    why_it_matters: str = ""
+    # Enlace directo al codigo del hallazgo en el `head_sha`. Lo resuelve el
+    # worker (unico que conoce el VCS) al pausar; el canal solo lo pinta.
+    code_url: str | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -187,6 +197,38 @@ class ApprovalRequest(BaseModel):
     head_sha: str
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
+
+
+class ChatNotice(BaseModel):
+    """Aviso del worker al canal de chat; viaja por la outbox (C10).
+
+    Es el mensaje que el worker **encola** (`reviews:notices`): durable y sin
+    conocer el transporte. `published` es el teaser de una review ya publicada en
+    el PR; `pause` es la tarjeta de decision y lleva la `ApprovalRequest`
+    **estructurada** (C12), no su render en texto. `review_key`, `repo` y `pr_id`
+    viajan siempre: son la identidad con la que el canal resuelve el hilo (C6).
+    """
+
+    kind: Literal["published", "pause"]
+    review_key: str
+    repo: str
+    pr_id: int
+    link: str | None = None
+    # `kind=published`: el teaser, ya renderizado por el grafo.
+    title: str = ""
+    body: str = ""
+    # `kind=pause`: la carga del `interrupt`; el canal pinta la tarjeta con ella.
+    approval: ApprovalRequest | None = None
+
+    @model_validator(mode="after")
+    def _check_payload(self) -> ChatNotice:
+        """Un aviso incompleto no llega a la outbox: falla al construirlo."""
+        if self.kind == "pause":
+            if self.approval is None:
+                raise ValueError("un aviso de pausa necesita la ApprovalRequest")
+        elif not self.title.strip():
+            raise ValueError("un aviso de review necesita titulo")
+        return self
 
 
 class VerifyJob(BaseModel):

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-15 | Creado: 2026-10-11
+Última modificación: 2026-10-16 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -99,8 +99,15 @@ Teams. **Nunca escribe en el repositorio revisado.**
 |---|---|
 | **Pausa** | `interrupt` de LangGraph en el nodo `hitl` cuando hay acciones pendientes. Es durable: el estado vive en Postgres y sobrevive a un reinicio. |
 | **Solicitud de aprobación** (`ApprovalRequest`) | Carga de la pausa: los `PendingDecision` (hallazgo + acción propuesta + razón) y la orden de CLI para decidir. |
+| **`PendingDecision`** | Un hallazgo pendiente con lo necesario para decidirlo sin abrir el PR: título, severidad, `fichero:línea`, la explicación del problema y el enlace al código. |
+| **Bot de Teams** (`teams-bot`) | Proceso que consume la outbox, publica/edita en el canal y recibe las acciones de la tarjeta (`POST /api/messages`). Traduce a `HitlDecision` con `build_decision` y **encola**; no reanuda el grafo ni conoce el worker. |
+| **Hilo por PR** | Un mensaje raíz por `repo:pr` en el canal dedicado; el resto de avisos van como reply y la tarjeta se edita in-place. El mapeo vive en Redis (`reviews:teams:threads`) y es UI, no verdad: si se pierde, se abre otro hilo. |
+| **Tarjeta de decisión** | La Adaptive Card que el bot publica en Teams a partir de la `ApprovalRequest`. Un botón por hallazgo y un Enviar gobernado por el **estado por usuario** (`reviews:teams:card:<key>`, lo que cada uno ha marcado). La primera decisión enviada **sella** la pausa (`pause_id`) y la tarjeta queda «decidido por X». |
+| **Canal dedicado** | La conversación de Teams donde el bot publica y desde la que acepta decisiones. Es la primera que captura (no personal); otra no la sustituye. Autoriza por pertenencia: quien está en el canal, decide. |
 | **Inbox** | Índice en Redis de las reviews pausadas (`reviews:paused:<review_key>`). Sirve para descubrirlas; la verdad está en el checkpoint. |
-| **Aviso de pausa** | Mensaje a Teams que avisa de una review pausada. **No lleva marca de dedupe.** |
+| **Aviso de pausa** | Aviso al canal (Teams) de que una review quedó pausada. Viaja por la **outbox** con la `ApprovalRequest` estructurada; **no lleva marca de dedupe.** |
+| **Outbox del canal** | Cola Redis `reviews:notices` donde el worker **encola** los avisos (`ChatNotice`) en vez de llamar por HTTP; el bot los consume con `BLPOP`. Un bot caído no pierde el aviso: se publica al arrancar |
+| **`ChatNotice`** | Aviso del worker al canal: `kind` `published` (teaser de una review) o `pause` (tarjeta de decisión, con la `ApprovalRequest`). Lleva siempre `repo`/`pr_id`/`review_key` para resolver el hilo |
 | **Decisión humana** (`HitlDecision`) | Respuesta de una persona: `actor`, `decision_id` e `items`, con un resultado por cada hallazgo pendiente. Debe cubrir **todos** los pendientes. |
 | **Resultado** (`DecisionOutcome`) | `approved` (autoriza el arreglo), `rejected` (descarta el hallazgo), `noted` (se atiende fuera del agente), `expired` (lo emite el sistema al vencer el TTL). |
 | **Reanudación** | Job con `ReviewRequest.decision`: el worker hace `Command(resume=…)` sobre el **mismo** hilo. |
@@ -148,6 +155,21 @@ Teams. **Nunca escribe en el repositorio revisado.**
 
 ---
 
+## Evaluación de la review (gold set)
+
+| Término | Definición |
+|---|---|
+| ***Gold set*** | El conjunto versionado de casos auditados a mano (`tests/eval/pr_3/`), con diff, `scope`, etiquetas y grabaciones. La fuente única del baseline es la spec [006](docs/iniciativas/archivo/006-eval-de-la-review/spec.md). |
+| **Caso de evaluación** | Un directorio del *gold set*: `labels.yaml` (procedencia, `scope`, etiquetas), `diff.patch`, `recorded.json` y `expected_report.json`. |
+| **Etiqueta (`expected`/`must_not_report`/`acceptable`)** | Veredicto humano por hallazgo: debe salir, no debe salir (con motivo) o es cierto pero sin valor. Un hallazgo no etiquetado cuenta como falso positivo. |
+| ***Replay*** | Correr el grafo real con un `LlmPort` que devuelve las respuestas grabadas, abortando si el *fingerprint* del prompt o del caso no casa. Es el modo de CI. |
+| ***Fingerprint*** | Huella del prompt (rol + `system` + prompt + `max_tokens`) y del caso (nombre + diff + `scope`). Una grabación vieja con un prompt nuevo aborta en vez de medir el pasado ([ADR-0017](docs/adr/0017-replay-determinista-con-fingerprint.md)). |
+| **Mejora (dominancia)** | Relación entre dos corridas: precisión, recall y cobertura no bajan, los falsos `P0`/`P1` no suben y algo sube estrictamente. Lo demás es *no concluyente*. |
+| **Cobertura** | Ficheros de código y configuración que el `LlmReviewer` vio / los de esas clases en el PR. Sale de `last_seen_files`. |
+| **`tp_inverted`** | `expected` cuyo fallo se describió al revés (`must_mention` no cumplido). Sigue siendo `tp`: no mueve precisión ni recall. |
+
+---
+
 ## Ambigüedades resueltas
 
 - **«Decisión»** tiene dos sentidos. En el código, `Decision` es **siempre** la de la
@@ -158,7 +180,10 @@ Teams. **Nunca escribe en el repositorio revisado.**
 - **«Review publicada»** significa que esta ejecución dejó su marca de resumen. Un
   aviso de pausa no cuenta como publicación.
 - **«Sin hallazgos»** solo significa «PR limpio» si la review está completa.
-- **«Teams»** es Microsoft Teams (Incoming Webhook). `twg teams` es Atlassian Teams y
-  no tiene nada que ver.
+- **«Teams»** es Microsoft Teams (canal de avisos y decisión vía bot). El Incoming
+  Webhook de Office 365 Connectors está **retirado**; no hay `TEAMS_WEBHOOK_URL`.
+  `twg teams` es Atlassian Teams y no tiene nada que ver.
+- **«Canal»** en este dominio es el medio de avisos y decisión humana (hoy Teams).
+  No confundir con un canal de Redis ni con el *messaging endpoint* HTTP.
 - **El CLI se llama `agent_review`** (`[project.scripts]`). Las specs de Fase 2 y 3
   dicen `reviews`, que era el nombre anterior.

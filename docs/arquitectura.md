@@ -15,7 +15,7 @@ flowchart LR
     subgraph EXT["Externos"]
         CI["CI del repo revisado<br/>(emotivoo-v2)"]
         VCS["Bitbucket (twg)<br/>o GitHub (REST)"]
-        TEAMS["Microsoft Teams<br/>Incoming Webhook"]
+        TEAMS["Microsoft Teams<br/>(canal dedicado)"]
         LLM["Proveedor LLM<br/>(compatible OpenAI)"]
         HUMAN["Persona"]
     end
@@ -24,8 +24,9 @@ flowchart LR
         API["api · FastAPI :8000"]
         WORKER["worker · grafo LangGraph"]
         FIXW["fix-worker<br/>verifica · nunca publica"]
+        BOT["teams-bot<br/>outbox · POST /api/messages"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
-        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes")]
+        REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
         CFG[/"./config · política + perfil + modelos"/]
@@ -40,7 +41,11 @@ flowchart LR
     WORKER --> CFG
     WORKER <-->|checkpoint| PG
     WORKER -->|"diff · inline · resumen"| VCS
-    WORKER -->|aviso| TEAMS
+    WORKER -->|"aviso: encola en la outbox"| REDIS
+    REDIS -->|"BLPOP"| BOT
+    BOT -->|"publica / edita hilo"| TEAMS
+    TEAMS -->|"Action.Execute"| BOT
+    BOT -->|"HitlDecision → reviews:jobs"| REDIS
     WORKER -->|"personas · fixer<br/>(modelo por rol)"| LLM
     WORKER -->|"wave de fix"| REDIS
     REDIS -->|dequeue| FIXW
@@ -50,12 +55,21 @@ flowchart LR
     TEAMS -.-> HUMAN
 ```
 
+> **Canal de Teams ([ADR-0016](adr/0016-bot-de-teams-para-el-canal-de-decision.md),
+> iniciativa 013).** El worker **encola** avisos en `reviews:notices`; `teams-bot`
+> los consume, publica/edita en el hilo del PR y traduce las acciones de la
+> tarjeta a una `HitlDecision` encolada en `reviews:jobs` (no reanuda el grafo).
+> Solo acepta acciones del canal capturado y, con `TEAMS_BOT_TENANT_ID`, de ese
+> tenant (C5): sin canal capturado, rechaza todas. El respaldo de decisión sigue
+> siendo el CLI y `POST /decision`. Pendiente humano: alta del bot en el tenant (T10).
+
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
 | `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
 | `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
+| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
 
 ---
@@ -68,9 +82,13 @@ src/agent_review/
 ├── ports/         Protocolos: VcsPort, ReviewerPort, LlmPort, ChatPort, ToolingOutputSource,
 │                  FixerPort, SandboxPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
-│                  openai_llm, teams_webhook, http_sandbox, tooling_source, diff_parser
+│                  openai_llm, http_sandbox, tooling_source, diff_parser
+├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, service,
+│                  ingress, sdk_client/handlers. El worker no importa este paquete.
+├── chat_outbox.py Outbox `reviews:notices` + `OutboxChatAdapter` (`ChatPort`)
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
-├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
+├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)
+├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
 ├── policy/        PolicyEngine (autonomy.yaml)
 ├── fix/           Selección, validación local, nodo fix, formatters de entrega
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
@@ -148,8 +166,8 @@ flowchart TD
 | `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". |
 | `fix_wait` | **Nunca** | `interrupt(FixWaitRequest)` si hay `PENDING`; al reanudar aplica la `FixResolutions`. Re-propone si un `FAILED` tiene intentos; si no, sigue. |
 | `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
-| `notify_fix` | Sí | Aviso compacto en Teams del resultado del fix. |
-| `notify` | Sí | Avisa a Teams. Un fallo no transitorio se registra y no tumba la review. |
+| `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
+| `notify` | Sí | Avisa de una review publicada, a la outbox del canal. Un fallo no transitorio se registra y no tumba la review. |
 
 ### Estado (`ReviewState`)
 
@@ -266,6 +284,10 @@ sequenceDiagram
     Note over F: resume → aplica → publish_fix + notify_fix
 ```
 
+El diff del parche se **deriva del fichero real** al `head_sha` (rango y texto de
+reemplazo que propone el modelo), no se toma del diff que devuelva el modelo: un
+header inventado haría fallar el `git apply` del runner.
+
 El worker de reviews **no** llama al sandbox (E7): propone y valida localmente,
 pausa y deja que el `fix-worker` verifique. La idempotencia del handoff vive en
 `reviews:fixes:done` (por `run_key`), que se marca **después** de encolar la
@@ -291,6 +313,13 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:fixes:dead` | DLQ de fixes | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
+| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
+| Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
+| Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome`: estado de la tarjeta, por usuario (C8) | 8 días |
+| Redis | `reviews:teams:card:<review_key>:final:<pause_id>` | Actor de la primera decisión de **esa pausa** (`SETNX`, C11). `pause_id` = `thread_id@created_at`: la pasada degradada y la completa comparten `review_key` y no se cierran entre sí | 8 días |
+| Redis | `reviews:teams:channel` | `conversation_id` (id base, sin `;messageid=`) + `service_url` del canal dedicado (C14). **Gana la primera captura**; mover el canal es borrar la clave | — |
+| Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
+| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
@@ -302,7 +331,7 @@ vencimiento vive en `sweep_fix_expired`
 | Fase | Estado | Qué falta |
 |---|---|---|
 | 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1) |
-| 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación) | Smoke contra infraestructura real. Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
+| 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación). Canal Teams: bot + outbox ([013](iniciativas/013-canal-teams-bidireccional/spec.md), [ADR-0016](adr/0016-bot-de-teams-para-el-canal-de-decision.md)) | Smoke contra infraestructura real. Alta del bot en el tenant (T10). Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
 | 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10) y **desacople E7** (F14–F28) hechos | F11 (spike R1 `suggestion`), F12 (smoke real), P6 (revisión de seguridad; precondición) |
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
@@ -330,12 +359,13 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D11 | **Worker secuencial** | La verificación de ~20 min ya no bloquea la cola: E7 desacopla por el `fix-worker` y un `interrupt`. Queda secuencial solo el resto del grafo (LLM, publicación). |
 | D12 | **Detalles de la API** | `/profile/{repo_name}` ignora el nombre; un `pr_id` no numérico da 500; los handlers `async` hacen I/O bloqueante. |
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
-| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas de coste o de falsos positivos; solo logs. |
+| D14 | **Observabilidad** | No hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. **Parcial:** el *gold set* de [006](iniciativas/archivo/006-eval-de-la-review/spec.md) ya mide precisión, recall, falsos positivos, coste y cobertura sobre fixtures versionados, pero no sobre producción. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
 | D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Pendiente de iniciativa propia. |
 | D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
 | D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
+| D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |
 
 ---
 

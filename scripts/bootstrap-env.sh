@@ -135,7 +135,6 @@ fi
 
 printf -- '\n-- variables a rellenar en .env --\n'
 report_var TOOLING_WEBHOOK_SECRET "firma HMAC del POST del CI (POST /webhook/tooling)"
-report_var TEAMS_WEBHOOK_URL      "Incoming Webhook de Teams (teaser de la review)"
 # El proveedor elige que identidad y credencial se exigen. twg (Bitbucket) es el
 # defecto; github requiere owner/repo/token de la API.
 if [ "$(env_value VCS_PROVIDER)" = "github" ]; then

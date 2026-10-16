@@ -36,6 +36,7 @@ docker compose logs -f worker
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
+| `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
 | `redis` | — | — | Sin auth; solo red interna |
@@ -101,7 +102,7 @@ plantilla comentada. Además hay tres ficheros versionados:
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
 | Alcance | `SCOPE_IGNORE` (patrones extra, separados por comas) |
 | Política | `AUTONOMY_CONFIG`, `REPO_PROFILE_CONFIG`, `MAX_AUTONOMY_OVERRIDE` (solo puede bajar el techo) |
-| Teams | `TEAMS_WEBHOOK_URL` (sin URL no hay canal), `TEAMS_ENABLED` (la hace obligatoria en producción) |
+| Canal (Teams) | `TEAMS_ENABLED` (declara el canal), `TEAMS_NOTICES_KEY` (`reviews:notices`), `TEAMS_BOT_ID` / `_TENANT_ID` / `_TOKEN` (identidad del bot; el tenant también filtra las acciones de tarjeta, §5), `TEAMS_BOT_PORT` (3978), `TEAMS_BOT_SHARED_SECRET` (bearer de `/healthz`), `TEAMS_BOT_POLL_S` (5) |
 | HITL | `REVIEWS_DECISION_TOKEN`, `DECISION_TTL_S` (7 días), `CHECKPOINT_RETENTION_DAYS` (30) |
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
@@ -133,7 +134,9 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 | `GITHUB_TOKEN` | PAT *fine-grained*: `pull_requests: write` + `contents: read` | Con `github` | Agente |
 | `TOOLING_WEBHOOK_SECRET` | HMAC-SHA256 del `POST /webhook/tooling` | Siempre en producción | Agente **y** CI |
 | `REVIEWS_DECISION_TOKEN` | Bearer del canal de decisión: quien lo tiene decide | Siempre en producción | Agente |
-| `TEAMS_WEBHOOK_URL` | Incoming Webhook: quien tiene la URL, publica | Si `TEAMS_ENABLED` | Agente |
+| `TEAMS_NOTICES_KEY` | Cola outbox de avisos al canal (`reviews:notices`); no es un secreto | Si `TEAMS_ENABLED` | Agente |
+| `TEAMS_BOT_ID` / `_TENANT_ID` / `_TOKEN` | Identidad y secreto del bot (Teams App / Azure Bot). Los lee **solo** `teams-bot` | Si `TEAMS_ENABLED` en producción | Agente |
+| `TEAMS_BOT_SHARED_SECRET` | Bearer del `/healthz` del bot (ingress interno) | Si `TEAMS_ENABLED` en producción | Agente |
 | `LLM_API_KEY` | Clave del proveedor LLM (la referencia `${LLM_API_KEY}` del registro de modelos) | Si `LLM_REVIEWER_ENABLED` | Agente |
 | `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre el `fix-worker` y el runner | Si `SANDBOX_ENABLED`; siempre para el `fix-worker` en producción | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
@@ -161,7 +164,8 @@ Reglas de higiene:
 | `SANDBOX_RUNNER_TOKEN` | 90 días | Nuevo valor en `.env` → `docker compose up -d fix-worker sandbox-runner` (**a la vez**) |
 | `SANDBOX_GIT_TOKEN` | 90 días o ante sospecha | Nuevo token de solo lectura → runner |
 | `REVIEWS_DECISION_TOKEN` | 90 días o al salir alguien con acceso | Nuevo valor → `api` → avisar a quien decide |
-| `TEAMS_WEBHOOK_URL` | Al revocar el conector | Regenerar el webhook en Teams |
+| `TEAMS_NOTICES_KEY` | — (no es un secreto: es una clave de cola) | Cambiarla requiere reiniciar worker y bot a la vez |
+| `TEAMS_BOT_TOKEN` / `_SHARED_SECRET` | 90 días o ante sospecha | Nuevo valor en `.env` → `docker compose up -d teams-bot` |
 | `LLM_API_KEY` | Según el proveedor | Rotar en el proveedor |
 | `POSTGRES_PASSWORD` | 180 días | `ALTER ROLE` + secreto + recrear los contenedores |
 
@@ -230,6 +234,29 @@ La `review_key` lleva `/` y `:` (`cqm/emotivoo-v2:430:<sha>:<pipeline>`): ponla 
 comillas. Exit `1` = no está pausada; exit `2` = decisión rechazada (falta algún
 pendiente, un id es ajeno o se usó `expired`).
 
+### Messaging endpoint del bot (`teams-bot`)
+
+El *messaging endpoint* del Bot Framework vive en el proceso `teams-bot`, **no** en
+`api`. Un único ingress/TLS enruta `POST /api/messages` hacia él (C2). El SDK
+valida el JWT del Bot Framework: un token inválido o ausente responde `401` antes
+de llegar a los handlers.
+
+| Método | Ruta | Auth | Respuestas |
+|---|---|---|---|
+| `POST` | `/api/messages` | JWT del Bot Framework | `200` (actividad procesada); `401` si el JWT no es válido |
+| `GET` | `/healthz` | Bearer `TEAMS_BOT_SHARED_SECRET` | `200`; `401` sin credencial |
+
+Las acciones de la tarjeta (`Action.Execute` / fallback `Action.Submit`) llegan a
+`/api/messages`, se traducen a marcas o a una `HitlDecision` con `build_decision` y
+se **encolan** en `reviews:jobs`. El bot no reanuda el grafo.
+
+Solo se aceptan acciones que vengan del **canal capturado** (`reviews:teams:channel`)
+y, si `TEAMS_BOT_TENANT_ID` está fijado, de ese tenant. Las demás reciben «Esta
+conversación no es el canal de decisión de las reviews.». El canal es la primera
+conversación (no personal) que ve el bot; si el bot está en otra, se registra y se
+ignora. Para mover el canal: `redis-cli DEL reviews:teams:channel` y una actividad
+del bot en el canal nuevo.
+
 ---
 
 ## 6. Verificación
@@ -237,7 +264,7 @@ pendiente, un id es ajeno o se usó `expired`).
 | Nivel | Comando | Qué demuestra |
 |---|---|---|
 | CI local | `make ci` | `ruff check`, `ruff format --check`, `mypy` estricto, `pytest` (`live` excluido) y `docs-check` |
-| Smoke nivel 1 (sin red) | `uv run pytest tests/test_e2e_tooling.py tests/test_worker.py tests/test_graph.py tests/test_hitl_e2e.py tests/test_fix_e2e.py -v` | Artefacto → grafo → inline/resumen; pausa → decisión → fix → sugerencia, con fakes |
+| Smoke nivel 1 (sin red) | `uv run pytest tests/test_e2e_tooling.py tests/test_worker.py tests/test_graph.py tests/test_hitl_e2e.py tests/test_teams_bot_service.py tests/test_fix_e2e.py -v` | Artefacto → grafo → inline/resumen; pausa → tarjeta/CLI → reanudación → outbox, con fakes |
 | Lectura real | `REVIEWS_LIVE_PR=417 uv run pytest tests/test_live_twg.py -m live` | El contrato de `twg` contra Bitbucket (solo lectura) |
 | Smoke nivel 2 | `scripts/smoke-nivel2.sh <PR_ID> [PIPELINE_ID]` | Levanta el stack, firma y deposita el artefacto, y espera la publicación real |
 
@@ -251,8 +278,8 @@ Reenviar el mismo `pipeline_id` no vuelve a publicar; un `pipeline_id` nuevo sí
 firma inválida o ausente da `401`.
 
 > Última ejecución real: 2026-10-11, PR 430 de `cqm/emotivoo-v2`. Resultado: 4 inline
-> + resumen; scope de 67 → 10 ficheros; ~15 s por review. Teams quedó en no-op por no
-> tener webhook real.
+> + resumen; scope de 67 → 10 ficheros; ~15 s por review. Teams quedó en no-op: el
+> bot (iniciativa 013) aún no está instalado en el tenant (T10).
 
 ---
 
@@ -271,6 +298,10 @@ firma inválida o ausente da `401`.
 | Fix `not_verifiable` | Sin digest, sin runner, sin fixer, o el runner rechazó la petición | La razón aparece en el inline y en el log `Fase 3:`. Si vino de un TTL (`FIX_VERIFY_TTL_S`), revisa que el `fix-worker` esté arriba |
 | La review pausa "en verificación" y no cierra | La wave no vuelve: `fix-worker` caído o runner sin responder | `docker compose logs -f fix-worker`; la wave vence por TTL y queda `NOT_VERIFIABLE` |
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
+| No llegan avisos a Teams | `teams-bot` caído, sin canal capturado (C14) o `TEAMS_ENABLED=false` | `docker compose logs -f teams-bot`; `LLEN reviews:notices` (la outbox acumula); instalar el bot en el canal dedicado (T10) |
+| La tarjeta no reanuda y el CLI sí | Acción no llegó al ingress o JWT inválido | Mirar `401` en `/api/messages`; el CLI/HTTP es el respaldo (C9) |
+| La tarjeta responde «no es el canal de decisión» | La acción viene de otra conversación o de otro tenant, o aún no hay canal capturado | Buscar `Accion de tarjeta de … rechazada` en los logs del bot; `GET reviews:teams:channel` dice cuál es el canal. Si está mal, ver §5 (mover el canal) |
+| Aviso perdido en la outbox | Payload ilegible (no valida como `ChatNotice`) | Está en `reviews:notices:dead` con el texto en `raw` |
 
 Fallos históricos que solo afloraron con Docker y ya están corregidos:
 

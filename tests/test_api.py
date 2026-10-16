@@ -184,7 +184,7 @@ def test_arranque_en_produccion_sin_credencial_de_twg_falla(monkeypatch) -> None
         require_production_secrets(settings)
 
 
-def test_arranque_en_produccion_con_teams_habilitado_sin_url_falla(monkeypatch) -> None:
+def test_arranque_en_produccion_con_teams_habilitado_sin_cola_falla(monkeypatch) -> None:
     from agent_review.settings import require_production_secrets
 
     settings = main._settings()
@@ -192,8 +192,8 @@ def test_arranque_en_produccion_con_teams_habilitado_sin_url_falla(monkeypatch) 
     monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
     monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
     monkeypatch.setattr(settings, "teams_enabled", True)
-    monkeypatch.setattr(settings, "teams_webhook_url", "")
-    with pytest.raises(RuntimeError, match="TEAMS_WEBHOOK_URL"):
+    monkeypatch.setattr(settings, "teams_notices_key", "")
+    with pytest.raises(RuntimeError, match="TEAMS_NOTICES_KEY"):
         require_production_secrets(settings)
 
 

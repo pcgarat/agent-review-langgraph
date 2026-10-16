@@ -67,6 +67,17 @@ class PausedReview(BaseModel):
         return self.review_key
 
     @property
+    def pause_id(self) -> str:
+        """Identidad de *esta* pausa: el hilo y el instante del checkpoint que pauso.
+
+        Varias pausas comparten `review_key` (la pasada degradada y la completa, o
+        el grafo que vuelve a interrumpir), asi que el sello de la tarjeta de Teams
+        (C11) se ancla a esto. Un re-registro de la misma pausa conserva
+        `created_at` (`reconcile_paused`), luego conserva la identidad.
+        """
+        return f"{self.request.thread_id}@{self.created_at.isoformat()}"
+
+    @property
     def human_request(self) -> ApprovalRequest:
         """La carga humana. Uso: el canal de decision, que solo actua sobre `human`.
 

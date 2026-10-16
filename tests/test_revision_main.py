@@ -12,6 +12,7 @@ import pytest
 from test_worker import FakeVcs, _CountingReviewer, _escalating_finding, _hitl_graph
 
 from agent_review.domain.models import (
+    ApprovalRequest,
     DecisionOutcome,
     FindingDecision,
     HitlDecision,
@@ -152,15 +153,32 @@ class _FlakyChat:
         self._fail = fail_times
         self.notices: list[str] = []
 
-    def notify(self, *, title: str, body: str, link: str | None = None) -> None:
-        del body, link
+    def notify(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        title: str,
+        body: str,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key, body, link
         if self._fail > 0:
             self._fail -= 1
             raise self._exc
         self.notices.append(title)
 
-    def notify_decision_pending(self, *, title: str, body: str, link: str | None = None) -> None:
-        del title, body, link
+    def notify_decision_pending(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        review_key: str,
+        approval: ApprovalRequest,
+        link: str | None = None,
+    ) -> None:
+        del repo, pr_id, review_key, approval, link
 
 
 def _graph_with_chat(vcs: FakeVcs, chat: _FlakyChat):
@@ -397,5 +415,4 @@ def test_b10_aviso_de_pausa_lleva_el_enlace_al_pr() -> None:
     assert process_request(graph, request, chat=chat, vcs=vcs).paused
 
     assert len(chat.pending) == 1
-    _title, _body, link = chat.pending[0]
-    assert link == "https://example.test/pr"
+    assert chat.pending_links[0] == "https://example.test/pr"

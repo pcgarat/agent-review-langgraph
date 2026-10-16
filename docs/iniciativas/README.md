@@ -16,23 +16,28 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 003 | [Fase 3 — Fix + verificación](003-fase3-fix-verificacion/spec.md) | aprobada | 🟡 F1–F10 hechas | F11 (spike R1), F12 (smoke real), F13 (docs), P6 · [todo](003-fase3-fix-verificacion/todo.md) |
 | 004 | [Fase 3-E7 — Desacople fuerte de la verificación](004-fase3-e7-desacople/spec.md) | implementada | ✅ F14–F28 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](004-fase3-e7-desacople/todo.md) |
 | 005 | [Fase 3.5 — Modelos declarativos por rol](005-modelos-declarativos/spec.md) | implementada | ✅ M1–M11 cerradas (incl. los hallazgos de la revisión del PR #3) | Smoke real (P6) · [todo](005-modelos-declarativos/todo.md) |
-| 006 | [Evaluación de la review: *gold set* y métricas](006-eval-de-la-review/spec.md) | borrador | 🔵 Base de medición | La miden 007–011 |
+| 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | ✅ E1–E12 cerradas; archivada | Mide el resto de iniciativas |
 | 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Depende de 006 para medirse · habilita 008, 009 y 011 |
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | Depende de 007 y 012 |
-| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | borrador | 🔵 Capa de pago de la cascada | Depende de 007 · se mide con 006 |
+| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada; incluye el workspace de lectura del runner ([ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md)) | Depende de 007 · se mide con 006 · falta plan y todo |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona) depende de 007 |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | Depende de 007, 008 y 009 |
 | 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Depende de 006 para medirse · habilita 008 |
+| 013 | [Canal bidireccional de Teams](013-canal-teams-bidireccional/spec.md) | implementada | ✅ T1–T9 y T11–T17 cerradas (outbox, tarjeta, hilo, servicio, Compose, ingress, E2E, docs y correcciones de la revisión) | T10 (alta del bot en el tenant) · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [plan](013-canal-teams-bidireccional/plan.md) · [todo](013-canal-teams-bidireccional/todo.md) |
+| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | Depende de 008, 009 (bucle y workspace de lectura) y 012 · se mide con 006 · falta plan y todo |
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
-la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 3 P1 no detectados):
+la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
+detectados —3 P1 de integración y 3 P2 de código—):
 medir (006), cobertura (012: el revisor vio ≈ 5 de 51 ficheros sin avisar), contrato
 (007), las capas baratas (008), la capa adversarial (009), el recall determinista
 (010) y el gate que lo cierra (011). Orden de dependencia:
 006 → 012 → 007 → (008 · 009 · 010 en paralelo) → 011. La fase 1 de 010 (gate de
 CI) puede ir en cualquier momento.
+La **014** amplía la cascada: da a las personas LLM las herramientas de lectura de
+009 y va después de 008, 009 y 012.
 
-Siguiente número libre: **013**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **015**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la spec de 001 §13 y aún no tiene iniciativa.
 
 ## Pendientes humanos o externos (transversales)

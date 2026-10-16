@@ -11,7 +11,7 @@
 
 ## 1. Objetivo
 
-La auditoría de la review del PR #3 (ver [006](../006-eval-de-la-review/spec.md))
+La auditoría de la review del PR #3 (ver [006](../archivo/006-eval-de-la-review/spec.md))
 atribuyó los falsos positivos y los `P1` perdidos a que el revisor «solo ve el
 diff». Al reproducir el `scope` sobre ese PR, la causa primera es otra: **el revisor
 no vio la mayor parte del diff, y nadie lo dijo**.
@@ -41,7 +41,7 @@ Se quiere:
    mitad de fichero.
 4. **Selección por relevancia**, no solo por churn: código y configuración antes que
    tests y documentación.
-5. Medir la cobertura en el *gold set* (métrica de [006](../006-eval-de-la-review/spec.md)).
+5. Medir la cobertura en el *gold set* (métrica de [006](../archivo/006-eval-de-la-review/spec.md)).
 
 ## 2. No-objetivos
 
@@ -185,7 +185,7 @@ parcial (C7).
 
 ## 7. Criterios de hecho
 
-1. Reproducir el PR #3 (fixture de [006](../006-eval-de-la-review/spec.md)) deja
+1. Reproducir el PR #3 (fixture de [006](../archivo/006-eval-de-la-review/spec.md)) deja
    `docker-compose.yml` y `settings.py` dentro de los ficheros revisados con
    `max_files_per_pr: 10`, y `worker/main.py` revisado o declarado `budget`.
 2. Ningún fichero se corta a mitad: test que lo prueba con un diff mayor que el lote.
