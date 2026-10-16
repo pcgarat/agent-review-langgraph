@@ -334,6 +334,8 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | El latido mide que el proceso vive, no que el bucle avanza. Un nodo lento (sandbox, LLM) no se detecta. |
 | D17 | **Presupuesto de tokens por llamada, no por PR** | `LlmReviewer` y `LlmFixer` comparan cada uno su propia llamada contra `budget_tokens_per_pr`; no hay acumulación entre personas, entre fixer y reviewer, ni entre reintentos. El tope real es N× el declarado. La cota previa sigue siendo `len(text)//4`, pero el gasto **real** ya se lee del `usage` del proveedor (`LlmReply`). Pendiente de iniciativa propia. |
+| D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
+| D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
 
 ---
 

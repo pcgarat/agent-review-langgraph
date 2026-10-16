@@ -4,22 +4,26 @@
 
 > **Estado:** borrador
 
-> **Entrega objetivo:** una persona determinista (sin LLM) que contrasta los pares
+> **Entrega objetivo:** un motor determinista (sin LLM) que contrasta los pares
 > que deben concordar —servicios de `docker-compose.yml`, campos de `Settings`,
 > plantilla `.env.example`, tabla de configuración de `operacion.md` §2 y registro
-> `models.yaml`— y publica hallazgos con `verification: verified_static`; más un
-> gate de CI que ejecuta el mismo motor sobre el repo del agente. Casos semilla:
-> los tres P1 reales que la review no vio.
+> `models.yaml`—. Primero como gate de CI sobre el repo del agente
+> (`make wiring-check`); después, el mismo motor como persona que publica hallazgos
+> con `verification: verified_static`. Casos semilla: los tres P1 reales que la
+> review no detectó.
 
 ---
 
 ## 1. Objetivo
 
-La review solo recibe el diff y, aun así, afirma sobre lo que no ve. Los **tres P1
-que no detectó** no vivían en el diff: eran **deriva entre ficheros de
+Los **tres P1 que la review no detectó** eran **deriva entre ficheros de
 configuración** (el aislamiento del `fix-worker`, su contrato de arranque y el valor
-por defecto de `MODELS_CONFIG`). Eso no lo arregla más verificación sobre el mismo
-diff: hace falta mirar pares que deben concordar y hoy nadie comprueba.
+por defecto de `MODELS_CONFIG`). Estaban en el diff del PR, pero el `scope` dejó
+fuera `docker-compose.yml` y `settings.py` (ver
+[012](../012-cobertura-de-la-review/spec.md)). Arreglar la cobertura es necesario,
+pero no suficiente: aunque el LLM vea los dos ficheros, nada garantiza que cruce un
+`environment:` de compose con una llamada en `fixworker/main.py`. Hace falta mirar
+pares que deben concordar, y hoy nadie lo comprueba.
 
 Se quiere un chequeo **determinista** —«un linter no alucina»— que:
 
@@ -30,8 +34,8 @@ Se quiere un chequeo **determinista** —«un linter no alucina»— que:
    variables de `docs/operacion.md` §2, **campo a campo** (nombre, presencia y
    default).
 3. Contraste `config/models.yaml` (sus referencias `${VAR}`) con los campos de
-   `Settings`, y que el default de `MODELS_CONFIG` no oculte la vía de
-   compatibilidad `LLM_*`.
+   `Settings`. Que el default de `MODELS_CONFIG` no oculte la vía de compatibilidad
+   `LLM_*` no es un par: queda como test de regresión (W10).
 
 Emite `Finding` con `verification: verified_static`, el campo que define el contrato
 de la iniciativa [007](../007-contrato-de-verificacion/spec.md).
@@ -57,20 +61,19 @@ de la iniciativa [007](../007-contrato-de-verificacion/spec.md).
 
 ### 3.1 Los tres P1 y por qué el diff no basta
 
-Los tres casos semilla viven en ficheros de **configuración y arranque**, que un
-revisor que solo ve el diff no puede contrastar entre sí:
+Los tres casos semilla viven en ficheros de **configuración y arranque** que hay que
+contrastar entre sí:
 
-| # | Síntoma real | Fichero (estado del árbol) | Por qué el revisor de diff no lo vio | El par que lo caza |
+| # | Síntoma real | Fichero (en `008da57`) | Por qué la review no lo vio | El par que lo caza |
 |---|---|---|---|---|
-| **#1** | El `fix-worker` recibía **todos** los secretos del despliegue | `docker-compose.yml`: el servicio llevaba `env_file: .env` | El aislamiento es una propiedad del **conjunto** de variables, no de una línea del diff | Servicio declarado `isolated` ↔ `env_file`/variables prohibidas |
-| **#2** | El `fix-worker` **no arrancaba en producción** | `src/agent_review/fixworker/main.py` llamaba a `require_production_secrets` (contrato completo, exige `TWG_BBC_TOKEN`) mientras compose lo deja vacío a propósito | La llamada y el `environment:` del compose están en ficheros distintos; ninguno «parece» mal por separado | Contrato de arranque del servicio ↔ variables que compose le pasa |
-| **#3** | El default de `MODELS_CONFIG` **ignoraba** la configuración `LLM_*` | `src/agent_review/settings.py`: `models_config: str = "config/models.yaml"` | Es un **valor por defecto**; el diff de la review no lo mira contra la vía de compatibilidad documentada | Default de `Settings` ↔ vía `LLM_*` (D7) y referencias de `models.yaml` |
+| **#1** | El `fix-worker` recibía **todos** los secretos del despliegue | `docker-compose.yml`: el servicio llevaba `env_file: .env` | El `scope` descartó el fichero (`max_files_per_pr`); y aun visto, el aislamiento es una propiedad del **conjunto** de variables, no de una línea | Servicio declarado `isolated` ↔ `env_file`/variables prohibidas |
+| **#2** | El `fix-worker` **no arrancaba en producción** | `src/agent_review/fixworker/main.py` llamaba a `require_production_secrets` (contrato completo, exige `TWG_BBC_TOKEN`) mientras compose lo deja vacío a propósito | `fixworker/main.py` sí se vio, pero su par en compose no; ninguno «parece» mal por separado | Contrato de arranque del servicio ↔ variables que compose le pasa |
+| **#3** | El default de `MODELS_CONFIG` **ignoraba** la configuración `LLM_*` | `src/agent_review/settings.py`: `models_config: str = "config/models.yaml"` | El `scope` descartó el fichero; y es un **valor por defecto** que solo falla frente a la vía de compatibilidad documentada | Test de regresión (W10) |
 
-`settings.py` y `fixworker/main.py` tienen cambios **sin commitear** en este momento
-(son justo el arreglo de #2 y #3): el árbol de trabajo ya trae
-`require_fix_worker_secrets` y `models_config: str = ""`, y `docker-compose.yml` ya
-no lleva `env_file` en el `fix-worker`. Esta iniciativa **fija el invariante** para
-que la deriva no vuelva; los tres casos pasan a ser tests de regresión.
+Los tres se corrigieron en `1efc99f` (`require_fix_worker_secrets`,
+`models_config: str = ""` y compose sin `env_file` en el `fix-worker`). Esta
+iniciativa **fija el invariante** para que la deriva no vuelva; los tres casos pasan
+a ser tests de regresión.
 
 ### 3.2 Ya hay un test estático, y no basta
 
@@ -99,6 +102,9 @@ convierte en código, como `check_docs.py` ya hace con la estructura documental.
 | **W7** | Anclaje: se emite al fichero del par que discrepa; sin línea añadida ⇒ **resumen** | Un par puede vivir fuera del diff (p. ej. `operacion.md`). El `publish` ya manda al resumen lo que no ancla ([ADR-0006](../../adr/0006-publicacion-inline-primero-resumen-al-final.md)); no se inventa una línea. |
 | **W8** | Los servicios requeridos y las variables prohibidas **se declaran**, no se intuyen del grafo | Introspección del grafo = acoplamiento frágil y silencioso. Una declaración versionada y revisada es auditable, como `config/autonomy.yaml` ([ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md)). |
 | **W9** | Se descarta el patrón «persona con rol LLM» para este chequeo | Un rol existe para elegir modelo; aquí no hay modelo. `wiring` es una persona **sin rol**, como `standards`: su nombre basta para el `finding_sources` y el merge. |
+| **W10** | El caso #3 (default de `MODELS_CONFIG` frente a la vía `LLM_*`) es un **test de regresión** en `tests/`, no una regla del motor | No es un par que deba concordar, sino un caso puntual; codificarlo como regla genérica la volvería frágil |
+| **W11** | Entrega en **dos fases**: primero el motor y el gate de CI (W6), después la persona (W1, W3, W7) | Las comprobaciones (a)–(c) dependen de convenciones de este repo (un `Settings` de Pydantic, la tabla de `operacion.md`); un repo Symfony no las tiene. El gate da valor inmediato; la persona se justifica cuando el agente revisa este repo con perfil o un segundo repo declara `wiring:` |
+| **W12** | `Settings` se lee con **AST**, no con `import` | En la persona, el fichero llega como texto a `head_sha` vía VCS; importarlo ejecutaría código del PR |
 
 ## 5. Diseño o contrato
 
@@ -144,7 +150,6 @@ wiring:
     example_only: [MODELS_CONFIG]                     # la plantilla activa; el default no
   models:
     file: config/models.yaml
-    compatibility_default: MODELS_CONFIG
 ```
 
 ### 5.3 Las tres comprobaciones
@@ -152,12 +157,12 @@ wiring:
 | Comprobación | Regla determinista | Caso que caza |
 |---|---|---|
 | **(a) servicios** | Cada servicio de `required` existe; cada `depends_on` apunta a un servicio declarado; un servicio `isolated` no tiene `env_file` ni recibe ninguna `forbidden_env`; su `environment:` cubre todas las `requires_env` | **#1** (`env_file` filtrado) y **#2** (contrato de arranque sin cubrir) |
-| **(b) settings ↔ entorno ↔ doc** | Cada campo de `Settings` aparece como variable en `.env.example` y en la tabla de `operacion.md` §2, salvo los declarados internos; cada clave de `.env.example` es campo de `Settings` o `external_keys`; para los campos con default documentado, el default del código coincide (los `example_only` se eximen de la igualdad) | **#3** y toda deriva de la tabla de sincronización |
-| **(c) models ↔ Settings** | Cada `${VAR}` de `config/models.yaml` nombra un campo de `Settings`; el default del campo `compatibility_default` no puede ser no vacío mientras D7 (registro implícito) siga documentado como comportamiento por defecto | **#3** (el default pisa `LLM_*`) |
+| **(b) settings ↔ entorno ↔ doc** | Cada campo de `Settings` aparece como variable en `.env.example` y en la tabla de `operacion.md` §2, salvo los declarados internos; cada clave de `.env.example` es campo de `Settings` o `external_keys`; para los campos con default documentado, el default del código coincide (los `example_only` se eximen de la igualdad) | Toda deriva de la tabla de sincronización (incluido un default documentado distinto del código, como el de #3) |
+| **(c) models ↔ Settings** | Cada `${VAR}` de `config/models.yaml` nombra un campo de `Settings` | Una referencia rota en el registro |
 
-La comprobación (b) parsea la tabla Markdown de `operacion.md` §2 por el mismo
-criterio que `check_docs.py` valida enlaces: identificadores entre comillas
-invertidas. La (c) reutiliza el patrón de referencia de
+La comprobación (b) lee los campos y defaults de `Settings` por AST (W12) y parsea la
+tabla Markdown de `operacion.md` §2 por el mismo criterio que `check_docs.py` valida
+enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón de referencia de
 [`models_config.py`](../../../src/agent_review/models_config.py) (`${VAR}` contra
 `Settings`), hoy solo usado en *runtime*.
 
@@ -190,23 +195,34 @@ invertidas. La (c) reutiliza el patrón de referencia de
 
 ## 7. Criterios de hecho
 
-1. Los **tres casos semilla** son tests que fallan con el estado defectuoso y pasan
-   con el actual (regresión de #1, #2 y #3).
-2. `WiringChecker` aparece en la review de un repo cuyo perfil declara `wiring:` y
-   publica hallazgos con `verification: verified_static`.
-3. Un fichero del contrato ilegible deja la review **incompleta**, no limpia.
-4. `make wiring-check` corre en `make ci` y detecta la deriva introducida a mano en
+**Fase 1 (gate de CI):**
+
+1. Los **tres casos semilla** son tests que fallan con el estado de `008da57` y pasan
+   con el actual: #1 y #2 por el motor, #3 por el test de regresión (W10).
+2. `make wiring-check` corre en `make ci` y detecta la deriva introducida a mano en
    un repo de prueba.
-5. Sin deriva, no hay falsos positivos sobre el árbol actual.
-6. `make ci` y `make docs-check` en verde.
-7. Documentos vivos al día: `desarrollo.md` §2 (zona de tests) y §3 (cómo extender),
+3. Sin deriva, no hay falsos positivos sobre el árbol actual.
+4. Un fichero del contrato ilegible hace fallar el gate, no lo deja en verde.
+
+**Fase 2 (persona):**
+
+5. `WiringChecker` aparece en la review de un repo cuyo perfil declara `wiring:` y
+   publica hallazgos con `verification: verified_static`.
+6. Un fichero del contrato ilegible deja la review **incompleta**, no limpia.
+
+**Ambas:**
+
+7. `make ci` y `make docs-check` en verde.
+8. Documentos vivos al día: `desarrollo.md` §2 (zona de tests) y §3 (cómo extender),
    `operacion.md` §2 si algún campo lo requiere, `arquitectura.md` §7 si aparece
    deuda, y `CONTEXT.md` si nace el término «wiring».
 
 ## 8. Preguntas abiertas
 
-- **Q1.** ¿Qué perfil declara primero el contrato de wiring: uno nuevo del propio
-  repo del agente, o se generaliza el perfil de `emotivoo-v2`?
+- **Q1.** Este repo no tiene perfil (solo existe `repo_profile.emotivoo-v2.yaml`,
+  que no aplica: es PHP sin `Settings`). Para la fase 1, ¿el contrato vive en un
+  fichero propio (`config/wiring.yaml`) o se crea ya el perfil del propio repo, que
+  la fase 2 necesitará?
 - **Q2.** La tabla de `operacion.md` §2: ¿se parsea como texto (simple y frágil) o se
   **genera** desde `Settings` (fuente única, pero toca el documento vivo)?
 - **Q3.** Mapa de severidad: ¿`P1` fijo para arranque/aislamiento y `P3` para deriva

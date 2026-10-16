@@ -46,7 +46,8 @@ Se quiere:
   wiring y el *gold set* son checkpoints posteriores. Aquí solo se define el
   contrato y se adaptan los emisores actuales.
 - **Cambiar el gate de publicación.** `config/autonomy.yaml` no se toca aquí; esta
-  iniciativa añade los campos que ese gate leerá después.
+  iniciativa añade los campos que leerá el gate de
+  [011](../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
 - **Rediseñar `confidence`.** Se mantiene tal cual (es el síntoma que motiva el
   contrato). Su retirada o sentido nuevo se decide en §8.
 - **Ejecutar código del PR.** `verified_executed` se declara pero no se produce aún:
@@ -76,12 +77,13 @@ contrato expresa *cuánto* se ha verificado el hallazgo.
 
 ### 3.2 La evidencia empírica de una review real
 
-Una review sobre un PR real produjo 9 hallazgos: **6 falsos positivos**, 1 confirmado
-con el fallo descrito **invertido** y 2 que documentaban decisiones ya tomadas; y
-**no detectó 3 P1 reales** de integración y configuración. Causa raíz única: el
-revisor LLM solo recibe el diff recortado y, aun así, afirma sobre código que no ve.
-Los falsos positivos **fabrican** el contexto que falta; los negativos **carecen**
-del que existe.
+La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó 9
+hallazgos publicados: **6 falsos positivos**, 1 confirmado con el fallo descrito
+**invertido**, 1 que confirmaba una decisión ya documentada y 1 cierto en parte; y
+**no detectó 3 P1 reales**. Los P1 perdidos son sobre todo de cobertura (el modelo no
+vio esos ficheros, [012](../012-cobertura-de-la-review/spec.md)). Los falsos
+positivos tienen otra causa, que es la que ataca este contrato: sobre lo que sí ve,
+el revisor afirma sobre código que no ve y **fabrica** el contexto que falta.
 
 | Síntoma | Qué lo cazaría |
 |---|---|
@@ -118,6 +120,8 @@ por la que pasan los emisores.
 | D7 | El contrato es la **fuente única**; modelo y JSON cambian en el mismo commit | Lo impone `schema_matches_domain`; es la garantía de que el contrato publicado no miente. |
 | D8 | Los campos nuevos entran **opcionales** en el JSON (con *default*), salvo el endurecimiento condicional de `failure_scenario` | El contrato lo reutiliza `ce-code-review`; romper la compatibilidad obligaría a tocar un consumidor ajeno. |
 | D9 | Se crea un ADR nuevo, **ADR-0016 — Cascada de verificación del hallazgo** | La cascada es una decisión de arquitectura con alternativas; se describe en §5.6 y el ADR ya no se reescribe. |
+| D10 | «No probado» **no** es un estado propio: es `verification: unverified` con `context_scope: outside_diff` | Un estado más en el enum solo duplicaría lo que ya dicen dos campos; cierra la Q7 de [008](../008-contexto-del-revisor/spec.md) |
+| D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
 
 ## 5. Diseño o contrato
 
@@ -181,12 +185,13 @@ stateDiagram-v2
     unverified --> verified_grounded: la cascada cita el código que prueba
     unverified --> verified_executed: test que falla (L3, diferido)
     unverified --> refuted: la cascada lo desmiente
-    refuted --> [*]: se conserva, no se publica
+    refuted --> [*]: se conserva en el estado
 ```
 
 Promover de `unverified` a cualquier `verified_*` o a `refuted` exige
 `verification_evidence` (I2). El gate de publicación —qué estados dejan salir un
-`P0`/`P1`— es de un checkpoint posterior y vive en
+`P0`/`P1` y qué se hace con un `refuted`— es de
+[011](../011-gate-de-severidad/spec.md) y vive en
 [`autonomy.yaml`](../../../config/autonomy.yaml), no en el contrato.
 
 ### 5.4 Emisión en las personas
@@ -244,7 +249,8 @@ El ADR nuevo documenta la decisión de fondo que este contrato habilita:
   contexto, L2 adversarial con otro rol y otro modelo, L3 ejecutable) cuyo estado se
   materializa en `verification`; la severidad `P0`/`P1` **se gana** con verificación o
   evidencia estática; un hallazgo `refuted` se conserva.
-- **Consecuencias:** el gate lee `verification` desde `autonomy.yaml` (policy-as-data,
+- **Consecuencias:** el gate ([011](../011-gate-de-severidad/spec.md)) es el único
+  que traduce `verification` en severidad publicada, desde `autonomy.yaml` (policy-as-data,
   [ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md)); el contrato
   gana cuatro campos versionados; L2 añade coste (deuda de presupuesto).
 - **Alternativas descartadas:** seguir opinando con el mismo modelo (sello de goma),
