@@ -140,6 +140,24 @@ def test_list_review_markers_ignora_payload_inesperado(monkeypatch) -> None:
     assert adapter.list_review_markers("r", 1) == []
 
 
+def test_file_url_es_un_permalink_de_bitbucket() -> None:
+    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
+    url = adapter.file_url("cqm/emotivoo-v2", "src/Foo.php", ref="7bf898f", line=12)
+    assert url == "https://bitbucket.org/cqm/emotivoo-v2/src/7bf898f/src/Foo.php#lines-12"
+
+
+def test_file_url_con_base_web_propia() -> None:
+    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2", web_url="https://bitbucket.corp/")
+    url = adapter.file_url("cqm/emotivoo-v2", "src/Foo.php", ref="abc", line=1)
+    assert url == "https://bitbucket.corp/cqm/emotivoo-v2/src/abc/src/Foo.php#lines-1"
+
+
+def test_file_url_sin_path_o_ref_no_se_inventa() -> None:
+    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
+    assert adapter.file_url("r", "", ref="abc", line=1) is None
+    assert adapter.file_url("r", "src/Foo.php", ref="", line=1) is None
+
+
 def test_check_twg_ok(monkeypatch) -> None:
     class Result:
         returncode = 0

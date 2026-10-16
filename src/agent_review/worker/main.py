@@ -36,6 +36,7 @@ from agent_review.checkpointer import (
     prune_fix_threads,
 )
 from agent_review.domain.models import (
+    ApprovalRequest,
     DecisionOutcome,
     FindingDecision,
     FixJob,
@@ -43,6 +44,7 @@ from agent_review.domain.models import (
     FixResolutions,
     FixWaitRequest,
     HitlDecision,
+    PendingDecision,
     ReviewOutcome,
     ReviewRequest,
 )
@@ -710,7 +712,7 @@ def _on_paused(
                 repo=request.repo,
                 pr_id=request.pr_id,
                 review_key=request.review_key,
-                approval=human,
+                approval=_with_code_links(human, vcs=vcs),
                 link=_pr_url(vcs, request),
             )
         except Exception as exc:
@@ -872,6 +874,29 @@ def _pr_url(vcs: VcsPort | None, request: ReviewRequest) -> str | None:
             "No se pudo resolver la URL del PR %s#%s para el aviso", request.repo, request.pr_id
         )
         return None
+
+
+def _with_code_links(approval: ApprovalRequest, *, vcs: VcsPort | None) -> ApprovalRequest:
+    """Anade a cada pendiente el permalink a su trozo de codigo.
+
+    El canal solo pinta lo que recibe: quien conoce el formato de permalink del
+    host es el worker. Nunca aborta la pausa: un fallo del VCS (o un doble de test
+    que no implemente `file_url`) deja el pendiente sin enlace y se sigue.
+    """
+    resolvers = getattr(vcs, "file_url", None) if vcs is not None else None
+    if resolvers is None:
+        return approval
+    enriched: list[PendingDecision] = []
+    for item in approval.pending:
+        url = None
+        try:
+            url = resolvers(approval.repo, item.file, ref=approval.head_sha, line=item.line)
+        except Exception:
+            logger.exception(
+                "No se pudo resolver el enlace al codigo de %s:%s", item.file, item.line
+            )
+        enriched.append(item.model_copy(update={"code_url": url}) if url else item)
+    return approval.model_copy(update={"pending": enriched})
 
 
 def sweep_expired(

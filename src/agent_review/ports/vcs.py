@@ -56,6 +56,15 @@ class VcsPort(Protocol):
         fichero al `head_sha` para que el fixer proponga sobre codigo real."""
         ...
 
+    def file_url(self, repo: str, path: str, *, ref: str, line: int) -> str | None:
+        """Permalink al fichero en `ref`, anclado a `line`. `None` si el host no
+        lo soporta o no hay base web configurada.
+
+        Lo usa el aviso de pausa para enlazar al trozo de codigo de un hallazgo
+        sin que el canal conozca el host. Nunca aborta: es un adorno del aviso.
+        """
+        ...
+
     def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
         """Comentarios del agente ya publicados en el PR.
 

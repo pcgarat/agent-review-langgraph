@@ -59,12 +59,21 @@ class TwgVcsAdapter:
     """
 
     def __init__(
-        self, *, workspace: str, repo: str, twg_bin: str = "twg", timeout_s: float = 60.0
+        self,
+        *,
+        workspace: str,
+        repo: str,
+        twg_bin: str = "twg",
+        timeout_s: float = 60.0,
+        web_url: str = "https://bitbucket.org",
     ) -> None:
         self._workspace = workspace
         self._repo = repo
         self._twg = twg_bin
         self._timeout_s = timeout_s
+        # Base web para los permalinks de la tarjeta (Bitbucket Cloud por defecto;
+        # se cambia para Bitbucket Server/Data Center).
+        self._web_url = web_url.rstrip("/")
 
     def _run(self, args: Sequence[str], *, json_output: bool = True) -> str:
         cmd = [self._twg, "bb", *args, "-w", self._workspace, "-r", self._repo]
@@ -121,6 +130,15 @@ class TwgVcsAdapter:
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
         return self._run(["repo", "file", path, "--ref", ref], json_output=False)
+
+    def file_url(self, repo: str, path: str, *, ref: str, line: int) -> str | None:
+        """Permalink de Bitbucket: `{web}/{workspace}/{repo}/src/{ref}/{path}#lines-{n}`."""
+        if not path or not ref or not self._web_url:
+            return None
+        return (
+            f"{self._web_url}/{self._workspace}/{self._repo}"
+            f"/src/{ref}/{path.lstrip('/')}#lines-{line}"
+        )
 
     def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
         del repo

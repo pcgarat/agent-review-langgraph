@@ -721,6 +721,55 @@ def test_la_pausa_deja_el_aviso_en_la_outbox_sin_red() -> None:
     assert len(outbox) == 0
 
 
+def test_el_aviso_de_pausa_lleva_enlace_al_codigo_del_hallazgo() -> None:
+    """T2: el canal pinta el enlace; quien conoce el permalink es el worker."""
+    from agent_review.chat_outbox import InMemoryChatOutbox, OutboxChatAdapter
+    from agent_review.paused_store import InMemoryPausedStore
+
+    class VcsConPermalink(FakeVcs):
+        def file_url(self, repo: str, path: str, *, ref: str, line: int) -> str | None:
+            return f"https://bb/{repo}/src/{ref}/{path}#lines-{line}"
+
+    outbox = InMemoryChatOutbox()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    graph = _hitl_graph(VcsConPermalink(), _CountingReviewer(_escalating_finding()))
+
+    process_request(
+        graph,
+        request,
+        paused=InMemoryPausedStore(),
+        chat=OutboxChatAdapter(outbox=outbox),
+        vcs=VcsConPermalink(),
+    )
+
+    notice = outbox.dequeue()
+    assert notice is not None
+    item = notice.approval.pending[0]
+    assert item.code_url == f"https://bb/{request.repo}/src/deadbeef/{item.file}#lines-{item.line}"
+    # El contexto del hallazgo viaja tambien para poder explicar el problema.
+    assert item.why_it_matters
+
+
+def test_un_vcs_sin_permalink_no_rompe_el_aviso() -> None:
+    """Un doble de test (o un host sin URL web) deja el pendiente sin enlace."""
+    from agent_review.chat_outbox import InMemoryChatOutbox, OutboxChatAdapter
+    from agent_review.paused_store import InMemoryPausedStore
+
+    outbox = InMemoryChatOutbox()
+    graph = _hitl_graph(FakeVcs(), _CountingReviewer(_escalating_finding()))
+
+    process_request(
+        graph,
+        ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef"),
+        paused=InMemoryPausedStore(),
+        chat=OutboxChatAdapter(outbox=outbox),
+    )
+
+    notice = outbox.dequeue()
+    assert notice is not None and notice.approval is not None
+    assert notice.approval.pending[0].code_url is None
+
+
 def test_una_outbox_caida_no_tumba_la_pausa() -> None:
     """El respaldo real es el CLI (C9): un fallo del canal no rompe el worker."""
     import redis

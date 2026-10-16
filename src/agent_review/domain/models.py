@@ -162,7 +162,13 @@ class HitlDecision(BaseModel):
 
 
 class PendingDecision(BaseModel):
-    """Lo que el nodo `hitl` pide a una persona: contexto + accion propuesta."""
+    """Lo que el nodo `hitl` pide a una persona: contexto + accion propuesta.
+
+    Lleva lo justo para decidir sin abrir el PR: el hallazgo (`title`,
+    `severity`), donde esta (`file:line`) y por que importa (`why_it_matters`).
+    El canal pinta la tarjeta con esto; no lee el inbox ni el diffs
+    (C12). Con default `""` para leer sin romper las pausas ya en Redis.
+    """
 
     finding_id: str
     proposed_action: FindingAction  # escalate | fix_with_approval
@@ -173,6 +179,10 @@ class PendingDecision(BaseModel):
     file: str
     line: int = Field(ge=1)
     severity: Severity
+    why_it_matters: str = ""
+    # Enlace directo al codigo del hallazgo en el `head_sha`. Lo resuelve el
+    # worker (unico que conoce el VCS) al pausar; el canal solo lo pinta.
+    code_url: str | None = None
 
 
 class ApprovalRequest(BaseModel):

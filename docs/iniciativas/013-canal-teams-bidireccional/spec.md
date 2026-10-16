@@ -76,8 +76,7 @@ producción, pero la decisión del ADR-0008 descansa en una pieza inexistente.
 | C5 | Autorización por **pertenencia al canal**; `actor` = identidad de Entra ID del SDK | Decisión de producto; queda traza de quién decidió. Riesgo aceptado (§6) |
 | C6 | **Un hilo por `repo:pr`**: mapeo `{conversation_id, root_message_id}` en Redis; si falta, hilo nuevo | Hilo = UI, no verdad; perder el mapeo crea un hilo, no corrompe nada |
 | C7 | La tarjeta se **edita** (`updateActivity`) al avanzar el grafo; los avisos van como reply del hilo | Evita inundar el canal; regla de UX del diseño base §5.1 |
-| C8 | La tarjeta lleva el **estado por usuario** (lo que cada uno ha marcado) en Redis | `Action.Execute` debe devolver la tarjeta con lo ya marcado, sin perderlo |
-| C9 | **CLI y `POST /decision` se mantienen** como canal de respaldo | Elemento clave: es el respaldo real. Si el bot o el canal caen, el HITL no se queda sin salida |
+| C8 | La tarjeta lleva el **estado por usuario** (lo que cada uno ha marcado) en Redis | `Action.Execute` debe devolver la tarjeta con lo ya marcado, sin perderlo || C9 | **CLI y `POST /decision` se mantienen** como canal de respaldo | Elemento clave: es el respaldo real. Si el bot o el canal caen, el HITL no se queda sin salida |
 | C10 | Egress del worker **por cola outbox** (`reviews:notices`) con un `ChatNotice` estructurado; capa HTTP interna como detalle del bot | Aviso durable y desacoplado; mismo patrón que `ReviewQueue`/`FixQueue`; el worker no conoce el transporte |
 | C11 | La **primera decisión es final**: la tarjeta pasa a «decidido por X» y el botón se desactiva. Rectificar solo por CLI/HTTP | Evita carrera con la reanudación del worker y complicar la idempotencia sin ganancia real |
 | C12 | El aviso de pausa viaja con la `ApprovalRequest` **estructurada**; el bot no lee el inbox para pintar la tarjeta | El render de texto (`render_pause_notice`) sirve al PR, no a una tarjeta; los datos estructurados son la fuente única |
@@ -122,7 +121,9 @@ flowchart LR
   - `reviews:teams:channel` → `conversation_id` del **canal dedicado**, capturado al
     instalar el bot (C14).
   - `reviews:teams:thread:<repo>:<pr>` → `{conversation_id, root_message_id}`.
-  - `reviews:teams:card:<review_key>` → estado de la tarjeta y marcas por usuario.
+  - `reviews:teams:card:<review_key>` → hash `user_id|finding_id → outcome` (estado de
+    la tarjeta, **por usuario**) y `…:final` con el actor de la primera decisión (C11).
+
 - **Hilo por PR (C6), con el SDK:** la primera vez, `app.send(conversation_id, card)`
   publica el mensaje **raíz** del PR y la `SentActivity` devuelve su
   `root_message_id`; el resto va con `app.reply(conversation_id, root_message_id, …)`,
@@ -235,7 +236,24 @@ Las cinco preguntas abiertas del borrador se cerraron el 2026-10-16:
 
 ## 9. Preguntas abiertas
 
-- **Q1.** ¿La tarjeta de decisión muestra `evidence` y `why_it_matters` por hallazgo
-  (más contexto, tarjeta más larga) o solo título, severidad y fichero:línea?
+- **Q1 — Cerrada (2026-10-16, T2).** La tarjeta muestra, por hallazgo: título,
+  severidad, `fichero:línea`, la **explicación del problema** (`why_it_matters`, que
+  viaja nuevo en `PendingDecision`) y un **enlace al trozo de código** aceptado
+  (`VcsPort.file_url`, permalink por host). **Sin `evidence`**: alargaba la tarjeta sin
+  añadir contexto a lo que ya venía dado en prosa.
 - **Q2.** ¿Se menciona (`@`) a alguien del canal al pausar, o un mensaje sin mención?
   Una mención mal elegida se convierte en ruido; ninguna puede pasar desapercibida.
+
+## 10. Enmiendas
+
+- **2026-10-16 — Estado de la tarjeta por usuario (T2).** La primera lectura de C8 era
+  ambigua: un estado *compartido* haría que dos personas marcando hallazgos distintos
+  no llegaran nunca a «todo marcado» (C3). Se fija **por usuario**: el hash se indexa
+  por `user_id|finding_id`, `Action.Execute` repinta la tarjeta solo para quien pulsa,
+  y Enviar se habilita cuando *ese* usuario ha cubierto todos los pendientes. La
+  atomicidad de la decisión no cambia (`build_decision` sigue exigiendo cubrir todo).
+- **2026-10-16 — Preguntas sobre un hallazgo (futuro).** Además de aprobar/rechazar se
+  querrá **preguntar** para pedir más contexto del hallazgo. El `data.action` de los
+  botones es un discriminante, así que una acción nueva se añade sin tocar el contrato
+  de decisión; se anota como caso futuro, no entra en la 013.
+

@@ -63,6 +63,7 @@ flowchart LR
 | `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest. Habla con su propio demonio Docker rootless. |
+| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` (T5/T6) | Canal de Teams: render de la tarjeta (T2) y, en T5–T7, consumo de la outbox e ingress del Bot Framework. **No** conoce el grafo. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
 
 ---
@@ -76,6 +77,8 @@ src/agent_review/
 │                  FixerPort, SandboxPort
 ├── adapters/      twg_vcs, github_vcs, tooling_reviewer, llm_reviewer, llm_fixer,
 │                  openai_llm, http_sandbox, tooling_source, diff_parser
+├── teams_bot/     Canal de Teams (iniciativa 013): cards, state, card_service
+│                  (el SDK de Teams llega en T5/T6; aqui es logica pura)
 ├── models_config.py  Registro declarativo de modelos (models.yaml): esquema y validacion
 ├── models_registry.py Bindings rol -> modelo, resueltos a LlmPort (y `probe` del catalogo)├── graph/build.py Grafo, nodos, merge, render de inline/resumen y marcas de dedupe
 ├── policy/        PolicyEngine (autonomy.yaml)
@@ -300,6 +303,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
 | Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13) | — |
+| Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome` y `…:final` (actor de la primera decisión): estado de la tarjeta, por usuario (C8/C11) | 8 días |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |

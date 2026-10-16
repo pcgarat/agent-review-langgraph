@@ -52,7 +52,7 @@ harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_compose` |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
-| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox `reviews:notices`) |
+| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox `reviews:notices`), `test_teams` (render de la tarjeta, estado por usuario y Enviar bloqueado) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
@@ -73,7 +73,9 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
    una línea. Si el host no resuelve anclas, usa `diff_parser.resolve_added_line`.
 4. `list_review_markers` tiene que paginar: una marca no vista significa una review
    duplicada.
-5. Añade el valor a `settings._VCS_PROVIDERS`, ramifica `worker.build_vcs` y
+5. `file_url` devuelve el permalink al fichero anclado a una línea (lo pinta el aviso
+   de pausa); `None` si el host no lo soporta. Nunca aborta.
+6. Añade el valor a `settings._VCS_PROVIDERS`, ramifica `worker.build_vcs` y
    `api._expected_repo`, y cubre la credencial en `insecure_secrets`.
 
 ### Una persona nueva

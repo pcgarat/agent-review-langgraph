@@ -198,6 +198,21 @@ class GithubVcsAdapter:
         except (ValueError, UnicodeDecodeError) as exc:
             raise GithubError(f"Contenido de {path}@{ref} ilegible: {exc}") from exc
 
+    def file_url(self, repo: str, path: str, *, ref: str, line: int) -> str | None:
+        """Permalink de GitHub: `{web}/{owner}/{repo}/blob/{ref}/{path}#L{line}`.
+
+        El host web se deriva de `GITHUB_API_URL` (GHES tiene otro dominio); en
+        `api.github.com` se usa `github.com` para no exponer el subdominio de API.
+        """
+        if not path or not ref:
+            return None
+        web = self._api_url
+        if web == _DEFAULT_API_URL:
+            web = "https://github.com"
+        elif web.endswith("/api/v3"):
+            web = web[: -len("/api/v3")]
+        return f"{web}/{self._owner}/{self._repo}/blob/{ref}/{path.lstrip('/')}#L{line}"
+
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
     ) -> InlineAnchor | None:

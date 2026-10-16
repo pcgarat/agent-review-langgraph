@@ -152,6 +152,9 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
                 file=finding.file,
                 line=finding.line,
                 severity=finding.severity,
+                # La tarjeta del canal explica el problema con esto; el render de
+                # texto del PR (`render_pause_notice`) sigue usando `reason`.
+                why_it_matters=" ".join(finding.why_it_matters.split()),
             )
         )
     if not pending:

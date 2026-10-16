@@ -79,7 +79,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
     **blindado** (un fallo del canal no tumba la pausa). `render_pause_notice`
     sigue existiendo para el comentario de PR de Fase 2, pero ya no lo usa el worker.
 
-- [ ] **T2** Tarjeta de decisión: render, estado por usuario y Enviar bloqueado
+- [x] **T2** Tarjeta de decisión: render, estado por usuario y Enviar bloqueado
   - Render de la tarjeta a partir de `ApprovalRequest` (un botón por hallazgo:
     `aprobar`/`rechazar`/`noted`) con `Action.Execute`; el estado marcado por usuario
     se guarda en `reviews:teams:card:<review_key>`. Enviar deshabilitado mientras
@@ -88,7 +88,23 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
   - Aceptación: la tarjeta refleja todos los pendientes del `ApprovalRequest`; la
     acción de un hallazgo devuelve la tarjeta con esa marca conservada.
   - Verifica: `tests/test_teams.py` (payload de la tarjeta y estado).
-  - Ficheros: `src/agent_review/adapters/teams_bot.py`, tests.
+  - Ficheros: `src/agent_review/teams_bot/` (`cards.py`, `state.py`,
+    `card_service.py`), tests.
+  - **Hecho (2026-10-16).** El paquete vive en `src/agent_review/teams_bot/`, no en
+    `adapters/` (esa carpeta es del worker, que no conoce Teams); el render produce el
+    **payload** de la tarjeta sin importar el SDK, así que es lógica pura y testeable
+    (T5/T6 solo lo materializan). **Resuelta Q1:** el contexto por hallazgo lleva
+    título, severidad, `fichero:línea`, la explicación del problema
+    (`why_it_matters`, nuevo en `PendingDecision`) y un **enlace al trozo de código**
+    aceptado (`VcsPort.file_url`, nuevo permalink por host); sin `evidence`, que
+    alarga la tarjeta sin añadir contexto. **Estado por usuario** (C8): el hash se
+    indexa por `user_id|finding_id`, de modo que dos personas marcan en paralelo sin
+    pisarse y cada una ve lo suyo (`Action.Execute` repinta solo para quien pulsa);
+    Enviar se habilita cuando *ese* usuario ha marcado todos los pendientes. La
+    tarjeta cerrada («decidido por X», C11) ya está lista para T3.
+    **Preparado para preguntas (futuro):** el `data.action` de los botones es un
+    discriminante (`teams.decision`/`teams.submit`), así que añadir una acción de
+    «preguntar» no toca el resto del contrato.
 
 - [ ] **T3** Decisión → `build_decision` → encolar
   - Traducción de las marcas de la tarjeta a `HitlDecision` con `build_decision`
@@ -97,7 +113,8 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
   - Aceptación: una decisión incompleta se rechaza sin tocar el grafo (misma regla
     que el `409` de la API); una completa reanuda el mismo hilo sin duplicar.
   - Verifica: `tests/test_teams.py`, `tests/test_hitl_e2e.py` (con fakes).
-  - Ficheros: `src/agent_review/adapters/teams_bot.py`, `src/agent_review/decision.py` (si hace falta un ctor).
+  - Ficheros: `src/agent_review/teams_bot/` (`card_service.py`, `decisions.py`),
+    `src/agent_review/decision.py` (si hace falta un ctor).
 
 ## Bloque 2 — Hilo por PR y egress
 
@@ -109,7 +126,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
   - Aceptación: dos avisos del mismo `repo:pr` caen en el mismo hilo; borrar la clave
     de Redis crea otro hilo y no rompe la reanudación.
   - Verifica: `tests/test_teams.py`; revisión humana del hilo en un canal de prueba.
-  - Ficheros: `src/agent_review/adapters/teams_bot.py`, `src/agent_review/settings.py`.
+  - Ficheros: `src/agent_review/teams_bot/` (`transport.py`), `src/agent_review/settings.py`.
 
 - [ ] **T5** Servicio `teams-bot`: consumo de la outbox y `ChatTransport`
   - `ChatTransport` (capa HTTP interna del bot, con bearer) y el bucle que consume
@@ -120,7 +137,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
   - Aceptación: un aviso deja la tarjeta/mensaje en el transporte falso; un aviso de
     pausa vencida no publica; reiniciar el bot con avisos pendientes los publica.
   - Verifica: `tests/test_teams_bot_service.py` (transporte y cola falsos).
-  - Ficheros: servicio `teams-bot`, `src/agent_review/settings.py`.
+  - Ficheros: `src/agent_review/teams_bot/` (`service.py`), `src/agent_review/settings.py`.
 
 - [ ] **T6** `teams-bot` en Compose + settings
   - Proceso propio con Teams SDK (versión fijada); servicio en `docker-compose.yml`
@@ -142,7 +159,7 @@ el orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado tod
     tarjeta y dispara T3.
   - Aceptación: un JWT inválido se rechaza; una acción válida llega a T3 y encola.
   - Verifica: `tests/test_teams_bot_service.py`; `docs/operacion.md` §5 (endpoint).
-  - Ficheros: servicio `teams-bot`, `docs/operacion.md`.
+  - Ficheros: `src/agent_review/teams_bot/` (`ingress.py`), `docs/operacion.md`.
 
 - [x] **T8** Retirada de `TeamsWebhookAdapter` y variables del webhook
   - Borrar `TeamsWebhookAdapter`, sus tests y `TEAMS_WEBHOOK_URL` del

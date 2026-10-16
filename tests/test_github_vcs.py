@@ -123,6 +123,31 @@ def test_get_file_binario_falla_permanente() -> None:
         adapter.get_file("", "logo.png", ref="abc")
 
 
+def test_file_url_es_un_permalink_anclado_a_la_linea() -> None:
+    adapter = _adapter(lambda r: httpx.Response(200, json={}))
+    url = adapter.file_url("", "src/Foo.php", ref="7bf898f", line=12)
+    assert url == "https://github.com/cqm/emotivoo-v2/blob/7bf898f/src/Foo.php#L12"
+
+
+def test_file_url_de_ghes_usa_la_base_del_api() -> None:
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    adapter = GithubVcsAdapter(
+        owner="cqm",
+        repo="emotivoo-v2",
+        token="t",
+        api_url="https://ghe.corp/api/v3",
+        client=client,
+    )
+    url = adapter.file_url("", "src/Foo.php", ref="abc", line=1)
+    assert url == "https://ghe.corp/cqm/emotivoo-v2/blob/abc/src/Foo.php#L1"
+
+
+def test_file_url_sin_path_o_ref_no_se_inventa() -> None:
+    adapter = _adapter(lambda r: httpx.Response(200, json={}))
+    assert adapter.file_url("", "", ref="abc", line=1) is None
+    assert adapter.file_url("", "src/Foo.php", ref="", line=1) is None
+
+
 def test_resolve_inline_anchor_calcula_sobre_el_diff() -> None:
     adapter = _adapter(lambda r: httpx.Response(200, text=_DIFF))
     anchor = adapter.resolve_inline_anchor("", 417, path="src/Foo.php", text="$balance->frozen")

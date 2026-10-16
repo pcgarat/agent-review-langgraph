@@ -35,7 +35,9 @@ se mantienen intactas.
   `decision`; el worker hace `Command(resume=…)` sobre el mismo hilo (ADR-0008).
 - **Decisión atómica (C3/C11).** La tarjeta se actualiza con cada interacción, pero
   Enviar está deshabilitado hasta que todo está marcado y la primera decisión es
-  final. `build_decision` sigue siendo la última palabra.
+  final. `build_decision` sigue siendo la última palabra. El **estado es por usuario**
+  (C8): dos personas marcan en paralelo sin pisarse y cada una ve lo suyo; Enviar se
+  habilita cuando *esa* persona ha cubierto todos los pendientes.
 - **Hilo = UI, no verdad (C6).** El mapeo `repo:pr → {conversation_id,
   root_message_id}` vive en Redis y se puede perder: se crea otro hilo, no se
   corrompe estado. La verdad durable sigue en Postgres.
