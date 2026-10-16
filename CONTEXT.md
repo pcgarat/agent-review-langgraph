@@ -130,6 +130,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Perfil del repo** | `config/repo_profile.*.yaml`: identidad, imagen del CI y su digest, `setup`, `checks`, orden de `verify` y `expected_tools`. |
 | **Sandbox runner** | Servicio aislado que clona, aplica el parche, ejecuta y destruye. `POST /verify`, idempotente por `run_key`. |
 | **`run_key`** | `review_key:finding_id:intento`. Una reentrega con el mismo `run_key` devuelve el informe previo y no vuelve a ejecutar. |
+| **Consola en vivo** | `stdout`/`stderr` de una verificación emitidos **línea a línea** por `on_line` mientras el contenedor corre, servidos por el runner como SSE en `GET /verify/{run_key}/console` (019 W5). Es **efímera** (memoria del runner, no persiste, no entra en el `VerifyReport`) y *best-effort*: su caída no altera la verificación (019 W8). |
 | **Estado del fix** (`FixStatus`) | `verified`, `failed` (agotó intentos), `invalid_patch`, `not_verifiable` (sin digest, sin runner o sin fixer), `skipped` (tope), `blocked` (ruta nunca-auto o tema protegido). |
 | **Entrega** | Cómo aparece un fix verificado en el inline: un bloque ` ```diff ` (por defecto) o ` ```suggestion `. La elige un `DeliveryFormatter`. |
 | **Handoff del fix (E7)** | La verificación no vive en el worker de reviews: `fix_dispatch` propone y valida, `fix_wait` **pausa** con la *wave* y el `fix-worker` la verifica y reanuda. Desacople por cola (`reviews:fixes`), no por llamada. |

@@ -359,6 +359,18 @@ par clonen una sola vez; un clon lento no bloquea las lecturas de otros workspac
 acotan el disco; el desalojo borra el más antiguo. Cada clon vive en un directorio
 temporal, **fuera** de lo que se monta en los contenedores de `/verify`.
 
+### Consola en vivo (memoria del `sandbox-runner`)
+
+El runner guarda en su memoria de proceso un **buffer circular por `run_key`** con las
+últimas líneas de `stdout`/`stderr` de cada verificación (019 W5): `ConsoleBuffer`, con
+`dict[run_key → (líneas, suscriptores, cerrado)]`. Lo alimenta `on_line` de
+`ContainerRuntime.start` y lo sirve `GET /verify/{run_key}/console` como SSE. Igual que
+los workspaces, **no viaja en Redis ni en Postgres**: un reinicio del runner lo pierde y
+un `run_key` desconocido da `404`. Es *best-effort*: no se copia al `VerifyReport` (el
+canal fiable) y perder la consola no afecta a la verificación (019 W8). El buffer
+desaloja antes las verificaciones terminadas y sin lectores que las que tienen un
+suscriptor vivo.
+
 ---
 
 ## 6. Estado por fase

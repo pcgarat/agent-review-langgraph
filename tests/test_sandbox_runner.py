@@ -10,7 +10,12 @@ from agent_review.sandbox_runner.recipes import (
     expand_setup,
     validate_targets,
 )
-from agent_review.sandbox_runner.runtime import ContainerOutcome, ContainerSpec, ContainerTimeout
+from agent_review.sandbox_runner.runtime import (
+    ContainerOutcome,
+    ContainerSpec,
+    ContainerTimeout,
+    LineSink,
+)
 from agent_review.sandbox_runner.verifier import FixedProfileSource, RunnerError, Verifier
 
 _PROFILE = {
@@ -70,10 +75,15 @@ class _Runtime:
         self._counter += 1
         return f"c{self._counter}"
 
-    def start(self, container_id: str, *, timeout_s: float) -> ContainerOutcome:
+    def start(
+        self, container_id: str, *, timeout_s: float, on_line: LineSink | None = None
+    ) -> ContainerOutcome:
         # El resultado depende del argv, para poder fallar un check concreto.
         spec = self.created[int(container_id[1:]) - 1]
         code = self.exit_codes.get(" ".join(spec.argv), 0)
+        if on_line is not None:
+            on_line("stdout", "ok")
+            on_line("stderr", "boom")
         return ContainerOutcome(exit_code=code, duration_s=0.5, stdout="ok", stderr="boom")
 
     def remove(self, container_id: str) -> None:
@@ -148,7 +158,9 @@ def test_para_al_primer_fallo() -> None:
 
 def test_timeout_mata_el_contenedor_y_lo_destruye() -> None:
     class _TimeoutRuntime(_Runtime):
-        def start(self, container_id: str, *, timeout_s: float) -> ContainerOutcome:
+        def start(
+            self, container_id: str, *, timeout_s: float, on_line: LineSink | None = None
+        ) -> ContainerOutcome:
             raise ContainerTimeout("se acabo el tiempo")
 
     runtime = _TimeoutRuntime()

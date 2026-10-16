@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import logging
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import IO, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 from agent_review.errors import PermanentError, TransientError
+
+logger = logging.getLogger(__name__)
+
+# Callback de linea: `(stream, line)` con `stream` en `{"stdout", "stderr"}`. Se usa
+# para la consola en vivo (019 W5); nunca para el `VerifyReport`, que sigue siendo
+# el canal fiable.
+LineSink = Callable[[str, str], None]
 
 
 class ContainerError(PermanentError):
@@ -56,7 +66,9 @@ class ContainerRuntime(Protocol):
 
     def create(self, spec: ContainerSpec) -> str: ...
 
-    def start(self, container_id: str, *, timeout_s: float) -> ContainerOutcome: ...
+    def start(
+        self, container_id: str, *, timeout_s: float, on_line: LineSink | None = None
+    ) -> ContainerOutcome: ...
 
     def remove(self, container_id: str) -> None: ...
 
@@ -142,20 +154,98 @@ class DockerCliRuntime:
             raise ContainerError(f"docker create fallo: {completed.stderr.strip()}")
         return completed.stdout.strip()
 
-    def start(self, container_id: str, *, timeout_s: float) -> ContainerOutcome:
+    def start(
+        self, container_id: str, *, timeout_s: float, on_line: LineSink | None = None
+    ) -> ContainerOutcome:
+        """`docker start -a` leyendo `stdout`/`stderr` linea a linea.
+
+        Dos hilos lectores (uno por flujo) evitan el bloqueo clasico de un *pipe*
+        lleno (R5) y permiten emitir cada linea a `on_line` mientras corre, sin
+        renunciar a acumular la cola completa para el `VerifyReport`. No se usa
+        `stderr=STDOUT`: el informe mantiene ambos flujos separados.
+        """
         started = time.monotonic()
         try:
-            completed = self._run(["start", "-a", container_id], timeout_s=timeout_s)
-        except ContainerTimeout:
+            process = subprocess.Popen(
+                [self._docker, "start", "-a", container_id],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError as exc:
+            raise ContainerError(f"No se encontro el binario {self._docker!r}") from exc
+
+        # `list` y no `str`: los hilos anaden con `append` (atomico) y el hilo
+        # principal solo une al terminar, asi que no hace falta lock adicional.
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        readers = [
+            threading.Thread(
+                target=self._pump,
+                args=("stdout", process.stdout, stdout_lines, on_line),
+                name=f"docker-stdout-{container_id}",
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._pump,
+                args=("stderr", process.stderr, stderr_lines, on_line),
+                name=f"docker-stderr-{container_id}",
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+        try:
+            returncode = process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
             # El contenedor puede seguir vivo tras el timeout: que el `finally` del
             # runner lo mate y lo elimine. Se relanza para no entregar un informe.
-            raise
+            self._kill(process)
+            raise ContainerTimeout(f"docker start -a {container_id} excedio {timeout_s}s") from None
+        finally:
+            # Los hilos cierran solos al ver EOF (el hijo termino o se mato); se les
+            # da tiempo acotado antes de devolver el control.
+            for reader in readers:
+                reader.join(timeout=5.0)
         return ContainerOutcome(
-            exit_code=completed.returncode,
+            exit_code=returncode,
             duration_s=time.monotonic() - started,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout="".join(stdout_lines),
+            stderr="".join(stderr_lines),
         )
+
+    def _pump(
+        self,
+        stream: str,
+        pipe: IO[str] | None,
+        sink: list[str],
+        on_line: LineSink | None,
+    ) -> None:
+        """Lee un flujo hasta EOF, guardando cada linea y emitiendola si hay callback.
+
+        `on_line` se aisla en un `try`: la consola es *best-effort* y una excepcion
+        del suscriptor no puede tumbar una verificacion que ya corre (W8).
+        """
+        if pipe is None:
+            return
+        try:
+            for line in pipe:
+                sink.append(line)
+                if on_line is not None:
+                    try:
+                        on_line(stream, line.rstrip("\n"))
+                    except Exception:  # noqa: BLE001 - la consola nunca rompe el informe
+                        logger.warning("la consola %s fallo al emitir una linea", stream)
+        finally:
+            pipe.close()
+
+    def _kill(self, process: subprocess.Popen[str]) -> None:
+        process.kill()
+        try:
+            process.wait(timeout=10.0)
+        except subprocess.TimeoutExpired:
+            logger.error("el proceso docker no murio tras el kill")
 
     def remove(self, container_id: str) -> None:
         if not container_id:
