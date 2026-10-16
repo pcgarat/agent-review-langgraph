@@ -60,7 +60,7 @@ orden, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Nada cerrado todav�
   - Verifica: `make eval` (informe) y revisión humana de las etiquetas.
   - Ficheros: `tests/eval/pr_3/labels.yaml`, `tests/eval/pr_3/diff.patch`.
 
-- [ ] **E6** `LlmPort` de *replay* con fingerprint
+- [x] **E6** `LlmPort` de *replay* con fingerprint
   - Un puerto que devuelve `text` y `usage` grabados por **rol y llamada** y aborta si
     el fingerprint del prompt (incluye el rol y el `max_findings`) o del caso no
     coincide; el mismo puerto sirve para el modelo real (la única variable es el

@@ -8,6 +8,7 @@ del modelo) y `expected_report.json` (el baseline congelado).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from typing import Any
 import yaml
 
 from agent_review.domain.models import Finding
+from agent_review.ports.llm import JsonMode, LlmReply
 
 # Tres etiquetas (E9 de la spec): lo que debe salir, lo que no, y lo tolerable.
 LBL_EXPECTED = "expected"
@@ -442,3 +444,162 @@ def _trend(baseline: float | None, current: float | None, *, higher_better: bool
         return _Trend.IGUAL
     improves = current > baseline if higher_better else current < baseline
     return _Trend.MEJOR if improves else _Trend.PEOR
+
+
+# ---------------------------------------------------------------------------
+# Replay: puerto LLM con respuestas grabadas y fingerprint (E6).
+# ---------------------------------------------------------------------------
+
+# Lo que un caso mide cambia si cambia el prompt (rol + tope de hallazgos), el
+# diff o el scope. El fingerprint cubre los tres: una grabacion vieja con un
+# prompt nuevo aborta en vez de medir el pasado en silencio (E4 de la spec).
+_FINGERPRINT_VERSION = 1
+
+
+class FingerprintMismatch(RuntimeError):
+    """La grabacion no corresponde al prompt o al caso: hay que regrabar."""
+
+
+def prompt_fingerprint(*, role: str, system: str, prompt: str, max_tokens: int) -> str:
+    """Huella estable del prompt de un rol: rol + system + prompt + `max_tokens`.
+
+    El rol forma parte del fingerprint porque dos roles con el mismo diff y tope
+    de hallazgos generan el mismo prompt (E4 de la spec): sin el, regrabar un rol
+    invalidaria los demas o pasaria por valido sin serlo.
+    """
+    digest = hashlib.sha256()
+    for part in (_FINGERPRINT_VERSION, role, system, prompt, max_tokens):
+        digest.update(str(part).encode("utf-8"))
+        digest.update(b"\x00")
+    return f"sha256:{digest.hexdigest()}"
+
+
+def case_fingerprint(case: Case) -> str:
+    """Huella del caso: diff + scope. Un caso distinto no casa la grabacion."""
+    digest = hashlib.sha256()
+    digest.update(case.name.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update(case.diff.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update(json.dumps(case.scope, sort_keys=True).encode("utf-8"))
+    return f"sha256:{digest.hexdigest()}"
+
+
+@dataclass(frozen=True)
+class Recording:
+    """Respuestas grabadas de un caso, indexadas por fingerprint de prompt.
+
+    Por rol y por llamada (E4): cada entrada lleva su `fingerprint` y el par
+    `text`/`usage`; regrabar un rol no toca los demas.
+    """
+
+    case: str
+    case_fingerprint: str
+    calls: dict[str, dict[str, Any]]
+
+    @classmethod
+    def load(cls, path: str | Path) -> Recording:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls(
+            case=str(data["case"]),
+            case_fingerprint=str(data["case_fingerprint"]),
+            calls={str(key): value for key, value in data.get("calls", {}).items()},
+        )
+
+    def dump(self) -> str:
+        return (
+            json.dumps(
+                {
+                    "case": self.case,
+                    "case_fingerprint": self.case_fingerprint,
+                    "calls": self.calls,
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
+
+
+class ReplayLlm:
+    """`LlmPort` de *replay*: devuelve las respuestas grabadas y aborta si no casan.
+
+    Es el mismo puerto que el modelo real (E7 de la spec): lo unico que cambia
+    entre *replay* y real es esta clase. Se construye **para un rol** (el `name`
+    de la persona), de modo que cada uno tiene sus propias respuestas grabadas y
+    regrabar un rol no invalida los demas. Cada llamada se comprueba contra el
+    fingerprint del prompt (que incluye el rol) y del caso; un prompt cambiado o
+    un caso distinto lanza `FingerprintMismatch` en vez de devolver una respuesta
+    ajena.
+    """
+
+    def __init__(self, recording: Recording, case: Case, *, role: str) -> None:
+        self._recording = recording
+        self._role = role
+        self._used: set[str] = set()
+        current = case_fingerprint(case)
+        if recording.case_fingerprint != current:
+            raise FingerprintMismatch(
+                f"el caso no casa la grabacion: {recording.case_fingerprint} != {current}; "
+                f"regraba con `make eval-record`"
+            )
+
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode: JsonMode | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> LlmReply:
+        del json_mode, response_schema
+        fingerprint = prompt_fingerprint(
+            role=self._role, system=system, prompt=prompt, max_tokens=max_tokens
+        )
+        entry = self._recording.calls.get(fingerprint)
+        if entry is None:
+            raise FingerprintMismatch(
+                f"el prompt del rol {self._role!r} no casa la grabacion "
+                f"(fingerprint {fingerprint}); regraba con `make eval-record`"
+            )
+        if fingerprint in self._used:
+            raise FingerprintMismatch(
+                f"el fingerprint {fingerprint} ya se consumio: la grabacion no cubre "
+                f"esta llamada; regraba con `make eval-record`"
+            )
+        self._used.add(fingerprint)
+        return LlmReply(
+            text=str(entry["text"]),
+            prompt_tokens=int(entry.get("prompt_tokens", 0)),
+            completion_tokens=int(entry.get("completion_tokens", 0)),
+            reasoning_tokens=int(entry.get("reasoning_tokens", 0)),
+            finish_reason=str(entry.get("finish_reason", "")),
+        )
+
+
+def record_call(
+    recording: Recording,
+    *,
+    role: str,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    reply: LlmReply,
+) -> str:
+    """Guarda una respuesta real en `recording` bajo su fingerprint. Devuelve la huella.
+
+    Lo usa `make eval-record` (E7): graba cada llamada a medida que ocurre, por
+    rol, para que regrabar un rol no invalide los demas.
+    """
+    fingerprint = prompt_fingerprint(role=role, system=system, prompt=prompt, max_tokens=max_tokens)
+    recording.calls[fingerprint] = {
+        "role": role,
+        "text": reply.text,
+        "prompt_tokens": reply.prompt_tokens,
+        "completion_tokens": reply.completion_tokens,
+        "reasoning_tokens": reply.reasoning_tokens,
+        "finish_reason": reply.finish_reason,
+    }
+    return fingerprint

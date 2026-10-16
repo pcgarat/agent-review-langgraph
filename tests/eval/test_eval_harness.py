@@ -13,18 +13,24 @@ import pytest
 import yaml
 from harness import (
     Case,
+    FingerprintMismatch,
     Label,
+    Recording,
+    ReplayLlm,
     Report,
     Verdict,
+    case_fingerprint,
     compare,
     load_case,
     match,
     measure,
     normalize,
+    record_call,
     to_json,
 )
 
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
+from agent_review.ports.llm import LlmReply
 
 
 def _write_case(root: Path, labels: dict) -> Path:
@@ -447,3 +453,95 @@ def test_compare_coverage_none_no_cuenta_como_caida() -> None:
     current = _report(metrics={"precision": 0.25, "recall": 0.5, "coverage": None}, fp_p0_p1=6)
 
     assert compare(current, baseline) is Verdict.MEJORA
+
+
+# --- E6: LlmPort de replay con fingerprint ---
+
+
+def _recording(case: Case, *, role: str, prompt: str = "DIFF:\nx", max_tokens: int = 4096):
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    record_call(
+        recording,
+        role=role,
+        system="S",
+        prompt=prompt,
+        max_tokens=max_tokens,
+        reply=LlmReply(text='{"findings": []}', prompt_tokens=10, completion_tokens=20),
+    )
+    return recording
+
+
+def test_replay_devuelve_la_respuesta_grabada() -> None:
+    case = _case()
+    llm = ReplayLlm(_recording(case, role="correctness"), case, role="correctness")
+
+    reply = llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+    assert reply.text == '{"findings": []}'
+    assert reply.prompt_tokens == 10
+    assert reply.completion_tokens == 20
+
+
+def test_replay_aborta_si_cambia_el_prompt() -> None:
+    case = _case()
+    llm = ReplayLlm(_recording(case, role="correctness"), case, role="correctness")
+
+    with pytest.raises(FingerprintMismatch, match="fingerprint"):
+        llm.complete(system="S", prompt="DIFF:\nOTRO", max_tokens=4096)
+
+
+def test_replay_aborta_si_cambia_el_max_findings() -> None:
+    case = _case()
+    llm = ReplayLlm(_recording(case, role="correctness", max_tokens=4096), case, role="correctness")
+
+    with pytest.raises(FingerprintMismatch):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=2048)
+
+
+def test_replay_aborta_si_el_caso_es_distinto() -> None:
+    case = _case()
+    other = Case(
+        name="otro",
+        repo="r",
+        pr_id=1,
+        base_sha="b",
+        head_sha="h",
+        captured_at="2026-10-16",
+        source="s",
+        scope={},
+        diff="otro diff",
+    )
+
+    with pytest.raises(FingerprintMismatch, match="caso"):
+        ReplayLlm(_recording(case, role="correctness"), other, role="correctness")
+
+
+def test_replay_el_rol_forma_parte_del_fingerprint() -> None:
+    case = _case()
+    recording = _recording(case, role="correctness")
+    llm = ReplayLlm(recording, case, role="verifier")
+
+    with pytest.raises(FingerprintMismatch):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+
+def test_replay_aborta_si_se_consume_dos_veces_el_mismo_fingerprint() -> None:
+    case = _case()
+    llm = ReplayLlm(_recording(case, role="correctness"), case, role="correctness")
+
+    llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+    with pytest.raises(FingerprintMismatch, match="ya se consumio"):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+
+def test_recording_round_trip(tmp_path: Path) -> None:
+    case = _case()
+    recording = _recording(case, role="correctness")
+    path = tmp_path / "recorded.json"
+    path.write_text(recording.dump(), encoding="utf-8")
+
+    reloaded = Recording.load(path)
+    llm = ReplayLlm(reloaded, case, role="correctness")
+
+    assert reloaded.case_fingerprint == recording.case_fingerprint
+    assert llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096).text == '{"findings": []}'
