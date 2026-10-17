@@ -8,7 +8,7 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
 
 ## Bloque S — Medida del caché (checkpoint S-K)
 
-- [ ] **S1** `cached_tokens` en el puerto
+- [x] **S1** `cached_tokens` en el puerto
   - `ports/llm.py`: `LlmReply.cached_tokens: int | None = None`; `None` = «el
     proveedor no lo reporta», **distinto de 0** (E3 de la spec). Ajustar el
     docstring: `total_tokens` sigue siendo `prompt + completion`.
@@ -18,8 +18,13 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
   - Verifica: `tests/test_llm_reviewer.py` (un `usage` con detalle da número; sin
     él, `None`).
   - Ficheros: `ports/llm.py`, `adapters/tool_loop.py`.
+  - Hecho (2026-10-17): `LoopResult` acumula los tres contadores y
+    `cached_tokens_per_turn`; la propiedad `cached_tokens` devuelve `None` si
+    **algún** turno no lo reportó (sumar los que sí daría un número incompleto con
+    aspecto de medido). `_call_with_tools` deja de devolver `prompt_tokens=0` y el
+    total como *completion*.
 
-- [ ] **S2** Normalización en el adaptador
+- [x] **S2** Normalización en el adaptador
   - `adapters/openai_llm.py`: `_read_message` y `_read_stream` devuelven el `usage`
     completo; una sola función `_cached_tokens(usage)` lee, por orden,
     `prompt_tokens_details.cached_tokens` (OpenAI-compatible),
@@ -29,8 +34,10 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
   - Verifica: `tests/test_openai_llm.py` con un doble por cada forma de `usage`
     (las tres con caché y una sin ningún campo).
   - Ficheros: `adapters/openai_llm.py`.
+  - Hecho (2026-10-17): `_cached_tokens` con los tres dialectos y test paramétrico;
+    cuando vienen varios gana el de OpenAI-compatible.
 
-- [ ] **S3** Ida y vuelta en la grabación
+- [x] **S3** Ida y vuelta en la grabación
   - `tests/eval/harness.py`: `record_call` guarda `cached_tokens`; `ReplayLlm` lo
     lee y lo devuelve en el `LlmReply` (`:695` y `:659`). **Los dos lados en el
     mismo cambio**: escribir sin leer devuelve `None` y el informe miente.
@@ -39,26 +46,34 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
   - Verifica: `tests/eval/test_eval_harness.py`, test de ida y vuelta con y sin el
     campo.
   - Ficheros: `tests/eval/harness.py`.
+  - Hecho (2026-10-17): `RecordedCall.cached_tokens`, `record_call` lo escribe y
+    `ReplayLlm` lo devuelve; un fichero sin el campo se reproduce como `None`.
 
-- [ ] **S4** Columna en el informe de 006
+- [x] **S4** Columna en el informe de 006
   - `tests/eval/harness.py`: `cached_tokens / prompt_tokens` por lote y por review;
     `no medido` cuando es `None`. No entra en *recall* ni en precisión: es coste.
   - Verifica: `tests/eval/test_eval_harness.py` (informe con `no medido` y con
     número).
   - Ficheros: `tests/eval/harness.py`.
+  - Hecho (2026-10-17): `Report.cache` = `{cached, ratio}` por review y
+    `Report.cache_by_batch` por lote, leído de `order` (una grabación heredada, sin
+    orden, no inventa lotes). `ratio` es `None` si no se midió o no hubo prompt.
 
-- [ ] **S5** Prueba de no invalidación
+- [x] **S5** Prueba de no invalidación
   - Test que calcula el *fingerprint* de un prompt conocido antes y después de S
     (no debe cambiar: S no toca `system`, `prompt`, `max_tokens` ni contrato).
   - Aceptación: la grabación actual de `pr_3` sigue casando llamada a llamada
     **después** de S; si algo cambia, es un bug de S, no una regrabación.
   - Verifica: `tests/eval/test_eval_harness.py`.
+  - Hecho (2026-10-17): test con el sha literal de un prompt conocido; la
+    grabación de `pr_3` sigue casando (el baseline sin herramientas se refijó solo
+    con las claves nuevas de medida, calidad idéntica).
 
 ### Checkpoint S-K
 
-- [ ] `cached_tokens` llega del adaptador al informe; `None` ⇒ `no medido`.
-- [ ] Ningún *fingerprint* cambia: la grabación de `pr_3` sigue válida.
-- [ ] `make ci` en verde.
+- [x] `cached_tokens` llega del adaptador al informe; `None` ⇒ `no medido`.
+- [x] Ningún *fingerprint* cambia: la grabación de `pr_3` sigue válida.
+- [x] `make ci` en verde.
 
 ## Bloque LB — Corrida *live* base, compartida con 023 (checkpoint LB-K)
 

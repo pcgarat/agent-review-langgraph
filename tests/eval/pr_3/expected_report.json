@@ -1,5 +1,10 @@
 {
   "acceptable": [],
+  "cache": {
+    "cached": null,
+    "ratio": null
+  },
+  "cache_by_batch": {},
   "case": "pr-3-agent-review",
   "counts": {
     "acceptable": 0,
@@ -45,6 +50,7 @@
   "skipped": {},
   "unmatched": [],
   "usage": {
+    "cached": null,
     "completion": 328318,
     "prompt": 145442,
     "reasoning": 295600

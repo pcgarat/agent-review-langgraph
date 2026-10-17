@@ -649,6 +649,72 @@ def test_sin_instrumentacion_la_medida_es_vacia_no_cero() -> None:
     assert report.usage == {}
     assert report.operations == {}
     assert report.skipped == {}
+    assert report.cache == {"cached": None, "ratio": None}
+
+
+def test_el_informe_declara_el_uso_del_cache() -> None:
+    # 024 S4: una sola columna, `cached_tokens / prompt_tokens`, por review.
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+
+    report = measure(
+        case,
+        [],
+        usage={"prompt": 100, "completion": 50, "reasoning": 10, "cached": 25},
+    )
+
+    assert report.usage["cached"] == 25
+    assert report.cache == {"cached": 25, "ratio": 0.25}
+
+
+def test_cache_no_reportado_es_no_medido_y_no_cero() -> None:
+    # 024 E3: el proveedor puede no reportarlo; un 0 falso cerraria la pregunta.
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+
+    report = measure(case, [], usage={"prompt": 100, "completion": 50, "cached": None})
+
+    assert report.cache == {"cached": None, "ratio": None}
+
+
+def test_el_cache_se_desglosa_por_lote_y_un_turno_mudo_lo_deja_no_medido() -> None:
+    # Criterio 7 de 024: por lote. Un turno sin el campo en un lote lo invalida:
+    # parcial no es medido, y el lote sin `batch_index` no se agrupa.
+    case = _case()
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    for prompt, cached, batch in (
+        ("a", 5, 0),
+        ("b", 5, 0),
+        ("c", 2, 1),
+        ("d", None, 1),
+        ("e", 9, None),
+    ):
+        record_call(
+            recording,
+            role="correctness",
+            system="S",
+            prompt=prompt,
+            max_tokens=4096,
+            reply=LlmReply(text="{}", prompt_tokens=10, completion_tokens=1, cached_tokens=cached),
+            batch_index=batch,
+        )
+
+    assert harness.cache_by_batch(recording) == {
+        "0": {"cached": 10, "ratio": 0.5},
+        "1": {"cached": None, "ratio": None},
+    }
+
+
+def test_una_grabacion_sin_orden_no_inventa_lotes() -> None:
+    # Una grabacion heredada no dice a que lote pertenece cada llamada (023 E0e).
+    case = _case()
+    recording = Recording(
+        case=case.name,
+        case_fingerprint=case_fingerprint(case),
+        calls={},
+        order=None,
+    )
+
+    assert harness.cache_by_batch(recording) == {}
+    assert harness.cache_by_batch(None) == {}
 
 
 # --- E4: harness.compare (dominancia, tres veredictos) ---
@@ -838,6 +904,56 @@ def test_recording_round_trip(tmp_path: Path) -> None:
 
     assert reloaded.case_fingerprint == recording.case_fingerprint
     assert llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096).text == '{"findings": []}'
+
+
+def test_la_grabacion_guarda_el_cache_y_lo_devuelve(tmp_path: Path) -> None:
+    # 024 S3: escribir sin leer dejaria el informe en «no medido» para siempre.
+    case = _case()
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    record_call(
+        recording,
+        role="correctness",
+        system="S",
+        prompt="DIFF:\nx",
+        max_tokens=4096,
+        reply=LlmReply(
+            text='{"findings": []}', prompt_tokens=10, completion_tokens=20, cached_tokens=7
+        ),
+        batch_index=0,
+    )
+    path = tmp_path / "recorded.json"
+    path.write_text(recording.dump(), encoding="utf-8")
+
+    reply = ReplayLlm(Recording.load(path), case, role="correctness").complete(
+        system="S", prompt="DIFF:\nx", max_tokens=4096
+    )
+
+    assert reply.cached_tokens == 7
+
+
+def test_una_grabacion_sin_el_campo_es_no_medido_y_sigue_casando(tmp_path: Path) -> None:
+    # 024 S3/S5: las grabaciones anteriores no cambian de fingerprint y no se les
+    # inventa un 0 en el cache.
+    case = _case()
+    payload = json.loads(_recording(case, role="correctness").dump())
+    for call in payload["order"]:
+        call.pop("cached_tokens", None)
+    path = tmp_path / "recorded.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    llm = ReplayLlm(Recording.load(path), case, role="correctness")
+    reply = llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+    assert reply.cached_tokens is None
+
+
+def test_s_no_cambia_el_fingerprint_de_un_prompt_conocido() -> None:
+    # 024 S5: S no toca `system`, `prompt`, `max_tokens` ni el contrato. Si este
+    # sha cambia, la grabacion de `pr_3` deja de casar: es un bug de S.
+    assert (
+        prompt_fingerprint(role="correctness", system="S", prompt="DIFF:\nx", max_tokens=4096)
+        == "sha256:8809aac4b2fbc0dc5378db67de91c6d4e92917fa8abd57daf46454597fe4b3f8"
+    )
 
 
 # --- Runner: graba el modelo real y reproduce en replay por el grafo real ---

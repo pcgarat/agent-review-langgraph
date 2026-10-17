@@ -281,6 +281,8 @@ def _load_report(path: Path) -> harness.Report:
         counts=data.get("counts", {}),
         metrics=data.get("metrics", {}),
         usage=data.get("usage", {}),
+        cache=data.get("cache", {}),
+        cache_by_batch=data.get("cache_by_batch", {}),
         operations=data.get("operations", {}),
         skipped=data.get("skipped", {}),
         matched=tuple(data.get("matched", [])),

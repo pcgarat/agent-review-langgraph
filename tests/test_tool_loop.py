@@ -850,6 +850,76 @@ def test_outline_apagado_cuenta_lo_que_de_verdad_se_sirvio() -> None:
     assert result.operations == {"read_file:full": 1}
 
 
+class _UsageLlm:
+    """Devuelve respuestas con `usage` distinto por turno (024 E9)."""
+
+    def __init__(self, *replies: LlmReply) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> LlmReply:
+        del system, prompt, max_tokens, json_mode, response_schema
+        reply = self._replies[min(self.calls, len(self._replies) - 1)]
+        self.calls += 1
+        return reply
+
+
+def _turn(text: str, *, prompt: int, completion: int, reasoning: int, cached: int | None):
+    return LlmReply(
+        text=text,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        reasoning_tokens=reasoning,
+        cached_tokens=cached,
+    )
+
+
+def test_el_bucle_separa_prompt_completion_razonamiento_y_cache(tmp_path: Path) -> None:
+    # 024 E9: `usage` sigue siendo la suma para el presupuesto, pero el informe
+    # necesita ver que parte es razonamiento y cuanto descuenta el proveedor.
+    llm = _UsageLlm(
+        _turn(_tools(_read(APP)), prompt=100, completion=20, reasoning=8, cached=40),
+        _turn(json.dumps({"findings": []}), prompt=120, completion=30, reasoning=10, cached=50),
+    )
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert (result.prompt_tokens, result.completion_tokens, result.reasoning_tokens) == (
+        220,
+        50,
+        18,
+    )
+    assert result.usage == 270
+    assert result.cached_tokens == 90
+
+
+def test_un_turno_sin_cache_deja_la_medida_en_none(tmp_path: Path) -> None:
+    # Sumar solo los turnos que lo reportan daria un numero incompleto con aspecto
+    # de medido: `None` es la respuesta honesta (024 E3).
+    llm = _UsageLlm(
+        _turn(_tools(_read(APP)), prompt=100, completion=20, reasoning=8, cached=40),
+        _turn(json.dumps({"findings": []}), prompt=120, completion=30, reasoning=10, cached=None),
+    )
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.cached_tokens is None
+
+
+def test_sin_turnos_no_hay_medida_de_cache() -> None:
+    result = LoopResult()
+
+    assert result.cached_tokens is None
+
+
 def test_read_state_aparece_tras_el_tool_result_y_no_en_el_prompt_inicial(
     tmp_path: Path,
 ) -> None:

@@ -113,7 +113,9 @@ class Report:
     Los `id` de `matched`/`unmatched`/`missing` existen para que el fallo de CI
     diga **que** hallazgo se movio, no solo que un numero cambio. `usage` desglosa
     el gasto (023 M1): sin separar *prompt*, *completion* y razonamiento no se
-    puede decidir que palanca del bucle se paga. `operations` cuenta las
+    puede decidir que palanca del bucle se paga. `cache` es el uso de la cache del
+    proveedor (`cached_tokens / prompt_tokens`, 024 §5.4) y `cache_by_batch` su
+    desglose por lote; `None` es «no medido», nunca 0. `operations` cuenta las
     peticiones servidas por herramienta y modo, para saber si el modelo usa
     `outline` o `regex` en vez de suponerlo. `skipped` cuenta los ficheros que la
     review dejo fuera, por motivo: una omision por presupuesto tambien cuesta
@@ -125,7 +127,9 @@ class Report:
     fingerprints: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, float | None] = field(default_factory=dict)
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int | None] = field(default_factory=dict)
+    cache: dict[str, float | int | None] = field(default_factory=dict)
+    cache_by_batch: dict[str, dict[str, float | int | None]] = field(default_factory=dict)
     operations: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
     matched: tuple[str, ...] = ()
@@ -361,9 +365,10 @@ def measure(
     tokens: int | None = None,
     coverage: float | None = None,
     fingerprints: Mapping[str, str] | None = None,
-    usage: Mapping[str, int] | None = None,
+    usage: Mapping[str, int | None] | None = None,
     operations: Mapping[str, int] | None = None,
     skipped: Mapping[str, SkipReason] | None = None,
+    cache_by_batch: Mapping[str, Mapping[str, float | int | None]] | None = None,
 ) -> Report:
     """Traduce una corrida en el informe de seis metricas (E3, spec §5.4).
 
@@ -372,7 +377,8 @@ def measure(
     porque el harness puro no corre el grafo. Hasta que exista la instrumentacion,
     `coverage=None` (nunca 0: «no medido» no es «no visto»). `usage`, `operations`
     y `skipped` son la medida de coste de 023 M1: no entran en precision ni en
-    recall, solo explican de donde sale el numero.
+    recall, solo explican de donde sale el numero. `cache` (y su desglose por lote)
+    es el uso de la cache del proveedor de 024 §5.4, con `None` cuando no se mide.
     """
     result = match(case, published)
     inverted = _inverted(case.expected, result.expected)
@@ -409,6 +415,11 @@ def measure(
         counts=counts,
         metrics=metrics,
         usage=dict(sorted((usage or {}).items())),
+        cache=_cache_report(int((usage or {}).get("prompt") or 0), (usage or {}).get("cached")),
+        cache_by_batch={
+            index: dict(sorted(entry.items()))
+            for index, entry in sorted((cache_by_batch or {}).items())
+        },
         operations=dict(sorted((operations or {}).items())),
         skipped=dict(sorted(_skipped_by_reason(skipped).items())),
         matched=tuple(sorted(all_tp)),
@@ -429,6 +440,48 @@ def _skipped_by_reason(skipped: Mapping[str, SkipReason] | None) -> dict[str, in
     for reason in (skipped or {}).values():
         counts[str(reason)] = counts.get(str(reason), 0) + 1
     return counts
+
+
+def _cache_report(prompt: int, cached: int | None) -> dict[str, float | int | None]:
+    """Uso de la cache del proveedor: `cached_tokens / prompt_tokens` (024 §5.4).
+
+    `ratio` es `None` cuando el proveedor no reporta (`cached` es `None`) **o**
+    cuando no hubo prompt: «no medido» no es 0. El ratio se redondea a cuatro
+    decimales para que el baseline sea comparable byte a byte.
+    """
+    ratio = None
+    if cached is not None and prompt > 0:
+        ratio = round(cached / prompt, 4)
+    return {"cached": cached, "ratio": ratio}
+
+
+def cache_by_batch(
+    recording: Recording | None,
+) -> dict[str, dict[str, float | int | None]]:
+    """Uso de la cache por lote, leido de la grabacion (024 §5.4, criterio 7).
+
+    Solo se puede agrupar con `order`: una grabacion heredada no dice a que lote
+    pertenece cada llamada y no se le inventa (023 E0e). Los turnos sin lote (el
+    verificador) no se agrupan. Un lote donde **algun** turno no reporta cache
+    queda con `cached=None`: parcial no es medido.
+    """
+    if recording is None or recording.order is None:
+        return {}
+    prompts: dict[int, int] = {}
+    cached: dict[int, int | None] = {}
+    for call in recording.order:
+        if call.batch_index is None:
+            continue
+        index = call.batch_index
+        prompts[index] = prompts.get(index, 0) + call.prompt_tokens
+        previous = cached.get(index, 0)
+        if previous is None or call.cached_tokens is None:
+            cached[index] = None
+        else:
+            cached[index] = previous + call.cached_tokens
+    return {
+        str(index): _cache_report(prompts[index], cached.get(index)) for index in sorted(prompts)
+    }
 
 
 def to_json(report: Report) -> str:
@@ -691,6 +744,7 @@ class RecordedCall:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    cached_tokens: int | None = None
     finish_reason: str = ""
 
     def entry(self) -> dict[str, Any]:
@@ -701,6 +755,7 @@ class RecordedCall:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "cached_tokens": self.cached_tokens,
             "finish_reason": self.finish_reason,
         }
 
@@ -786,24 +841,28 @@ def _recorded_call(raw: Mapping[str, Any]) -> RecordedCall:
         prompt_tokens=int(raw.get("prompt_tokens", 0)),
         completion_tokens=int(raw.get("completion_tokens", 0)),
         reasoning_tokens=int(raw.get("reasoning_tokens", 0)),
+        cached_tokens=(int(raw["cached_tokens"]) if raw.get("cached_tokens") is not None else None),
         finish_reason=str(raw.get("finish_reason", "")),
     )
 
 
 @dataclass
 class Usage:
-    """Gasto real de una corrida, desglosado por concepto (023 M1).
+    """Gasto real de una corrida, desglosado por concepto (023 M1, 024 E9).
 
     El proveedor reporta el `usage` por llamada y nadie lo suma: el informe solo
     tenia el total. `reasoning` va **dentro** de `completion` en el proveedor y se
     cuenta aparte porque es lo que se paga dos veces al reenviar contexto
-    (espec 023 §1). Se acumula en los puertos de *replay* y de grabacion para que
-    la misma tabla sirva en *replay* y en *live*.
+    (espec 023 §1). `cached` es el prefijo que el proveedor sirvio de su cache y
+    queda en `None` si **alguna** llamada no lo reporto: sumar las que si lo
+    hicieron daria un numero incompleto con aspecto de medido (024 E3).
     """
 
     prompt: int = 0
     completion: int = 0
     reasoning: int = 0
+    cached: int | None = None
+    unmeasured_cache: bool = False
 
     @property
     def total(self) -> int:
@@ -813,12 +872,17 @@ class Usage:
         self.prompt += reply.prompt_tokens
         self.completion += reply.completion_tokens
         self.reasoning += reply.reasoning_tokens
+        if reply.cached_tokens is None:
+            self.unmeasured_cache = True
+        else:
+            self.cached = (self.cached or 0) + reply.cached_tokens
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | None]:
         return {
             "prompt": self.prompt,
             "completion": self.completion,
             "reasoning": self.reasoning,
+            "cached": None if self.unmeasured_cache else self.cached,
         }
 
 
@@ -881,6 +945,9 @@ class ReplayLlm:
             prompt_tokens=int(entry.get("prompt_tokens", 0)),
             completion_tokens=int(entry.get("completion_tokens", 0)),
             reasoning_tokens=int(entry.get("reasoning_tokens", 0)),
+            cached_tokens=(
+                int(entry["cached_tokens"]) if entry.get("cached_tokens") is not None else None
+            ),
             finish_reason=str(entry.get("finish_reason", "")),
         )
         self.total_tokens += reply.total_tokens
@@ -952,6 +1019,7 @@ def record_call(
         "prompt_tokens": reply.prompt_tokens,
         "completion_tokens": reply.completion_tokens,
         "reasoning_tokens": reply.reasoning_tokens,
+        "cached_tokens": reply.cached_tokens,
         "finish_reason": reply.finish_reason,
     }
     # El indice conserva la primera ocurrencia del prompt; las repeticiones viven
@@ -975,6 +1043,7 @@ def record_call(
             prompt_tokens=reply.prompt_tokens,
             completion_tokens=reply.completion_tokens,
             reasoning_tokens=reply.reasoning_tokens,
+            cached_tokens=reply.cached_tokens,
             finish_reason=reply.finish_reason,
         )
     )
@@ -1348,6 +1417,7 @@ def evaluate(
         usage=run.usage,
         operations=run.operations,
         skipped=run.skipped,
+        cache_by_batch=cache_by_batch(recording),
     )
 
 

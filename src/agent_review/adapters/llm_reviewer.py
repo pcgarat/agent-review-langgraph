@@ -627,7 +627,16 @@ class LlmReviewer:
             if loop.data is not None
             else (loop.text or "")
         )
-        reply = LlmReply(text=text, prompt_tokens=0, completion_tokens=loop.usage)
+        # El `LlmReply` del lote lleva los contadores **separados** (024 E9): antes
+        # ponia `prompt_tokens=0` y el total como *completion*, que es un gasto
+        # mal atribuido aunque nadie lo leyera todavia.
+        reply = LlmReply(
+            text=text,
+            prompt_tokens=loop.prompt_tokens,
+            completion_tokens=loop.completion_tokens,
+            reasoning_tokens=loop.reasoning_tokens,
+            cached_tokens=loop.cached_tokens,
+        )
         self.last_usage = reply
         return reply
 

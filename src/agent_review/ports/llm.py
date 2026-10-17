@@ -59,6 +59,10 @@ class LlmReply:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    # Tokens del prefijo que el proveedor sirvio de su cache (024 E3). `None` es
+    # «no medido» y **no** es 0: un proveedor que no lo reporta no es un proveedor
+    # que no cachea, y confundirlos cierra la pregunta al reves.
+    cached_tokens: int | None = None
     finish_reason: str = ""
     # Lo que el modelo razono antes de responder, si el proveedor lo devuelve
     # (021). Es material de operacion: no se publica ni entra en el estado.

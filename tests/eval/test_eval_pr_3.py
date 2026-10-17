@@ -82,6 +82,8 @@ def _baseline(path: Path) -> harness.Report:
         counts=data.get("counts", {}),
         metrics=data.get("metrics", {}),
         usage=data.get("usage", {}),
+        cache=data.get("cache", {}),
+        cache_by_batch=data.get("cache_by_batch", {}),
         operations=data.get("operations", {}),
         skipped=data.get("skipped", {}),
         matched=tuple(data.get("matched", [])),
@@ -178,8 +180,17 @@ def test_el_baseline_fija_el_gasto_por_concepto() -> None:
     # comparar configuraciones; el total de antes no decia donde se pagaba.
     report = _replay_report(harness.load_case(CASE_DIR))
 
-    assert report.usage == {"prompt": 145442, "completion": 328318, "reasoning": 295600}
+    assert report.usage == {
+        "prompt": 145442,
+        "completion": 328318,
+        "reasoning": 295600,
+        "cached": None,
+    }
     assert report.usage["reasoning"] > 0, "el gold set tiene razonamiento: debe contarse"
+    # La grabacion de 008 es anterior a 024: no trae cache ni orden por lote, y el
+    # informe lo declara «no medido» en vez de inventar un 0.
+    assert report.cache == {"cached": None, "ratio": None}
+    assert report.cache_by_batch == {}
     # Sin herramientas no hay peticiones servidas ni ficheros omitidos: el caso
     # entra entero (cobertura 1.0), asi que un `skipped` no vacio seria una fuga.
     assert report.operations == {}

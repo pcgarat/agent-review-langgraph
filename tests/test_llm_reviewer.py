@@ -1008,8 +1008,9 @@ def test_reader_factory_none_no_cambia_el_camino() -> None:
 class _ScriptedToolsLlm:
     """Respuestas en orden; acepta `on_reasoning` opcional (RH7)."""
 
-    def __init__(self, *responses: str) -> None:
+    def __init__(self, *responses: str, cached_tokens: int | None = None) -> None:
         self._responses = list(responses) or ["{}"]
+        self._cached_tokens = cached_tokens
         self.calls: list[dict] = []
         self.reasoning_pieces: list[str] = []
 
@@ -1031,7 +1032,13 @@ class _ScriptedToolsLlm:
         if on_reasoning is not None:
             on_reasoning("pienso")
             self.reasoning_pieces.append("pienso")
-        return LlmReply(text=self._responses[index], prompt_tokens=10, completion_tokens=5)
+        return LlmReply(
+            text=self._responses[index],
+            prompt_tokens=10,
+            completion_tokens=5,
+            reasoning_tokens=2,
+            cached_tokens=self._cached_tokens,
+        )
 
 
 def _tools(*entries: dict) -> str:
@@ -1446,6 +1453,54 @@ def test_sin_herramientas_no_hay_operaciones(tmp_path: Path) -> None:
     reviewer.review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
 
     assert reviewer.operation_counts == {}
+
+
+def test_el_lote_con_herramientas_declara_el_gasto_separado(tmp_path: Path) -> None:
+    # 024 E9: antes `_call_with_tools` devolvia `prompt_tokens=0` y el total como
+    # *completion*. Una medida de cache sobre ese `LlmReply` seria una ficcion.
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path, path="a.py", body="x = 1\n")
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+        cached_tokens=4,
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+    )
+
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 5), head_sha="h")
+
+    usage = reviewer.last_usage
+    assert usage is not None
+    assert (usage.prompt_tokens, usage.completion_tokens) == (20, 10)
+    assert usage.reasoning_tokens == 4
+    assert usage.cached_tokens == 8, "dos turnos de 4 tokens cacheados"
+    assert usage.total_tokens == 30
+
+
+def test_sin_campo_de_cache_la_medida_es_none_no_cero(tmp_path: Path) -> None:
+    # 024 E3: «no medido» y «no cacheado» son cosas distintas.
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path, path="a.py", body="x = 1\n")
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+    )
+
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 5), head_sha="h")
+
+    assert reviewer.last_usage is not None
+    assert reviewer.last_usage.cached_tokens is None
 
 
 def test_precache_off_deja_el_contexto_l1_fuera_del_prompt(tmp_path: Path) -> None:

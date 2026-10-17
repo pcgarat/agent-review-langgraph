@@ -112,6 +112,7 @@ class OpenAiCompatibleLlm:
             reasoning_tokens=int(
                 (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0
             ),
+            cached_tokens=_cached_tokens(usage),
             finish_reason=str(finish_reason or ""),
             reasoning=reasoning,
         )
@@ -187,6 +188,25 @@ class OpenAiCompatibleLlm:
         finally:
             if self._client is None:
                 client.close()
+
+
+def _cached_tokens(usage: dict[str, Any]) -> int | None:
+    """Tokens del prefijo servidos de la cache del proveedor (024 E3).
+
+    Tres dialectos conocidos, en orden: `prompt_tokens_details.cached_tokens`
+    (OpenAI-compatible), `prompt_cache_hit_tokens` (DeepSeek) y
+    `cache_read_input_tokens` (Anthropic). Si no viene ninguno, `None`: el
+    proveedor **no lo reporta**, que no es lo mismo que no cachear. Inventar un 0
+    cerraria la pregunta al reves.
+    """
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details.get("cached_tokens") is not None:
+        return int(details["cached_tokens"])
+    for key in ("prompt_cache_hit_tokens", "cache_read_input_tokens"):
+        value = usage.get(key)
+        if value is not None:
+            return int(value)
+    return None
 
 
 def _read_message(

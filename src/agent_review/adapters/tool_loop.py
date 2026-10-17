@@ -97,6 +97,13 @@ class LoopResult(BaseModel):
     `operations` cuenta las peticiones **servidas** por herramienta y modo
     (`read_file:outline`, `grep:regex`…): mide si la palanca se usa, no solo si
     existe (023 M1).
+
+    Los contadores separados (`prompt_tokens`, `completion_tokens`,
+    `reasoning_tokens`) son la medida de coste de 024 E9: `usage` sigue siendo su
+    suma para el presupuesto, pero un informe que solo ve el total no puede decir
+    que se paga dos veces. `cached_tokens` es `None` si **algún** turno no lo
+    reporto: sumar los que si lo hicieron daria un numero incompleto con aspecto
+    de medido.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -108,10 +115,23 @@ class LoopResult(BaseModel):
     tool_calls: int = 0
     bytes_served: int = 0
     usage: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens_per_turn: list[int | None] = Field(default_factory=list)
     operations: dict[str, int] = Field(default_factory=dict)
     final_forced: bool = False
     forced_by_truncation: bool = False
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def cached_tokens(self) -> int | None:
+        """Tokens cacheados del bucle; `None` si algun turno no lo reporto (024 E3)."""
+        if not self.cached_tokens_per_turn or any(
+            value is None for value in self.cached_tokens_per_turn
+        ):
+            return None
+        return sum(value for value in self.cached_tokens_per_turn if value is not None)
 
     @property
     def served(self) -> dict[str, str]:
@@ -265,6 +285,12 @@ def run_tool_loop(
             release_tokens(budget, review_key, held_tokens)
             raise
         result.usage += reply.total_tokens
+        # Contadores separados (024 E9): la suma no distingue lo que se paga dos
+        # veces (razonamiento) ni lo que el proveedor descuenta (cache).
+        result.prompt_tokens += reply.prompt_tokens
+        result.completion_tokens += reply.completion_tokens
+        result.reasoning_tokens += reply.reasoning_tokens
+        result.cached_tokens_per_turn.append(reply.cached_tokens)
         if budget is not None and review_key:
             # Confirma el gasto real. En el salvamento sin reserva (`held_tokens`
             # = 0) se cobra el gasto sin tocar el pendiente: el contador refleja lo
