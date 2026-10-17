@@ -241,3 +241,129 @@ def test_respuesta_sin_choices_es_llm_error() -> None:
 def test_modelo_vacio_falla_en_construccion() -> None:
     with pytest.raises(ValueError):
         OpenAiCompatibleLlm(api_key="k", model="")
+
+
+# --- Streaming (021 R1/R2/R8) ---
+
+
+def _sse(*chunks: dict, done: bool = True) -> bytes:
+    body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+    if done:
+        body += "data: [DONE]\n\n"
+    return body.encode()
+
+
+_STREAM = _sse(
+    {"choices": [{"delta": {"role": "assistant", "reasoning_content": "Miro el "}}]},
+    {"choices": [{"delta": {"reasoning_content": "diff."}}]},
+    {"choices": [{"delta": {"content": '{"findings"'}}]},
+    {"choices": [{"delta": {"content": ": []}"}, "finish_reason": "stop"}]},
+    {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 40,
+            "completion_tokens": 12,
+            "completion_tokens_details": {"reasoning_tokens": 5},
+        },
+    },
+)
+
+
+def _stream_handler(body: bytes, captured: dict | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if captured is not None:
+            captured.update(_payload(request))
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    return handler
+
+
+def test_pide_siempre_streaming_con_usage() -> None:
+    captured: dict = {}
+    llm = OpenAiCompatibleLlm(
+        api_key="k", model="m", client=_client(_stream_handler(_STREAM, captured))
+    )
+    llm.complete(system="s", prompt="p", max_tokens=10)
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}
+
+
+def test_streaming_acumula_contenido_razonamiento_y_usage() -> None:
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(_stream_handler(_STREAM)))
+    reply = llm.complete(system="s", prompt="p", max_tokens=10)
+    assert reply.text == '{"findings": []}'
+    assert reply.reasoning == "Miro el diff."
+    assert reply.finish_reason == "stop"
+    assert (reply.prompt_tokens, reply.completion_tokens, reply.reasoning_tokens) == (40, 12, 5)
+
+
+def test_on_reasoning_recibe_los_trozos_en_orden() -> None:
+    trozos: list[str] = []
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(_stream_handler(_STREAM)))
+    llm.complete(system="s", prompt="p", max_tokens=10, on_reasoning=trozos.append)
+    assert trozos == ["Miro el ", "diff."]
+
+
+def test_un_oyente_que_falla_no_cambia_la_respuesta() -> None:
+    def roto(_: str) -> None:
+        raise RuntimeError("panel caido")
+
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(_stream_handler(_STREAM)))
+    reply = llm.complete(system="s", prompt="p", max_tokens=10, on_reasoning=roto)
+    assert reply.text == '{"findings": []}'
+
+
+def test_lineas_vacias_y_sin_done_se_toleran() -> None:
+    body = b": keep-alive\n\n" + _sse(
+        {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}, done=False
+    )
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(_stream_handler(body)))
+    assert llm.complete(system="s", prompt="p", max_tokens=10).text == "ok"
+
+
+def test_razonamiento_que_agota_max_tokens_sin_respuesta_es_error() -> None:
+    # La prueba del 2026-10-17: 43 194 tokens de razonamiento y `length` sin content.
+    body = _sse(
+        {"choices": [{"delta": {"reasoning_content": "pienso mucho"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+    )
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(_stream_handler(body)))
+    with pytest.raises(LlmError, match="finish_reason=length"):
+        llm.complete(system="s", prompt="p", max_tokens=10)
+
+
+def test_un_corte_a_mitad_del_stream_es_transitorio() -> None:
+    from agent_review.ports.llm import LlmTransientError
+
+    class _Cortado(httpx.SyncByteStream):
+        def __iter__(self):
+            yield _sse({"choices": [{"delta": {"reasoning_content": "a"}}]}, done=False)
+            raise httpx.ReadError("conexion cerrada")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Cortado())
+
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(handler))
+    with pytest.raises(LlmTransientError):
+        llm.complete(system="s", prompt="p", max_tokens=10)
+
+
+def test_sin_streaming_tambien_devuelve_el_razonamiento() -> None:
+    # Un proveedor que ignora `stream` responde JSON: se lee igual (sonda §3.1).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "391", "reasoning_content": "17*23=391"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    trozos: list[str] = []
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(handler))
+    reply = llm.complete(system="s", prompt="p", max_tokens=10, on_reasoning=trozos.append)
+    assert (reply.text, reply.reasoning, trozos) == ("391", "17*23=391", ["17*23=391"])

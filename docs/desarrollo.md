@@ -120,9 +120,17 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
 2. Añade el campo del secreto a `Settings` y a `.env.example`. El YAML solo
    resuelve referencias contra campos de `Settings`; no lee el entorno crudo.
 3. Bindealo a los roles que corresponda. El código no conoce nombres de modelo.
+   Para usar el **mismo modelo con otros parámetros** en un rol (p. ej. el revisor
+   que razona y el fixer que no), declara otra entrada con `api_model` (el nombre
+   real en la API) y `params` (se aplican encima de los `defaults` del proveedor):
+   es `deepseek-v4-flash-revisor` en el registro ([021](iniciativas/021-razonamiento-visible/spec.md) R10).
 4. Cubre el contrato en `tests/test_live_models.py` (`-m live`): es lo que verifica
    que las capacidades declaradas se cumplen, cosa que `/v1/models` no publica.
-5. Si el proveedor **no** habla `/chat/completions`, añade un adaptador de
+5. El adaptador pide **siempre** *streaming* y acepta una respuesta normal si el
+   proveedor lo ignora; el razonamiento (`reasoning_content`) sale en
+   `LlmReply.reasoning` y, a trozos, por el `on_reasoning` opcional (021 R1/R2). Un
+   adaptador nuevo que no razone puede ignorar `on_reasoning`.
+6. Si el proveedor **no** habla `/chat/completions`, añade un adaptador de
    `LlmPort` y ramifica el registro por `protocol`
    ([ADR-0015](adr/0015-registro-declarativo-de-modelos.md)).
 

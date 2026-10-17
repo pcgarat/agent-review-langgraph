@@ -40,6 +40,21 @@ models:
     # que la estimacion de coste mienta.
     reasoning_min_max_tokens: 16384
 
+  # El mismo modelo, como revisor: razona siempre en alto (021 R10/R11). Con
+  # razonamiento alto, un lote de 30 000 caracteres piensa ~20 000 tokens y tarda
+  # ~2 minutos; el adaptador hace streaming para que el gateway no corte a los
+  # ~116 s (408). Se le da margen de salida para que el razonamiento no se coma la
+  # respuesta (`finish_reason: length`).
+  deepseek-v4-flash-revisor:
+    provider: nan
+    api_model: deepseek-v4-flash
+    kind: chat
+    context_window: 1048576
+    json_mode: json_object
+    reasoning_min_max_tokens: 65536
+    params:
+      reasoning_effort: high
+
   # Soporta `json_schema` estricto: candidato para el fixer, donde una respuesta
   # con forma invalida cuesta un intento entero.
   qwen3.6:
@@ -80,5 +95,6 @@ models:
 # persona; `fixer` propone el parche), no el nodo del grafo: el nodo `persona` es
 # un fan-out y todas sus ramas comparten closure (D1).
 bindings:
-  correctness: deepseek-v4-flash
+  # Los revisores razonan; el fixer no (propone un parche corto con `json_object`).
+  correctness: deepseek-v4-flash-revisor
   fixer: deepseek-v4-flash

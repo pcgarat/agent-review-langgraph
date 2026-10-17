@@ -109,3 +109,51 @@ def test_probe_una_credencial_rechazada_es_fatal(tmp_path: Path) -> None:
     assert len(problems) == 1
     assert problems[0].fatal
     assert "401" in str(problems[0])
+
+
+_ALIAS = """\
+version: 1
+providers:
+  nan:
+    base_url: https://api.nan.builders/v1
+    api_key: ${LLM_API_KEY}
+    defaults:
+      temperature: 0
+      reasoning_effort: none
+models:
+  real: {provider: nan, kind: chat, json_mode: json_object}
+  real-revisor:
+    provider: nan
+    api_model: real
+    kind: chat
+    json_mode: json_object
+    reasoning_min_max_tokens: 65536
+    params:
+      reasoning_effort: high
+bindings:
+  correctness: real-revisor
+  fixer: real
+"""
+
+
+def test_alias_de_modelo_con_parametros_propios(tmp_path: Path) -> None:
+    # 021 R10: el revisor y el fixer usan el mismo modelo real; solo el revisor
+    # razona. Los `params` del modelo pisan los `defaults` del proveedor.
+    registry = ModelRegistry.from_settings(_settings(tmp_path, _ALIAS))
+    reviewer = registry.port_for("correctness")
+    fixer = registry.port_for("fixer")
+
+    assert reviewer is not fixer
+    assert reviewer._model == "real"  # type: ignore[union-attr]
+    assert reviewer._defaults == {"temperature": 0, "reasoning_effort": "high"}  # type: ignore[union-attr]
+    assert fixer._model == "real"  # type: ignore[union-attr]
+    assert fixer._defaults == {"temperature": 0, "reasoning_effort": "none"}  # type: ignore[union-attr]
+
+
+def test_probe_contrasta_el_nombre_de_api_del_alias(tmp_path: Path) -> None:
+    # El proveedor lista `real`, no `real-revisor`: el alias no es un modelo inexistente.
+    registry = ModelRegistry.from_settings(_settings(tmp_path, _ALIAS))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": [{"id": "real"}]})
+    )
+    assert registry.probe(client=httpx.Client(transport=transport)) == []

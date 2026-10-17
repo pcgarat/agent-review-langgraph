@@ -32,9 +32,11 @@ Cinco bloques, en este orden:
 - **Streaming en el adaptador, no en el puerto.** El puerto sigue devolviendo un
   `LlmReply` completo; el *streaming* es un detalle de `OpenAiCompatibleLlm`. El SSE
   se parsea a mano con `httpx.stream` (sin SDK nuevo). Errores: un estado HTTP de
-  error antes del primer *chunk* se clasifica como hoy (4xx permanente, 5xx/429/408
+  error antes del primer *chunk* se clasifica como hoy (4xx permanente, 5xx/429
   transitorio); un corte a mitad del *stream* es transitorio; `length` sin contenido
-  sigue siendo `LlmError`.
+  sigue siendo `LlmError`. *Enmienda 2026-10-17:* el 408 se queda **permanente**,
+  como hoy: reintentar una llamada larga choca con el mismo corte, y el *streaming*
+  ya lo evita.
 - **`on_reasoning` opcional y *best-effort*.** Se añade a `LlmPort.complete` con
   *default* `None`. Quien llama solo lo pasa si hay sink, así que los dobles de test
   que no lo aceptan siguen valiendo; `ReplayLlm` y `RecordingLlm` del harness lo

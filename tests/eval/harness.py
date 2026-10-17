@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -576,7 +576,10 @@ class ReplayLlm:
         max_tokens: int,
         json_mode: JsonMode | None = None,
         response_schema: dict[str, Any] | None = None,
+        on_reasoning: Callable[[str], None] | None = None,
     ) -> LlmReply:
+        # Una respuesta grabada no trae razonamiento: no hay nada que escuchar.
+        del on_reasoning
         fingerprint = prompt_fingerprint(
             role=self._role,
             system=system,
@@ -678,13 +681,18 @@ class RecordingLlm:
         max_tokens: int,
         json_mode: JsonMode | None = None,
         response_schema: dict[str, Any] | None = None,
+        on_reasoning: Callable[[str], None] | None = None,
     ) -> LlmReply:
+        # Solo se pasa si alguien escucha (021 R2): un puerto que no razona no tiene
+        # por que aceptarlo.
+        extra = {"on_reasoning": on_reasoning} if on_reasoning is not None else {}
         reply = self._inner.complete(
             system=system,
             prompt=prompt,
             max_tokens=max_tokens,
             json_mode=json_mode,
             response_schema=response_schema,
+            **extra,
         )
         record_call(
             self._recording,

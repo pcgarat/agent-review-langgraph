@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -39,6 +40,9 @@ class LlmReply:
     completion_tokens: int = 0
     reasoning_tokens: int = 0
     finish_reason: str = ""
+    # Lo que el modelo razono antes de responder, si el proveedor lo devuelve
+    # (021). Es material de operacion: no se publica ni entra en el estado.
+    reasoning: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -56,6 +60,10 @@ class LlmPort(Protocol):
     `json_mode` deja que quien llama pida salida estructurada sin conocer el
     proveedor; el adaptador envia lo que su modelo declare soportar (un
     `json_schema` a un modelo que no lo soporta es un 400 permanente).
+
+    `on_reasoning` (021 R2) recibe el razonamiento a trozos mientras se genera. Es
+    *best-effort*: un oyente que falla nunca cambia la respuesta. Quien llama solo
+    lo pasa si alguien escucha, asi que un adaptador que no razona puede ignorarlo.
     """
 
     def complete(
@@ -66,4 +74,5 @@ class LlmPort(Protocol):
         max_tokens: int,
         json_mode: JsonMode | None = None,
         response_schema: dict[str, Any] | None = None,
+        on_reasoning: Callable[[str], None] | None = None,
     ) -> LlmReply: ...

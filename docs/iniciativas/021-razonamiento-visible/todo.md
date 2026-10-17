@@ -7,7 +7,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 1 — Modelo y adaptador (checkpoint C1)
 
-- [ ] **RZ1** Parámetros por modelo y alias (R10)
+- [x] **RZ1** Parámetros por modelo y alias (R10)
   - `src/agent_review/models_config.py`: `ModelSpec.api_model` (por defecto, la clave)
     y `ModelSpec.params` (encima de los `defaults` del proveedor).
     `models_registry.py` construye el puerto con ambos; `probe` usa `api_model`.
@@ -18,7 +18,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     high`; el fixer, con `none`; un `params` con clave desconocida no rompe.
   - Verifica: `tests/test_models_config.py`, `tests/test_models_registry.py`.
 
-- [ ] **RZ2** *Streaming* siempre en `OpenAiCompatibleLlm` (R1, R8)
+- [x] **RZ2** *Streaming* siempre en `OpenAiCompatibleLlm` (R1, R8)
   - `src/agent_review/adapters/openai_llm.py`: `stream: true` con
     `stream_options.include_usage`; acumula `content`, `reasoning_content`, `usage` y
     `finish_reason`. `LlmReply.reasoning` (texto completo).
@@ -26,9 +26,12 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     *stream* transitorio; `length` sin contenido, `LlmError`.
   - Aceptación: con SSE grabados (incluidos *chunks* partidos, `[DONE]` y el `usage`
     en el último) el resultado coincide con el de hoy sin *streaming*.
+  - *Hecho 2026-10-17:* si el proveedor ignora `stream` y responde JSON, se lee igual
+    (los dobles de test existentes siguen valiendo). Comprobado contra
+    `nan.builders`: 65 trozos de razonamiento y `usage` correcto.
   - Verifica: `tests/test_openai_llm.py`.
 
-- [ ] **RZ3** `on_reasoning` en el puerto (R2)
+- [x] **RZ3** `on_reasoning` en el puerto (R2)
   - `src/agent_review/ports/llm.py`: `complete(..., on_reasoning=None)`; el adaptador
     lo llama con cada trozo; una excepción del *callback* se registra y se ignora.
   - `tests/eval/harness.py`: `ReplayLlm` y `RecordingLlm` lo aceptan.

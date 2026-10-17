@@ -59,6 +59,13 @@ class ModelSpec(BaseModel):
     # Con razonamiento activo la API puede subir `max_tokens` por su cuenta: si se
     # declara, la estimacion de coste deja de mentir.
     reasoning_min_max_tokens: int | None = None
+    # Nombre del modelo en la API. Por defecto, la clave del registro; declararlo
+    # permite dos entradas sobre el mismo modelo real con parametros distintos
+    # (p. ej. un revisor que razona y un fixer que no; 021 R10).
+    api_model: str | None = None
+    # Parametros de peticion del modelo (`reasoning_effort`, `temperature`...). Se
+    # fusionan **encima** de los `defaults` del proveedor: el modelo manda.
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelsConfig(BaseModel):
@@ -95,6 +102,14 @@ class ModelsConfig(BaseModel):
 
     def provider_of(self, model_name: str) -> ProviderSpec:
         return self.providers[self.models[model_name].provider]
+
+    def api_model_of(self, model_name: str) -> str:
+        """Nombre que se manda a la API: `api_model` si se declara, o la clave."""
+        return self.models[model_name].api_model or model_name
+
+    def params_of(self, model_name: str) -> dict[str, Any]:
+        """`defaults` del proveedor con los `params` del modelo encima (021 R10)."""
+        return {**self.provider_of(model_name).defaults, **self.models[model_name].params}
 
 
 def resolve_reference(value: str, env: Mapping[str, str]) -> str:

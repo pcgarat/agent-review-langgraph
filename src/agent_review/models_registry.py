@@ -91,10 +91,10 @@ class ModelRegistry:
         provider = self._config.provider_of(model_name)
         return OpenAiCompatibleLlm(
             api_key=resolved_api_key(provider, self._env),
-            model=model_name,
+            model=self._config.api_model_of(model_name),
             base_url=provider.base_url,
             timeout_s=provider.timeout_s,
-            defaults=dict(provider.defaults),
+            defaults=self._config.params_of(model_name),
             json_mode=model.json_mode,
             reasoning_min_max_tokens=model.reasoning_min_max_tokens,
         )
@@ -133,11 +133,13 @@ class ModelRegistry:
             for model_name in dict.fromkeys(self._config.bindings.values()):
                 if self._config.models[model_name].provider != provider_name:
                     continue
-                if model_name not in listed:
+                api_model = self._config.api_model_of(model_name)
+                if api_model not in listed:
+                    shown = model_name if api_model == model_name else f"{model_name} ({api_model})"
                     problems.append(
                         Problem(
                             provider_name,
-                            f"el modelo {model_name!r} no aparece en {provider.base_url}/models",
+                            f"el modelo {shown!r} no aparece en {provider.base_url}/models",
                         )
                     )
         return problems
