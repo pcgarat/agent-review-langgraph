@@ -184,6 +184,51 @@ def test_arranque_en_produccion_sin_credencial_de_twg_falla(monkeypatch) -> None
         require_production_secrets(settings)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "secret"),
+    [
+        ({"twg_bbc_token": "change-me"}, "TWG_BBC_TOKEN"),
+        ({"vcs_provider": "github", "github_token": "change-me"}, "GITHUB_TOKEN"),
+        ({"sandbox_enabled": True, "sandbox_git_token": "change-me"}, "SANDBOX_GIT_TOKEN"),
+        (
+            {"llm_reviewer_enabled": True, "models_config": "", "llm_api_key": "change-me"},
+            "LLM_API_KEY",
+        ),
+    ],
+)
+def test_el_placeholder_de_env_example_cuenta_como_sin_rellenar(
+    monkeypatch, overrides: dict[str, object], secret: str
+) -> None:
+    """Copiar `.env.example` tal cual no puede pasar el contrato de produccion."""
+    from agent_review.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "reviews_decision_token", "token-decision-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    for name, value in overrides.items():
+        monkeypatch.setattr(settings, name, value)
+    with pytest.raises(RuntimeError, match=secret):
+        require_production_secrets(settings)
+
+
+def test_env_example_declara_todas_las_variables_y_ningun_secreto_vacio() -> None:
+    import re
+    from pathlib import Path
+
+    from agent_review.settings import Settings
+
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
+    declared = dict(re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", text, flags=re.M))
+    missing = [name.upper() for name in Settings.model_fields if name.upper() not in declared]
+    assert missing == [], f"faltan en .env.example: {missing}"
+    # Vacio a proposito solo donde el vacio significa algo (desactivado/por defecto).
+    intentionally_empty = {"SCOPE_IGNORE", "MAX_AUTONOMY_OVERRIDE", "LLM_MODEL", "LLM_BASE_URL"}
+    empty = sorted(k for k, v in declared.items() if not v.strip())
+    assert set(empty) <= intentionally_empty, f"sin placeholder: {empty}"
+
+
 def test_arranque_en_produccion_con_teams_habilitado_sin_cola_falla(monkeypatch) -> None:
     from agent_review.settings import require_production_secrets
 

@@ -249,6 +249,16 @@ def _is_unset(value: str) -> bool:
     return value.strip() in _INSECURE_DEFAULTS
 
 
+def is_missing(value: str) -> bool:
+    """¿Vacío o en el placeholder de `.env.example` (`change-me`)? Igual de ausente.
+
+    `.env.example` rellena cada secreto e identidad con `change-me`: copiarlo tal
+    cual no puede contar como «configurado», ni en el contrato de producción ni en
+    los puntos donde el vacío desactiva algo (p. ej. el login del registro).
+    """
+    return not value.strip() or _is_unset(value)
+
+
 def insecure_secrets(settings: Settings) -> list[str]:
     """Nombres de secretos que siguen en su valor de ejemplo o sin rellenar (D4).
 
@@ -266,9 +276,9 @@ def insecure_secrets(settings: Settings) -> list[str]:
     # La credencial del proveedor de VCS es obligatoria: sin ella no hay diff ni
     # comentarios. Se exige la del proveedor activo, no siempre la de Bitbucket.
     if settings.vcs_provider == "github":
-        if not settings.github_token.strip():
+        if is_missing(settings.github_token):
             insecure.append("GITHUB_TOKEN")
-    elif not settings.twg_bbc_token.strip():
+    elif is_missing(settings.twg_bbc_token):
         insecure.append("TWG_BBC_TOKEN")
     if settings.teams_enabled and not settings.teams_notices_key.strip():
         insecure.append("TEAMS_NOTICES_KEY")
@@ -290,7 +300,7 @@ def insecure_secrets(settings: Settings) -> list[str]:
                 config = None
             if config is not None:
                 insecure.extend(unresolved_secrets(config, env_for(settings)))
-        elif not settings.llm_api_key.strip():
+        elif is_missing(settings.llm_api_key):
             insecure.append("LLM_API_KEY")
     # Con el sandbox activo hay dos superficies nuevas: el token compartido
     # worker<->runner y el token de clonado de solo lectura del runner. Sin ellos
@@ -298,7 +308,7 @@ def insecure_secrets(settings: Settings) -> list[str]:
     if settings.sandbox_enabled:
         if _is_unset(settings.sandbox_runner_token):
             insecure.append("SANDBOX_RUNNER_TOKEN")
-        if not settings.sandbox_git_token.strip():
+        if is_missing(settings.sandbox_git_token):
             insecure.append("SANDBOX_GIT_TOKEN")
     # El secreto de sesion del panel (019 W7) solo se exige si el panel esta
     # desplegado: un despliegue sin `web` no debe fallar por un secreto que no usa.
@@ -316,7 +326,7 @@ def panel_insecure_secrets(settings: Settings) -> list[str]:
     ejemplo (`change-me`) o vacia dejaria el panel sin autenticacion: es
     exactamente el agujero que el fail-closed debe evitar.
     """
-    if not settings.panel_session_secret.strip() or _is_unset(settings.panel_session_secret):
+    if is_missing(settings.panel_session_secret):
         return ["PANEL_SESSION_SECRET"]
     return []
 
@@ -331,8 +341,7 @@ def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
     insecure: list[str] = []
     if not settings.sandbox_runner_url.strip():
         insecure.append("SANDBOX_RUNNER_URL")
-    token = settings.sandbox_runner_token
-    if not token.strip() or _is_unset(token):
+    if is_missing(settings.sandbox_runner_token):
         insecure.append("SANDBOX_RUNNER_TOKEN")
     return insecure
 
@@ -348,13 +357,13 @@ def teams_bot_insecure_secrets(settings: Settings) -> list[str]:
     insecure: list[str] = []
     if not settings.teams_enabled:
         return insecure
-    if not settings.teams_bot_id.strip():
+    if is_missing(settings.teams_bot_id):
         insecure.append("TEAMS_BOT_ID")
-    if not settings.teams_bot_tenant_id.strip():
+    if is_missing(settings.teams_bot_tenant_id):
         insecure.append("TEAMS_BOT_TENANT_ID")
     # El token es el secreto del bot (client secret). Sin el, el SDK no valida el
     # JWT del Bot Framework: en produccion no puede quedarse vacio ni de ejemplo.
-    if not settings.teams_bot_token.strip() or _is_unset(settings.teams_bot_token):
+    if is_missing(settings.teams_bot_token):
         insecure.append("TEAMS_BOT_TOKEN")
     if _is_unset(settings.teams_bot_shared_secret):
         insecure.append("TEAMS_BOT_SHARED_SECRET")

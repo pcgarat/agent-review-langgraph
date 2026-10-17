@@ -26,7 +26,7 @@ from agent_review.sandbox_runner.read_workspace import (
 from agent_review.sandbox_runner.runtime import ContainerError, DockerCliRuntime
 from agent_review.sandbox_runner.verifier import RunnerError, Verifier
 from agent_review.sandbox_runner.workspace import GitWorkspace, WorkspaceError
-from agent_review.settings import Settings, get_settings
+from agent_review.settings import Settings, get_settings, is_missing
 
 logger = logging.getLogger(__name__)
 
@@ -297,11 +297,18 @@ def build_verifier(settings: Settings) -> Verifier:
             profile_source=_FileProfileSource(settings.repo_profile_config),
             workspace=GitWorkspace(git_token=settings.sandbox_git_token),
             runtime=DockerCliRuntime(docker_bin=settings.sandbox_docker_bin),
-            registry_user=settings.sandbox_registry_user,
-            registry_token=settings.sandbox_registry_token,
+            # El placeholder de `.env.example` (`change-me`) cuenta como vacio: sin
+            # usuario no se hace `docker login` (imagen publica o ya autenticada).
+            registry_user=_configured(settings.sandbox_registry_user),
+            registry_token=_configured(settings.sandbox_registry_token),
             console=build_console(settings),
         )
     return _verifier
+
+
+def _configured(value: str) -> str:
+    """El valor, o `""` si sigue en el placeholder de `.env.example`."""
+    return "" if is_missing(value) else value
 
 
 def _sse(event: str, payload: dict[str, object]) -> str:

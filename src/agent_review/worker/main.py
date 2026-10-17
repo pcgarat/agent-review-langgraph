@@ -68,7 +68,13 @@ from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
 from agent_review.profile import expected_tools, fix_recipes, load_profile
 from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
-from agent_review.settings import Settings, get_settings, is_production, require_production_secrets
+from agent_review.settings import (
+    Settings,
+    get_settings,
+    is_missing,
+    is_production,
+    require_production_secrets,
+)
 from agent_review.worker.cancel import CancellationPort, build_cancellation
 
 logger = logging.getLogger(__name__)
@@ -320,7 +326,7 @@ def build_vcs(settings: Settings) -> VcsPort:
     hay Bitbucket (CLI `twg`) o GitHub (API REST).
     """
     if settings.vcs_provider == "github":
-        if not settings.github_token.strip():
+        if is_missing(settings.github_token):
             # Falla ruidoso en el arranque: descubrirlo en la primera review
             # pareceria un fallo del PR revisado.
             raise RuntimeError(

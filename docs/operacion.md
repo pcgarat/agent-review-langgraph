@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-17 | Creado: 2026-10-11
 # Operación
 
 Cómo se levanta, se configura, se verifica y se diagnostica el agente. La
@@ -57,7 +57,12 @@ Sin el perfil, `docker compose up` arranca exactamente lo de siempre.
 ## 2. Configuración
 
 Toda la configuración entra por entorno (`settings.py`); `.env.example` es la
-plantilla comentada. Además hay tres ficheros versionados:
+plantilla comentada y declara **todas** las variables. Cada secreto o identidad lleva
+el placeholder `change-me`, que cuenta como «sin rellenar» en todas partes:
+`make bootstrap` lo lista como pendiente y en producción el arranque falla (§3). Solo
+quedan vacías a propósito las variables en las que el vacío significa algo
+(`SCOPE_IGNORE`, `MAX_AUTONOMY_OVERRIDE`, `LLM_MODEL`, `LLM_BASE_URL`). Además hay tres
+ficheros versionados:
 
 - **[`config/autonomy.yaml`](../config/autonomy.yaml)**: la política
   ([ADR-0003](adr/0003-autonomia-como-politica-por-hallazgo.md)). `max_autonomy` es
@@ -137,6 +142,8 @@ Si falta cualquiera, el fix queda `NOT_VERIFIABLE`.
 
 Principio: la aplicación solo lee variables de entorno, y en producción no arranca
 si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-closed.md)).
+Vacío y `change-me` (el placeholder de `.env.example`) son igual de «falta»
+(`settings.is_missing`).
 
 | Variable | Qué es | Obligatoria | Dueño |
 |---|---|---|---|
