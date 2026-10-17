@@ -166,7 +166,13 @@ def test_el_placeholder_tiene_una_sola_definicion() -> None:
 
 
 def test_ningun_campo_secreto_sin_declaracion() -> None:
-    """I1: un campo secreto nuevo sin `Secret` pone este test en rojo."""
+    """I1: un campo secreto nuevo sin `Secret` pone este test en rojo.
+
+    El rojo puede aparecer en una rama que no toco nada del contrato: si sale de un
+    commit anterior al ADR-0022 y anade un campo con nombre de secreto, su rama esta
+    verde y la declaracion falta al integrar. Por eso el mensaje nombra el ADR y como
+    declarar el campo, en vez de senalar solo el nombre.
+    """
     # Campos que el contrato no trata como secretos pese a su nombre (si aparecen).
     exempt: set[str] = set()
     undeclared = [
@@ -176,7 +182,13 @@ def test_ningun_campo_secreto_sin_declaracion() -> None:
         and (name.endswith(("_token", "_secret", "_password", "_api_key")))
         and _secret_of(field_info) is None
     ]
-    assert undeclared == [], f"campos secretos sin `Secret` en el metadata: {undeclared}"
+    assert undeclared == [], (
+        f"campos secretos sin `Secret` en el metadata: {undeclared}.\n"
+        "El contrato de secretos se deriva de `Settings` (ADR-0022, iniciativa 020):\n"
+        "anade `Annotated[str, Secret(...)]` al campo, con `required_in` si solo lo\n"
+        "exige algun proceso y `feature` si depende de una condicion (o\n"
+        "`feature=\"solo_inventario\"` si solo debe aparecer en el inventario)."
+    )
 
 
 def test_el_default_placeholder_obligue_a_declarar_el_campo() -> None:

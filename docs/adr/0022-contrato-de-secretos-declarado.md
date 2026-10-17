@@ -74,6 +74,16 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
   contrato real (`SANDBOX_RUNNER_URL` no es un secreto; `TEAMS_NOTICES_KEY` se exige
   por estar vacía y `reviews:notices` es un valor legítimo). Si aparece un sexto caso,
   la decisión vuelve a revisión en vez de que el descriptor se vuelva un mini-framework.
+- **`Settings` pasa a ser un punto de serialización del trabajo en paralelo.** El
+  inventario y la declaración comparten sitio *a propósito* (es el valor del ADR),
+  pero el precio es que la declaración de un campo vive **en el campo**: no hay zona
+  neutra. Dos ramas que añadan campos a `Settings` tocan las mismas líneas, y —más
+  sutil— una rama que salga de un commit **anterior a este ADR** no conoce `I1`: si
+  añade un campo con nombre de secreto, su rama está verde y la declaración no le
+  falta, así que el rojo aparece al integrar, en `main`, por un test del que su rama
+  no tiene contexto. La mitigación es que el mensaje de `I1` nombre este ADR (abajo);
+  el coste no se puede eliminar sin renunciar a que la declaración viva en el campo,
+  que es lo que evita que se desincronice.
 
 ---
 
