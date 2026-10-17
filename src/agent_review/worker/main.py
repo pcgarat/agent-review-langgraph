@@ -76,6 +76,8 @@ from agent_review.ports.vcs import VcsPort
 from agent_review.ports.verifier import VerifierPort
 from agent_review.profile import (
     context_denylist,
+    context_doc_paths,
+    context_docs,
     expected_tools,
     fix_recipes,
     load_profile,
@@ -521,6 +523,7 @@ def build_runtime(
         fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
         scope_classes=scope_classes(load_profile(settings)),
+        context_doc_paths=context_doc_paths(context_docs(load_profile(settings))),
         retry_policy=node_retry_policy(settings),
         verification_enabled=verification_enabled(settings),
         budget_total=settings.llm_budget_tokens_per_pr,

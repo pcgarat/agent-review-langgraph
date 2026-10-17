@@ -62,7 +62,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 2 — ReviewContext y L1 (checkpoint C2)
 
-- [ ] **CX6** `ReviewContext` y ensamblaje en `scope` (D4, D14)
+- [x] **CX6** `ReviewContext` y ensamblaje en `scope` (D4, D14)
   - Tipo inmutable (p. ej. en `domain/` o `scope.py`) con diff indexado, ficheros
     completos al `head_sha` y documentos de contexto.
   - `graph/build.py` `scope`: lee con `vcs.get_file` (cache por `(path, ref)`);
@@ -71,17 +71,19 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     `persona`/`ReviewerPort.review` reciben `context=...`.
   - Aceptación: una review con dos personas llama a `get_file` una vez por ruta.
   - Verifica: `tests/test_graph.py`.
+  - *Hecho 2026-10-17:* `ReviewContext` (Pydantic frozen) con `contents`/`docs`;
+    el diff indexado sigue en `state["diff"]` (checkpointer). `assemble_review_context`
+    en `scope.py`; worker pasa `context_doc_paths(...)`.
 
 - [x] **CX7** `context_docs:` en el perfil (D5, D11) — validación
   - `profile.py`: valida `context_docs` opcional (`glossary`, `decisions: [str]`,
     `extra: [str]`); rutas relativas al repo revisado.
   - `context_docs(profile)` extrae el mapa o `{}` si es inválido.
-  - *Pendiente en CX6:* `scope` carga solo las rutas listadas (ADR curados).
+  - *Hecho con CX6:* `scope` carga las rutas de `context_doc_paths`.
   - Aceptación: perfil sin clave → OK; perfil con lista inválida → warning y
     extractor vacío, no tumba.
   - Verifica: `tests/test_profile.py`.
-  - *Hecho 2026-10-17:* solo el contrato del perfil; la lectura en `scope` espera a
-    CX6 (toca `graph/build.py`, en uso por 009).
+  - *Hecho 2026-10-17:* contrato del perfil + lectura en `scope` (CX6).
 
 - [ ] **CX8** L1 por lote + tope de config (D8, D12)
   - `settings.py` + `.env.example` + `operacion.md` §2: `LLM_CONTEXT_MAX_CHARS`.

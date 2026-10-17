@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from agent_review.domain.models import ReviewerResult
+from agent_review.domain.models import ReviewContext, ReviewerResult
 
 
 @runtime_checkable
@@ -22,6 +22,9 @@ class ReviewerPort(Protocol):
     con presupuesto compartido lo necesitan para reservar y confirmar contra el
     contador de esa review (017 B1). Las personas sin coste lo ignoran.
 
+    `context` (008 CX6): `ReviewContext` ensamblado en `scope` (ficheros al head
+    y docs del perfil). Opcional; las personas que no lo usan lo ignoran.
+
     `grounded` (bool, opcional, por defecto `False`): si la hipotesis nace de una
     herramienta que ya corrio (009 V7). Quien no lo declara se lee como no
     grounded (`getattr(reviewer, "grounded", False)`). Solo `ToolingReviewer` lo
@@ -32,5 +35,12 @@ class ReviewerPort(Protocol):
     name: str
 
     def review(
-        self, *, repo: str, pr_id: int, diff: str, head_sha: str = "", review_key: str = ""
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        diff: str,
+        head_sha: str = "",
+        review_key: str = "",
+        context: ReviewContext | None = None,
     ) -> ReviewerResult: ...

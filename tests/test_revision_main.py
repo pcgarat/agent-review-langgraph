@@ -292,6 +292,7 @@ class _ToolingReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         findings = [] if self.status is ToolingSourceStatus.MISSING else [_escalating_finding()]
@@ -358,6 +359,7 @@ class _SameTitleReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(

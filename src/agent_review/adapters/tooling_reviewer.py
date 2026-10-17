@@ -14,6 +14,7 @@ from agent_review.domain.models import (
     ContextScope,
     Finding,
     Owner,
+    ReviewContext,
     ReviewerResult,
     Severity,
     ToolingSourceStatus,
@@ -65,8 +66,9 @@ class ToolingReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context: ReviewContext | None = None,
     ) -> ReviewerResult:
-        del review_key
+        del review_key, context
         files = parse_unified_diff(diff)
         entries, status = self._entries(repo=repo, pr_id=pr_id, head_sha=head_sha)
         findings: list[Finding] = []

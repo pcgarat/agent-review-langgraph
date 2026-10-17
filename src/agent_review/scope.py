@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from agent_review.adapters.diff_parser import parse_unified_diff
-from agent_review.domain.models import FileClass, ReviewCoverage, SkipReason
+from agent_review.domain.models import FileClass, ReviewContext, ReviewCoverage, SkipReason
 from agent_review.globs import matches_any, path_matches
+from agent_review.ports.vcs import VcsPort
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,62 @@ def changed_files(diff: str) -> list[str]:
         if path is not None:
             seen.setdefault(path, None)
     return list(seen)
+
+
+def assemble_review_context(
+    vcs: VcsPort,
+    *,
+    repo: str,
+    head_sha: str,
+    base_sha: str = "",
+    diff: str,
+    doc_paths: Sequence[str] = (),
+) -> ReviewContext:
+    """Lee ficheros del diff y docs del perfil una vez (008 CX6 / D4 / R3).
+
+    Cache por `(path, ref)` dentro de la llamada. Un `get_file` fallido omite ese
+    fichero y no tumba la review.
+    """
+    cache: dict[tuple[str, str], str | None] = {}
+
+    def read(path: str, ref: str) -> str | None:
+        if not path or not ref:
+            return None
+        key = (path, ref)
+        if key not in cache:
+            try:
+                cache[key] = vcs.get_file(repo, path, ref=ref)
+            except Exception:
+                logger.warning(
+                    "ReviewContext: no se pudo leer %s@%s; se omite",
+                    path,
+                    ref,
+                    exc_info=True,
+                )
+                cache[key] = None
+        return cache[key]
+
+    contents: dict[str, str] = {}
+    for path in parse_unified_diff(diff):
+        text = read(path, head_sha)
+        if text is not None:
+            contents[path] = text
+
+    docs: dict[str, str] = {}
+    for raw in doc_paths:
+        path = raw.split("#", 1)[0].strip()
+        if not path or path in docs:
+            continue
+        text = read(path, head_sha)
+        if text is not None:
+            docs[path] = text
+
+    return ReviewContext(
+        head_sha=head_sha,
+        base_sha=base_sha,
+        contents=contents,
+        docs=docs,
+    )
 
 
 def _block_path(header_line: str) -> str | None:

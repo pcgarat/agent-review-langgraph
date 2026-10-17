@@ -98,6 +98,21 @@ def context_docs(profile: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def context_doc_paths(docs: dict[str, Any] | None) -> list[str]:
+    """Rutas a leer en `scope` (008 CX6), en orden y sin duplicar."""
+    if not docs:
+        return []
+    out: list[str] = []
+    glossary = docs.get("glossary")
+    if isinstance(glossary, str) and glossary.strip():
+        out.append(glossary.strip())
+    for key in ("decisions", "extra"):
+        for item in docs.get(key) or []:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+    return list(dict.fromkeys(out))
+
+
 def _scope_problems(scope: object) -> list[str]:
     """`scope.classes`: clase conocida -> lista de globs (012 C5)."""
     if not isinstance(scope, dict):

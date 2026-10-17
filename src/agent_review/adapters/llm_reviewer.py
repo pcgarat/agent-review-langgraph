@@ -21,6 +21,7 @@ from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
     ContextScope,
     Finding,
+    ReviewContext,
     ReviewCoverage,
     ReviewerResult,
     Severity,
@@ -217,6 +218,7 @@ class LlmReviewer:
         # El **hecho** lo consume 012 para la cobertura; aqui solo se declara.
         self.budget_exhausted = False
         self.tokens_used = 0
+        self._context: ReviewContext | None = None
 
     # Revisa por lotes y declara lo que no lee (012): si la persona cae entera, el
     # nodo marca sus ficheros como `failed` en vez de callar.
@@ -230,8 +232,11 @@ class LlmReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context: ReviewContext | None = None,
     ) -> ReviewerResult:
         del repo, pr_id, head_sha
+        # CX8 ensamblara el prompt con `context`; CX6 solo lo acepta.
+        self._context = context
         # El worker reutiliza la instancia entre reviews: los hechos del presupuesto
         # son **por review**, no acumulados en el objeto (017 B4).
         self.budget_exhausted = False

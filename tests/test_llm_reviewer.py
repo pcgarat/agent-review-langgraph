@@ -274,6 +274,7 @@ class StaticReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(findings=list(self._findings))

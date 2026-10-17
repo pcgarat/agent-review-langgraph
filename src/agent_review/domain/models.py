@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CONFIDENCE_ANCHORS = (0, 25, 50, 75, 100)
 
@@ -242,6 +242,22 @@ class ReviewCoverage(BaseModel):
             skipped=skipped,
             file_class={**other.file_class, **self.file_class},
         )
+
+
+class ReviewContext(BaseModel):
+    """Contexto L1 ensamblado una vez en `scope` (008 D4).
+
+    Ficheros completos al `head_sha` y documentos curados del perfil. El diff
+    indexado no se duplica aqui: vive en `state["diff"]` y se reparsea donde
+    haga falta (checkpointer-friendly). Inmutable hacia fuera (`frozen`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    head_sha: str = ""
+    base_sha: str = ""
+    contents: dict[str, str] = Field(default_factory=dict)
+    docs: dict[str, str] = Field(default_factory=dict)
 
 
 class ReviewerResult(BaseModel):

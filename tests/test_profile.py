@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_review.profile import (
     ci_image_digest,
+    context_doc_paths,
     context_docs,
     fix_recipes,
     load_profile,
@@ -147,8 +148,14 @@ def test_context_docs_valida_y_extrae(tmp_path: Path) -> None:
     }
     assert validate_profile(ok) == []
     assert context_docs(ok)["glossary"] == "CONTEXT.md"
+    assert context_doc_paths(context_docs(ok)) == [
+        "CONTEXT.md",
+        "docs/adr/0013-secretos-por-entorno-fail-closed.md",
+        "docs/operacion.md#2",
+    ]
     assert context_docs({}) == {}
     assert context_docs(None) == {}
+    assert context_doc_paths({}) == []
 
     mala = {"repo": "r", "context_docs": {"decisions": "solo-uno", "typo": 1}}
     problems = validate_profile(mala)

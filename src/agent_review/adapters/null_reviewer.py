@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_review.domain.models import ReviewerResult
+from agent_review.domain.models import ReviewContext, ReviewerResult
 
 
 class NullReviewer:
@@ -17,6 +17,7 @@ class NullReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context: ReviewContext | None = None,
     ) -> ReviewerResult:
-        del repo, pr_id, diff, head_sha, review_key
+        del repo, pr_id, diff, head_sha, review_key, context
         return ReviewerResult()

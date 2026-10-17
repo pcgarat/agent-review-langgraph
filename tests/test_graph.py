@@ -72,6 +72,10 @@ class FakeVcs:
             return "".join(parts)
         return "diff --git a/src/foo.py b/src/foo.py\n+amor\n"
 
+    def get_file(self, repo: str, path: str, *, ref: str) -> str:
+        del repo, ref
+        return f"# {path}\n"
+
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
     ) -> InlineAnchor | None:
@@ -125,8 +129,9 @@ class StaticReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
-        del repo, pr_id, diff, head_sha, review_key
+        del repo, pr_id, diff, head_sha, review_key, context
         return ReviewerResult(
             findings=list(self._findings),
             tooling_status=self._status,
@@ -177,6 +182,61 @@ def test_grafo_de_duplica_hallazgos_de_dos_personas() -> None:
     assert len(outcome.decisions) == 1
     assert len(vcs.inlines) == 1
     assert vcs.comments, "debe publicar el resumen en el PR"
+
+
+def test_scope_lee_cada_fichero_una_vez_con_dos_personas() -> None:
+    # 008 CX6 / D4: el contexto se ensambla en scope; el fan-out no relee.
+    class CountingVcs(FakeVcs):
+        def __init__(self) -> None:
+            super().__init__(
+                anchors={"src/a.py": InlineAnchor(path="src/a.py", line=1)},
+                diff=(
+                    "diff --git a/src/a.py b/src/a.py\n"
+                    "--- a/src/a.py\n+++ b/src/a.py\n"
+                    "@@ -0,0 +1,1 @@\n+x\n"
+                ),
+            )
+            self.file_reads: list[tuple[str, str]] = []
+
+        def get_file(self, repo: str, path: str, *, ref: str) -> str:
+            del repo
+            self.file_reads.append((path, ref))
+            return f"# {path}@{ref}\n"
+
+    vcs = CountingVcs()
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", []),
+        StaticReviewer("tests", []),
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=reviewers,
+        policy=policy,
+        context_doc_paths=["CONTEXT.md", "docs/operacion.md#2"],
+    ).compile()
+    state = graph.invoke(
+        {
+            "request": {
+                "repo": "cqm/emotivoo-v2",
+                "pr_id": 7,
+                "head_sha": "deadbeef",
+                "base_sha": "basebase",
+            },
+            "findings": [],
+        }
+    )
+    assert vcs.file_reads == [
+        ("src/a.py", "deadbeef"),
+        ("CONTEXT.md", "deadbeef"),
+        ("docs/operacion.md", "deadbeef"),
+    ]
+    ctx = state["review_context"]
+    assert ctx.contents["src/a.py"] == "# src/a.py@deadbeef\n"
+    assert ctx.docs["CONTEXT.md"] == "# CONTEXT.md@deadbeef\n"
+    assert "docs/operacion.md" in ctx.docs
+    assert ctx.head_sha == "deadbeef"
+    assert ctx.base_sha == "basebase"
 
 
 def test_merge_estampa_grounded_si_participa_tooling() -> None:
@@ -875,8 +935,9 @@ def test_scope_filtra_ruido_antes_de_las_personas() -> None:
             diff: str,
             head_sha: str = "",
             review_key: str = "",
+            context=None,
         ):
-            del repo, pr_id, head_sha
+            del repo, pr_id, head_sha, review_key, context
             captured["diff"] = diff
             return ReviewerResult()
 
@@ -920,8 +981,9 @@ def test_scope_no_recorta_y_deja_la_cobertura_en_el_estado() -> None:
             diff: str,
             head_sha: str = "",
             review_key: str = "",
+            context=None,
         ):
-            del repo, pr_id, head_sha, review_key
+            del repo, pr_id, head_sha, review_key, context
             captured["diff"] = diff
             return ReviewerResult()
 

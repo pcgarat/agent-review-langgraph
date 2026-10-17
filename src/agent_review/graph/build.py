@@ -29,6 +29,7 @@ from agent_review.domain.models import (
     FixWaitRequest,
     HitlDecision,
     PendingDecision,
+    ReviewContext,
     ReviewCoverage,
     ReviewOutcome,
     ReviewRequest,
@@ -51,6 +52,7 @@ from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.vcs import ReviewMarker, VcsPort
 from agent_review.ports.verifier import VerifierPort
 from agent_review.scope import (
+    assemble_review_context,
     merge_file_classes,
     merge_ignore_patterns,
     prioritize_diff,
@@ -87,6 +89,9 @@ class ReviewIntegrityError(RuntimeError):
 class ReviewState(TypedDict, total=False):
     request: ReviewRequest
     diff: str
+    # Contexto L1 (008 CX6): ficheros al head + docs del perfil. Lo escribe
+    # `scope` una vez; el fan-out lo reenvia a cada persona.
+    review_context: ReviewContext | None
     # Persona asignada a esta rama del fan-out (la escribe cada `Send`).
     reviewer: str
     # Las personas escriben aqui en paralelo; el reducer acumula.
@@ -605,6 +610,7 @@ def build_graph(
     fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
     scope_classes: Mapping[str, list[str]] | None = None,
+    context_doc_paths: Sequence[str] | None = None,
     retry_policy: RetryPolicy | None = None,
     verification_enabled: bool = True,
     budget_total: int | None = None,
@@ -656,6 +662,7 @@ def build_graph(
     # Clases de fichero del perfil sumadas a las de por defecto (012 C5); se
     # resuelven una vez al construir el grafo, no en cada review.
     classes = merge_file_classes(scope_classes)
+    doc_paths = list(context_doc_paths or ())
 
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
@@ -664,12 +671,22 @@ def build_graph(
         # prioridad, sin recortar (012 C8): el unico tope de coste es el presupuesto
         # por review, y quien se corta por el lo declara en la cobertura.
         diff, coverage = prioritize_diff(diff, merge_ignore_patterns(scope_ignore), classes)
+        # 008 CX6: ficheros al head + docs del perfil, una lectura por ruta.
+        review_context = assemble_review_context(
+            vcs,
+            repo=request.repo,
+            head_sha=request.head_sha,
+            base_sha=request.base_sha,
+            diff=diff,
+            doc_paths=doc_paths,
+        )
         # Las recetas y targets se fijan aqui (una vez por review, del perfil) y
         # viajan en el estado: `build_fix_wait` los necesita para armar la wave sin
         # conocer la configuracion.
         return {
             "request": request,
             "diff": diff,
+            "review_context": review_context,
             "findings": [],
             "source_status": {},
             "fix_recipes": list(recipes),
@@ -679,12 +696,17 @@ def build_graph(
         }
 
     def dispatch(state: ReviewState) -> list[Send]:
-        """Fan-out: una rama por persona, sobre el mismo diff."""
+        """Fan-out: una rama por persona, sobre el mismo diff y contexto."""
         request = ReviewRequest.model_validate(state["request"])
         return [
             Send(
                 "persona",
-                {"request": request, "diff": state["diff"], "reviewer": reviewer.name},
+                {
+                    "request": request,
+                    "diff": state["diff"],
+                    "review_context": state.get("review_context"),
+                    "reviewer": reviewer.name,
+                },
             )
             for reviewer in reviewers
         ]
@@ -695,6 +717,8 @@ def build_graph(
         if reviewer is None:
             return {"findings": []}
         request = ReviewRequest.model_validate(state["request"])
+        raw_ctx = state.get("review_context")
+        context = ReviewContext.model_validate(raw_ctx) if raw_ctx is not None else None
         try:
             result = reviewer.review(
                 repo=request.repo,
@@ -702,6 +726,7 @@ def build_graph(
                 diff=state["diff"],
                 head_sha=request.head_sha,
                 review_key=request.review_key,
+                context=context,
             )
         except Exception as exc:
             # Un fallo transitorio se relanza mientras queden intentos (lo reintenta

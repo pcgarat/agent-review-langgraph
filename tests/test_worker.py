@@ -120,6 +120,7 @@ class OneShotReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
@@ -762,6 +763,7 @@ class _CountingReviewer:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         self.calls += 1

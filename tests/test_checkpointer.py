@@ -86,6 +86,7 @@ class _OneFinding:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(
@@ -190,8 +191,9 @@ def test_verifications_sobrevive_pausa_hitl_y_reanudacion(caplog) -> None:
             diff: str,
             head_sha: str = "",
             review_key: str = "",
+            context=None,
         ) -> ReviewerResult:
-            del repo, pr_id, diff, head_sha, review_key
+            del repo, pr_id, diff, head_sha, review_key, context
             return ReviewerResult(
                 findings=[
                     Finding(
@@ -529,6 +531,7 @@ class _OneFinder:
         diff: str,
         head_sha: str = "",
         review_key: str = "",
+        context=None,
     ) -> ReviewerResult:
         del repo, pr_id, diff, head_sha
         return ReviewerResult(findings=[self._finding])
