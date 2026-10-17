@@ -88,9 +88,11 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
 rompería la comparabilidad del informe por flag.
 
 - [ ] **A1** ADR del puerto conversacional
-  - ADR nuevo (**0027**: el 0025 está reservado al matcher y el 0026 al dialecto de
-    `grep`, ambos de 023). Alternativas: `messages` frente a string con marcas;
-    una API frente a dos; rol `tool` frente a `<tool_result>` en `user`.
+  - ADR nuevo con el **siguiente número libre cuando se escriba**, no ahora (regla
+    `documentacion` §2: el número se asigna al crear el fichero). Previsto ~0027
+    por el orden de 023 (su T1 va antes); si al llegar no está libre, se usa el que
+    toque sin tocar este documento. Alternativas: `messages` frente a string con
+    marcas; una API frente a dos; rol `tool` frente a `<tool_result>` en `user`.
   - Enmienda con fecha lo que [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md)
     dice del *prompt* como string.
   - Ficheros: `docs/adr/`, `docs/adr/README.md`.

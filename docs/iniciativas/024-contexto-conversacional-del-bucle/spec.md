@@ -437,5 +437,7 @@ ese *baseline*.
   con alternativas (mensajes frente a string, una API frente a dos): nace un
   **ADR nuevo al implementar**, que sustituya o enmiende lo que
   [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md) dice del
-  *prompt* como string. **No se fija número aquí**: el 0025 está reservado al
-  matcher de 023 (T1) y el siguiente libre al dialecto de `grep` de 023 (G1).
+  *prompt* como string. **No se fija número aquí**: se toma el siguiente libre al
+  escribir el fichero (regla `documentacion` §2). Los ADR de 023 (matcher y dialecto
+  de `grep`) van antes por el orden de sus bloques, pero eso es una previsión, no
+  una reserva: si el orden cambia, manda el número libre.

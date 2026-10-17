@@ -44,7 +44,8 @@ mejora hace salir el eval en verde con recall 0 (§3 de la spec).
     `adapters/tool_loop.py`, `docs/operacion.md` §2.
 
 - [ ] **T1** ADR: el matcher mide **defecto**, no redacción (E0d/R1/R1b)
-  - ADR nuevo (`docs/adr/0025-…`): ancla por `file`(+`line`, tolerancia ADR-0014)
+  - ADR nuevo con el **siguiente número libre al escribirlo** (hoy sería el 0025):
+    ancla por `file`(+`line`, tolerancia ADR-0014)
     como primaria y fragmentos como respaldo/desambiguación. Debe declarar la
     **regla de puntuación**: desempate entre etiquetas y qué pasa si un hallazgo
     casa una `expected` y una `must_not_report`.
