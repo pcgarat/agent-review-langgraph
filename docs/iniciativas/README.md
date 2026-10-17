@@ -19,7 +19,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | borrador | 🟠 Refactor: el contrato de secretos se deriva de `Settings`, no de listas a mano | Sin dependencias de diseño · nace del hueco que dejó `92dea1e` (D22) · 3 preguntas abiertas |
-| 021 | [Razonamiento del revisor visible en el panel](021-razonamiento-visible/spec.md) | borrador | 🟠 Revisores que razonan siempre, razonamiento en vivo en el panel (SSE) e histórico de reviews; enlace en Teams en fase 2 | Sin dependencias · preguntas resueltas, falta aprobar · comparte punto de captura con 018 |
+| 021 | [Razonamiento del revisor visible en el panel](021-razonamiento-visible/spec.md) | aprobada | 🟠 Revisores que razonan siempre, razonamiento en vivo en el panel (SSE) e histórico de reviews; enlace en Teams en fase 2 | Sin dependencias · falta plan y todo · comparte punto de captura con 018 |
 
 ### Orden
 

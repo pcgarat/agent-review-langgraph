@@ -2,7 +2,7 @@
 
 # Razonamiento del revisor visible en el panel
 
-> **Estado:** borrador
+> **Estado:** aprobada *(2026-10-17)*
 >
 > **Entrega objetivo:** los revisores LLM razonan siempre, y mientras revisan el panel
 > de operación muestra **en vivo** lo que el modelo razona en cada lote, igual que un
