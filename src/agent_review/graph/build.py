@@ -19,6 +19,7 @@ from agent_review.adapters.tool_loop import LoopResult
 from agent_review.domain.models import (
     PENDING_ACTIONS,
     ApprovalRequest,
+    ContextScope,
     Decision,
     DecisionOutcome,
     FileClass,
@@ -1305,6 +1306,16 @@ _OUTCOME_LABEL = {
 }
 
 
+def _finding_labels(finding: Finding) -> str:
+    """Etiquetas de hechos L0/L1 (008 D7): no tocan severidad ni accion."""
+    tags: list[str] = []
+    if finding.pre_existing:
+        tags.append("preexistente")
+    if finding.context_scope is ContextScope.OUTSIDE_DIFF:
+        tags.append("fuera del diff")
+    return " · ".join(f"_{tag}_" for tag in tags)
+
+
 def _render_inline(
     finding: Finding,
     decision: Decision,
@@ -1324,6 +1335,9 @@ def _render_inline(
     title_is_truncation = bool(why) and why.lower().startswith(title.lower())
     header = why if title_is_truncation else title
     blocks = [f"**[{finding.severity.value}] {header}**"]
+    labels = _finding_labels(finding)
+    if labels:
+        blocks.append(labels)
     if why and not title_is_truncation:
         blocks.append(why)
     # 009 V12: el escenario del verificador (o el del proponente si L2 no corro)
@@ -1439,9 +1453,12 @@ def _render_summary(
         if decision is None:
             raise ReviewIntegrityError(f"Hallazgo sin decision de politica: {_finding_id(finding)}")
         marker = "inline" if finding in inlined else "resumen"
+        labels = _finding_labels(finding)
+        label_suffix = f" · {labels}" if labels else ""
         lines.append(
             f"- **[{finding.severity.value}] {finding.title}** "
             f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
+            f"{label_suffix}"
         )
         # El detalle ya vive en el inline; no se repite aqui salvo que sea
         # imprescindible (hallazgo que solo figura en el resumen).

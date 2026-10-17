@@ -108,11 +108,12 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 3 — Cierre (checkpoint C3)
 
-- [ ] **CX10** Render: etiqueta «preexistente» (D7)
+- [x] **CX10** Render: etiqueta «preexistente» (D7)
   - Inline y resumen muestran la etiqueta cuando `pre_existing` es verdadero; no
     cambian severidad ni acción.
   - Aceptación: snapshot o aserción de texto; `severity` intacta.
   - Verifica: tests de render del grafo / fix_render según donde viva.
+  - *Hecho 2026-10-17:* también «fuera del diff» si `context_scope=outside_diff`.
 
 - [ ] **CX11** Casos de la auditoría y medida (criterios 1, 7)
   - Tests unitarios del caso F (`pre_existing`) y de humildad/contexto para B, D, E,

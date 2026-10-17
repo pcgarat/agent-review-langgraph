@@ -1300,6 +1300,29 @@ def _inline_body(vcs: FakeVcs) -> str:
     return vcs.inlines[0][4]
 
 
+def test_render_muestra_etiqueta_preexistente_sin_cambiar_severidad() -> None:
+    # 008 CX10 / D7: etiqueta visible; severity y accion intactas.
+    from agent_review.domain.models import ContextScope
+
+    finding = make_finding(severity=Severity.P2).model_copy(
+        update={"pre_existing": True, "context_scope": ContextScope.OUTSIDE_DIFF}
+    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile()
+    graph.invoke({"request": {"repo": "r", "pr_id": 1, "head_sha": "abc"}, "findings": []})
+    body = _inline_body(vcs)
+    assert "_preexistente_" in body
+    assert "_fuera del diff_" in body
+    assert "**[P2]" in body
+    assert "_Accion: report_" in body
+    assert "preexistente" in vcs.comments[0][2]
+    assert "fuera del diff" in vcs.comments[0][2]
+
+
 def test_inline_no_repite_el_titulo_en_el_cuerpo() -> None:
     # La persona estatica propaga el mensaje crudo de la herramienta como titulo
     # y como `why_it_matters`: no debe imprimirse dos veces.
