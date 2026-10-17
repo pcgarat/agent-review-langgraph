@@ -45,7 +45,13 @@ from agent_review.ports.context import (
     ReadingRegistry,
     ReadResult,
 )
-from agent_review.ports.llm import FingerprintMismatch, LlmError, LlmPort, LlmReply
+from agent_review.ports.llm import (
+    FingerprintMismatch,
+    LlmError,
+    LlmPort,
+    LlmReply,
+    LlmTransientError,
+)
 from agent_review.ports.reasoning import (
     ReasoningEvent,
     ReasoningKind,
@@ -109,6 +115,12 @@ DEFAULT_CONTEXT_MAX_CHARS = 40_000
 # espera base entre ellos (se dobla en cada intento).
 DEFAULT_BATCH_RETRIES = 2
 _RETRY_BASE_S = 5.0
+# Reintento de lote: ademas de espaciar, pide la respuesta ya. Un razonador que
+# agoto la salida en pensamiento tiende a repetir el fallo con el mismo prompt.
+_RETRY_HINT = (
+    "IMPORTANTE: no gastes la salida razonando. Responde ya con el objeto JSON "
+    'de hallazgos, aunque sea `{"findings": []}`.'
+)
 _SEVERITY_RANK = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 3}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
@@ -441,9 +453,12 @@ class LlmReviewer:
         """
         for attempt in range(self._batch_retries + 1):
             event("start", meta={"files": paths})
+            # El reintento cambia el prompt a proposito: con razonamiento, una
+            # repeticion identica puede devolver el mismo contenido en blanco.
+            attempt_text = text if attempt == 0 else f"{text}\n\n{_RETRY_HINT}"
             try:
                 return self._call(
-                    text,
+                    attempt_text,
                     review_key,
                     paths=paths,
                     on_reasoning=self._listener(event),
@@ -557,8 +572,28 @@ class LlmReviewer:
         if l1:
             prompt = f"{prompt}\n\nCONTEXT:{l1}"
         if self._reader_factory is not None:
-            return self._call_with_tools(prompt, review_key, on_reasoning=on_reasoning)
-        return self._call_once(prompt, review_key, on_reasoning=on_reasoning)
+            reply = self._call_with_tools(prompt, review_key, on_reasoning=on_reasoning)
+        else:
+            reply = self._call_once(prompt, review_key, on_reasoning=on_reasoning)
+        if reply is not None and not reply.text.strip():
+            # Un razonador que gasta la salida en pensamiento devuelve contenido en
+            # blanco con `finish_reason=stop`: el lote no se reviso, aunque el
+            # proveedor diga que si. Se trata como corte y se reintenta el lote; sin
+            # esto, los ficheros salen `failed` sin que nada lo explique y un replay
+            # de la grabacion aborta la medida (023 T0c).
+            raise LlmTransientError(
+                "el modelo devolvio una respuesta vacia (razonamiento sin contenido)"
+            )
+        # En el bucle el turno final se fuerza a JSON de hallazgos: prosa aqui no es
+        # una review sin hallazgos, es un lote sin revisar. Se reintenta con el aviso
+        # del reintento antes de dejar los ficheros en `failed`.
+        if (
+            reply is not None
+            and self._reader_factory is not None
+            and _findings_payload(reply.text) is None
+        ):
+            raise LlmTransientError("el modelo cerro el lote sin JSON de hallazgos")
+        return reply
 
     def _call_with_tools(
         self,
@@ -719,15 +754,21 @@ class LlmReviewer:
         return reply
 
     def _entries(self, raw: str) -> list[dict[str, Any]] | None:
-        data = _parse_json(raw)
-        if data is None:
-            logger.warning("correctness: salida no parseable; 0 hallazgos")
-            return None
-        entries = data.get("findings") if isinstance(data, dict) else data
-        if not isinstance(entries, list):
-            logger.warning("correctness: la salida no trae una lista 'findings'; 0 hallazgos")
-            return None
-        return [entry for entry in entries if isinstance(entry, dict)]
+        entries = _findings_payload(raw)
+        if entries is None:
+            logger.warning("correctness: salida sin JSON de hallazgos; 0 hallazgos")
+        return entries
+
+
+def _findings_payload(raw: str) -> list[dict[str, Any]] | None:
+    """Los hallazgos de una respuesta, o `None` si no hay JSON de hallazgos."""
+    data = _parse_json(raw)
+    if data is None:
+        return None
+    entries = data.get("findings") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return None
+    return [entry for entry in entries if isinstance(entry, dict)]
 
 
 def _parse_json(raw: str) -> Any:

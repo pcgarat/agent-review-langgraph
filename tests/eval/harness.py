@@ -28,7 +28,15 @@ from agent_review.domain.models import PARTIAL_CLASSES, Finding, SkipReason
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, ContextLimits, is_denied
-from agent_review.ports.llm import FingerprintMismatch, JsonMode, LlmPort, LlmReply
+from agent_review.ports.llm import (
+    FingerprintMismatch,
+    JsonMode,
+    LlmError,
+    LlmPort,
+    LlmReply,
+    LlmTransientError,
+    LlmTruncatedError,
+)
 from agent_review.ports.reasoning import ReasoningEvent
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from agent_review.ports.verifier import VerifierPort
@@ -746,6 +754,10 @@ class RecordedCall:
     reasoning_tokens: int = 0
     cached_tokens: int | None = None
     finish_reason: str = ""
+    # Un intento que **fallo** tambien ocupa su sitio: sin el, el replay se salta
+    # una llamada que en vivo ocurrio y aborta por fingerprint (T0c). Se guarda
+    # el tipo y el mensaje, y `ReplayLlm` levanta el mismo error.
+    error: str = ""
 
     def entry(self) -> dict[str, Any]:
         """La respuesta en el formato del indice heredado (`calls`)."""
@@ -757,6 +769,7 @@ class RecordedCall:
             "reasoning_tokens": self.reasoning_tokens,
             "cached_tokens": self.cached_tokens,
             "finish_reason": self.finish_reason,
+            "error": self.error,
         }
 
     def to_json(self) -> dict[str, Any]:
@@ -843,6 +856,7 @@ def _recorded_call(raw: Mapping[str, Any]) -> RecordedCall:
         reasoning_tokens=int(raw.get("reasoning_tokens", 0)),
         cached_tokens=(int(raw["cached_tokens"]) if raw.get("cached_tokens") is not None else None),
         finish_reason=str(raw.get("finish_reason", "")),
+        error=str(raw.get("error", "")),
     )
 
 
@@ -940,6 +954,11 @@ class ReplayLlm:
             response_schema=response_schema,
         )
         entry = self._next_entry(fingerprint)
+        reproducido = str(entry.get("error") or "")
+        if reproducido:
+            # El intento fallo en vivo y la grabacion lo conserva: se levanta el
+            # mismo tipo de error para que el reintento del lote ocurra igual.
+            raise _recorded_error(reproducido)
         reply = LlmReply(
             text=str(entry["text"]),
             prompt_tokens=int(entry.get("prompt_tokens", 0)),
@@ -991,19 +1010,24 @@ def record_call(
     system: str,
     prompt: str,
     max_tokens: int,
-    reply: LlmReply,
+    reply: LlmReply | None,
     json_mode: JsonMode | None = None,
     response_schema: dict[str, Any] | None = None,
     batch_index: int | None = None,
     turn: int | None = None,
+    error: BaseException | None = None,
 ) -> str:
-    """Guarda una respuesta real en `recording` con su sitio en la corrida.
+    """Guarda una llamada real en `recording` con su sitio en la corrida.
 
     Devuelve la huella del prompt. Lo usa `make eval-record` (E7): graba cada
     llamada a medida que ocurre, por rol, para que regrabar un rol no invalide
     los demas. `batch_index`/`turn` los aporta el `BatchTracker`; sin el (p. ej.
     el verificador) quedan `None`, que es «no se», no un cero. Una grabacion
     cargada de un fichero sin `order` no se puede ampliar: su orden no existe.
+
+    Un intento que **fallo** tambien se graba (`error`): si no, el *replay* se
+    salta una llamada que en vivo consumio un turno y aborta por fingerprint, con
+    lo que la corrida entera se vuelve irreproducible (023 T0c).
     """
     fingerprint = prompt_fingerprint(
         role=role,
@@ -1013,14 +1037,16 @@ def record_call(
         json_mode=json_mode,
         response_schema=response_schema,
     )
+    registro = f"{type(error).__name__}: {error}" if error is not None else ""
     entry = {
         "role": role,
-        "text": reply.text,
-        "prompt_tokens": reply.prompt_tokens,
-        "completion_tokens": reply.completion_tokens,
-        "reasoning_tokens": reply.reasoning_tokens,
-        "cached_tokens": reply.cached_tokens,
-        "finish_reason": reply.finish_reason,
+        "text": "" if reply is None else reply.text,
+        "prompt_tokens": 0 if reply is None else reply.prompt_tokens,
+        "completion_tokens": 0 if reply is None else reply.completion_tokens,
+        "reasoning_tokens": 0 if reply is None else reply.reasoning_tokens,
+        "cached_tokens": None if reply is None else reply.cached_tokens,
+        "finish_reason": "" if reply is None else reply.finish_reason,
+        "error": registro,
     }
     # El indice conserva la primera ocurrencia del prompt; las repeticiones viven
     # en `order`, que es la verdad (E0e).
@@ -1039,15 +1065,30 @@ def record_call(
             role=role,
             batch_index=batch_index,
             turn=turn,
-            text=reply.text,
-            prompt_tokens=reply.prompt_tokens,
-            completion_tokens=reply.completion_tokens,
-            reasoning_tokens=reply.reasoning_tokens,
-            cached_tokens=reply.cached_tokens,
-            finish_reason=reply.finish_reason,
+            text=entry["text"],
+            prompt_tokens=entry["prompt_tokens"],
+            completion_tokens=entry["completion_tokens"],
+            reasoning_tokens=entry["reasoning_tokens"],
+            cached_tokens=entry["cached_tokens"],
+            finish_reason=entry["finish_reason"],
+            error=registro,
         )
     )
     return fingerprint
+
+
+_ERRORS: dict[str, type[LlmError]] = {
+    "LlmError": LlmError,
+    "LlmTransientError": LlmTransientError,
+    "LlmTruncatedError": LlmTruncatedError,
+    "FingerprintMismatch": FingerprintMismatch,
+}
+
+
+def _recorded_error(raw: str) -> LlmError:
+    """El error de una llamada grabada, reconstruido por su tipo."""
+    name, _, message = raw.partition(": ")
+    return _ERRORS.get(name, LlmError)(message or raw)
 
 
 def fingerprints_by_role(recording: Recording) -> dict[str, str]:
@@ -1130,14 +1171,33 @@ class RecordingLlm:
         # Solo se pasa si alguien escucha (021 R2): un puerto que no razona no tiene
         # por que aceptarlo.
         extra = {"on_reasoning": on_reasoning} if on_reasoning is not None else {}
-        reply = self._inner.complete(
-            system=system,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            response_schema=response_schema,
-            **extra,
-        )
+        try:
+            reply = self._inner.complete(
+                system=system,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                response_schema=response_schema,
+                **extra,
+            )
+        except LlmError as exc:
+            # El turno fallido ocupa su sitio en la grabacion: sin su entrada, el
+            # replay se salta la llamada y aborta por fingerprint (T0c).
+            batch_index, turn = self.tracker.take() if self.tracker is not None else (None, None)
+            record_call(
+                self._recording,
+                role=self._role,
+                system=system,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                reply=None,
+                json_mode=json_mode,
+                response_schema=response_schema,
+                batch_index=batch_index,
+                turn=turn,
+                error=exc,
+            )
+            raise
         batch_index, turn = self.tracker.take() if self.tracker is not None else (None, None)
         record_call(
             self._recording,

@@ -56,6 +56,15 @@ _CORRECTIVE = (
     '{"tools": [ ... ]} o tu objeto final. Intentalo de nuevo.'
 )
 
+# Un razonador devuelve a veces contenido en blanco (solo espacios) con
+# `finish_reason=stop`: no es una respuesta, es un turno perdido. Se repite el turno
+# con este recordatorio antes de gastar el correctivo o cerrar el lote.
+_BLANK_RETRY = (
+    '\n\nTu ultima respuesta llego vacia. Escribe ahora el JSON: {"tools": [ ... ]} '
+    'para pedir herramientas o {"findings": [ ... ]} para cerrar.'
+)
+_MAX_BLANK_TURNS = 2
+
 # Lo que el modelo ve cuando `READ_STATE` esta encendido (S1 de 023): el bloque va
 # tras los `<tool_result>`, al final del ultimo mensaje de usuario.
 _STATE_HINT = (
@@ -197,8 +206,10 @@ def run_tool_loop(
     `is_final`. El bucle sirve las herramientas por `reader` y vuelve a llamar hasta
     el objeto final o un tope (turnos, peticiones, bytes o presupuesto); al agotarlo,
     el siguiente turno pide el objeto final sin herramientas. Un JSON invalido recibe
-    **un** turno correctivo y despues se cierra. Un fallo transitorio del modelo sube
-    a quien llama: el reintento es del nodo, no del bucle (ADR-0007).
+    **un** turno correctivo y despues se cierra. Un turno con contenido en blanco
+    (solo espacios: el razonador no respondio) se repite hasta `_MAX_BLANK_TURNS`
+    veces, sin gastar el correctivo ni un turno de herramientas. Un fallo transitorio
+    del modelo sube a quien llama: el reintento es del nodo, no del bucle (ADR-0007).
 
     Con presupuesto (017): reserva la estimacion antes de cada llamada y la confirma
     con el `usage` real. Un `reserve` que devuelva `False` corta igual que un tope
@@ -218,6 +229,7 @@ def run_tool_loop(
     conversation = prompt
     corrective_used = False
     force_final = False
+    blank_turns = 0
 
     while True:
         force_final = force_final or _exhausted(result, limits)
@@ -302,6 +314,23 @@ def run_tool_loop(
             result.turns += 1
 
         data = _parse_object(reply.text)
+        if data is None and not reply.text.strip():
+            # Turno perdido, no respuesta invalida: el modelo no dijo nada. Se repite
+            # el turno con un recordatorio, sin gastar el correctivo ni el turno ni
+            # los topes de herramientas (023 T0c: el lote no se da por no revisado).
+            blank_turns += 1
+            if not force_final:
+                result.turns -= 1
+            if blank_turns > _MAX_BLANK_TURNS:
+                result.text = reply.text
+                return result
+            logger.warning(
+                "bucle de herramientas: respuesta en blanco; se repite el turno (%d/%d)",
+                blank_turns,
+                _MAX_BLANK_TURNS,
+            )
+            conversation = turn_prompt + _BLANK_RETRY
+            continue
         if data is None:
             if force_final or corrective_used:
                 result.text = reply.text

@@ -458,6 +458,12 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   lo que cada motor interpreta distinto se rechaza con `ToolError`, nunca se degrada
   a «sin coincidencias» ([ADR-0027](adr/0027-dialecto-portable-de-grep.md)).
   `glob` se mide contra la ruta relativa a `path`, con `*` que no cruza `/`.
+- **La grabación de la medida contiene *todas* las llamadas, también las fallidas.**
+  Un intento que lanza (`LlmTruncatedError`, `LlmTransientError`) guarda su tipo y
+  su mensaje, y el *replay* levanta el mismo error; sin esa entrada el *replay* se
+  salta un turno y aborta por *fingerprint* (023 T0c/D30). Un turno con contenido en
+  blanco no es una review limpia: el bucle lo repite con un recordatorio y, si el
+  lote cierra sin JSON de hallazgos, el lote se reintenta antes de darlo por `failed`.
 
 ## 5. Convenciones
 

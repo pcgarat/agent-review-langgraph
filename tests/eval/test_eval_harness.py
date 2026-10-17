@@ -40,7 +40,7 @@ from harness import (
 
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity, SkipReason
 from agent_review.policy.engine import PolicyEngine
-from agent_review.ports.llm import LlmError, LlmReply
+from agent_review.ports.llm import LlmError, LlmReply, LlmTruncatedError
 
 
 def _write_case(root: Path, labels: dict) -> Path:
@@ -1078,6 +1078,44 @@ def test_la_grabacion_conserva_el_orden_y_no_colapsa_prompts_iguales(tmp_path: P
     assert (primera.text, segunda.text) == ('{"turno": 1}', '{"turno": 2}')
     with pytest.raises(FingerprintMismatch, match="ya se consumio"):
         llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+
+def test_un_intento_que_fallo_se_graba_y_el_replay_lo_vuelve_a_levantar(
+    tmp_path: Path,
+) -> None:
+    # Un razonador que agota `max_tokens` lanza `LlmTruncatedError` dentro del
+    # puerto: sin su entrada, el replay se salta la llamada y aborta por
+    # fingerprint, y la corrida entera se vuelve irreproducible (T0c).
+    case = _case()
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    record_call(
+        recording,
+        role="correctness",
+        system="S",
+        prompt="DIFF:\nx",
+        max_tokens=4096,
+        reply=None,
+        error=LlmTruncatedError("agoto max_tokens sin contenido"),
+        batch_index=0,
+        turn=0,
+    )
+    record_call(
+        recording,
+        role="correctness",
+        system="S",
+        prompt="DIFF:\nx",
+        max_tokens=4096,
+        reply=LlmReply(text='{"findings": []}', prompt_tokens=10, completion_tokens=20),
+        batch_index=0,
+        turn=1,
+    )
+    path = tmp_path / "recorded.json"
+    path.write_text(recording.dump(), encoding="utf-8")
+
+    llm = ReplayLlm(Recording.load(path), case, role="correctness")
+    with pytest.raises(LlmTruncatedError, match="max_tokens"):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+    assert llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096).text == '{"findings": []}'
 
 
 def test_una_grabacion_sin_orden_se_reproduce_pero_no_se_mide_por_lote(

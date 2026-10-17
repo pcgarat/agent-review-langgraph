@@ -289,6 +289,24 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     se compara con el de 008). Se declara omitido mientras falte el fichero, para
     que el verde de CI no finja una medida que no existe. Falta la regrabación
     *live*, que es la corrida compartida de 024 LB1.
+  - Bloqueo (2026-10-17): **cuatro** regrabaciones *live* seguidas y **ninguna**
+    deja la corrida completa. El revisor (`deepseek-v4-flash-revisor`, razonamiento
+    medio) devuelve **contenido en blanco** (solo espacios, `finish_reason=stop`,
+    ~100 tokens de salida) en un 10–25 % de las llamadas y, en algunos lotes, en
+    **todos** los intentos: el lote sale `failed` (2 ficheros de 48) y el *replay*
+    aborta la medida (T0c). Los arreglos que sí quedan, medidos en esas corridas:
+    (a) un turno en blanco se **repite** con un recordatorio sin gastar el
+    correctivo (`_MAX_BLANK_TURNS`), (b) un lote que cierra sin JSON de hallazgos
+    se **reintenta** en vez de publicarse como limpio, (c) el reintento de lote
+    añade un aviso al final del *prompt* (una repetición idéntica tiende a repetir
+    el vacío), y (d) la grabación guarda también los **intentos fallidos**, sin lo
+    cual el *replay* se salta una llamada y aborta por *fingerprint*. Con (a)–(d)
+    una corrida pasa de 5 lotes en blanco a 1–2, no a 0. El vacío persistente
+    depende del **contenido del lote** (los mismos ficheros fallan en corridas
+    distintas), así que la salida es partir el lote que falla o cambiar de modelo,
+    no más reintentos iguales. `recorded_tools.json` se dejó como estaba (no
+    reproduce con el código nuevo: los turnos en blanco ahora se repiten) y
+    `expected_report_tools.json` sigue sin existir.
 
 ### Checkpoint K0.5
 

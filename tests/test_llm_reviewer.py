@@ -553,6 +553,39 @@ class _ScriptedLlm(FakeLlm):
         return dataclasses.replace(reply, text=self._responses.pop(0))
 
 
+def test_una_respuesta_en_blanco_reintenta_el_lote_y_no_lo_da_por_revisado() -> None:
+    # El revisor real devolvio contenido en blanco (solo espacios) con
+    # `finish_reason=stop` en 5 de 19 lotes: sin reintento, 17 ficheros salian
+    # `failed` sin explicacion y el replay abortaba la medida (023 T0c).
+    from agent_review.domain.models import SkipReason
+
+    llm = _ScriptedLlm(["   \n  ", _response(_finding_json())])
+    reviewer = LlmReviewer(llm=llm, batch_retries=1)
+
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+
+    assert len(llm.calls) == 2, "la respuesta vacia se reintenta"
+    assert llm.calls[0][1] != llm.calls[1][1], "el reintento cambia el prompt (no repite el vacio)"
+    assert "Responde ya" in llm.calls[1][1]
+    assert result.coverage is not None
+    assert result.coverage.skipped == {}
+    assert SkipReason.FAILED not in result.coverage.skipped.values()
+    assert len(result.findings) == 1
+
+
+def test_una_respuesta_en_blanco_agota_los_reintentos_y_deja_el_lote_failed() -> None:
+    from agent_review.domain.models import SkipReason
+
+    llm = _ScriptedLlm(["   ", "  \n "])
+    reviewer = LlmReviewer(llm=llm, batch_retries=1)
+
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+
+    assert len(llm.calls) == 2
+    assert result.coverage is not None
+    assert set(result.coverage.skipped.values()) == {SkipReason.FAILED}
+
+
 def test_lotes_de_ficheros_enteros_nunca_cortan_un_fichero() -> None:
     # 012 C2 (criterio 2): un diff mayor que un lote se reparte en varias llamadas y
     # cada fichero entra entero en una sola.
@@ -1129,6 +1162,47 @@ def test_linea_fuera_del_diff_no_se_ancla_con_herramientas(tmp_path: Path) -> No
         tool_limits=ContextLimits(),
     ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
     assert result.findings == []
+
+
+def test_un_lote_con_herramientas_que_cierra_sin_json_se_reintenta(tmp_path: Path) -> None:
+    # El modelo cerro el lote con prosa (no JSON): los ficheros salian `failed` y el
+    # replay abortaba la medida. En el bucle, prosa al final no es «sin hallazgos».
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path)
+    prosa = "No encuentro problemas en este lote."
+    # Tres turnos de prosa: el bucle gasta su turno correctivo, fuerza el final y el
+    # lote cierra sin JSON. El cuarto es ya el reintento del lote.
+    llm = _ScriptedToolsLlm(prosa, prosa, prosa, _response(_finding_json()))
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_retries=1,
+    )
+
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+
+    assert len(llm.calls) == 4, "el cierre sin JSON se reintenta"
+    assert "Responde ya" in llm.calls[3]["prompt"]
+    assert result.coverage is not None
+    assert result.coverage.skipped == {}
+    assert len(result.findings) == 1
+
+
+def test_un_lote_sin_herramientas_con_prosa_no_se_reintenta() -> None:
+    # Sin herramientas la grabacion de 008 manda: cambiar el numero de llamadas de
+    # un lote que ya estaba congelado rompe su replay por fingerprint.
+    from agent_review.domain.models import SkipReason
+
+    llm = _ScriptedLlm(["Primero miraria el fichero, luego decidiria.", _response(_finding_json())])
+    reviewer = LlmReviewer(llm=llm, batch_retries=1)
+
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
+
+    assert len(llm.calls) == 1
+    assert result.coverage is not None
+    assert set(result.coverage.skipped.values()) == {SkipReason.FAILED}
 
 
 @pytest.mark.parametrize(

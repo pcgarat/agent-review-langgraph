@@ -308,6 +308,29 @@ def test_un_turno_truncado_reiterado_cierra(tmp_path: Path) -> None:
     assert result.forced_by_truncation is True
 
 
+def test_un_turno_en_blanco_se_repite_sin_gastar_el_correctivo(tmp_path: Path) -> None:
+    # El razonador devolvio solo espacios (23 T0c): no es una respuesta invalida, es
+    # un turno perdido. Se repite con un recordatorio y el lote no se pierde.
+    llm = ScriptedLlm("   ", _tools(_read(APP)), json.dumps({"findings": []}))
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.data == {"findings": []}
+    assert result.tool_calls == 1
+    assert "vacia" in llm.calls[1]["prompt"]
+    assert result.turns == 2, "el turno en blanco no consume el tope de turnos"
+
+
+def test_los_turnos_en_blanco_se_agotan_y_el_lote_cierra(tmp_path: Path) -> None:
+    llm = ScriptedLlm("   ", "  \n", "\t", json.dumps({"findings": []}))
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.data is None
+    assert not result.text.strip()
+    assert len(llm.calls) == 3, "dos reintentos y despues se cierra"
+
+
 def test_una_herramienta_que_falla_no_tumba_el_bucle(tmp_path: Path) -> None:
     class Exploding(FixtureContextReader):
         def read_file(self, *args: Any, **kwargs: Any) -> ReadResult | None:
