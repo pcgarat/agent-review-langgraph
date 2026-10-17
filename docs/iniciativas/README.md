@@ -19,6 +19,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | borrador | 🟠 Refactor: el contrato de secretos se deriva de `Settings`, no de listas a mano | Sin dependencias de diseño · nace del hueco que dejó `92dea1e` (D22) · 3 preguntas abiertas |
+| 021 | [Razonamiento del revisor visible en el panel](021-razonamiento-visible/spec.md) | borrador | 🟠 Revisores que razonan siempre, razonamiento en vivo en el panel (SSE) e histórico de reviews; enlace en Teams en fase 2 | Sin dependencias · preguntas resueltas, falta aprobar · comparte punto de captura con 018 |
 
 ### Orden
 
@@ -85,6 +86,6 @@ conservando sus IDs.
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **020**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **022**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.
