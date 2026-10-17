@@ -18,6 +18,7 @@ from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.llm_verifier import LlmVerifier
 from agent_review.adapters.null_reviewer import NullReviewer
+from agent_review.adapters.tool_loop import ReviewToolsOptions
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
 from agent_review.adapters.tooling_source import (
@@ -274,9 +275,19 @@ def build_reviewers(
             max_turns=settings.review_tools_max_turns,
             max_calls=settings.review_tools_max_calls,
             max_bytes=settings.review_tools_max_bytes,
+            calls_per_turn=settings.review_tools_calls_per_turn,
         )
         if tools_roles
         else None
+    )
+    tool_options = ReviewToolsOptions(
+        grep_mode=settings.review_tools_grep_mode,
+        read_outline=settings.review_tools_read_outline,
+        read_state=settings.review_tools_read_state,
+        truncation_notice=settings.review_tools_truncation_notice,
+        strict_calls=settings.review_tools_strict_calls,
+        io_cache=settings.review_tools_io_cache,
+        precache_context=settings.review_tools_precache_context,
     )
     for role in roles:
         llm = registry.port_for(role)
@@ -314,6 +325,7 @@ def build_reviewers(
                 batch_retries=settings.llm_batch_retries,
                 reader_factory=reader_factory,
                 tool_limits=limits,
+                tool_options=tool_options,
             )
         )
 

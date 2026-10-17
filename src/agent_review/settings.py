@@ -366,6 +366,32 @@ class Settings(BaseSettings):
     review_tools_max_turns: int = 4
     review_tools_max_calls: int = 8
     review_tools_max_bytes: int = 60_000
+    # Palancas del bucle de lectura (023 F1). Ninguna cambia lo que el *prompt*
+    # anuncia que existe (E11): deciden coste y forma de servir. Con todas en su
+    # default, el comportamiento servido es el de hoy.
+    # Modo por defecto de `grep`: `literal` sirve lo de hoy; `regex` interpreta el
+    # patrón (con el subconjunto portable de G1).
+    review_tools_grep_mode: Literal["literal", "regex"] = "literal"
+    # Habilita `mode="outline"` en `read_file` (R1). Apagado, pedirlo se sirve como
+    # `full` y se avisa: el modelo no gasta una llamada en balde sin saberlo.
+    review_tools_read_outline: bool = False
+    # Bloque de lecturas de la review en el bucle (S1). Apagado, no viaja al prompt;
+    # las citas se siguen validando con el registro.
+    review_tools_read_state: bool = False
+    # Aviso de corte con el tamaño real (R1). Apagado, el corte se aplica igual pero
+    # no se anuncia: solo válido para reproducir el *prompt* viejo.
+    review_tools_truncation_notice: bool = True
+    # S1: una petición no atendida recibe un error explícito. Apagado, el excedente
+    # se descarta con un AVISO (comportamiento de hoy).
+    review_tools_strict_calls: bool = False
+    # Peticiones por turno (P1/E14). Se sube junto con `review_tools_max_calls`: con 5
+    # por turno y 8 totales el lote se agota en dos turnos.
+    review_tools_calls_per_turn: int = 3
+    # Precarga L1 en el bucle (C1/E8). Apagada, el *prompt* base del lote baja y el
+    # modelo debe leer lo que necesite (cuesta turnos).
+    review_tools_precache_context: bool = True
+    # Caché de E/S por review (C1/E13). Ahorra E/S, no *prompt*.
+    review_tools_io_cache: bool = False
 
     @property
     def fix_recipes_list(self) -> list[str]:
@@ -380,6 +406,19 @@ class Settings(BaseSettings):
     @property
     def review_tools_roles_list(self) -> list[str]:
         return [item.strip() for item in self.review_tools_roles.split(",") if item.strip()]
+
+    @field_validator("review_tools_grep_mode", mode="before")
+    @classmethod
+    def _normalize_grep_mode(cls, value: object) -> object:
+        """Normaliza el modo de `grep` y falla en el arranque si no es válido."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in {"literal", "regex"}:
+                raise ValueError(
+                    f"REVIEW_TOOLS_GREP_MODE debe ser `literal` o `regex`, no {value!r}"
+                )
+            return normalized
+        return value
 
     @field_validator("vcs_provider", mode="before")
     @classmethod

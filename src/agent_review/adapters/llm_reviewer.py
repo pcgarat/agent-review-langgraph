@@ -17,7 +17,12 @@ from agent_review.adapters.diff_parser import (
     parse_unified_diff,
 )
 from agent_review.adapters.text_utils import guess_protected_subject, shorten_title, slug
-from agent_review.adapters.tool_loop import LoopResult, citation_path, run_tool_loop
+from agent_review.adapters.tool_loop import (
+    LoopResult,
+    ReviewToolsOptions,
+    citation_path,
+    run_tool_loop,
+)
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
     ContextScope,
@@ -238,6 +243,7 @@ class LlmReviewer:
         sleep: Callable[[float], None] = time.sleep,
         reader_factory: ReviewerReaderFactory | None = None,
         tool_limits: ContextLimits | None = None,
+        tool_options: ReviewToolsOptions | None = None,
     ) -> None:
         self.name = name
         self._llm = llm
@@ -263,6 +269,9 @@ class LlmReviewer:
         # lote como en 008. Con fabrica, RH4 cablea `run_tool_loop` por lote.
         self._reader_factory = reader_factory
         self._tool_limits = tool_limits
+        # Comportamiento del bucle (023 F1): topes y forma de servir van separados.
+        # Con `None` rigen los defaults, que son los de hoy.
+        self._tool_options = tool_options or ReviewToolsOptions()
         # Tokens estimados de la ultima llamada: se expone para poder medir el
         # gasto real por review (C3) sin acoplar el puerto al proveedor. `last_usage`
         # lleva el gasto **real** que reporta el proveedor, que es la fuente de
@@ -539,6 +548,7 @@ class LlmReviewer:
                 prompt=prompt,
                 reader=reader,
                 limits=limits,
+                options=self._tool_options,
                 is_final=_is_findings,
                 budget=self._budget,
                 review_key=review_key,

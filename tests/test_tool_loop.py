@@ -17,6 +17,7 @@ from context_fakes import APP, ENV, README, build_fixture_reader
 from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.tool_loop import (
     LoopResult,
+    ReviewToolsOptions,
     citation_path,
     run_tool_loop,
 )
@@ -93,6 +94,7 @@ def _run(
     reader: FixtureContextReader,
     *,
     limits: ContextLimits | None = None,
+    options: ReviewToolsOptions | None = None,
     budget: MemoryBudget | None = None,
 ) -> LoopResult:
     return run_tool_loop(
@@ -101,6 +103,7 @@ def _run(
         prompt="Revisa el PR.",
         reader=reader,
         limits=limits or ContextLimits(),
+        options=options,
         is_final=_is_final,
         budget=budget,
         review_key="r:1",
@@ -179,6 +182,56 @@ def test_cuatro_peticiones_en_un_turno_atiende_tres_y_avisa(tmp_path: Path) -> N
     assert result.tool_calls == 3, "solo tres peticiones por turno (Q2 de 014)"
     assert any("descartadas" in note for note in result.notes)
     assert "AVISO" in llm.calls[-1]["prompt"]
+
+
+def test_el_tope_por_turno_es_configurable(tmp_path: Path) -> None:
+    # 023 F1/P1: `calls_per_turn` deja de ser constante; con 2 se atienden dos.
+    entries = [_read(APP), _read(README), _read(APP)]
+    llm = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path), limits=ContextLimits(calls_per_turn=2))
+
+    assert result.tool_calls == 2
+    assert any("1 descartadas" in note for note in result.notes)
+
+
+def test_strict_calls_pone_un_error_por_peticion_no_atendida(tmp_path: Path) -> None:
+    # 023 F1/S1: el excedente no desaparece en silencio.
+    entries = [_read(APP), _read(README), _read(APP), _read(README)]
+    llm = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    result = _run(
+        llm,
+        build_fixture_reader(tmp_path),
+        limits=ContextLimits(calls_per_turn=2),
+        options=ReviewToolsOptions(strict_calls=True),
+    )
+
+    assert result.tool_calls == 2
+    prompt = llm.calls[-1]["prompt"]
+    assert prompt.count("ERROR: no atendida") == 2
+    assert "AVISO" not in prompt
+
+
+def test_el_prompt_anuncia_las_capacidades_del_puerto(tmp_path: Path) -> None:
+    # 023 F1/E11: el anuncio no depende de los flags; sin el, el modelo no pediria
+    # los modos que el puerto si sirve.
+    llm = ScriptedLlm(json.dumps({"findings": []}))
+    _run(llm, build_fixture_reader(tmp_path))
+
+    system = llm.calls[0]["system"]
+    for capability in ('"mode"', '"files_only"', '"depth"', '"ref"'):
+        assert capability in system
+
+
+def test_los_defaults_no_cambian_lo_servido(tmp_path: Path) -> None:
+    # 023 F1 (criterio 9): mismos argumentos y mismos defaults ⇒ mismo prompt.
+    entries = [_read(APP), _grep("needle")]
+    without = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    explicit = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+
+    _run(without, build_fixture_reader(tmp_path))
+    _run(explicit, build_fixture_reader(tmp_path), options=ReviewToolsOptions())
+
+    assert [call["prompt"] for call in without.calls] == [call["prompt"] for call in explicit.calls]
 
 
 def test_una_herramienta_desconocida_se_sirve_como_error(tmp_path: Path) -> None:

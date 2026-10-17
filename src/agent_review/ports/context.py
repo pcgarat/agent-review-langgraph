@@ -58,6 +58,10 @@ class ContextLimits(BaseModel):
     max_turns: int = Field(default=4, ge=1)
     max_calls: int = Field(default=8, ge=0)
     max_bytes: int = Field(default=60_000, ge=1)
+    # Peticiones que se atienden en un mismo turno (023 F1/E14). Se sube junto con
+    # `max_calls`: con 5 por turno y 8 totales el tope del lote se agota en dos
+    # turnos y la palanca mide otra cosa.
+    calls_per_turn: int = Field(default=3, ge=1)
 
 
 @runtime_checkable

@@ -400,11 +400,23 @@ def test_build_reviewers_herramientas_opt_in_por_rol(tmp_path: Path) -> None:
         if isinstance(r, LlmReviewer)
     )
 
-    con = build_reviewers(Settings(**base, review_tools_roles="correctness"))
+    con = build_reviewers(
+        Settings(
+            **base,
+            review_tools_roles="correctness",
+            review_tools_calls_per_turn=5,
+            review_tools_strict_calls=True,
+        )
+    )
     by_name = {r.name: r for r in con if isinstance(r, LlmReviewer)}
     assert by_name["correctness"]._reader_factory is not None
     assert by_name["correctness"]._tool_limits is not None
     assert by_name["correctness"]._tool_limits.max_turns == 4
+    # 023 F1: los topes y las palancas llegan al reviewer desde `Settings`, no se
+    # leen dentro del bucle.
+    assert by_name["correctness"]._tool_limits.calls_per_turn == 5
+    assert by_name["correctness"]._tool_options.strict_calls is True
+    assert by_name["correctness"]._tool_options.grep_mode == "literal"
     assert by_name["security"]._reader_factory is None
 
 

@@ -131,9 +131,34 @@ ficheros versionados:
 | Razonamiento (021) | `REASONING_STREAM_ENABLED` (`false`: el worker escribe en Redis lo que razonan los revisores en cada lote y el panel lo muestra en vivo en el detalle de la review), `REASONING_TTL_S` (864000: 10 días), `REASONING_MAX_BYTES` (10485760: tope aproximado por review) |
 | LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (2000000: tope de tokens **por review**, compartido por todas las personas, el fixer y el verificador L2; al agotarse, lo que falte se registra como `budget_exhausted` en vez de gastar de más, §2), `LLM_BATCH_MAX_CHARS` (20000: tamaño de un lote de la persona LLM en caracteres de diff; un fichero que no cabe se trocea por hunks y solo un hunk que no cabe sale `too_large`), `LLM_BATCH_RETRIES` (2: reintentos de un lote ante un corte del proveedor; agotados, el lote sale `failed` y la review sigue), `LLM_CONTEXT_MAX_CHARS` (40000: tope del bloque L1 —fichero completo + `context_docs` del perfil— por lote; el diff no se recorta; lo que no cabe se omite) |
 | Verificador L2 (009) | `VERIFIER_MAX_FINDINGS` (5: tope de hallazgos por review, los más graves primero; el resto queda `unverified` sin llamada), `VERIFIER_MAX_TOOL_CALLS` (8) y `VERIFIER_MAX_CONTEXT_BYTES` (60000: topes del bucle *ReAct* por hallazgo), `VERIFIER_REQUIRE_VERIFIED_FOR` (`P0,P1`: respaldo si `autonomy.yaml` no declara `severity_gate.require_verified_for`; hoy el umbral vive en `severity_gate` —011/VF15— y L2 lo lee de ahí) |
-| Revisor con herramientas (014) | `REVIEW_TOOLS_ROLES` (vacío: roles LLM que pueden leer ficheros y hacer `grep` mientras revisan; vacío = una llamada por lote como en 008), `REVIEW_TOOLS_MAX_TURNS` (4), `REVIEW_TOOLS_MAX_CALLS` (8) y `REVIEW_TOOLS_MAX_BYTES` (60000: topes del bucle *ReAct* por lote) |
+| Revisor con herramientas (014/023) | `REVIEW_TOOLS_ROLES` (vacío: roles LLM que pueden leer ficheros y hacer `grep` mientras revisan; vacío = una llamada por lote como en 008). Topes y palancas del bucle: tabla siguiente |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
+
+### Revisor con herramientas (023)
+
+El *prompt* del bucle anuncia **siempre** todas las capacidades del puerto (modos,
+`ref`, `files_only`, `depth`): estas banderas deciden el coste y la forma de servir,
+nunca la disponibilidad. Con todas en su default, el comportamiento servido es el de
+hoy.
+
+| Variable | Default | Qué hace | Apagado ⇒ qué pasa |
+|---|---|---|---|
+| `REVIEW_TOOLS_MAX_TURNS` | `4` | turnos con herramientas por lote (sin contar el final forzado) | — |
+| `REVIEW_TOOLS_MAX_CALLS` | `8` | total de peticiones por lote | — |
+| `REVIEW_TOOLS_MAX_BYTES` | `60000` | bytes servidos por lote | — |
+| `REVIEW_TOOLS_CALLS_PER_TURN` | `3` | peticiones atendidas en un mismo turno | se sube junto con `MAX_CALLS`: con más por turno y el mismo total, el lote se agota antes |
+| `REVIEW_TOOLS_GREP_MODE` | `literal` | modo por defecto de `grep` (`literal` \| `regex`) | el adaptador sirve literal aunque el *prompt* anuncie `regex`; pedirlo explícito **sí** funciona |
+| `REVIEW_TOOLS_READ_OUTLINE` | `off` | habilita `mode="outline"` en `read_file` | pedirlo cae a `full` y se avisa |
+| `REVIEW_TOOLS_READ_STATE` | `off` | bloque de lecturas de la review en el *prompt* | no viaja el bloque; las citas se siguen validando con el registro |
+| `REVIEW_TOOLS_TRUNCATION_NOTICE` | `on` | aviso de corte con el tamaño real del fichero | el corte se aplica igual pero **no** se anuncia: solo para reproducir el *prompt* viejo |
+| `REVIEW_TOOLS_STRICT_CALLS` | `off` | error explícito por petición no atendida | el excedente se descarta con un `AVISO` en el `<tool_result>` |
+| `REVIEW_TOOLS_PRECACHE_CONTEXT` | `on` | L1 precargado en el bucle | baja el *prompt* base del lote; el modelo debe leer lo que necesite (cuesta turnos) |
+| `REVIEW_TOOLS_IO_CACHE` | `off` | caché de E/S por review (ahorra E/S, no *prompt*) | cada lote vuelve a leer del repositorio |
+
+Mientras 023 no cierre G1/R1/S1/C1, `GREP_MODE`, `READ_OUTLINE`, `READ_STATE`,
+`TRUNCATION_NOTICE`, `PRECACHE_CONTEXT` e `IO_CACHE` están declarados y cableados
+pero **todavía no cambian lo servido**; `CALLS_PER_TURN` y `STRICT_CALLS` ya actúan.
 
 **Para activar la Fase 3** hacen falta las cinco cosas:
 

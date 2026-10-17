@@ -80,7 +80,7 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     actuales siguen en el formato viejo y se declaran **no medibles por lote**; la
     regrabación que estrena el formato es la **única** de F1.
 
-- [ ] **F1** Flags de verdad: `Settings`, `.env.example` y *prompt* de capacidades
+- [x] **F1** Flags de verdad: `Settings`, `.env.example` y *prompt* de capacidades
   (E11, E11b, criterio 9)
   - `settings.py`: las 9 variables de la spec §5.4 (hoy solo existen 4
     `REVIEW_TOOLS_*`; faltan `MAX_CALLS`, `CALLS_PER_TURN`, `STRICT_CALLS`,
@@ -100,6 +100,18 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/test_settings.py`, `tests/test_tool_loop.py`.
   - Ficheros: `settings.py`, `.env.example`, `worker/main.py`,
     `adapters/tool_loop.py`, `docs/operacion.md` §2.
+  - Hecho: los topes (`ContextLimits`, con `calls_per_turn`) y el comportamiento
+    (`ReviewToolsOptions`) van separados; `worker/main.py` es el único que lee
+    `Settings` y lo pasa al `LlmReviewer`. `CALLS_PER_TURN` y `STRICT_CALLS` ya
+    actúan; `GREP_MODE`, `READ_OUTLINE`, `READ_STATE`, `TRUNCATION_NOTICE`,
+    `PRECACHE_CONTEXT` e `IO_CACHE` quedan declarados y cableados, pero su efecto
+    llega con G1/R1/S1/C1 (anotado en `operacion.md` §2). El *prompt* de
+    capacidades cambia **una vez** (anuncia `mode`, `ref`, `files_only` y `depth`):
+    la grabación de `pr_3` queda **caducada** a propósito y `make eval-tools` falla
+    con `FingerprintMismatch` (T0) hasta la **única** regrabación *live*, que es la
+    corrida compartida de [024 LB1](../024-contexto-conversacional-del-bucle/todo.md)
+    tras su bloque S. Los tests no tocan byte a byte el *prompt*: fijan el
+    **comportamiento** con los defaults y que el anuncio no dependa de los flags.
 
 - [ ] **T1** ADR: el matcher mide **defecto**, no redacción (E0d, E0h, R1/R1b)
   - ADR nuevo con el **siguiente número libre al escribirlo** (hoy sería el 0025):

@@ -917,6 +917,11 @@ def test_sin_sink_no_se_pide_el_razonamiento() -> None:
 
 def test_review_tools_settings_defaults_y_lista() -> None:
     # 014 RH1: vacio = sin roles; lista separada por comas; topes por lote.
+    # 023 F1: las palancas existen con su default y el comportamiento es el de hoy.
+    import pytest
+    from pydantic import ValidationError
+
+    from agent_review.adapters.tool_loop import ReviewToolsOptions
     from agent_review.ports.context import ContextLimits
     from agent_review.settings import Settings
 
@@ -925,21 +930,49 @@ def test_review_tools_settings_defaults_y_lista() -> None:
     assert empty.review_tools_max_turns == 4
     assert empty.review_tools_max_calls == 8
     assert empty.review_tools_max_bytes == 60_000
+    assert empty.review_tools_calls_per_turn == 3
+    assert empty.review_tools_grep_mode == "literal"
+    assert empty.review_tools_read_outline is False
+    assert empty.review_tools_read_state is False
+    assert empty.review_tools_truncation_notice is True
+    assert empty.review_tools_strict_calls is False
+    assert empty.review_tools_precache_context is True
+    assert empty.review_tools_io_cache is False
 
     configured = Settings(
         _env_file=None,
         review_tools_roles="correctness, security",
         review_tools_max_turns=6,
+        review_tools_grep_mode="REGEX",
+        review_tools_calls_per_turn=5,
     )
     assert configured.review_tools_roles_list == ["correctness", "security"]
     assert configured.review_tools_max_turns == 6
-    # Los defaults del bucle coinciden con ContextLimits (016/014 H5).
+    assert configured.review_tools_grep_mode == "regex", "el modo se normaliza"
+    assert configured.review_tools_calls_per_turn == 5
+
+    with pytest.raises(ValidationError, match="REVIEW_TOOLS_GREP_MODE"):
+        Settings(_env_file=None, review_tools_grep_mode="glob")
+
+    # Los defaults del bucle coinciden con ContextLimits (016/014 H5) y con las
+    # opciones de servicio (023 F1).
     limits = ContextLimits(
         max_turns=empty.review_tools_max_turns,
         max_calls=empty.review_tools_max_calls,
         max_bytes=empty.review_tools_max_bytes,
+        calls_per_turn=empty.review_tools_calls_per_turn,
     )
     assert limits.max_turns == 4
+    assert limits.calls_per_turn == 3
+    assert ReviewToolsOptions() == ReviewToolsOptions(
+        grep_mode=empty.review_tools_grep_mode,
+        read_outline=empty.review_tools_read_outline,
+        read_state=empty.review_tools_read_state,
+        truncation_notice=empty.review_tools_truncation_notice,
+        strict_calls=empty.review_tools_strict_calls,
+        io_cache=empty.review_tools_io_cache,
+        precache_context=empty.review_tools_precache_context,
+    )
 
 
 def test_reader_factory_none_no_cambia_el_camino() -> None:
