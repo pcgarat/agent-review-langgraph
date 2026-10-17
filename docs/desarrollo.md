@@ -319,6 +319,11 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **Ninguna persona compara su propia llamada contra un entero de presupuesto.** El
   gasto se reserva y se confirma contra el `BudgetPort` compartido; el hecho del
   corte (`budget_exhausted`) viaja, no se silencia.
+- **Un secreto, una declaración.** El contrato de arranque se deriva de `Settings`
+  (`secrets_for`), no de una lista a mano: cada campo secreto declara su descriptor
+  `Secret` y el valor de ejemplo vive en `PLACEHOLDER_VALUES`
+  ([ADR-0022](adr/0022-contrato-de-secretos-declarado.md)). Un campo secreto nuevo sin
+  declarar rompe `tests/test_secrets.py`.
 
 ## 5. Convenciones
 
