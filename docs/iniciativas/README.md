@@ -16,7 +16,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan · [plan](014-revisor-con-herramientas/plan.md) · [todo](014-revisor-con-herramientas/todo.md) | 008 (012, 016 y 017 hechas) · RH1–RH10 hechas; RH11–RH12 pendientes |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
-| 022 | [Decisión humana desde el panel](022-decision-humana-en-el-panel/spec.md) | borrador | 🟠 El panel muestra y decide los pendientes de una pausa humana con `build_decision` | 019 (panel) · Q1–Q4 abiertas |
+| 023 | [Eficacia del bucle de lectura](023-eficacia-del-bucle-de-lectura/spec.md) | aprobada | 🟠 Que `grep`, `read_file` y `list_dir` de 014 sirvan de verdad: `grep` regex/acotado, corte declarado, `outline`, estado de lecturas · [plan](023-eficacia-del-bucle-de-lectura/plan.md) · [todo](023-eficacia-del-bucle-de-lectura/todo.md) | 014 (medida) · K0 (D23 + matcher) bloquea el resto · T0–D1 pendientes |
 
 ### Orden
 
