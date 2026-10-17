@@ -50,7 +50,8 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
   en cada petición, no al arrancar; se quedan donde están y solo comparten el
   predicado (`is_missing`). Los campos que sí se declaran para que el inventario
   (`I1`) sea completo pero que el contrato de hoy no exige (`TWG_TOKEN` de Fase 4,
-  `SANDBOX_REGISTRY_TOKEN`, `SANDBOX_CONSOLE_TOKEN`) usan `feature="solo_inventario"`.
+  `SANDBOX_REGISTRY_TOKEN`, `SANDBOX_CONSOLE_TOKEN`) lo declaran con el motivo
+  (`inventory_only="…"`).
 - **Vacío y placeholder cuentan igual** («sin configurar»): vacío es el caso más
   probable (variable sin asignar, `VAR=`), y un contrato fail-closed que no lo cubre
   falla justo cuando más importa.
@@ -69,11 +70,12 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
   declaración es accesible solo por `model_fields[...].metadata`. Es el precio de no
   tener una tabla paralela que pueda quedar desactualizada; se compensa con
   `secrets_for` como única vía de lectura y un comentario en el módulo.
-- El descriptor admite cinco campos (`required_in`, `feature`, `required_when_empty`,
-  `expect`) y no debe crecer más: `expect` y `required_when_empty` los exige el
-  contrato real (`SANDBOX_RUNNER_URL` no es un secreto; `TEAMS_NOTICES_KEY` se exige
-  por estar vacía y `reviews:notices` es un valor legítimo). Si aparece un sexto caso,
-  la decisión vuelve a revisión en vez de que el descriptor se vuelva un mini-framework.
+- El descriptor admite cuatro campos (`required_in`, `feature`, `expect`,
+  `inventory_only`) y no debe crecer más: `expect` lo exige el contrato real
+  (`SANDBOX_RUNNER_URL` no es un secreto y `TEAMS_NOTICES_KEY` se exige por estar
+  vacía, y `reviews:notices` es un valor legítimo) e `inventory_only` declara lo que
+  solo entra en el inventario. Si aparece un quinto caso, la decisión vuelve a
+  revisión en vez de que el descriptor se vuelva un mini-framework.
 - **`Settings` pasa a ser un punto de serialización del trabajo en paralelo.** El
   inventario y la declaración comparten sitio *a propósito* (es el valor del ADR),
   pero el precio es que la declaración de un campo vive **en el campo**: no hay zona
@@ -88,11 +90,21 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
 ---
 
 > **Enmienda (2026-10-17).** Este ADR se aceptó junto con la implementación, con dos
-> correcciones sobre el texto de arriba: (1) el runner importa `PLACEHOLDER_VALUES` en
-> vez de replicarlo, porque ya importa `settings`; (2) el contrato necesita dos ejes
-> (`required_in` + `feature`) para reproducir los veredictos reales, y el descriptor
-> gana `expect` y `required_when_empty`. El detalle está en la
+> correcciones sobre el texto de arriba: (1) el runner comparte el predicado
+> `is_missing` en vez de replicar el placeholder, porque ya importa `settings`; (2) el
+> contrato necesita dos ejes (`required_in` + `feature`) para reproducir los veredictos
+> reales, y el descriptor gana `expect` y `inventory_only`. El detalle está en la
 > [enmienda de la spec](../iniciativas/archivo/020-secretos-declarados/spec.md).
+>
+> **Enmienda (2026-10-17, revisión de código).** Tres correcciones del descriptor
+> respecto a lo que se implementó primero: (1) `expect` se queda en un solo eje
+> (`secret` | `plain`) y desparece `required_when_empty`, que declaraba lo mismo que
+> `expect="value"`; (2) `feature="solo_inventario"` se sustituye por
+> `inventory_only="motivo"`, que obliga a justificar el campo y no permite declarar
+> proceso o condición; (3) `secrets_for` valida `process` contra `PROCESSES`, de modo
+> que un nombre desconocido es un error en vez de un contrato vacío. El contrato extra
+> del registro de modelos se declara en `_EXTRA_BY_PROCESS`, no en una rama del
+> recorrido.
 - Las tres excepciones que no caben en el descriptor (el registro declarativo de
   modelos, `teams_enabled`, `sandbox_enabled`) quedan como guardas explícitas y
   documentadas en `secrets_for`, no repartidas por el módulo.

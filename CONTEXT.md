@@ -217,9 +217,9 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | Término | Definición |
 |---|---|
 | **Secreto** | Variable que en producción el proceso **no puede arrancar** sin rellenar ([ADR-0013](docs/adr/0013-secretos-por-entorno-fail-closed.md)). Vacío y el placeholder de `.env.example` cuentan igual: «sin configurar» (`settings.is_missing`). |
-| **Descriptor de secreto** (`Secret`) | La declaración de un campo de `Settings` en su `metadata` (iniciativa 020, [ADR-0022](docs/adr/0022-contrato-de-secretos-declarado.md)): en qué procesos aplica (`required_in`), qué condición lo activa (`feature`), qué se espera del valor (`expect`) y si se exige por estar vacío. Vive junto al campo, así que el inventario del modelo y el contrato de seguridad no pueden desincronizarse. |
-| **Contrato derivado** (`secrets_for`) | La lista de secretos sin configurar que un proceso exige, derivada del recorrido de `Settings.model_fields`. Es la **única** vía de lectura del descriptor; las funciones de arranque (`require_*_secrets`) delegan en ella. |
-| **Placeholder** (`PLACEHOLDER_VALUES`) | Valor de ejemplo de `.env.example` (`change-me`, `changeme`). Es una sola definición en `settings.py`, importada por API, web y el `sandbox-runner`: con ella el proceso se relaja a propósito en desarrollo. |
+| **Descriptor de secreto** (`Secret`) | La declaración de un campo de `Settings` en su `metadata` (iniciativa 020, [ADR-0022](docs/adr/0022-contrato-de-secretos-declarado.md)): en qué procesos aplica (`required_in`), qué condición lo activa (`feature`), qué se espera del valor (`expect`: `secret` o `plain`) y, si solo entra en el inventario, el motivo (`inventory_only`). Vive junto al campo, así que el inventario del modelo y el contrato de seguridad no pueden desincronizarse. |
+| **Contrato derivado** (`secrets_for`) | La lista de secretos sin configurar que un proceso exige, derivada del recorrido de `Settings.model_fields`. Es la **única** vía de lectura del descriptor; las funciones de arranque (`require_*_secrets`) delegan en ella. Un `process` fuera de `PROCESSES` es un error, no un contrato vacío. |
+| **Placeholder** (`PLACEHOLDER_VALUES`) | Valor de ejemplo de `.env.example` (`change-me`, `changeme`). Es una sola definición en `settings.py`; API, web y el `sandbox-runner` comparten el predicado `is_missing`, que la encapsula: con él el proceso se relaja a propósito en desarrollo. |
 
 ---
 

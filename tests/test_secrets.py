@@ -17,12 +17,12 @@ from pathlib import Path
 import pytest
 
 from agent_review.settings import (
+    _EXTRA_BY_PROCESS,
+    _FEATURES,
     PLACEHOLDER_VALUES,
     PROCESSES,
     Secret,
     Settings,
-    _EXTRA_BY_PROCESS,
-    _FEATURES,
     _secret_of,
     is_missing,
     secrets_for,

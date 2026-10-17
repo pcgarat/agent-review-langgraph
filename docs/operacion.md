@@ -159,7 +159,8 @@ secreto de `Settings` lleva un descriptor `Secret` en su `metadata` que dice en 
 procesos aplica, qué condición lo activa y qué se espera del valor; el contrato se
 deriva con `settings.secrets_for(settings, proceso)`. Añadir un campo secreto y
 olvidar su comprobación deja de ser posible, y el valor de ejemplo se declara una sola
-vez (`settings.PLACEHOLDER_VALUES`, que API, web y el `sandbox-runner` importan).
+vez: API, web y el `sandbox-runner` comparten el predicado `settings.is_missing`, que
+encapsula la lista `settings.PLACEHOLDER_VALUES`.
 
 | Variable | Qué es | Obligatoria | Dueño |
 |---|---|---|---|

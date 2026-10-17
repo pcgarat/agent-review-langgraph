@@ -55,6 +55,14 @@ se sostienen; las tres preguntas abiertas quedan resueltas. El diseño vigente e
   `required_when_empty` y `expect: "value" | "url"`— y no es «un mini-framework»: son
   las dos formas que el inventario real ya tenía escondidas en `if`.
 
+- **Enmienda (2026-10-17, revisión de código).** El descriptor se simplificó tras una
+  revisión: `expect` queda en un solo eje (`secret` | `plain`) y desaparece
+  `required_when_empty` (declaraba lo mismo que `expect="value"`); `feature="solo_inventario"`
+  se sustituye por `inventory_only="motivo"`, que obliga a justificar el campo; y
+  `secrets_for` valida `process` contra `PROCESSES`, de modo que un nombre desconocido
+  es un error en vez de un contrato vacío. El contrato extra del registro de modelos se
+  declara en `_EXTRA_BY_PROCESS`. Ver [ADR-0022](../../../adr/0022-contrato-de-secretos-declarado.md).
+
 **Preguntas abiertas, resueltas:**
 
 - **Q1 — placeholder.** Global: `PLACEHOLDER_VALUES = frozenset({"change-me", "changeme"})`
