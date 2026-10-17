@@ -41,6 +41,31 @@ class ProtectedSubject(StrEnum):
     CRYPTOGRAPHY = "cryptography"
 
 
+class Verification(StrEnum):
+    """Estado del hallazgo en la cascada de verificacion (007 D2).
+
+    Nace `unverified`; solo la cascada lo promueve o lo refuta. Un `refuted` se
+    conserva en el estado (D3): alimenta la metrica de falsos positivos.
+    """
+
+    UNVERIFIED = "unverified"
+    VERIFIED_STATIC = "verified_static"
+    VERIFIED_GROUNDED = "verified_grounded"
+    VERIFIED_EXECUTED = "verified_executed"
+    REFUTED = "refuted"
+
+
+class ContextScope(StrEnum):
+    """Lo que sostiene la afirmacion: solo el diff o algo que el revisor no ve (007 D5)."""
+
+    IN_DIFF = "in_diff"
+    OUTSIDE_DIFF = "outside_diff"
+
+
+# Severidades que, sin verificar, deben trazar su escenario de fallo (007 I1).
+SCENARIO_SEVERITIES = frozenset({Severity.P0, Severity.P1, Severity.P2})
+
+
 class ToolingSourceStatus(StrEnum):
     """Estado de la fuente de tooling de una persona estatica.
 
@@ -85,12 +110,17 @@ class Finding(BaseModel):
     why_it_matters: str
     autofix_class: AutofixClass
     owner: Owner
-    requires_verification: bool
     confidence: int
     evidence: list[str] = Field(min_length=1)
     pre_existing: bool = False
     suggested_fix: str | None = None
     protected_subject: ProtectedSubject | None = None
+    # Contrato de verificacion (007). Son hechos, no decisiones: ninguno cambia la
+    # severidad; la publicada la calcula solo el gate de 011 (D11).
+    failure_scenario: str | None = None
+    verification: Verification = Verification.UNVERIFIED
+    verification_evidence: list[str] = Field(default_factory=list)
+    context_scope: ContextScope | None = None
 
     @field_validator("confidence")
     @classmethod
@@ -98,6 +128,22 @@ class Finding(BaseModel):
         if value not in CONFIDENCE_ANCHORS:
             raise ValueError(f"confidence debe ser uno de {CONFIDENCE_ANCHORS}")
         return value
+
+    @model_validator(mode="after")
+    def _verification_contract(self) -> Finding:
+        # I1: una hipotesis P0-P2 traza su camino de fallo; opinar no basta.
+        if (
+            self.severity in SCENARIO_SEVERITIES
+            and self.verification is Verification.UNVERIFIED
+            and not (self.failure_scenario or "").strip()
+        ):
+            raise ValueError("un P0-P2 sin verificar necesita failure_scenario (007 I1)")
+        # I2: un veredicto sin cita es otra opinion.
+        if self.verification is not Verification.UNVERIFIED and not self.verification_evidence:
+            raise ValueError(
+                "un hallazgo verificado o refutado necesita verification_evidence (007 I2)"
+            )
+        return self
 
 
 class ReviewerResult(BaseModel):

@@ -11,11 +11,13 @@ from agent_review.adapters.tooling_source import StaticToolingOutputSource
 from agent_review.domain.contracts import validate_finding
 from agent_review.domain.models import (
     AutofixClass,
+    ContextScope,
     Finding,
     Owner,
     ReviewerResult,
     Severity,
     ToolingSourceStatus,
+    Verification,
 )
 from agent_review.ports.tooling import ToolingOutputSource
 
@@ -115,7 +117,10 @@ class ToolingReviewer:
             return None
         severity = _SEVERITY_MAP.get(str(entry.get("level", "warning")), Severity.P3)
         subject = guess_protected_subject(message)
-        evidence_line = added.get(line, "")
+        cite = f"{key}:{line} {added.get(line, '')}".strip()
+        # 007 Q3: si la herramienta senala una linea que el PR no anadio, el hallazgo
+        # se reancla a la anadida mas cercana, pero habla de codigo no tocado.
+        scope = ContextScope.IN_DIFF if hint in added else ContextScope.OUTSIDE_DIFF
         payload = {
             "id": f"standards-{slug(path)}-{hint or line}-{slug(message)[:24]}",
             "title": _title(message),
@@ -125,10 +130,14 @@ class ToolingReviewer:
             "why_it_matters": message,
             "autofix_class": AutofixClass.MANUAL.value if subject else AutofixClass.ADVISORY.value,
             "owner": Owner.HUMAN.value if subject else Owner.DOWNSTREAM_RESOLVER.value,
-            "requires_verification": False,
             "confidence": 100 if entry.get("line") else 75,
-            "evidence": [f"{key}:{line} {evidence_line}".strip()],
+            "evidence": [cite],
             "protected_subject": subject.value if subject else None,
+            # Nace de una herramienta que corrio: ya esta verificado (007 D6), asi
+            # que no necesita escenario de fallo (I1 solo aplica a `unverified`).
+            "verification": Verification.VERIFIED_STATIC.value,
+            "verification_evidence": [cite],
+            "context_scope": scope.value,
         }
         return validate_finding(payload)
 

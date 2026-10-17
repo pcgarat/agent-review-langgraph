@@ -28,7 +28,7 @@ def make_finding(**overrides: object) -> Finding:
         "why_it_matters": "Rompe algo",
         "autofix_class": AutofixClass.GATED_AUTO,
         "owner": Owner.DOWNSTREAM_RESOLVER,
-        "requires_verification": False,
+        "failure_scenario": "escenario de prueba",
         "confidence": 75,
         "evidence": ["src/foo.py:10 amor"],
     }

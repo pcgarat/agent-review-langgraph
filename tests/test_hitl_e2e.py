@@ -168,7 +168,7 @@ class _StaticReviewer:
                     why_it_matters="Riesgo de null dereference",
                     autofix_class=AutofixClass.ADVISORY,
                     owner=Owner.HUMAN,
-                    requires_verification=False,
+                    failure_scenario="escenario de prueba",
                     confidence=75,
                     evidence=["a.php:1 $x"],
                 )

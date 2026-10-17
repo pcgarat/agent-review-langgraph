@@ -33,6 +33,22 @@
         "secrets-exposure",
         "cryptography"
       ]
+    },
+    "Verification": {
+      "title": "Verification",
+      "type": "string",
+      "enum": [
+        "unverified",
+        "verified_static",
+        "verified_grounded",
+        "verified_executed",
+        "refuted"
+      ]
+    },
+    "ContextScope": {
+      "title": "ContextScope",
+      "type": "string",
+      "enum": ["in_diff", "outside_diff"]
     }
   },
   "properties": {
@@ -44,7 +60,6 @@
     "why_it_matters": { "title": "Why It Matters", "type": "string" },
     "autofix_class": { "$ref": "#/$defs/AutofixClass" },
     "owner": { "$ref": "#/$defs/Owner" },
-    "requires_verification": { "title": "Requires Verification", "type": "boolean" },
     "confidence": {
       "title": "Confidence",
       "type": "integer",
@@ -67,6 +82,24 @@
       "title": "Protected Subject",
       "anyOf": [{ "$ref": "#/$defs/ProtectedSubject" }, { "type": "null" }],
       "default": null
+    },
+    "failure_scenario": {
+      "title": "Failure Scenario",
+      "description": "input/estado -> ruta file:line -> resultado incorrecto. Obligatorio en P0-P2 sin verificar.",
+      "anyOf": [{ "type": "string" }, { "type": "null" }],
+      "default": null
+    },
+    "verification": { "$ref": "#/$defs/Verification", "default": "unverified" },
+    "verification_evidence": {
+      "title": "Verification Evidence",
+      "description": "Citas o salida de test que sostienen el veredicto. Al menos una si verification no es unverified.",
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "context_scope": {
+      "anyOf": [{ "$ref": "#/$defs/ContextScope" }, { "type": "null" }],
+      "default": null
     }
   },
   "required": [
@@ -78,8 +111,25 @@
     "why_it_matters",
     "autofix_class",
     "owner",
-    "requires_verification",
     "confidence",
     "evidence"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "severity": { "enum": ["P0", "P1", "P2"] },
+          "verification": { "const": "unverified" }
+        }
+      },
+      "then": { "required": ["failure_scenario"] }
+    },
+    {
+      "if": {
+        "properties": { "verification": { "not": { "const": "unverified" } } },
+        "required": ["verification"]
+      },
+      "then": { "properties": { "verification_evidence": { "minItems": 1 } }, "required": ["verification_evidence"] }
+    }
   ]
 }

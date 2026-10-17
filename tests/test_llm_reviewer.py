@@ -87,7 +87,7 @@ def _finding_json(**overrides) -> dict:
         "why_it_matters": "Se lanza una excepcion de dominio sin proteger el estado",
         "autofix_class": "gated_auto",
         "owner": "downstream-resolver",
-        "requires_verification": True,
+        "failure_scenario": "escenario de prueba",
         "confidence": 75,
         "evidence": [f"{TRANSFER}:14 throw new InsufficientBalance('no funds');"],
     }
@@ -354,7 +354,7 @@ def _static_duplicate() -> Finding:
         why_it_matters="Otra persona lo ve igual",
         autofix_class=AutofixClass.ADVISORY,
         owner=Owner.HUMAN,
-        requires_verification=False,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=[f"{TRANSFER}:14 throw new InsufficientBalance('no funds');"],
     )
@@ -379,3 +379,45 @@ def test_merge_deduplica_persona_llm_y_estatica() -> None:
 
     assert len(result["merged"]) == 1, "el merge debe unificar por (fichero, titulo)"
     assert len(vcs.inlines) == 1
+
+
+def test_p0_p2_sin_escenario_se_descarta_por_el_contrato() -> None:
+    # 007 I1: el modelo tiene que trazar el fallo; opinar no basta.
+    sin = {k: v for k, v in _finding_json().items() if k != "failure_scenario"}
+    reviewer = LlmReviewer(llm=FakeLlm(_response(sin, sin | {"severity": "P3"})))
+    findings = reviewer.review(repo="r", pr_id=1, diff=DIFF).findings
+    assert [f.severity for f in findings] == [Severity.P3]
+
+
+def test_el_modelo_no_puede_autoverificarse() -> None:
+    from agent_review.domain.models import Verification
+
+    entry = _finding_json(verification="verified_grounded", verification_evidence=["lo digo yo"])
+    [finding] = (
+        LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings
+    )
+    assert finding.verification is Verification.UNVERIFIED
+    assert finding.verification_evidence == []
+    assert finding.failure_scenario == "escenario de prueba"
+
+
+def test_context_scope_del_modelo_se_lee_y_lo_desconocido_cae_a_none() -> None:
+    from agent_review.domain.models import ContextScope
+
+    fuera = _finding_json(context_scope="outside_diff")
+    raro = _finding_json(context_scope="quizas", line=13, title="Otro hallazgo")
+    findings = (
+        LlmReviewer(llm=FakeLlm(_response(fuera, raro)))
+        .review(repo="r", pr_id=1, diff=DIFF)
+        .findings
+    )
+    assert [f.context_scope for f in findings] == [ContextScope.OUTSIDE_DIFF, None]
+
+
+def test_el_prompt_pide_escenario_y_alcance_y_no_requires_verification() -> None:
+    llm = FakeLlm(_response())
+    LlmReviewer(llm=llm).review(repo="r", pr_id=1, diff=DIFF)
+    prompt = llm.calls[0][1]
+    assert "failure_scenario" in prompt
+    assert "context_scope" in prompt
+    assert "requires_verification" not in prompt

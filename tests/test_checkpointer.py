@@ -101,7 +101,7 @@ class _OneFinding:
                     why_it_matters="w",
                     autofix_class=AutofixClass.ADVISORY,
                     owner=Owner.HUMAN,
-                    requires_verification=False,
+                    failure_scenario="escenario de prueba",
                     confidence=75,
                     evidence=["a.php:1 x"],
                 )
@@ -398,7 +398,7 @@ def _fix_graph(vcs: _MemoryVcs, saver=None):
         why_it_matters="w",
         autofix_class=AutofixClass.GATED_AUTO,
         owner=Owner.HUMAN,
-        requires_verification=True,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=["a.php:1 x"],
     )
@@ -520,3 +520,63 @@ def test_prune_fix_no_toca_un_fix_reciente() -> None:
     kinds = paused_thread_kinds(saver)
     assert prune_fix_threads(saver, max_age_s=0, paused_kinds=kinds) == []
     assert prune_fix_threads(saver, max_age_s=3600.0, paused_kinds=kinds) == []
+
+
+def test_un_finding_de_antes_de_007_se_reanuda() -> None:
+    """Un checkpoint guardado antes de 007 lleva `requires_verification` y un `P1`
+    sin `failure_scenario`. Reanudar ese hilo no puede romper (007 D12, plan)."""
+    import ormsgpack
+    from langgraph.checkpoint.serde.jsonplus import EXT_PYDANTIC_V2, _msgpack_enc
+
+    legacy = {
+        "id": "f-legacy",
+        "title": "T",
+        "severity": "P1",
+        "file": "a.php",
+        "line": 1,
+        "why_it_matters": "w",
+        "autofix_class": "manual",
+        "owner": "human",
+        "requires_verification": True,
+        "confidence": 75,
+        "evidence": ["a.php:1 x"],
+        "pre_existing": False,
+        "suggested_fix": None,
+        "protected_subject": None,
+    }
+    raw = ormsgpack.packb(
+        ormsgpack.Ext(
+            EXT_PYDANTIC_V2,
+            _msgpack_enc(("agent_review.domain.models", "Finding", legacy, "model_validate_json")),
+        )
+    )
+    finding = build_serde().loads_typed(("msgpack", raw))
+
+    assert isinstance(finding, Finding)
+    assert finding.id == "f-legacy"
+    assert finding.failure_scenario is None
+    assert "requires_verification" not in finding.model_dump()
+
+
+def test_serde_roundtrip_de_los_campos_de_verificacion(caplog) -> None:
+    from agent_review.domain.models import ContextScope, Verification
+
+    finding = Finding(
+        id="f",
+        title="T",
+        severity=Severity.P1,
+        file="a.php",
+        line=1,
+        why_it_matters="w",
+        autofix_class=AutofixClass.MANUAL,
+        owner=Owner.HUMAN,
+        confidence=100,
+        evidence=["a.php:1 x"],
+        verification=Verification.VERIFIED_STATIC,
+        verification_evidence=["a.php:1 x"],
+        context_scope=ContextScope.OUTSIDE_DIFF,
+    )
+    serde = build_serde()
+    with caplog.at_level("WARNING"):
+        assert serde.loads_typed(serde.dumps_typed(finding)) == finding
+    assert not [r for r in caplog.records if "msgpack" in r.getMessage().lower()]

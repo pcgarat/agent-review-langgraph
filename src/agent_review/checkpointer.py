@@ -13,6 +13,7 @@ from agent_review.domain.models import (
     ApprovalRequest,
     AutofixClass,
     CommandResult,
+    ContextScope,
     Decision,
     DecisionOutcome,
     Finding,
@@ -30,6 +31,7 @@ from agent_review.domain.models import (
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
+    Verification,
     VerifyJob,
 )
 
@@ -49,6 +51,9 @@ _STATE_TYPES: tuple[type, ...] = (
     Owner,
     FindingAction,
     ToolingSourceStatus,
+    # 007: estado de verificacion y alcance de contexto del hallazgo.
+    Verification,
+    ContextScope,
     ApprovalRequest,
     PendingDecision,
     FindingDecision,

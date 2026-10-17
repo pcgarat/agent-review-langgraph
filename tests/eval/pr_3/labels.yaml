@@ -110,6 +110,39 @@ must_not_report:
     match: ["apply_resolutions", "NOT_VERIFIABLE"]
     why: "requisito inventado sin leer verify_job"
 
+  # J-O: falsos positivos de la regrabacion del 2026-10-17 (deepseek-v4-flash, con
+  # el contrato de 007). Verificados contra 008da57; todos traen escenario de
+  # fallo, pero el escenario no es alcanzable.
+  - id: J
+    file: src/agent_review/graph/build.py
+    match: ["`fix_wait` no tiene", "retry_policy"]
+    why: "fix_wait es puro y va sin RetryPolicy a proposito (como hitl); un ValidationError tampoco se reintentaria"
+
+  - id: K
+    file: src/agent_review/fixworker/main.py
+    match: ["`done_keys` vacío", "encola la reanudación"]
+    why: "una wave vacia nunca se encola: build_fix_wait devuelve None sin PENDING con parche"
+
+  - id: L
+    file: src/agent_review/graph/build.py
+    match: ["comentario de seguimiento del fix", "parcialmente resuelto"]
+    why: "apply_resolutions cierra todo PENDING sin resolucion: publish_fix nunca ve una wave a medias"
+
+  - id: M
+    file: src/agent_review/fixworker/main.py
+    match: ["no propaga `sandboxerror` transitorio"]
+    why: "los 5xx/429/timeouts son SandboxUnavailable (transitorio, hermano de SandboxError): suben y se reencolan"
+
+  - id: N
+    file: src/agent_review/fix/node.py
+    match: ["`dispatch_fixes` re-propone", "terminales previos"]
+    why: "devolver el delta es el contrato; el reducer _merge_fixes conserva los terminales (escenario hipotetico)"
+
+  - id: O
+    file: src/agent_review/graph/build.py
+    match: ["puede no converger", "que no avanza"]
+    why: "una excepcion aborta fix_dispatch y no llega a _route_fix_wait; cada vuelta consume un intento (familia de C)"
+
 acceptable:
   - id: H
     match: ["env_for", "Settings"]

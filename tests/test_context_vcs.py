@@ -67,7 +67,7 @@ def test_seed_findings_precarga_los_ficheros_de_los_hallazgos() -> None:
         why_it_matters="w",
         autofix_class=AutofixClass.ADVISORY,
         owner=Owner.HUMAN,
-        requires_verification=False,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=[f"{README}:1 # repo"],
     )

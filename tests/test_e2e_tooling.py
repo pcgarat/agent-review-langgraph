@@ -155,7 +155,7 @@ class _FakeLlm:
                             "why_it_matters": "El saldo puede ser nulo antes de retirar",
                             "autofix_class": "gated_auto",
                             "owner": "downstream-resolver",
-                            "requires_verification": True,
+                            "failure_scenario": "escenario de prueba",
                             "confidence": 75,
                             "evidence": [
                                 "src/BackOffice/Application/Wallet/Transfer.php:13 $balance->frozen"

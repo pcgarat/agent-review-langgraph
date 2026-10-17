@@ -35,7 +35,7 @@ def _valid() -> dict:
         "why_it_matters": "w",
         "autofix_class": "advisory",
         "owner": "human",
-        "requires_verification": False,
+        "failure_scenario": "escenario de prueba",
         "confidence": 75,
         "evidence": ["a.php:1 algo"],
     }
@@ -83,3 +83,37 @@ def test_la_ruta_del_contrato_no_depende_del_paquete_instalado(monkeypatch, tmp_
     monkeypatch.setenv("REVIEWS_CONTRACT_PATH", str(copia))
     assert contracts.default_contract_path() == copia
     assert contracts.validate_finding(_valid()).file == "a.php"
+
+
+def test_contrato_declara_la_verificacion_y_retira_requires_verification() -> None:
+    schema = load_findings_schema()
+    props = schema["properties"]
+    for field in ("failure_scenario", "verification", "verification_evidence", "context_scope"):
+        assert field in props
+        assert field not in schema["required"]
+    assert "requires_verification" not in props
+    assert "requires_verification" not in schema["required"]
+    assert schema["$defs"]["Verification"]["enum"] == [
+        "unverified",
+        "verified_static",
+        "verified_grounded",
+        "verified_executed",
+        "refuted",
+    ]
+    assert schema["$defs"]["ContextScope"]["enum"] == ["in_diff", "outside_diff"]
+
+
+def test_contrato_exige_escenario_a_p0_p2_sin_verificar() -> None:
+    # El `if/then` del JSON publica lo mismo que I1 e I2 del modelo (spec 007 §5.5).
+    rules = load_findings_schema()["allOf"]
+    escenario = next(r for r in rules if r["then"].get("required") == ["failure_scenario"])
+    assert escenario["if"]["properties"]["severity"]["enum"] == ["P0", "P1", "P2"]
+    assert escenario["if"]["properties"]["verification"] == {"const": "unverified"}
+    evidencia = next(r for r in rules if r["then"].get("required") == ["verification_evidence"])
+    assert evidencia["then"]["properties"]["verification_evidence"]["minItems"] == 1
+
+
+def test_validate_finding_aplica_los_invariantes() -> None:
+    payload = {k: v for k, v in _valid().items() if k != "failure_scenario"}
+    with pytest.raises(ValidationError, match="failure_scenario"):
+        validate_finding(payload | {"severity": "P1"})

@@ -24,7 +24,7 @@ def _finding(fid: str, *, line: int = 1) -> Finding:
         why_it_matters="Rompe",
         autofix_class=AutofixClass.GATED_AUTO,
         owner=Owner.HUMAN,
-        requires_verification=True,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=["src/Foo.php:1 x"],
     )

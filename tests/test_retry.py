@@ -117,7 +117,7 @@ def _finding() -> Finding:
         why_it_matters="No cubre el caso borde",
         autofix_class=AutofixClass.GATED_AUTO,
         owner=Owner.DOWNSTREAM_RESOLVER,
-        requires_verification=True,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=["src/foo.py:3 falta assert"],
     )

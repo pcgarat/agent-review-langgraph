@@ -87,23 +87,25 @@ def test_replay_es_determinista() -> None:
     assert to_json(_replay_report(case)) == to_json(_replay_report(case))
 
 
-def test_el_baseline_recoge_los_numeros_de_la_auditoria() -> None:
+def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
+    # Regrabacion del 2026-10-17 (deepseek-v4-flash, contrato de 007). La auditoria
+    # original (9 publicados, 2 TP, precision 0.25) vive en la spec de 006 §3.1.
     case = harness.load_case(CASE_DIR)
     report = _replay_report(case)
 
     assert report.counts["fp_unknown"] == 0, "todo hallazgo publicado debe estar etiquetado"
-    assert report.counts["fp_labeled"] == 6
-    assert report.counts["tp"] == 2
-    # 7 hallazgos reales (A, I, integracion 1-3, no-detectado 1-3); solo 2 se
-    # publicaron. El recall global y el de los dos subconjuntos faltantes caen a 0.
-    assert report.counts["fn"] == 6
-    assert report.metrics["precision"] == 0.25
-    assert report.metrics["recall"] == 0.25
-    assert report.metrics["recall_by_subset"]["integracion"] == 0.0
-    assert report.metrics["recall_by_subset"]["no_detectado"] == 0.0
-    # A se publico como P1 pero es P2 (el TTL recupera la review): severidad mal.
-    assert report.metrics["severity_accuracy"] == 0.5
-    assert report.inverted == ("A",)
+    # Los 7 publicados son FP etiquetados (F, G y J-O): todos traen escenario de
+    # fallo, pero ninguno alcanzable. El escenario no basta; hace falta verificar (009).
+    assert report.counts["published"] == 7
+    assert report.counts["fp_labeled"] == 7
+    assert report.counts["tp"] == 0
+    # Los 8 reales (A, I, integracion 1-3, no-detectado 1-3) quedan sin detectar:
+    # la cobertura sigue en 0.2 hasta la 012.
+    assert report.counts["fn"] == 8
+    assert report.metrics["precision"] == 0.0
+    assert report.metrics["recall"] == 0.0
+    assert report.metrics["coverage"] == 0.2
+    assert report.inverted == ()
 
 
 def test_sin_deriva_frente_al_baseline() -> None:

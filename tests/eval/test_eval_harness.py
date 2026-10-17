@@ -89,7 +89,7 @@ def _finding(
         why_it_matters=why or title,
         autofix_class=AutofixClass.ADVISORY,
         owner=Owner.HUMAN,
-        requires_verification=False,
+        failure_scenario="escenario de prueba",
         confidence=50,
         evidence=[f"{file}:{line} algo"],
     )
@@ -654,7 +654,7 @@ def _finding_payload() -> str:
                     "why_it_matters": "Se escribe sin comprobar",
                     "autofix_class": "advisory",
                     "owner": "human",
-                    "requires_verification": False,
+                    "failure_scenario": "escenario de prueba",
                     "confidence": 50,
                     "evidence": ["x.py:1 amor"],
                 }

@@ -113,3 +113,52 @@ def test_persona_no_lee_herramientas_no_permitidas() -> None:
     result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
     assert result.findings == []
     assert result.tooling_status is ToolingSourceStatus.MISSING
+
+
+_SCOPE_DIFF = """\
+diff --git a/src/A.php b/src/A.php
+--- a/src/A.php
++++ b/src/A.php
+@@ -1,3 +1,4 @@
+ <?php
+ $a = 1;
++$b = $a->call();
+ $c = 3;
+"""
+
+
+def _phpstan(line: int) -> str:
+    import json
+
+    message = {"message": "Error en A", "line": line, "level": "error"}
+    return json.dumps({"files": {"src/A.php": {"messages": [message]}}})
+
+
+def test_persona_emite_verified_static_con_evidencia() -> None:
+    from agent_review.domain.models import ContextScope, Verification
+
+    [finding] = (
+        ToolingReviewer(phpstan_json=_phpstan(3))
+        .review(repo="r", pr_id=1, diff=_SCOPE_DIFF)
+        .findings
+    )
+    # 007 D6: nace verificado; por eso su P2 no necesita escenario (I1).
+    assert finding.severity.value == "P2"
+    assert finding.verification is Verification.VERIFIED_STATIC
+    assert finding.verification_evidence == ["src/A.php:3 $b = $a->call();"]
+    assert finding.failure_scenario is None
+    assert finding.context_scope is ContextScope.IN_DIFF
+
+
+def test_persona_marca_outside_diff_si_reancla() -> None:
+    from agent_review.domain.models import ContextScope
+
+    # La linea 4 no la anadio el PR: el hallazgo se reancla a la 3, pero habla de
+    # codigo no tocado (007 Q3).
+    [finding] = (
+        ToolingReviewer(phpstan_json=_phpstan(4))
+        .review(repo="r", pr_id=1, diff=_SCOPE_DIFF)
+        .findings
+    )
+    assert finding.line == 3
+    assert finding.context_scope is ContextScope.OUTSIDE_DIFF

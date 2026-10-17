@@ -112,7 +112,7 @@ class _FindingReviewer:
                     why_it_matters="Ruido",
                     autofix_class=AutofixClass.GATED_AUTO,
                     owner=Owner.HUMAN,
-                    requires_verification=True,
+                    failure_scenario="escenario de prueba",
                     confidence=75,
                     evidence=["src/Foo.php:2 +use App\\Bar;"],
                 )

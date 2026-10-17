@@ -10,7 +10,13 @@ from pydantic import ValidationError
 from agent_review.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
 from agent_review.adapters.text_utils import guess_protected_subject, shorten_title, slug
 from agent_review.domain.contracts import ContractError, validate_finding
-from agent_review.domain.models import Finding, ReviewerResult, Severity
+from agent_review.domain.models import (
+    ContextScope,
+    Finding,
+    ReviewerResult,
+    Severity,
+    Verification,
+)
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
@@ -35,15 +41,21 @@ Devuelve {"findings": [ ... ]}. Cada hallazgo:
   "why_it_matters": "impacto y modo de fallo, no 'esta mal'",
   "autofix_class": "gated_auto|manual|advisory",
   "owner": "downstream-resolver|human|release",
-  "requires_verification": true|false,
   "confidence": 0|25|50|75|100,
   "evidence": ["cita textual de la linea del diff"],
+  "failure_scenario": "obligatorio en P0/P1/P2: input o estado -> ruta file:line -> \
+resultado incorrecto",
+  "context_scope": "in_diff|outside_diff",
   "suggested_fix": "opcional, cambio de codigo corto",
   "protected_subject": "opcional: memory-safety|concurrency|data-loss|\
 authorization-authentication|injection|public-contract|secrets-exposure|cryptography"
 }
 Reglas: no inventes ficheros ni lineas que no esten en el diff; `confidence` solo
-puede ser 0/25/50/75/100; la primera evidencia cita la linea. Como maximo %d hallazgos.
+puede ser 0/25/50/75/100; la primera evidencia cita la linea. Un P0, P1 o P2 sin
+`failure_scenario` concreto se descarta: traza el camino del fallo, no opines.
+`context_scope` es `outside_diff` si la afirmacion depende de codigo que no esta en
+el diff (una firma, una configuracion, otro fichero); `in_diff` si basta el diff.
+Como maximo %d hallazgos.
 """
 
 # Un diff enorme no debe dispararse como prompt entero: se acota por coste.
@@ -266,12 +278,16 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
         "why_it_matters": why,
         "autofix_class": str(entry.get("autofix_class") or "advisory"),
         "owner": str(entry.get("owner") or "downstream-resolver"),
-        "requires_verification": bool(entry.get("requires_verification", False)),
         "confidence": _confidence(entry.get("confidence")),
         "evidence": evidence,
         "pre_existing": bool(entry.get("pre_existing", False)),
         "suggested_fix": _as_text(entry.get("suggested_fix")),
         "protected_subject": subject,
+        "failure_scenario": _as_text(entry.get("failure_scenario")),
+        # El modelo propone hipotesis: no puede autopromoverse (007 §5.4). Lo que
+        # devuelva en `verification`/`verification_evidence` se ignora.
+        "verification": Verification.UNVERIFIED.value,
+        "context_scope": _context_scope(entry.get("context_scope")),
     }
     try:
         return validate_finding(payload)
@@ -294,6 +310,11 @@ def _anchor_text(evidence: list[str], title: str) -> str | None:
 def _severity(value: object) -> str:
     text = str(value or "P3").upper()
     return text if text in {sev.value for sev in Severity} else "P3"
+
+
+def _context_scope(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in {scope.value for scope in ContextScope} else None
 
 
 def _confidence(value: object) -> int:

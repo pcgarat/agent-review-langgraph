@@ -131,7 +131,7 @@ def make_finding(
         why_it_matters="No cubre el caso borde",
         autofix_class=AutofixClass.GATED_AUTO,
         owner=Owner.DOWNSTREAM_RESOLVER,
-        requires_verification=True,
+        failure_scenario="escenario de prueba",
         confidence=75,
         evidence=[f"{file}:3 falta assert"],
     )

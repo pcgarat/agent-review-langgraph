@@ -1,42 +1,37 @@
 {
-  "acceptable": [
-    "H"
-  ],
+  "acceptable": [],
   "case": "pr-3-agent-review",
   "counts": {
-    "acceptable": 1,
-    "fn": 6,
-    "fp": 6,
-    "fp_labeled": 6,
-    "fp_p0_p1": 3,
+    "acceptable": 0,
+    "fn": 8,
+    "fp": 7,
+    "fp_labeled": 7,
+    "fp_p0_p1": 1,
     "fp_unknown": 0,
-    "published": 9,
-    "tp": 2,
-    "tp_inverted": 1
+    "published": 7,
+    "tp": 0,
+    "tp_inverted": 0
   },
   "fingerprints": {
-    "correctness": "sha256:1cb138eba85a50ef075fb680fbdd30cd28799a5c763d58a9a30d5e57b01319ca"
+    "correctness": "sha256:fd1dc1abbda59df24057094b473e099ef6f0bdbca38e45e3f25b6f8d1c173a13"
   },
-  "inverted": [
-    "A"
-  ],
-  "matched": [
-    "A",
-    "I"
-  ],
+  "inverted": [],
+  "matched": [],
   "metrics": {
-    "cost_per_tp_tokens": 10333.5,
+    "cost_per_tp_tokens": null,
     "coverage": 0.2,
-    "precision": 0.25,
-    "recall": 0.25,
+    "precision": 0.0,
+    "recall": 0.0,
     "recall_by_subset": {
-      "correctness": 1.0,
+      "correctness": 0.0,
       "integracion": 0.0,
       "no_detectado": 0.0
     },
-    "severity_accuracy": 0.5
+    "severity_accuracy": null
   },
   "missing": [
+    "A",
+    "I",
     "integracion-1",
     "integracion-2",
     "integracion-3",

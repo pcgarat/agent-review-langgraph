@@ -5,6 +5,7 @@ from agent_review.domain.models import (
     AutofixClass,
     ChatNotice,
     CommandResult,
+    ContextScope,
     Decision,
     DecisionOutcome,
     Finding,
@@ -22,6 +23,7 @@ from agent_review.domain.models import (
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
+    Verification,
 )
 from agent_review.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
 
@@ -32,6 +34,7 @@ __all__ = [
     "AutofixClass",
     "ChatNotice",
     "CommandResult",
+    "ContextScope",
     "Decision",
     "DecisionOutcome",
     "Finding",
@@ -52,4 +55,5 @@ __all__ = [
     "ReviewerResult",
     "Severity",
     "ToolingSourceStatus",
+    "Verification",
 ]
