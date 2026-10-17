@@ -225,7 +225,13 @@ def test_env_example_declara_todas_las_variables_y_ningun_secreto_vacio() -> Non
     assert missing == [], f"faltan en .env.example: {missing}"
     # Vacio a proposito solo donde el vacio significa algo (desactivado/por defecto);
     # vacio en un secreto se colaria como «sin rellenar» solo por la via `is_missing`.
-    intentionally_empty = {"SCOPE_IGNORE", "MAX_AUTONOMY_OVERRIDE", "LLM_MODEL", "LLM_BASE_URL"}
+    intentionally_empty = {
+        "SCOPE_IGNORE",
+        "MAX_AUTONOMY_OVERRIDE",
+        "LLM_MODEL",
+        "LLM_BASE_URL",
+        "REVIEW_TOOLS_ROLES",  # 014: vacio = opt-in desactivado (una llamada por lote)
+    }
     empty = sorted(name for name, value in declared if not value.strip())
     assert empty, "el filtro de vacios no deberia ser vacuo: `.env.example` deja variables vacias"
     assert set(empty) <= intentionally_empty, f"sin placeholder: {empty}"

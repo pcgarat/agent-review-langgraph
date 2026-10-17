@@ -1,5 +1,6 @@
 Última modificación: 2026-10-17 | Creado: 2026-10-11
 
+
 # Iniciativas
 
 Cada iniciativa tiene su carpeta `NNN-slug/` con `spec.md` (qué y por qué),
@@ -12,7 +13,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
-| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008 (012, 016 y 017 hechas) · falta plan y todo |
+| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan · [plan](014-revisor-con-herramientas/plan.md) · [todo](014-revisor-con-herramientas/todo.md) | 008 (012, 016 y 017 hechas) · RH1–RH12 pendientes |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 
@@ -44,7 +45,7 @@ flowchart LR
 - **Archivadas el 2026-10-17:** 008 (L0/L1), 009 (L2) y **011** (gate de
   severidad; [ADR-0024](../adr/0024-gate-de-severidad-en-la-politica.md)). Queda
   regrabar el *gold set* del PR #3 **una sola vez** (CX11 de 008). Siguiente de
-  la cascada: **014** (plan + todo).
+  la cascada: **014** (RH1 en adelante; plan y todo listos).
 - **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
   no de código.

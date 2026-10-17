@@ -38,6 +38,7 @@ from agent_review.domain.models import (
     Severity,
     SkipReason,
     ToolingSourceStatus,
+    ToolUsage,
     Verdict,
     Verification,
     VerificationResult,
@@ -124,6 +125,9 @@ class ReviewState(TypedDict, total=False):
     # `ReviewOutcome` se deriva de el (`tokens_spent`) sin consultar el puerto: el
     # hecho viaja en el estado y el `replay` sigue siendo determinista (017 B4).
     budget_total: int | None
+    # Uso del bucle de herramientas por persona (014). Reducer de suma/union: un
+    # reintento acumula turnos y une `files_read`.
+    tool_usage: Annotated[dict[str, ToolUsage], _merge_tool_usage]
     # Cobertura de la review (012 C1): `scope` la crea con los ignorados y la clase
     # de cada fichero; cada persona que revisa por lotes anade lo que leyo y lo que
     # no. El reducer las combina: un fichero cuenta como revisado si alguien lo leyo.
@@ -194,6 +198,29 @@ def _merge_tokens(left: dict[str, int] | None, right: dict[str, int] | None) -> 
     merged = dict(left or {})
     for name, tokens in (right or {}).items():
         merged[name] = merged.get(name, 0) + tokens
+    return merged
+
+
+def _merge_tool_usage(
+    left: dict[str, ToolUsage] | None, right: dict[str, ToolUsage] | None
+) -> dict[str, ToolUsage]:
+    """Acumula el uso del bucle por persona (014): suma turnos/calls/bytes y une rutas.
+
+    Un reintento de la persona no debe perder lo ya contado ni duplicar rutas en
+    `files_read`: el reducer une con orden estable.
+    """
+    merged = dict(left or {})
+    for name, usage in (right or {}).items():
+        prev = merged.get(name)
+        if prev is None:
+            merged[name] = usage
+            continue
+        merged[name] = ToolUsage(
+            turns=prev.turns + usage.turns,
+            tool_calls=prev.tool_calls + usage.tool_calls,
+            bytes_served=prev.bytes_served + usage.bytes_served,
+            files_read=list(dict.fromkeys([*prev.files_read, *usage.files_read])),
+        )
     return merged
 
 
@@ -783,6 +810,8 @@ def build_graph(
             update["budget_exhausted"] = {reviewer.name}
         if result.tokens_used:
             update["tokens_spent"] = {reviewer.name: result.tokens_used}
+        if result.tool_usage is not None:
+            update["tool_usage"] = {reviewer.name: result.tool_usage}
         return update
 
     def merge(state: ReviewState) -> ReviewState:
@@ -1766,6 +1795,7 @@ def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOut
         tokens_remaining=_remaining(state),
         coverage=state.get("coverage"),
         verifications=dict(state.get("verifications") or {}),
+        tool_usage=dict(state.get("tool_usage") or {}),
     )
 
 

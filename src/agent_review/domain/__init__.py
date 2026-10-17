@@ -23,6 +23,7 @@ from agent_review.domain.models import (
     ReviewRequest,
     Severity,
     ToolingSourceStatus,
+    ToolUsage,
     Verification,
 )
 from agent_review.domain.pending import InMemoryPendingStore, PendingReview, PendingStatus
@@ -55,5 +56,6 @@ __all__ = [
     "ReviewerResult",
     "Severity",
     "ToolingSourceStatus",
+    "ToolUsage",
     "Verification",
 ]

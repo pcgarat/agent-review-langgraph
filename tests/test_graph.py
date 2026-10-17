@@ -13,6 +13,7 @@ from agent_review.domain.models import (
     Severity,
     SkipReason,
     ToolingSourceStatus,
+    ToolUsage,
 )
 from agent_review.graph.build import build_graph, outcome_from_state
 from agent_review.idempotency import InMemoryIdempotencyStore
@@ -114,12 +115,14 @@ class StaticReviewer:
         status: ToolingSourceStatus | None = None,
         budget_exhausted: bool = False,
         tokens_used: int = 0,
+        tool_usage: ToolUsage | None = None,
     ) -> None:
         self.name = name
         self._findings = findings
         self._status = status
         self._budget_exhausted = budget_exhausted
         self._tokens_used = tokens_used
+        self._tool_usage = tool_usage
 
     def review(
         self,
@@ -137,6 +140,7 @@ class StaticReviewer:
             tooling_status=self._status,
             budget_exhausted=self._budget_exhausted,
             tokens_used=self._tokens_used,
+            tool_usage=self._tool_usage,
         )
 
 
@@ -742,6 +746,27 @@ def test_sin_corte_no_hay_hecho_de_presupuesto() -> None:
     assert outcome.budget_exhausted == []
     assert outcome.tokens_spent == {}
     assert outcome.tokens_total == 0
+
+
+def test_tool_usage_viaja_al_outcome() -> None:
+    # 014 RH2: el uso del bucle por persona llega al ReviewOutcome; sin el, vacio.
+    usage = ToolUsage(turns=2, tool_calls=3, bytes_served=1200, files_read=["a.py", "b.py"])
+    vcs = FakeVcs(anchors={})
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", [make_finding()], tool_usage=usage),
+        StaticReviewer("security", []),
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    outcome = outcome_from_state(result)
+    assert outcome.tool_usage == {"correctness": usage}
+    assert "security" not in outcome.tool_usage
 
 
 def test_publish_sin_ancla_cae_al_resumen() -> None:

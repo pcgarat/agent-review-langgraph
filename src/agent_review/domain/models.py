@@ -264,6 +264,20 @@ class ReviewContext(BaseModel):
     docs: dict[str, str] = Field(default_factory=dict)
 
 
+class ToolUsage(BaseModel):
+    """Uso del bucle de herramientas de una persona (014 H8 / criterio 8).
+
+    Viaja en `ReviewerResult` y, por persona, en `ReviewOutcome.tool_usage` para
+    que 006 mida el coste sin releer el estado. Sin herramientas, la persona
+    deja `None` / no escribe su clave.
+    """
+
+    turns: int = 0
+    tool_calls: int = 0
+    bytes_served: int = 0
+    files_read: list[str] = Field(default_factory=list)
+
+
 class ReviewerResult(BaseModel):
     """Hallazgos de una persona mas el estado de su fuente de datos.
 
@@ -275,6 +289,7 @@ class ReviewerResult(BaseModel):
     `budget_exhausted` y `tokens_used` son el **hecho** del presupuesto (017 B4).
     `coverage` es lo que la persona leyo de verdad (012): solo la pueblan las
     personas que revisan el diff por lotes; `None` = no declara cobertura.
+    `tool_usage` es el gasto del bucle de herramientas (014); `None` = sin bucle.
     """
 
     findings: list[Finding] = Field(default_factory=list)
@@ -282,6 +297,7 @@ class ReviewerResult(BaseModel):
     budget_exhausted: bool = False
     tokens_used: int = 0
     coverage: ReviewCoverage | None = None
+    tool_usage: ToolUsage | None = None
 
 
 class PublicationMode(StrEnum):
@@ -601,6 +617,9 @@ class ReviewOutcome(BaseModel):
     # 009: veredictos L2 por finding_id. El eval cuenta confirmed/refuted/unproven
     # sin releer el estado del grafo (§5.6).
     verifications: dict[str, VerificationResult] = Field(default_factory=dict)
+    # 014: uso del bucle de herramientas por persona (`turns`/`tool_calls`/
+    # `bytes_served`/`files_read`). Vacio si nadie activo herramientas.
+    tool_usage: dict[str, ToolUsage] = Field(default_factory=dict)
 
     @property
     def tokens_total(self) -> int:

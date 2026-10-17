@@ -849,3 +849,57 @@ def test_sin_sink_no_se_pide_el_razonamiento() -> None:
         repo="r", pr_id=1, diff=DIFF, review_key="rk"
     )
     assert len(result.findings) == 1
+
+
+def test_review_tools_settings_defaults_y_lista() -> None:
+    # 014 RH1: vacio = sin roles; lista separada por comas; topes por lote.
+    from agent_review.ports.context import ContextLimits
+    from agent_review.settings import Settings
+
+    empty = Settings(_env_file=None)
+    assert empty.review_tools_roles_list == []
+    assert empty.review_tools_max_turns == 4
+    assert empty.review_tools_max_calls == 8
+    assert empty.review_tools_max_bytes == 60_000
+
+    configured = Settings(
+        _env_file=None,
+        review_tools_roles="correctness, security",
+        review_tools_max_turns=6,
+    )
+    assert configured.review_tools_roles_list == ["correctness", "security"]
+    assert configured.review_tools_max_turns == 6
+    # Los defaults del bucle coinciden con ContextLimits (016/014 H5).
+    limits = ContextLimits(
+        max_turns=empty.review_tools_max_turns,
+        max_calls=empty.review_tools_max_calls,
+        max_bytes=empty.review_tools_max_bytes,
+    )
+    assert limits.max_turns == 4
+
+
+def test_reader_factory_none_no_cambia_el_camino() -> None:
+    # 014 RH3: con fabrica None el path es el de 008 (una complete por lote).
+    from agent_review.domain.models import ReviewContext
+    from agent_review.ports.context import ContextLimits
+
+    llm = FakeLlm(_response(_finding_json()))
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=None,
+        tool_limits=ContextLimits(),
+    )
+    ctx = ReviewContext(head_sha="h", base_sha="b", contents={})
+    result = reviewer.review(
+        repo="org/repo",
+        pr_id=1,
+        diff=DIFF,
+        head_sha="deadbeef",
+        context=ctx,
+    )
+    assert len(result.findings) == 1
+    assert result.tool_usage is None
+    assert reviewer._repo == "org/repo"
+    assert reviewer._head_sha == "deadbeef"
+    assert reviewer._base_sha == "b"
+    assert len(llm.calls) == 1

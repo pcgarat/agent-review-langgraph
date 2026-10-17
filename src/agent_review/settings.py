@@ -359,6 +359,14 @@ class Settings(BaseSettings):
     # separada por comas; el nodo prefiere la clave de la política si existe.
     verifier_require_verified_for: str = "P0,P1"
 
+    # Revisor con herramientas de lectura (014 H4/H5): opt-in por rol. Vacío =
+    # una llamada por lote como en 008 (cero cambio de coste). Topes por lote del
+    # bucle *ReAct*; el primero que se activa al medir es `correctness` (Q1).
+    review_tools_roles: str = ""
+    review_tools_max_turns: int = 4
+    review_tools_max_calls: int = 8
+    review_tools_max_bytes: int = 60_000
+
     @property
     def fix_recipes_list(self) -> list[str]:
         return [item.strip() for item in self.fix_recipes.split(",") if item.strip()]
@@ -368,6 +376,10 @@ class Settings(BaseSettings):
         return [
             item.strip() for item in self.verifier_require_verified_for.split(",") if item.strip()
         ]
+
+    @property
+    def review_tools_roles_list(self) -> list[str]:
+        return [item.strip() for item in self.review_tools_roles.split(",") if item.strip()]
 
     @field_validator("vcs_provider", mode="before")
     @classmethod

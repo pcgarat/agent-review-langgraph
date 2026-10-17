@@ -34,6 +34,7 @@ from agent_review.domain.models import (
     Severity,
     SkipReason,
     ToolingSourceStatus,
+    ToolUsage,
     Verdict,
     Verification,
     VerificationResult,
@@ -66,6 +67,8 @@ _STATE_TYPES: tuple[type, ...] = (
     ReviewCoverage,
     SkipReason,
     FileClass,
+    # 014: uso del bucle de herramientas por persona.
+    ToolUsage,
     ApprovalRequest,
     PendingDecision,
     FindingDecision,
