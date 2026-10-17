@@ -119,6 +119,7 @@ class TwgVcsAdapter:
             destination_branch=str((destination.get("branch") or {}).get("name", "")),
             author=str(author.get("display_name", "") if isinstance(author, dict) else ""),
             head_sha=str((source.get("commit") or {}).get("hash", "")),
+            base_sha=str((destination.get("commit") or {}).get("hash", "")),
             state=str(item.get("state", "OPEN")),
             url=str(((links.get("html") or {}) if isinstance(links, dict) else {}).get("href", "")),
         )

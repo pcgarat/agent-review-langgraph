@@ -151,6 +151,7 @@ class GithubVcsAdapter:
             destination_branch=str((base or {}).get("ref", "")),
             author=str((user or {}).get("login", "")),
             head_sha=str((head or {}).get("sha", "")),
+            base_sha=str((base or {}).get("sha", "")),
             state=str(item.get("state", "open")).upper(),
             url=str(item.get("html_url", "")),
         )

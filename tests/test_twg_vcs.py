@@ -38,7 +38,10 @@ def test_get_pull_request_mapea_campos_reales(monkeypatch) -> None:
         "state": "OPEN",
         "author": {"display_name": "John Astete"},
         "source": {"branch": {"name": "feature/x"}, "commit": {"hash": "7bf898f54e14"}},
-        "destination": {"branch": {"name": "main"}},
+        "destination": {
+            "branch": {"name": "main"},
+            "commit": {"hash": "0a1b2c3d4e5f"},
+        },
         "links": {"html": {"href": "https://bitbucket.org/cqm/emotivoo-v2/pull-requests/417"}},
     }
     monkeypatch.setattr(adapter, "_run", lambda *a, **k: json.dumps(payload))
@@ -47,6 +50,7 @@ def test_get_pull_request_mapea_campos_reales(monkeypatch) -> None:
     assert pr.source_branch == "feature/x"
     assert pr.destination_branch == "main"
     assert pr.head_sha == "7bf898f54e14"
+    assert pr.base_sha == "0a1b2c3d4e5f"
     assert pr.url.endswith("/417")
 
 

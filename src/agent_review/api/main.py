@@ -226,6 +226,7 @@ async def tooling_webhook(
         repo=str(body.get("repo", "")),
         pr_id=int(body.get("pr_id", 0) or 0),
         head_sha=str(body.get("head_sha", "")),
+        base_sha=str(body.get("base_sha", "")),
         pipeline_id=str(body.get("pipeline_id", "")),
     )
     if not (review_request.repo and review_request.pr_id and review_request.head_sha and tool):

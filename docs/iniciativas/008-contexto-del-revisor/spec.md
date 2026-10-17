@@ -2,7 +2,8 @@
 
 # Contexto del revisor: verificación determinista (L0) y contexto (L1)
 
-> **Estado:** borrador
+> **Estado:** aprobada *(2026-10-17)*
+>
 > **Entrega objetivo:** que el `LlmReviewer` deje de afirmar sobre lo que no ve y
 > de publicar como regresión lo que ya estaba en la base, sin gastar un token de más:
 > anclaje estricto, cita contrastada y `pre_existing` deterministas (L0), y el
@@ -134,6 +135,12 @@ verifica.
 | D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
 | D8 | El contexto se reparte **por lote** de [012](../archivo/012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
 | D9 | Una cita que **no existe** en ninguna línea del fichero (ni añadida, ni de contexto, ni borrada) **se descarta** | No es un caso dudoso que proteger: es evidencia fabricada. Descartarla no cuesta recall real. |
+| D10 | El `base_sha` viaja en `PullRequestInfo`/`ReviewRequest`; lo puebla el VCS (Q1) | La rama de destino se mueve; el SHA de merge-base no. `destination_branch` como `ref` mentiría en `pre_existing` |
+| D11 | Los ADR de L1 son un **índice curado** en el perfil (`context_docs.decisions:`), no matching ni el árbol entero (Q2) | Matching es opaco; el índice completo infla el prompt (R2). Si mantener la lista duele, se abre otra iniciativa |
+| D12 | El tope de caracteres de L1 es **config** (`Settings` y/o perfil) y cuenta en `_estimate_tokens` (Q3) | Un fijo es rígido; un % del presupuesto de 017 acopla L1 al gasto de razonamiento y L2 |
+| D13 | L0 vive en un módulo compartido `verification/l0.py` desde el día 1; L1 se ensambla **dentro de `LlmReviewer`** hasta que otra persona lo necesite (Q4) | L0 es puro y lo reutilizarán otras capas; L1 es ensamblaje de *prompt* acoplado al revisor |
+| D14 | El fichero completo de L1 se lee al `head_sha`; `base_sha` solo alimenta el cálculo de `pre_existing` (Q5) | El modelo opina sobre el cambio; `pre_existing` compara con la base |
+| D15 | Qué se publica ante `pre_existing`/`outside_diff` **no lo decide 008**: solo marca hechos; la publicación es [011 Q1](../011-gate-de-severidad/spec.md) (Q6) | Coherente con D7 (un solo dueño de la severidad) |
 
 ## 5. Diseño o contrato
 
@@ -172,31 +179,35 @@ flowchart LR
    verificar ya lo degrada el gate. En **F**, el lector ve que no es una regresión
    sin gastar un token.
 
-El cálculo de `pre_existing` requiere el `base_sha` (que hoy no está en
-`PullRequestInfo`) y, para el paso (b), indexar también el lado viejo del diff: se
-extiende `FileDiff`/`parse_unified_diff` con las líneas de contexto y borradas, con
-*cache* por `(fichero, ref)` para no repetir llamadas.
+El cálculo de `pre_existing` requiere el `base_sha` en
+`PullRequestInfo`/`ReviewRequest` (D10; lo puebla el VCS) y, para el paso (b),
+indexar también el lado viejo del diff: se extiende `FileDiff`/`parse_unified_diff`
+con las líneas de contexto y borradas, con *cache* por `(fichero, ref)` para no
+repetir llamadas.
 
 **L1 — contexto (barato).** Antes de llamar al modelo, el *prompt* de cada lote
 incluye:
 
-- El **fichero completo** de cada fichero del lote, leído al `head_sha` con
+- El **fichero completo** de cada fichero del lote, leído al `head_sha` (D14) con
   `get_file` — no solo el fragmento. El modelo ve la función entera, su firma y sus
   llamadas (mata B, D, E, G: la semántica deja de ser una suposición).
-- Los **documentos de contexto** que declare el perfil del repo:
+- Los **documentos de contexto** que declare el perfil del repo, con ADR **curados**
+  (D11):
 
   ```yaml
   context_docs:
     glossary: CONTEXT.md
-    decisions: docs/adr/          # se eligen los relevantes (Q2)
+    decisions:
+      - docs/adr/0013-secretos-por-entorno-fail-closed.md
     extra: ["docs/operacion.md#2"]
   ```
 
-  En este repo: el glosario, los ADR relevantes (p. ej.
+  En este repo: el glosario, los ADR listados (p. ej.
   [`ADR-0013`](../../adr/0013-secretos-por-entorno-fail-closed.md), que ya documenta
   la decisión de H) y la tabla de variables de
   [`docs/operacion.md`](../../operacion.md) §2. Un perfil sin `context_docs:` solo
-  recibe el fichero completo.
+  recibe el fichero completo. El tope de caracteres de este bloque es config y
+  cuenta en `_estimate_tokens` (D12).
 
 Y una **regla de humildad** explícita en el *system prompt*: «si tu afirmación
 depende de código que no ves, declara el hallazgo `context_scope: outside_diff` y no
@@ -214,17 +225,18 @@ de [011](../011-gate-de-severidad/spec.md).
 - **`ReviewerResult`** transporta los veredictos de L0/L1 hacia el merge: el hallazgo
   lleva `pre_existing` (calculado) y, vía contrato 007, `verification` y
   `context_scope`. L0/L1 **no** tocan `merge` ni `policy`.
-- Un módulo determinista compartido (`verification/l0.py`, puro y testeable) evalúa
-  los tres pasos de L0 sobre el hallazgo y el índice del diff; `LlmReviewer` lo
-  invoca tras anclar. Así L0 servirá a futuras personas sin duplicar lógica.
+- Un módulo determinista compartido `verification/l0.py` (D13; puro y testeable)
+  evalúa los tres pasos de L0 sobre el hallazgo y el índice del diff; `LlmReviewer`
+  lo invoca tras anclar. El ensamblaje de L1 (fichero completo + `context_docs`)
+  vive **en** `LlmReviewer` hasta que otra persona con hipótesis lo necesite.
 
 ### 5.3 Presupuesto por lote
 
 Los lotes de [012](../archivo/012-cobertura-de-la-review/spec.md) ya garantizan que ningún
 fichero del diff se corta. L1 añade al lote su contexto con prioridad —diff, luego
-fichero completo, luego documentos de contexto— y un tope de caracteres propio.
-Cuando el contexto no entra, el lote sale sin él y la cobertura lo anota; nunca se
-recorta el diff para hacer sitio al contexto. La estimación de tokens y el
+fichero completo, luego documentos de contexto— y un tope de caracteres de *config*
+(D12). Cuando el contexto no entra, el lote sale sin él y la cobertura lo anota;
+nunca se recorta el diff para hacer sitio al contexto. La estimación de tokens y el
 presupuesto acumulado del `LlmReviewer` (012 C6) cuentan el contexto: si no, el
 presupuesto mide de menos (D17).
 
@@ -262,23 +274,22 @@ presupuesto mide de menos (D17).
 
 ## 8. Preguntas abiertas
 
-- **Q1.** El `base_sha`: ¿se añade a `PullRequestInfo`/`ReviewRequest` (lo puebla el
-  VCS) o se usa el `destination_branch` como `ref` de [`get_file`](../../../src/agent_review/ports/vcs.py)?
-  Añadirlo es más exacto; la rama evita tocar el modelo de la petición.
-- **Q2.** ¿Cómo se eligen los **ADR relevantes**? Candidatos: índice curado, casado
-  por palabra clave con los ficheros tocados, o el índice completo de `docs/adr/`.
-  Un exceso infla el prompt (R2).
-- **Q3.** El **tope de caracteres** de L1 y su interacción con D17: ¿un valor fijo, un
-  porcentaje del presupuesto de tokens, o *config*? Debe contarse en
-  `_estimate_tokens`.
-- **Q4.** L0/L1 se aplican **ya** como capa compartida (módulo `verification/`) o solo
-  dentro de `LlmReviewer` hasta que existan más personas con hipótesis.
-- **Q5.** El fichero completo, ¿se lee al `head_sha` del PR o al `base_sha`? El
-  contexto de una afirmación sobre el **cambio** es `head_sha`; la comparación de
-  `pre_existing` es `base_sha`.
-- **Q6.** Qué se publica para un hallazgo `pre_existing`/`outside_diff` («P3» o
-  sección «posibles») se decide en una sola pregunta:
-  [011 Q1](../011-gate-de-severidad/spec.md).
+Todas resueltas el 2026-10-17 (salvo Q7, del 2026-10-16). Spec aprobada el
+2026-10-17.
+
+- **Q1.** *Resuelta:* `base_sha` en `PullRequestInfo`/`ReviewRequest`, poblado por el
+  VCS (D10). Descartado: `destination_branch` como `ref`.
+- **Q2.** *Resuelta:* índice curado en el perfil (`context_docs.decisions:`) (D11).
+  Descartados: matching por palabras clave y el árbol completo de `docs/adr/`.
+- **Q3.** *Resuelta:* tope de caracteres de L1 como *config*, contado en
+  `_estimate_tokens` (D12). Descartados: valor fijo en código y % del presupuesto
+  de 017.
+- **Q4.** *Resuelta:* L0 en `verification/l0.py` desde el día 1; L1 dentro de
+  `LlmReviewer` hasta que otra persona lo necesite (D13).
+- **Q5.** *Resuelta:* fichero completo al `head_sha`; `base_sha` solo para
+  `pre_existing` (D14).
+- **Q6.** *Resuelta (aparcada):* 008 solo marca hechos; qué se publica lo decide
+  [011 Q1](../011-gate-de-severidad/spec.md) (D15).
 - **Q7.** *Resuelta (2026-10-16):* «no probado» es `verification: unverified` con
   `context_scope: outside_diff`
   ([007 D10](../archivo/007-contrato-de-verificacion/spec.md)).

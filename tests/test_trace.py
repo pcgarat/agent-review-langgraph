@@ -32,7 +32,7 @@ from agent_review.trace import read_trace
 from agent_review.worker.main import process_request
 
 # Orden real del grafo (docs/arquitectura.md §3) hasta que pausa.
-_PREFIX = ["scope", "persona", "merge", "policy", "hitl"]
+_PREFIX = ["scope", "persona", "merge", "verify", "policy", "hitl"]
 
 
 def _memory_saver() -> InMemorySaver:

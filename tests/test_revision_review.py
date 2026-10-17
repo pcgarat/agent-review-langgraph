@@ -252,7 +252,7 @@ def test_merge_es_determinista_y_no_fusiona_la_misma_persona() -> None:
     sources = {"a10": "A", "a14": "A", "b12": "B"}
 
     results = {
-        tuple(sorted(f.id for f in _merge_findings(list(order), sources)))
+        tuple(sorted(f.id for f in _merge_findings(list(order), sources)[0]))
         for order in permutations([a10, a14, b12])
     }
 

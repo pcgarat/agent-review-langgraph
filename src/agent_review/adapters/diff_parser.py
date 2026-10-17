@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 _DIFF_HEADER = re.compile(r"^diff --git a/(?P<a>.+?) b/(?P<b>.+)$")
@@ -13,26 +13,37 @@ _HUNK_HEADER = re.compile(
 
 @dataclass(frozen=True)
 class FileDiff:
+    """Diff de un fichero indexado por numero de linea.
+
+    `added` y `context` usan el lado nuevo; `removed`, el lado viejo. L0 (008) usa
+    `context`/`removed` para `pre_existing` y para no recolocar anclas a una
+    anadida cercana.
+    """
+
     path: str
-    added: dict[int, str]
+    added: dict[int, str] = field(default_factory=dict)
+    context: dict[int, str] = field(default_factory=dict)
+    removed: dict[int, str] = field(default_factory=dict)
 
 
 def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
-    """Indexa lineas anadidas por fichero y numero de linea del lado nuevo.
+    """Indexa anadidas, contexto y borradas por fichero.
 
-    Solo se indexan las lineas `+` reales (no `+++`). Sirve para que las personas
-    anclen hallazgos a lineas que existen en el diff, requisito de Bitbucket.
+    Las anadidas y el contexto se numeran con el lado nuevo; las borradas, con el
+    lado viejo. El anclaje publico (`best_line`, `resolve_added_line`) sigue
+    mirando solo `added`.
     """
     files: dict[str, FileDiff] = {}
     current: str | None = None
     new_line = 0
+    old_line = 0
     in_hunk = False
 
     for raw in diff.splitlines():
         header = _DIFF_HEADER.match(raw)
         if header:
             current = header.group("b")
-            files.setdefault(current, FileDiff(path=current, added={}))
+            files.setdefault(current, FileDiff(path=current, added={}, context={}, removed={}))
             in_hunk = False
             continue
 
@@ -41,6 +52,7 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
 
         hunk = _HUNK_HEADER.match(raw)
         if hunk:
+            old_line = int(hunk.group("old_start"))
             new_line = int(hunk.group("new_start"))
             in_hunk = True
             continue
@@ -52,8 +64,11 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
             files[current].added[new_line] = raw[1:]
             new_line += 1
         elif raw.startswith("-"):
-            continue
+            files[current].removed[old_line] = raw[1:]
+            old_line += 1
         elif raw.startswith(" "):
+            files[current].context[new_line] = raw[1:]
+            old_line += 1
             new_line += 1
 
     return files

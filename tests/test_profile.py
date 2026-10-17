@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_review.profile import (
     ci_image_digest,
+    context_docs,
     fix_recipes,
     load_profile,
     sandbox_timeout_s,
@@ -132,3 +133,25 @@ def test_scope_classes_valida_clase_y_globs() -> None:
     # Un perfil invalido no tumba el scope: se ignora lo que no encaja.
     assert scope_classes(mala) == {}
     assert scope_classes(None) == {}
+
+
+def test_context_docs_valida_y_extrae(tmp_path: Path) -> None:
+    # 008 CX7: mapa opcional; invalido → warning de contrato y extractor vacio.
+    ok = {
+        "repo": "r",
+        "context_docs": {
+            "glossary": "CONTEXT.md",
+            "decisions": ["docs/adr/0013-secretos-por-entorno-fail-closed.md"],
+            "extra": ["docs/operacion.md#2"],
+        },
+    }
+    assert validate_profile(ok) == []
+    assert context_docs(ok)["glossary"] == "CONTEXT.md"
+    assert context_docs({}) == {}
+    assert context_docs(None) == {}
+
+    mala = {"repo": "r", "context_docs": {"decisions": "solo-uno", "typo": 1}}
+    problems = validate_profile(mala)
+    assert any("context_docs.decisions" in p for p in problems)
+    assert any("clave desconocida 'typo'" in p for p in problems)
+    assert context_docs(mala) == {}

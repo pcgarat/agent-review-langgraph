@@ -14,6 +14,9 @@ class PullRequestInfo(BaseModel):
     destination_branch: str
     author: str
     head_sha: str
+    # SHA de la base del PR (merge-base / destino). Vacío si el host no lo trae;
+    # L0 de 008 lo usa para `pre_existing` sin depender del nombre de la rama.
+    base_sha: str = ""
     state: str = "OPEN"
     url: str = ""
 

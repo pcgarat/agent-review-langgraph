@@ -29,9 +29,10 @@ _FLAT_KEYS = {
     "ci_image_digest",
     "source",
 }
-_MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox", "scope"}
+_MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox", "scope", "context_docs"}
 _LIST_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
 _LIST_OF_STR_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
+_CONTEXT_DOCS_KEYS = frozenset({"glossary", "decisions", "extra"})
 
 
 def validate_profile(profile: dict[str, Any]) -> list[str]:
@@ -58,7 +59,43 @@ def validate_profile(profile: dict[str, Any]) -> list[str]:
     if not profile.get("repo"):
         problems.append("falta 'repo' (identidad del perfil)")
     problems.extend(_scope_problems(profile.get("scope")))
+    problems.extend(_context_docs_problems(profile.get("context_docs")))
     return problems
+
+
+def _context_docs_problems(docs: object) -> list[str]:
+    """`context_docs` (008 D11): glossary texto, decisions/extra listas de rutas."""
+    if docs is None:
+        return []
+    if not isinstance(docs, dict):
+        return ["context_docs debe ser un mapa"]
+    problems = [
+        f"context_docs: clave desconocida {key!r}" for key in docs if key not in _CONTEXT_DOCS_KEYS
+    ]
+    glossary = docs.get("glossary")
+    if glossary is not None and not isinstance(glossary, str):
+        problems.append("context_docs.glossary debe ser texto")
+    for name in ("decisions", "extra"):
+        value = docs.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            problems.append(f"context_docs.{name} debe ser una lista de textos")
+    return problems
+
+
+def context_docs(profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Documento de contexto del perfil, o `{}` si falta o es invalido (008 CX7)."""
+    if not profile:
+        return {}
+    raw = profile.get("context_docs")
+    if not isinstance(raw, dict) or _context_docs_problems(raw):
+        return {}
+    return {
+        key: raw[key]
+        for key in ("glossary", "decisions", "extra")
+        if key in raw and raw[key] is not None
+    }
 
 
 def _scope_problems(scope: object) -> list[str]:

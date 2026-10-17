@@ -19,7 +19,7 @@ _PR_PAYLOAD = {
     "state": "open",
     "user": {"login": "john"},
     "head": {"ref": "feature/x", "sha": "7bf898f54e14"},
-    "base": {"ref": "main"},
+    "base": {"ref": "main", "sha": "0a1b2c3d4e5f"},
     "html_url": "https://github.com/cqm/emotivoo-v2/pull/417",
 }
 
@@ -57,6 +57,7 @@ def test_get_pull_request_mapea_campos_realistas() -> None:
     assert pr.source_branch == "feature/x"
     assert pr.destination_branch == "main"
     assert pr.head_sha == "7bf898f54e14"
+    assert pr.base_sha == "0a1b2c3d4e5f"
     assert pr.state == "OPEN"
     assert pr.url.endswith("/417")
 
