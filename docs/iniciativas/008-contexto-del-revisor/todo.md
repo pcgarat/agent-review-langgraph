@@ -122,6 +122,8 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Aceptación: L0/L1 no empeoran los invariantes de test; `severity` nunca muda.
   - Verifica: `tests/test_verification_l0.py`, `tests/test_llm_reviewer.py`; opcional
     `make eval-record`.
+  - *Nota 2026-10-17:* CX8/CX9 rompen el fingerprint del *replay* del PR #3; los
+    tests afectados van `xfail` hasta regrabar (`make eval-record`).
 
 - [ ] **CX12** Documentos vivos y CI
   - `docs/arquitectura.md` §3–4 (persona, `ReviewContext`, L0).

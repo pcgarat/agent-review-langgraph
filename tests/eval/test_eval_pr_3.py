@@ -15,9 +15,17 @@ import json
 from pathlib import Path
 
 import harness
+import pytest
 from harness import ReplayLlm, case_fingerprint, compare, to_json
 
 from agent_review.policy.engine import PolicyEngine
+
+# 008 L1/humildad cambia el system/prompt; la grabacion del gold set queda
+# desfasada hasta `make eval-record` (CX11, preferible junto con 009).
+_XFAIL_REGRABAR = pytest.mark.xfail(
+    reason="008 CX8/CX9: fingerprint del prompt; regrabar gold set en CX11",
+    strict=True,
+)
 
 CASE_DIR = Path(__file__).parent / "pr_3"
 BASELINE = CASE_DIR / "expected_report.json"
@@ -65,6 +73,7 @@ def test_la_grabacion_casa_el_caso() -> None:
     assert recording.case_fingerprint == case_fingerprint(case)
 
 
+@_XFAIL_REGRABAR
 def test_replay_reproduce_el_baseline_byte_a_byte() -> None:
     case = harness.load_case(CASE_DIR)
 
@@ -83,6 +92,7 @@ def test_replay_es_determinista() -> None:
     assert to_json(_replay_report(case)) == to_json(_replay_report(case))
 
 
+@_XFAIL_REGRABAR
 def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
     # Regrabacion del 2026-10-17 (021): deepseek-v4-flash con razonamiento alto,
     # lotes de 20 000, diff numerado y troceo por hunks, grabada en una review real en
@@ -105,6 +115,7 @@ def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
     assert report.inverted == ()
 
 
+@_XFAIL_REGRABAR
 def test_el_pr_3_entero_llega_al_revisor() -> None:
     # 012 criterio 1: sin `max_files_per_pr` ni el corte a 60000 chars, la
     # configuracion que dejo fuera la review auditada entra en la review.
