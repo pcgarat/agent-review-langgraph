@@ -199,7 +199,7 @@ services:
       # Sin URL o sin token, la consola responde `404`.
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
-      LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-500000}
+      LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
       - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"

@@ -61,3 +61,10 @@ def aislar_entorno_del_host(
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _sin_espera_entre_reintentos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El reintento por lote del `LlmReviewer` (021 R14) espera de verdad entre
+    intentos; en los tests no se duerme."""
+    monkeypatch.setattr("agent_review.adapters.llm_reviewer._RETRY_BASE_S", 0.0)

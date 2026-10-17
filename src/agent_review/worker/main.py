@@ -263,6 +263,7 @@ def build_reviewers(
                 budget_limit=limit,
                 batch_max_chars=settings.llm_batch_max_chars,
                 reasoning_sink=reasoning_sink,
+                batch_retries=settings.llm_batch_retries,
             )
         )
 

@@ -330,9 +330,13 @@ class Settings(BaseSettings):
     llm_budget_tokens_per_pr: int = 2000000
     # Tamano maximo de un lote del `LlmReviewer`, en caracteres de diff (012 C2): se
     # revisan ficheros enteros por lotes; uno que solo no cabe se declara `too_large`.
-    # 30 000 con razonamiento (021 R12): con 60 000 el proveedor corta antes de que
-    # el modelo responda.
-    llm_batch_max_chars: int = 30000
+    # 20 000 con razonamiento (021 R12/R15): con 60 000 el proveedor corta antes de
+    # que el modelo responda, y con 30 000 una llamada puede pasar del tope de
+    # duracion del stream (~3 min). Un fichero mayor se trocea por hunks (R16).
+    llm_batch_max_chars: int = 20000
+    # Reintentos de un lote ante un fallo transitorio (021 R14): se repite ese lote,
+    # no la persona entera; agotados, el lote sale `failed` y se sigue.
+    llm_batch_retries: int = 2
 
     @property
     def fix_recipes_list(self) -> list[str]:

@@ -125,6 +125,41 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - «Razonamiento: sí» significa que el sink estaba activo y la review gastó tokens; el
   detalle dice si el *stream* sigue vivo (10 días).
 
+## Bloque 4b — Robustez de los lotes (enmienda 2026-10-17, §3.4b)
+
+- [x] **RZ15** Reintento por lote en el `LlmReviewer` (R14)
+  - Un fallo transitorio de una llamada se reintenta en el mismo lote hasta
+    `LLM_BATCH_RETRIES` (2) con espera creciente; agotado, el lote sale `failed` y se
+    sigue. El panel ve cada intento (`error` con «reintento i/N»).
+  - `settings.py`, `.env.example`, `operacion.md` §2 (`LLM_BATCH_RETRIES`).
+  - Aceptación: un corte en el lote 4 no repite los lotes 1–3; tres cortes seguidos
+    dejan ese lote `failed` y el resto revisado.
+  - Verifica: `tests/test_llm_reviewer.py`, `tests/test_retry.py`.
+
+- [x] **RZ16** Lotes de 20 000 caracteres por defecto (R15)
+  - `settings.py`, `.env.example`, `llm_reviewer.DEFAULT_BATCH_MAX_CHARS`,
+    `operacion.md` §2.
+
+- [x] **RZ17** Trocear por hunks los ficheros que no caben (R16)
+  - `_batches` parte un bloque mayor que el lote en trozos de hunks completos, cada
+    uno con las cabeceras del fichero; un hunk que solo no cabe sigue `too_large`.
+  - Cobertura: revisado si lo fueron todos sus trozos; si no, el motivo del primero
+    que faltó.
+  - Aceptación: un fichero de 3 lotes de tamaño se revisa en 3 trozos y sale
+    revisado; el anclaje de un hallazgo cae en su trozo.
+  - Verifica: `tests/test_llm_reviewer.py`.
+
+*Notas de implementación 2026-10-17 (bloque 4b):*
+
+- El reintento del lote vuelve a emitir `start` (el panel reinicia el texto del lote)
+  y su aviso lleva `meta.retry`, para que el SSE no dé el lote por cerrado.
+- Un fallo transitorio agotado ya no sube al nodo `persona`: el lote sale `failed`.
+  El reintento del nodo queda para lo que falle fuera de las llamadas al modelo.
+- En los tests, un *fixture* global pone a 0 la espera entre reintentos.
+- La corrida real previa (RZ12, 25,6 min, 284 066 tokens) dio el primer TP (A) y
+  candidatos a integracion-1; `worker/main.py` salió `too_large` con lotes de 30k, de
+  ahí RZ17.
+
 ## Bloque 5 — Medida y cierre (checkpoint C5)
 
 - [ ] **RZ12** *(Red)* Review real del PR #3 con razonamiento y *gold set*

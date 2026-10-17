@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -77,8 +78,13 @@ Como maximo %d hallazgos.
 """
 
 # Tamano de lote por defecto (`LLM_BATCH_MAX_CHARS`). Con razonamiento alto, un lote
-# de 60 000 caracteres agota la salida del proveedor antes de responder (021 R12).
-DEFAULT_BATCH_MAX_CHARS = 30_000
+# de 60 000 caracteres agota la salida del proveedor antes de responder (021 R12) y
+# uno de 30 000 puede pasar del tope de duracion del stream (~3 min, R15).
+DEFAULT_BATCH_MAX_CHARS = 20_000
+# Reintentos por lote ante un fallo transitorio (`LLM_BATCH_RETRIES`, 021 R14) y la
+# espera base entre ellos (se dobla en cada intento).
+DEFAULT_BATCH_RETRIES = 2
+_RETRY_BASE_S = 5.0
 _SEVERITY_RANK = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 3}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
@@ -103,28 +109,58 @@ def _usage_meta(reply: LlmReply, *, findings: int | None) -> dict[str, Any]:
 def _batches(
     blocks: list[tuple[str, str]], max_chars: int
 ) -> tuple[list[list[tuple[str, str]]], list[str]]:
-    """Lotes de ficheros **enteros** en el orden recibido (ya priorizado por `scope`).
+    """Lotes en el orden recibido (ya priorizado por `scope`), sin cortar un hunk.
 
-    Nunca se corta un fichero (012 C2): el que solo ya no cabe va a `too_large` sin
-    gastar llamada (C3). Llenar en orden mantiene la prioridad: si el presupuesto se
-    agota, lo que se queda fuera es lo ultimo (tests y docs).
+    Un fichero que cabe va entero (012 C2). Uno que no cabe se trocea por hunks
+    completos, cada trozo con las cabeceras del fichero (021 R16); solo un hunk que
+    por si solo no cabe va a `too_large` sin gastar llamada. Llenar en orden mantiene
+    la prioridad: si el presupuesto se agota, lo que queda fuera es lo ultimo.
     """
     batches: list[list[tuple[str, str]]] = []
     too_large: list[str] = []
     current: list[tuple[str, str]] = []
     size = 0
     for path, block in blocks:
-        if len(block) > max_chars:
+        pieces = [block] if len(block) <= max_chars else _split_block(block, max_chars)
+        if pieces is None:
             too_large.append(path)
             continue
-        if current and size + len(block) > max_chars:
-            batches.append(current)
-            current, size = [], 0
-        current.append((path, block))
-        size += len(block)
+        for piece in pieces:
+            if current and size + len(piece) > max_chars:
+                batches.append(current)
+                current, size = [], 0
+            current.append((path, piece))
+            size += len(piece)
     if current:
         batches.append(current)
     return batches, too_large
+
+
+def _split_block(block: str, max_chars: int) -> list[str] | None:
+    """Trozos de hunks completos de un fichero, o `None` si un hunk no cabe solo."""
+    lines = block.splitlines(keepends=True)
+    first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), None)
+    if first_hunk is None:
+        return None
+    header = "".join(lines[:first_hunk])
+    hunks: list[str] = []
+    for line in lines[first_hunk:]:
+        if line.startswith("@@") or not hunks:
+            hunks.append(line)
+        else:
+            hunks[-1] += line
+    pieces: list[str] = []
+    current = ""
+    for hunk in hunks:
+        if len(header) + len(hunk) > max_chars:
+            return None
+        if current and len(header) + len(current) + len(hunk) > max_chars:
+            pieces.append(header + current)
+            current = ""
+        current += hunk
+    if current:
+        pieces.append(header + current)
+    return pieces
 
 
 class LlmReviewer:
@@ -149,6 +185,8 @@ class LlmReviewer:
         budget_limit: int | None = None,
         batch_max_chars: int = DEFAULT_BATCH_MAX_CHARS,
         reasoning_sink: ReasoningSink | None = None,
+        batch_retries: int = DEFAULT_BATCH_RETRIES,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.name = name
         self._llm = llm
@@ -159,6 +197,10 @@ class LlmReviewer:
         # review es la de siempre.
         self._reasoning_sink = reasoning_sink
         self._last_error = ""
+        # Reintento por lote (021 R14): un corte del proveedor repite *ese* lote, no
+        # la persona entera; agotado, el lote sale `failed` y se sigue.
+        self._batch_retries = max(0, batch_retries)
+        self._sleep = sleep
         # Presupuesto **compartido** por review (017 B1/B6): el puerto se consulta por
         # `review_key` y el contador lo ven a la vez todas las personas. `budget_limit`
         # es el tope blando por persona (B10) que calcula el wiring; sin el, el puerto
@@ -200,38 +242,36 @@ class LlmReviewer:
         # del CI, asi que su ausencia de hallazgos si es un analisis limpio. Lo que no
         # lee, en cambio, lo declara en la cobertura (012).
         batches, too_large = _batches(split_diff(diff), self._batch_max_chars)
-        reviewed: list[str] = []
-        skipped: dict[str, SkipReason] = {path: SkipReason.TOO_LARGE for path in too_large}
+        order = list(dict.fromkeys([*(p for b in batches for p, _ in b), *too_large]))
+        # Un fichero troceado cuenta como revisado si lo fueron todos sus trozos; si
+        # no, sale con el motivo del primero que falto (021 R16).
+        missing: dict[str, SkipReason] = dict.fromkeys(too_large, SkipReason.TOO_LARGE)
         findings: list[Finding] = []
         total = len(batches)
         for index, batch in enumerate(batches):
-            paths = [path for path, _ in batch]
+            paths = list(dict.fromkeys(path for path, _ in batch))
             if self.budget_exhausted:
-                skipped.update(dict.fromkeys(paths, SkipReason.BUDGET))
+                for path in paths:
+                    missing.setdefault(path, SkipReason.BUDGET)
                 continue
             text = "".join(block for _, block in batch)
             event = functools.partial(self._event, review_key, index + 1, total)
-            event("start", meta={"files": paths})
-            try:
-                reply = self._call(text, review_key, on_reasoning=self._listener(event))
-            except Exception as exc:
-                # Transitorio: sube para que lo reintente el nodo; el panel lo ve.
-                event("error", text=f"fallo transitorio del modelo: {exc}")
-                raise
+            reply = self._call_with_retries(text, review_key, paths, event)
             if reply is None:
                 reason = SkipReason.BUDGET if self.budget_exhausted else SkipReason.FAILED
                 note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
                 event("error", text=note)
-                skipped.update(dict.fromkeys(paths, reason))
+                for path in paths:
+                    missing.setdefault(path, reason)
                 continue
             entries = self._entries(reply.text)
             event(
                 "end", meta=_usage_meta(reply, findings=None if entries is None else len(entries))
             )
             if entries is None:
-                skipped.update(dict.fromkeys(paths, SkipReason.FAILED))
+                for path in paths:
+                    missing.setdefault(path, SkipReason.FAILED)
                 continue
-            reviewed.extend(paths)
             files = parse_unified_diff(text)
             findings.extend(f for f in (_to_finding(e, files) for e in entries) if f is not None)
             logger.info(
@@ -240,12 +280,51 @@ class LlmReviewer:
                 len(batches),
                 len(paths),
             )
+        reviewed = [path for path in order if path not in missing]
+        skipped = {path: missing[path] for path in order if path in missing}
         return ReviewerResult(
             findings=self._cap(findings),
             budget_exhausted=self.budget_exhausted,
             tokens_used=self.tokens_used,
             coverage=ReviewCoverage(reviewed=reviewed, skipped=skipped),
         )
+
+    def _call_with_retries(
+        self,
+        text: str,
+        review_key: str,
+        paths: list[str],
+        event: Callable[..., None],
+    ) -> LlmReply | None:
+        """La llamada de un lote con su reintento propio (021 R14).
+
+        Un fallo transitorio (corte del stream, 5xx, 429) repite el lote con espera
+        creciente; agotados los reintentos, devuelve `None` como un fallo permanente
+        y el lote sale `failed`. Cada intento reabre el lote en el panel.
+        """
+        for attempt in range(self._batch_retries + 1):
+            event("start", meta={"files": paths})
+            try:
+                return self._call(text, review_key, on_reasoning=self._listener(event))
+            except Exception as exc:
+                if attempt < self._batch_retries:
+                    retry = f"{attempt + 1}/{self._batch_retries}"
+                    event(
+                        "error",
+                        text=f"corte del modelo, reintento {retry}: {exc}",
+                        meta={"retry": attempt + 1},
+                    )
+                    logger.warning(
+                        "correctness: lote con fallo transitorio (%s); reintento %d/%d",
+                        exc,
+                        attempt + 1,
+                        self._batch_retries,
+                    )
+                    self._sleep(_RETRY_BASE_S * 2**attempt)
+                    continue
+                self._last_error = f"fallo transitorio tras {attempt + 1} intentos: {exc}"
+                logger.warning("correctness: %s; el lote sale failed", self._last_error)
+        return None
 
     def _event(
         self,

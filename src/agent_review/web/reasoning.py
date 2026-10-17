@@ -33,7 +33,8 @@ class _Progress:
 
     def see(self, event: ReasoningEvent) -> None:
         self.totals[event.role] = max(self.totals.get(event.role, 0), event.total)
-        if event.kind in ("end", "error"):
+        # Un aviso de reintento (021 R14) no cierra el lote: viene otro intento.
+        if event.kind == "end" or (event.kind == "error" and not event.meta.get("retry")):
             self.closed.setdefault(event.role, set()).add(event.batch)
         if event.kind == "error" and event.text == _NO_BUDGET:
             self.cut.add(event.role)

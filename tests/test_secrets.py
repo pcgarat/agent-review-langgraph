@@ -187,7 +187,7 @@ def test_ningun_campo_secreto_sin_declaracion() -> None:
         "El contrato de secretos se deriva de `Settings` (ADR-0022, iniciativa 020):\n"
         "anade `Annotated[str, Secret(...)]` al campo, con `required_in` si solo lo\n"
         "exige algun proceso y `feature` si depende de una condicion (o\n"
-        "`feature=\"solo_inventario\"` si solo debe aparecer en el inventario)."
+        '`feature="solo_inventario"` si solo debe aparecer en el inventario).'
     )
 
 

@@ -619,3 +619,17 @@ def test_api_history_devuelve_json_filtrado(monkeypatch: pytest.MonkeyPatch) -> 
     data = client.get("/api/history", params={"pr_id": 2}).json()
     assert [item["review_key"] for item in data] == ["b"]
     assert data[0]["end"] == "completa"
+
+
+def test_un_aviso_de_reintento_no_cierra_el_lote() -> None:
+    # 021 R14: tras el aviso de reintento viene otro intento del mismo lote.
+    from agent_review.ports.reasoning import InMemoryReasoningSink, ReasoningEvent
+    from agent_review.web.reasoning import reasoning_stream
+
+    sink = InMemoryReasoningSink()
+    sink.emit("rk", ReasoningEvent("start", "correctness", 1, 1))
+    sink.emit("rk", ReasoningEvent("error", "correctness", 1, 1, "corte", {"retry": 1}))
+    ticks = iter([0.0, 1.0, 999.0])
+    chunks = list(reasoning_stream(sink, "rk", block_ms=1, idle_s=10, clock=lambda: next(ticks)))
+    # No se cerro por «todos los lotes cerrados» sino por inactividad: hubo keep-alive.
+    assert any(chunk.startswith(": sigo aqui") for chunk in chunks)

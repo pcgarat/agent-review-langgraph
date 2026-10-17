@@ -74,6 +74,19 @@ corte. Pero el modelo razonó 43 194 tokens y terminó con `finish_reason: lengt
 false`: el proveedor corta antes, por tiempo o por tokens de salida. Con lotes de
 30 000 caracteres (§3.1) la llamada termina bien. De ahí R12.
 
+### 3.4b Un segundo límite: la duración del stream (enmienda 2026-10-17)
+
+En la corrida real del PR #3 en el stack (RZ12), el lote 4 (4 ficheros) se cortó a
+mitad de *stream* a los **~3 min** («*peer closed connection without sending
+complete message body*»); el lote 2 terminó a los 2 min 42 s y la prueba de §3.2
+aguantó 234 s. El *streaming* evita el corte de ~2 min sin datos, pero el proveedor
+tiene **otro tope de duración total, entre 3 y 4 minutos**.
+
+Y el corte, al ser transitorio, subió al nodo `persona`, cuya `RetryPolicy`
+**re-ejecutó la persona entera desde el lote 1**: se pagaron otra vez los lotes ya
+hechos (riesgo anotado en el plan de 012). Con lotes de minutos ya no es aceptable.
+De ahí R14 y R15.
+
 ### 3.5 En qué gasta el razonamiento
 
 En el razonamiento de esa prueba (173 KB, sin bucles: 1 171 líneas distintas de 1 687)
@@ -116,6 +129,9 @@ costó verificar a mano diez hallazgos.
 | R10 | **Parámetros por modelo**: `ModelSpec` gana `params` (p. ej. `reasoning_effort`, `temperature`) que **sustituyen** a los `defaults` del proveedor; el registro declara una entrada de revisor con razonamiento y los roles revisores (`correctness`, `security`, `arch`) se enlazan a ella. El fixer sigue con `reasoning_effort: none` | Hoy el razonamiento solo se enciende por proveedor, para todos los roles a la vez. *Decidido 2026-10-17 (Q6).* |
 | R12 | Con razonamiento, el lote por defecto baja a **30 000 caracteres** (`LLM_BATCH_MAX_CHARS`) | Con 60 000 el proveedor corta antes de que el modelo responda (§3.2); con 30 000 termina en ~110 s |
 | R13 | El `LlmReviewer` entrega el diff con el **número de línea del lado nuevo** en cada línea añadida o de contexto | El modelo deja de gastar razonamiento en aritmética (§3.5) y el anclaje mejora. Cambia el *prompt*: se regraba el *gold set* (criterio 6) |
+| R14 | **Reintento por lote** dentro del `LlmReviewer`: un fallo transitorio reintenta *ese* lote (hasta `LLM_BATCH_RETRIES`, 2, con espera creciente); si sigue fallando, el lote sale `failed` en la cobertura y se sigue con los demás. El reintento del nodo `persona` queda solo para lo que falle fuera de las llamadas | Repetir la persona entera tira minutos de trabajo hecho y puede acabar con todo `failed` por un solo lote. *Enmienda 2026-10-17 (§3.4b).* |
+| R15 | Con razonamiento alto, el lote por defecto baja a **20 000 caracteres** | Mantiene cada llamada holgada por debajo del tope de duración del proveedor (§3.4b). Sustituye a R12 (30 000) |
+| R16 | Un fichero que no cabe en un lote **se trocea por hunks** (cada trozo con sus cabeceras) y los trozos van en lotes como cualquier fichero. El fichero cuenta como revisado si se revisaron todos sus trozos; si no, sale con el motivo del primero que faltó. Solo un hunk que por sí solo no cabe sigue siendo `too_large` | En la corrida real, `worker/main.py` (donde vive un real no detectado) salió `too_large` con lotes de 30 000, y R15 los baja a 20 000. Enmienda C3 y Q2 de [012](../archivo/012-cobertura-de-la-review/spec.md) |
 | R11 | **Los revisores razonan siempre**, con nivel `high` (el del experimento de §3.1) y `reasoning_min_max_tokens` de 65 536 | Pensar es lo que el usuario espera de una review «como con un agente de chat». El coste y la latencia se miden en el *gold set* (criterio 6) |
 
 ## 5. Diseño o contrato

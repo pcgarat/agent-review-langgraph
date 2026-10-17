@@ -336,12 +336,14 @@ def _run(graph) -> dict:  # noqa: ANN001
     )
 
 
-def test_llm_reviewer_propaga_el_fallo_transitorio_y_degrada_el_permanente() -> None:
+def test_llm_reviewer_reintenta_el_transitorio_en_el_lote_y_degrada_el_permanente() -> None:
     # Las personas solo reciben bloques `diff --git` (los deja pasar `scope`).
     diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x\n"
-    transient = LlmReviewer(llm=_FlakyLlm(LlmTransientError("503"), fail_times=1))
-    with pytest.raises(LlmTransientError):
-        transient.review(repo="r", pr_id=1, diff=diff)
+    # 021 R14: un transitorio se reintenta dentro del lote; si se recupera, no sube.
+    flaky = _FlakyLlm(LlmTransientError("503"), fail_times=1)
+    transient = LlmReviewer(llm=flaky)
+    assert transient.review(repo="r", pr_id=1, diff=diff).coverage.reviewed == ["a.py"]
+    assert flaky.calls == 2
 
     permanent = LlmReviewer(llm=_FlakyLlm(LlmError("401"), fail_times=1))
     assert permanent.review(repo="r", pr_id=1, diff=diff).findings == []
