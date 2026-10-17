@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
 
-from agent_review.adapters.diff_parser import FileDiff, best_line, file_key, parse_unified_diff
+from agent_review.adapters.diff_parser import (
+    FileDiff,
+    best_line,
+    file_key,
+    number_diff,
+    parse_unified_diff,
+)
 from agent_review.adapters.text_utils import guess_protected_subject, shorten_title, slug
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
@@ -22,6 +30,12 @@ from agent_review.domain.models import (
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
+from agent_review.ports.reasoning import (
+    ReasoningEvent,
+    ReasoningKind,
+    ReasoningSink,
+    emit_safely,
+)
 from agent_review.scope import split_diff
 
 logger = logging.getLogger(__name__)
@@ -39,12 +53,12 @@ Devuelve {"findings": [ ... ]}. Cada hallazgo:
   "title": "<=100 chars, conciso>",
   "severity": "P0|P1|P2|P3",
   "file": "ruta del fichero tal como aparece en el diff",
-  "line": <entero, linea del lado nuevo del diff>,
+  "line": <entero: el numero que lleva delante la linea en el diff>,
   "why_it_matters": "impacto y modo de fallo, no 'esta mal'",
   "autofix_class": "gated_auto|manual|advisory",
   "owner": "downstream-resolver|human|release",
   "confidence": 0|25|50|75|100,
-  "evidence": ["cita textual de la linea del diff"],
+  "evidence": ["cita textual de la linea, sin el numero ni el +"],
   "failure_scenario": "obligatorio en P0/P1/P2: input o estado -> ruta file:line -> \
 resultado incorrecto",
   "context_scope": "in_diff|outside_diff",
@@ -52,6 +66,8 @@ resultado incorrecto",
   "protected_subject": "opcional: memory-safety|concurrency|data-loss|\
 authorization-authentication|injection|public-contract|secrets-exposure|cryptography"
 }
+Cada linea anadida o de contexto del diff lleva delante su numero en el fichero
+nuevo; usa ese numero en `line`, no lo cuentes. Las borradas no llevan numero.
 Reglas: no inventes ficheros ni lineas que no esten en el diff; `confidence` solo
 puede ser 0/25/50/75/100; la primera evidencia cita la linea. Un P0, P1 o P2 sin
 `failure_scenario` concreto se descarta: traza el camino del fallo, no opines.
@@ -60,8 +76,9 @@ el diff (una firma, una configuracion, otro fichero); `in_diff` si basta el diff
 Como maximo %d hallazgos.
 """
 
-# Tamano de lote por defecto (`LLM_BATCH_MAX_CHARS`): el antiguo corte unico.
-DEFAULT_BATCH_MAX_CHARS = 60_000
+# Tamano de lote por defecto (`LLM_BATCH_MAX_CHARS`). Con razonamiento alto, un lote
+# de 60 000 caracteres agota la salida del proveedor antes de responder (021 R12).
+DEFAULT_BATCH_MAX_CHARS = 30_000
 _SEVERITY_RANK = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 3}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
@@ -70,6 +87,17 @@ _CHARS_PER_TOKEN = 4
 
 def _estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
+
+
+def _usage_meta(reply: LlmReply, *, findings: int | None) -> dict[str, Any]:
+    """Lo que el panel muestra al cerrar un lote (021 §5.2)."""
+    return {
+        "prompt_tokens": reply.prompt_tokens,
+        "completion_tokens": reply.completion_tokens,
+        "reasoning_tokens": reply.reasoning_tokens,
+        "finish_reason": reply.finish_reason,
+        "findings": findings if findings is not None else "salida ilegible",
+    }
 
 
 def _batches(
@@ -120,12 +148,17 @@ class LlmReviewer:
         budget: BudgetPort | None = None,
         budget_limit: int | None = None,
         batch_max_chars: int = DEFAULT_BATCH_MAX_CHARS,
+        reasoning_sink: ReasoningSink | None = None,
     ) -> None:
         self.name = name
         self._llm = llm
         self._max_findings = max_findings
         self._max_tokens = max_tokens
         self._batch_max_chars = batch_max_chars
+        # Destino del razonamiento (021 R3): sin el, no se escucha al modelo y la
+        # review es la de siempre.
+        self._reasoning_sink = reasoning_sink
+        self._last_error = ""
         # Presupuesto **compartido** por review (017 B1/B6): el puerto se consulta por
         # `review_key` y el contador lo ven a la vez todas las personas. `budget_limit`
         # es el tope blando por persona (B10) que calcula el wiring; sin el, el puerto
@@ -170,18 +203,31 @@ class LlmReviewer:
         reviewed: list[str] = []
         skipped: dict[str, SkipReason] = {path: SkipReason.TOO_LARGE for path in too_large}
         findings: list[Finding] = []
+        total = len(batches)
         for index, batch in enumerate(batches):
             paths = [path for path, _ in batch]
             if self.budget_exhausted:
                 skipped.update(dict.fromkeys(paths, SkipReason.BUDGET))
                 continue
             text = "".join(block for _, block in batch)
-            reply = self._call(text, review_key)
+            event = functools.partial(self._event, review_key, index + 1, total)
+            event("start", meta={"files": paths})
+            try:
+                reply = self._call(text, review_key, on_reasoning=self._listener(event))
+            except Exception as exc:
+                # Transitorio: sube para que lo reintente el nodo; el panel lo ve.
+                event("error", text=f"fallo transitorio del modelo: {exc}")
+                raise
             if reply is None:
                 reason = SkipReason.BUDGET if self.budget_exhausted else SkipReason.FAILED
+                note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
+                event("error", text=note)
                 skipped.update(dict.fromkeys(paths, reason))
                 continue
             entries = self._entries(reply.text)
+            event(
+                "end", meta=_usage_meta(reply, findings=None if entries is None else len(entries))
+            )
             if entries is None:
                 skipped.update(dict.fromkeys(paths, SkipReason.FAILED))
                 continue
@@ -201,6 +247,30 @@ class LlmReviewer:
             coverage=ReviewCoverage(reviewed=reviewed, skipped=skipped),
         )
 
+    def _event(
+        self,
+        review_key: str,
+        batch: int,
+        total: int,
+        kind: ReasoningKind,
+        *,
+        text: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        emit_safely(
+            self._reasoning_sink,
+            review_key,
+            ReasoningEvent(
+                kind=kind, role=self.name, batch=batch, total=total, text=text, meta=meta or {}
+            ),
+        )
+
+    def _listener(self, event: Callable[..., None]) -> Callable[[str], None] | None:
+        """El oyente del modelo, solo si alguien escucha (021 R2)."""
+        if self._reasoning_sink is None:
+            return None
+        return lambda piece: event("reasoning", text=piece)
+
     def _cap(self, findings: list[Finding]) -> list[Finding]:
         """`max_findings` sobre el total de la persona, primero lo mas grave (012 §5.3)."""
         if len(findings) <= self._max_findings:
@@ -209,10 +279,18 @@ class LlmReviewer:
         ranked = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
         return ranked[: self._max_findings]
 
-    def _call(self, diff: str, review_key: str = "") -> LlmReply | None:
+    def _call(
+        self,
+        diff: str,
+        review_key: str = "",
+        *,
+        on_reasoning: Callable[[str], None] | None = None,
+    ) -> LlmReply | None:
         """Una llamada por lote. `None` y `budget_exhausted` = sin presupuesto; `None`
-        sin el = fallo permanente del modelo."""
-        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{diff}"
+        sin el = fallo permanente del modelo (el motivo queda en `_last_error`)."""
+        self._last_error = ""
+        # El modelo ve el diff numerado (021 R13); el anclaje usa el original.
+        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{number_diff(diff)}"
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
         # Tope blando por persona (B10), sobre lo **acumulado** entre lotes: acota lo
@@ -238,12 +316,23 @@ class LlmReviewer:
             self.budget_exhausted = True
             return None
         try:
-            reply = self._llm.complete(
-                system=_SYSTEM,
-                prompt=prompt,
-                max_tokens=self._max_tokens,
-                json_mode="json_object",
-            )
+            # `on_reasoning` solo viaja si alguien escucha: un puerto que no razona
+            # (o un doble de test) no tiene por que aceptarlo.
+            if on_reasoning is None:
+                reply = self._llm.complete(
+                    system=_SYSTEM,
+                    prompt=prompt,
+                    max_tokens=self._max_tokens,
+                    json_mode="json_object",
+                )
+            else:
+                reply = self._llm.complete(
+                    system=_SYSTEM,
+                    prompt=prompt,
+                    max_tokens=self._max_tokens,
+                    json_mode="json_object",
+                    on_reasoning=on_reasoning,
+                )
         except Exception as exc:
             # La reserva no llego a gastarse: se devuelve antes de subir o degradar,
             # para que el reintento del nodo no reserve dos veces (B8).
@@ -254,6 +343,7 @@ class LlmReviewer:
             # nodo sin nada que reintentar.
             if is_transient(exc):
                 raise
+            self._last_error = f"el modelo fallo: {exc}"
             if isinstance(exc, LlmError):
                 logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
             else:

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import harness
+import pytest
 from harness import ReplayLlm, case_fingerprint, compare, to_json
 
 from agent_review.policy.engine import PolicyEngine
@@ -65,6 +66,10 @@ def test_la_grabacion_casa_el_caso() -> None:
     assert recording.case_fingerprint == case_fingerprint(case)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
+)
 def test_replay_reproduce_el_baseline_byte_a_byte() -> None:
     case = harness.load_case(CASE_DIR)
 
@@ -83,6 +88,10 @@ def test_replay_es_determinista() -> None:
     assert to_json(_replay_report(case)) == to_json(_replay_report(case))
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
+)
 def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
     # Regrabacion del 2026-10-17 (deepseek-v4-flash, contrato de 007, lotes de 012).
     # La auditoria original (9 publicados, 2 TP, precision 0.25, cobertura 0.2) vive
@@ -105,6 +114,10 @@ def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
     assert report.inverted == ()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
+)
 def test_el_pr_3_entero_llega_al_revisor() -> None:
     # 012 criterio 1: sin `max_files_per_pr` ni el corte a 60000 chars, la
     # configuracion que dejo fuera la review auditada entra en la review.

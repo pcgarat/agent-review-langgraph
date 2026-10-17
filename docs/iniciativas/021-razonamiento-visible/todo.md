@@ -39,10 +39,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 2 — El revisor (checkpoint C2)
 
-- [ ] **RZ4** Lotes de 30 000 caracteres por defecto (R12)
+- [x] **RZ4** Lotes de 30 000 caracteres por defecto (R12)
   - `settings.py` (`llm_batch_max_chars`), `.env.example`, `docs/operacion.md` §2.
 
-- [ ] **RZ5** Diff numerado para el modelo (R13)
+- [x] **RZ5** Diff numerado para el modelo (R13)
   - `src/agent_review/adapters/llm_reviewer.py`: cada línea añadida o de contexto del
     lote lleva su número del lado nuevo; el *prompt* lo explica. El anclaje sigue
     sobre el diff original.
@@ -50,13 +50,23 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     ancla igual que hoy.
   - Verifica: `tests/test_llm_reviewer.py`.
 
-- [ ] **RZ6** El revisor emite su razonamiento con contexto (R3)
+- [x] **RZ6** El revisor emite su razonamiento con contexto (R3)
   - `LlmReviewer` recibe un `ReasoningSink` opcional y, por lote, emite `start`
     (persona, lote *i/N*, ficheros), los trozos, y `end` (`usage`, `finish_reason`) o
     `error` (motivo).
   - Aceptación: con un LLM falso que emite trozos, el sink recibe la secuencia
     completa por lote; sin sink, nada cambia.
   - Verifica: `tests/test_llm_reviewer.py`.
+
+*Notas de implementación 2026-10-17 (bloque 2):*
+
+- El puerto `ReasoningSink` (`ports/reasoning.py`, con `InMemoryReasoningSink`) nace
+  en RZ6, porque el revisor ya emite; RZ7 añade el adaptador Redis y el cableado.
+- Eventos por lote: `start` (ficheros), los trozos `reasoning`, y `end` (`usage`,
+  `finish_reason`, nº de hallazgos o «salida ilegible») o `error` (sin presupuesto,
+  fallo del modelo o fallo transitorio, que además sube para el reintento).
+- Los 3 tests del *gold set* que dependen del *prompt* quedan en `xfail(strict=True)`
+  hasta RZ12: al regrabar, pasarán y el CI obligará a quitar la marca.
 
 ## Bloque 3 — Sink y panel (checkpoint C3)
 
@@ -102,6 +112,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     latencia y tokens de razonamiento por lote.
   - `make eval-record`; etiquetar los hallazgos nuevos contra `008da57` (revisión
     humana de las etiquetas) y congelar el baseline (criterio 6).
+  - Quitar el `xfail(strict=True)` de los 3 tests de `tests/eval/test_eval_pr_3.py`.
 
 - [ ] **RZ13** ADR y documentos vivos
   - ADR nuevo: razonamiento por *streaming* con un único punto de captura y un

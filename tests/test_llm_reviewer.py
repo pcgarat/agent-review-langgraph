@@ -542,3 +542,135 @@ def test_max_findings_sobre_el_total_prioriza_severidad() -> None:
     findings = reviewer.review(repo="r", pr_id=1, diff=a + b).findings
 
     assert [(f.file, f.severity) for f in findings] == [("src/b.py", Severity.P1)]
+
+
+# --- 021: diff numerado (R13) y razonamiento por lote (R3) ---
+
+
+def test_number_diff_numera_el_lado_nuevo_y_deja_hueco_en_las_borradas() -> None:
+    from agent_review.adapters.diff_parser import number_diff
+
+    diff = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+        "@@ -10,3 +10,4 @@ def f():\n ctx\n-old\n+new1\n+new2\n ctx2\n"
+    )
+    assert number_diff(diff).splitlines()[4:] == [
+        "    10  ctx",
+        "       -old",
+        "    11 +new1",
+        "    12 +new2",
+        "    13  ctx2",
+    ]
+
+
+def test_el_prompt_lleva_el_diff_numerado_y_el_anclaje_no_cambia() -> None:
+    from agent_review.adapters.diff_parser import parse_unified_diff
+
+    llm = FakeLlm(_response(_finding_json()))
+    finding = LlmReviewer(llm=llm).review(repo="r", pr_id=1, diff=DIFF).findings[0]
+
+    prompt = llm.calls[0][1]
+    added = parse_unified_diff(DIFF)[TRANSFER].added
+    # Cada linea anadida del fixture aparece con su numero del lado nuevo.
+    for number, text in added.items():
+        assert f"{number:>6} +{text}" in prompt
+    assert "no lo cuentes" in prompt
+    assert (finding.file, finding.line) == (TRANSFER, 14)
+
+
+class _ReasoningLlm(FakeLlm):
+    """Doble que razona: emite trozos por `on_reasoning` antes de responder."""
+
+    def __init__(self, response: str, pieces: list[str], **kwargs) -> None:
+        super().__init__(response, **kwargs)
+        self._pieces = pieces
+
+    def complete(self, *, on_reasoning=None, **kwargs) -> LlmReply:
+        import dataclasses
+
+        for piece in self._pieces:
+            if on_reasoning is not None:
+                on_reasoning(piece)
+        reply = super().complete(**kwargs)
+        return dataclasses.replace(reply, reasoning="".join(self._pieces))
+
+
+def test_el_revisor_emite_el_razonamiento_de_cada_lote_con_su_contexto() -> None:
+    from agent_review.ports.reasoning import InMemoryReasoningSink
+
+    sink = InMemoryReasoningSink()
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(2)]
+    llm = _ReasoningLlm(_response(), ["miro ", "el lote"], prompt_tokens=100)
+    reviewer = LlmReviewer(llm=llm, reasoning_sink=sink, batch_max_chars=len(blocks[0]))
+
+    reviewer.review(repo="r", pr_id=1, diff="".join(blocks), review_key="rk")
+
+    events = sink.events["rk"]
+    assert [(e.kind, e.batch, e.total) for e in events] == [
+        ("start", 1, 2),
+        ("reasoning", 1, 2),
+        ("reasoning", 1, 2),
+        ("end", 1, 2),
+        ("start", 2, 2),
+        ("reasoning", 2, 2),
+        ("reasoning", 2, 2),
+        ("end", 2, 2),
+    ]
+    assert events[0].meta == {"files": ["src/f0.py"]}
+    assert all(e.role == "correctness" for e in events)
+    assert sink.text("rk", batch=1) == "miro el lote"
+    assert events[3].meta["findings"] == 0
+    assert events[3].meta["prompt_tokens"] == 100
+
+
+def test_un_lote_sin_presupuesto_o_con_fallo_deja_su_motivo() -> None:
+    from agent_review.ports.llm import LlmError
+    from agent_review.ports.reasoning import InMemoryReasoningSink
+
+    sink = InMemoryReasoningSink()
+    reviewer = LlmReviewer(
+        llm=_ReasoningLlm("", [], raises=LlmError("400 malo")), reasoning_sink=sink
+    )
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 3), review_key="rk")
+    [start, error] = sink.events["rk"]
+    assert (start.kind, error.kind) == ("start", "error")
+    assert "400 malo" in error.text
+
+    sink = InMemoryReasoningSink()
+    budget = _ToggleBudget()
+    budget.allow = False
+    reviewer = LlmReviewer(llm=FakeLlm(_response()), budget=budget, reasoning_sink=sink)
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 3), review_key="rk")
+    assert sink.events["rk"][-1].text == "sin presupuesto"
+
+
+def test_un_fallo_transitorio_se_ve_y_sube_para_el_reintento() -> None:
+    from agent_review.ports.reasoning import InMemoryReasoningSink
+
+    sink = InMemoryReasoningSink()
+    reviewer = LlmReviewer(
+        llm=_ReasoningLlm("", [], raises=TransientError("503")), reasoning_sink=sink
+    )
+    with pytest.raises(TransientError):
+        reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 3), review_key="rk")
+    assert sink.events["rk"][-1].kind == "error"
+
+
+def test_un_sink_roto_no_cambia_la_review() -> None:
+    class _Roto:
+        def emit(self, review_key, event) -> None:
+            raise RuntimeError("redis caido")
+
+    llm = _ReasoningLlm(_response(_finding_json()), ["pienso"])
+    result = LlmReviewer(llm=llm, reasoning_sink=_Roto()).review(
+        repo="r", pr_id=1, diff=DIFF, review_key="rk"
+    )
+    assert len(result.findings) == 1
+
+
+def test_sin_sink_no_se_pide_el_razonamiento() -> None:
+    # `FakeLlm.complete` no acepta `on_reasoning`: si se pasara, fallaria.
+    result = LlmReviewer(llm=FakeLlm(_response(_finding_json()))).review(
+        repo="r", pr_id=1, diff=DIFF, review_key="rk"
+    )
+    assert len(result.findings) == 1

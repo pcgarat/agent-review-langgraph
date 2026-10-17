@@ -59,6 +59,38 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
     return files
 
 
+def number_diff(diff: str) -> str:
+    """El diff con el numero de linea del lado nuevo delante de cada linea (021 R13).
+
+    Es la vista que se manda al modelo: sin ella, el modelo gasta razonamiento en
+    contar lineas a mano para rellenar `line`. Las anadidas y las de contexto llevan
+    su numero; las borradas, un hueco (no existen en el lado nuevo). Cuenta igual
+    que `parse_unified_diff`, que sigue anclando sobre el diff original.
+    """
+    out: list[str] = []
+    new_line = 0
+    in_hunk = False
+    for raw in diff.splitlines():
+        if _DIFF_HEADER.match(raw):
+            in_hunk = False
+            out.append(raw)
+            continue
+        hunk = _HUNK_HEADER.match(raw)
+        if hunk:
+            new_line = int(hunk.group("new_start"))
+            in_hunk = True
+            out.append(raw)
+            continue
+        if not in_hunk or raw.startswith(("+++", "---")):
+            out.append(raw)
+        elif raw.startswith(("+", " ")):
+            out.append(f"{new_line:>6} {raw}")
+            new_line += 1
+        else:
+            out.append(f"{'':>6} {raw}")
+    return "\n".join(out) + ("\n" if diff.endswith("\n") else "")
+
+
 def file_key(files: dict[str, FileDiff], path: str) -> str | None:
     """Casa la ruta del linter con una del diff (basename como ultimo recurso)."""
     if path in files:
