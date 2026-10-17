@@ -113,7 +113,7 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     tras su bloque S. Los tests no tocan byte a byte el *prompt*: fijan el
     **comportamiento** con los defaults y que el anuncio no dependa de los flags.
 
-- [ ] **T1** ADR: el matcher mide **defecto**, no redacción (E0d, E0h, R1/R1b)
+- [x] **T1** ADR: el matcher mide **defecto**, no redacción (E0d, E0h, R1/R1b)
   - ADR nuevo con el **siguiente número libre al escribirlo** (hoy sería el 0025):
     ancla por `file`(+`line`, tolerancia ADR-0014)
     como primaria y fragmentos como respaldo/desambiguación. Debe declarar la
@@ -132,6 +132,17 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `expected`/`must_not` falla con un mensaje claro).
   - Verifica: `tests/eval/test_eval_harness.py`, `tests/eval/test_eval_pr_3.py`.
   - Ficheros: `tests/eval/harness.py`, `docs/adr/`, spec de 006.
+  - Hecho (2026-10-17): ADR-0025. `file`+`line` (±5) es el ancla primaria y basta
+    **un** fragmento discriminante; sin línea el `match` sigue siendo conjuntivo
+    (un fichero solo no ancla: el hallazgo de `settings.py:230` casaba
+    `integracion-2`, `integracion-3` y `R6` a la vez). La carga valida `id` único,
+    `line` sin `file`, etiqueta sin fragmento y `expected`/`must_not` indistinguibles;
+    al medir, un hallazgo que casa ambas clases **falla** con los dos `id` (no hay
+    prioridad de `expected`). La atribución 1:1 puntúa por fragmentos casados y
+    desempata por orden declarado y orden canónico del hallazgo. Tests: dos
+    redacciones del mismo defecto, dos defectos distintos en la misma línea y las
+    tres validaciones de carga. Enmienda con fecha en la spec de 006 y §2 de
+    `desarrollo.md`.
 
 - [ ] **T2** Reancla de etiquetas y **dos** *baselines* firmes (R1, E12b)
   - `tests/eval/pr_3/labels.yaml`: reanclar **contra el código de `008da57`** (el
@@ -155,31 +166,51 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `make eval`, `make eval-tools`, `tests/eval/test_eval_pr_3.py`.
   - Ficheros: `tests/eval/pr_3/labels.yaml`, `tests/eval/pr_3/expected_report.json`,
     `tests/eval/pr_3/expected_report_tools.json`, `tests/eval/test_eval_pr_3.py`.
+  - Hecho (2026-10-17), a medias: etiquetas reancladas **contra `fixtures/head`**:
+    `A` (`fixworker/main.py:95`, entrada de `_consume`), `I` (`:166`, `except
+    OSError`), `integracion-1` (`docker-compose.yml:72`, `env_file`),
+    `integracion-2` (`:76`, `TWG_BBC_TOKEN` vacío), `integracion-3`
+    (`settings.py:155`), `no-detectado-1` (`worker/main.py:152`),
+    `no-detectado-2` (`openai_llm.py:122`) y `R6` (`settings.py:230`).
+    `integracion-1` e `integracion-2` **no** son el mismo defecto: uno es fuga de
+    secretos y el otro un fallo de arranque; comparten línea de síntoma, no causa, y
+    por eso van anclados en líneas distintas. `expected_report.json` no cambió
+    **ni un byte**: el informe etiqueta por etiqueta es idéntico al anterior
+    (`matched`, `missing`, `counts` y `metrics`), así que el refijado no baja el
+    listón. `expected_report_tools.json` **sigue bloqueado**: `recorded_tools.json`
+    quedó caducada a propósito con el *prompt* de capacidades (F1) y la única
+    regrabación *live* es la corrida compartida de 024 LB1 tras su bloque S; C0c
+    hereda la tarea cuando exista esa grabación.
 
-- [ ] **M0** Clasificación *replay*/*live* por flag (E12, §5.5)
+- [x] **M0** Clasificación *replay*/*live* por flag (E12, §5.5)
   - Anotar en la spec o aquí, por cada flag de §5.4, si cambia lo que recibe el
     modelo. Regla: si cambia coincidencias, contenido servido, avisos o número de
     turnos, **exige regrabación *live***; si sirve los mismos bytes, vale *replay*.
   - Aceptación: ningún flag de M1 queda sin clasificar; el informe de M1 declara
     *replay* o *live* por configuración.
   - Ficheros: `docs/iniciativas/023-…/spec.md` §5.5, `todo.md` (M1).
+  - Hecho (2026-10-17): §5.5 clasifica **cada** flag de §5.4 con su fila: los nueve
+    que cambian lo que recibe el modelo (`GREP_MODE`, `READ_OUTLINE`, `READ_STATE`,
+    `TRUNCATION_NOTICE`, `STRICT_CALLS`, `CALLS_PER_TURN`, `MAX_CALLS`,
+    `PRECACHE_CONTEXT` y el anuncio de capacidades) exigen *live*; solo `IO_CACHE`
+    se mide en *replay* con contador de E/S.
 
 ### Checkpoint K0
 
-- [ ] Grabación caducada ⇒ error, no recall 0, **con `batch_retries=2`**.
-- [ ] Un error permanente **nunca** se publica como review limpia: en *replay*
+- [x] Grabación caducada ⇒ error, no recall 0, **con `batch_retries=2`**.
+- [x] Un error permanente **nunca** se publica como review limpia: en *replay*
   aborta la medida (T0c) y en producción el lote queda `FAILED` y la review
   **parcial** (T0d), sin tumbar los demás lotes.
-- [ ] `_call_with_retries` **no** relanza lo permanente: solo `FingerprintMismatch`.
-- [ ] La grabación conserva el **orden** (19 lotes) y la **unicidad** (dos llamadas
+- [x] `_call_with_retries` **no** relanza lo permanente: solo `FingerprintMismatch`.
+- [x] La grabación conserva el **orden** (19 lotes) y la **unicidad** (dos llamadas
   con el mismo *prompt* no se colapsan).
-- [ ] El informe no depende de la redacción del mismo defecto y **no** sube el
+- [x] El informe no depende de la redacción del mismo defecto y **no** sube el
   recall con defectos distintos **en la misma línea**.
-- [ ] Los flags existen en `Settings` y `.env.example`; con todo en default, el
+- [x] Los flags existen en `Settings` y `.env.example`; con todo en default, el
   **comportamiento servido** es el de hoy y la regrabación del *prompt* de
   capacidades es única y está anotada.
-- [ ] Cada flag clasificado como *replay* o *live*.
-- [ ] `make ci` en verde.
+- [x] Cada flag clasificado como *replay* o *live*.
+- [x] `make ci` en verde.
 
 ## Bloque 0.5 — Contrato de lectura (checkpoint K0.5)
 

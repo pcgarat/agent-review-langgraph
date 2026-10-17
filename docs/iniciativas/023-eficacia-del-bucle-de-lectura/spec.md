@@ -277,12 +277,23 @@ defecto idéntico**; el *prompt* cambia una vez y se regraba (criterio 9).
 
 ### 5.5 Clasificación de la medida (E12)
 
+Cada flag se clasifica **antes** de medir. La regla: si cambia lo que recibe el
+modelo (coincidencias, contenido servido, avisos, número de turnos o *prompt* base)
+exige **regrabación *live***; si sirve los mismos bytes, vale ***replay*** sobre la
+misma grabación.
+
 | Flag | ¿Cambia lo que recibe el modelo? | Cómo se mide |
 |---|---|---|
 | **Anuncio de capacidades en el *prompt*** (E11) | **Sí, una vez**: el *prompt* base cambia respecto a hoy | **Una** regrabación *live* de referencia, compartida por todas las configuraciones; el diff es revisable (ADR-0017) y trae `cached_tokens` de 024 |
-| `GREP_MODE`, `READ_OUTLINE`, `TRUNCATION_NOTICE`, `READ_STATE`, `STRICT_CALLS`, `CALLS_PER_TURN`/`MAX_CALLS` | **Sí**: cambia coincidencias, contenido servido, avisos o número de turnos | **Regrabación *live*** por configuración, sobre la referencia anterior |
-| `IO_CACHE` | No: sirve los mismos bytes | *Replay* sobre la misma grabación, con contador de E/S |
-| `PRECACHE_CONTEXT` | **Sí**: cambia el *prompt* base del lote | **Regrabación *live*** |
+| `REVIEW_TOOLS_GREP_MODE` | **Sí**: cambia las coincidencias que devuelve `grep` | *Live*: el modelo reacciona a otro `tool_result` |
+| `REVIEW_TOOLS_READ_OUTLINE` | **Sí**: `outline` sirve un índice (o un aviso) en vez de `full` | *Live* |
+| `REVIEW_TOOLS_READ_STATE` | **Sí**: añade el bloque `LECTURAS` al último mensaje | *Live* |
+| `REVIEW_TOOLS_TRUNCATION_NOTICE` | **Sí**: añade el aviso de corte al `tool_result` | *Live* |
+| `REVIEW_TOOLS_STRICT_CALLS` | **Sí**: cambia el `<tool_result>` de una petición no atendida | *Live* |
+| `REVIEW_TOOLS_CALLS_PER_TURN` | **Sí**: cambia cuántas peticiones se atienden por turno | *Live* (va junto con `MAX_CALLS`, E14) |
+| `REVIEW_TOOLS_MAX_CALLS` | **Sí**: cambia cuándo se agota el lote | *Live* |
+| `REVIEW_TOOLS_PRECACHE_CONTEXT` | **Sí**: cambia el *prompt* base del lote | *Live* |
+| `REVIEW_TOOLS_IO_CACHE` | **No**: sirve los mismos bytes, solo evita la E/S | *Replay* sobre la misma grabación, con contador de E/S |
 
 El informe de M1 declara, por configuración, si es *replay* o *live*; presentar un
 *replay* como medida de una mejora que cambia los resultados es medir el pasado. La

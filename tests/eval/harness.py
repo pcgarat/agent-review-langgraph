@@ -130,7 +130,8 @@ def load_case(directory: str | Path) -> Case:
     """Carga un caso versionado desde su directorio.
 
     El `diff.patch` es obligatorio (sin diff no hay review que medir). Las
-    etiquetas se leen tal cual; el matcher (E2) es quien las interpreta.
+    etiquetas se validan al cargar (ADR-0025): una etiqueta mal anclada o un
+    solapamiento `expected`/`must_not_report` falla aqui, no al medir.
     """
     base = Path(directory)
     data = _read_yaml(base / "labels.yaml")
@@ -138,7 +139,7 @@ def load_case(directory: str | Path) -> Case:
     scope = data.get("scope") or {}
     head_root = base / "fixtures" / "head"
     base_root = base / "fixtures" / "base"
-    return Case(
+    case = Case(
         name=str(data["case"]),
         repo=str(data["repo"]),
         pr_id=int(data["pr_id"]),
@@ -154,6 +155,56 @@ def load_case(directory: str | Path) -> Case:
         fixtures=head_root if head_root.is_dir() else None,
         base_fixtures=base_root if base_root.is_dir() else None,
     )
+    _validate_labels(case)
+    return case
+
+
+def _validate_labels(case: Case) -> None:
+    """Valida el anclaje de las etiquetas (ADR-0025).
+
+    Reglas que se comprueban **al cargar**: `id` unico, `line` solo con `file`,
+    toda etiqueta con fragmentos y ninguna pareja `expected`/`must_not_report`
+    indistinguible (mismo anclaje y mismos fragmentos), que seria un hallazgo
+    contado a la vez como acierto y como falso positivo.
+    """
+    seen: set[str] = set()
+    for label in case.labels():
+        if label.id in seen:
+            raise ValueError(f"id de etiqueta repetido en el caso: {label.id!r}")
+        seen.add(label.id)
+        if label.line is not None and label.file is None:
+            raise ValueError(
+                f"la etiqueta {label.id!r} declara 'line' sin 'file': una linea de otro "
+                "fichero no ancla nada"
+            )
+        if not label.match:
+            raise ValueError(
+                f"la etiqueta {label.id!r} no declara 'match': sin un fragmento "
+                "discriminante no se puede distinguir de otro defecto"
+            )
+    for expected in case.expected:
+        for must_not in case.must_not_report:
+            if _indistinguishable(expected, must_not):
+                raise ValueError(
+                    f"las etiquetas {expected.id!r} (expected) y {must_not.id!r} "
+                    "(must_not_report) son indistinguibles: mismo anclaje y mismos "
+                    "fragmentos; un hallazgo contaria a la vez como acierto y como FP"
+                )
+
+
+def _indistinguishable(left: Label, right: Label) -> bool:
+    """¿Dos etiquetas de distinta clase no se pueden separar al medir?"""
+    if left.file != right.file:
+        return False
+    if (left.line is None) != (right.line is None):
+        return False
+    if left.line is not None and right.line is not None:
+        assert left.line is not None and right.line is not None
+        if abs(left.line - right.line) > LINE_TOLERANCE:
+            return False
+    return {normalize(fragment) for fragment in left.match} == {
+        normalize(fragment) for fragment in right.match
+    }
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -193,18 +244,20 @@ class MatchResult:
 
 
 def match(case: Case, published: Sequence[Finding]) -> MatchResult:
-    """Atribuye `published` contra las etiquetas del caso (1:1 determinista, E2).
+    """Atribuye `published` contra las etiquetas del caso (1:1 determinista, ADR-0025).
 
     El orden no depende de como llegaron los hallazgos: ambos lados se ordenan en
-    forma canonica (severidad, linea, id) y, en ese orden, cada etiqueta se queda
-    con el primer hallazgo no consumido que cumpla su `match`. Dos etiquetas que
-    casarian el mismo hallazgo se reparten distintos (la segunda busca el siguiente
-    no consumido); un hallazgo que no casa ninguna etiqueta queda `unmatched`.
+    forma canonica (severidad, linea, id) y los pares (etiqueta, hallazgo) se
+    asignan por numero de fragmentos casados. El empate lo rompe el orden
+    declarado de la etiqueta y, despues, el orden canonico del hallazgo.
+
+    Un hallazgo que casa a la vez un `expected` y un `must_not_report` es un caso
+    ambiguo: no puede ser acierto y falso positivo en la misma medida, asi que
+    **falla** en vez de dejar que `expected` gane por orden de atribucion.
     """
-    for label in case.expected + case.must_not_report:
-        if not label.match:
-            raise ValueError(f"la etiqueta {label.id!r} no declara 'match'")
+    _validate_labels(case)
     findings = sorted(published, key=_finding_order)
+    _reject_overlap(case, findings)
     used: set[int] = set()
     expected = _attribute(case.expected, findings, used)
     must_not = _attribute(case.must_not_report, findings, used)
@@ -220,35 +273,65 @@ def match(case: Case, published: Sequence[Finding]) -> MatchResult:
     )
 
 
+def _reject_overlap(case: Case, findings: Sequence[Finding]) -> None:
+    """Un hallazgo que casa `expected` y `must_not_report` invalida la medida."""
+    for finding in findings:
+        hits_expected = [label.id for label in case.expected if _score(label, finding) is not None]
+        hits_must_not = [
+            label.id for label in case.must_not_report if _score(label, finding) is not None
+        ]
+        if hits_expected and hits_must_not:
+            raise ValueError(
+                f"el hallazgo {finding.id!r} casa a la vez las etiquetas "
+                f"expected {hits_expected} y must_not_report {hits_must_not}: "
+                "el caso es ambiguo (ADR-0025); separa el anclaje o los fragmentos"
+            )
+
+
 def _attribute(
     labels: tuple[Label, ...], findings: list[Finding], used: set[int]
 ) -> dict[str, Finding]:
-    """Asigna a cada etiqueta su primer hallazgo no consumido, en orden canonico.
+    """Asigna cada etiqueta a su mejor hallazgo no consumido (ADR-0025).
 
-    Las etiquetas con `file`/`line` exigen ese anclaje (con la tolerancia del
-    ADR-0014) y las que anclan por identificador (``file` sin `line`) solo el
-    fichero.
+    La puntuacion es el numero de fragmentos casados: la etiqueta mas especifica
+    gana el hallazgo aunque este declarada despues. Un hallazgo se consume una
+    sola vez para que un matcher laxo no lo cuente dos veces.
     """
-    result: dict[str, Finding] = {}
-    for label in labels:
-        for finding in findings:
-            if id(finding) in used:
+    pairs: list[tuple[int, int, int]] = []
+    for label_index, label in enumerate(labels):
+        for finding_index, finding in enumerate(findings):
+            score = _score(label, finding)
+            if score is None or id(finding) in used:
                 continue
-            if _matches(label, finding):
-                result[label.id] = finding
-                used.add(id(finding))
-                break
+            pairs.append((-score, label_index, finding_index))
+    pairs.sort()
+    result: dict[str, Finding] = {}
+    for _, label_index, finding_index in pairs:
+        label = labels[label_index]
+        finding = findings[finding_index]
+        if label.id in result or id(finding) in used:
+            continue
+        result[label.id] = finding
+        used.add(id(finding))
     return result
 
 
-def _matches(label: Label, finding: Finding) -> bool:
-    """¿El hallazgo casa la etiqueta? `match` conjuntivo + anclaje opcional."""
+def _score(label: Label, finding: Finding) -> int | None:
+    """Fragmentos casados, o `None` si el hallazgo no casa la etiqueta (ADR-0025).
+
+    `file`/`line` son el ancla primaria. Con `line` declarada basta **un**
+    fragmento discriminante; sin linea (o sin fichero) el conjunto de fragmentos
+    es la unica ancla y exige **todos**, como en 006.
+    """
     if label.file is not None and finding.file != label.file:
-        return False
+        return None
     if label.line is not None and abs(finding.line - label.line) > LINE_TOLERANCE:
-        return False
+        return None
     text = normalize(f"{finding.title} {finding.why_it_matters}")
-    return all(normalize(fragment) in text for fragment in label.match)
+    hits = sum(1 for fragment in label.match if normalize(fragment) in text)
+    if label.file is not None and label.line is not None:
+        return hits or None
+    return hits if hits == len(label.match) else None
 
 
 def _finding_order(finding: Finding) -> tuple[int, int, str]:

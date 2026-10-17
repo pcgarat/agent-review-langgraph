@@ -276,6 +276,178 @@ def test_expected_sin_match_falla() -> None:
         match(case, [])
 
 
+# --- ADR-0025: el matcher mide el defecto, no la redaccion ---
+
+
+def test_dos_redacciones_del_mismo_defecto_casan_la_misma_etiqueta() -> None:
+    # Ancla por fichero + linea + un fragmento discriminante: la redaccion puede
+    # cambiar sin que el defecto se mueva (E0d de 023).
+    case = _case(
+        expected=[Label(id="A", match=("mark_done",), file="src/x.py", line=95)],
+    )
+    literal = _finding(fid="uno", title="mark_done corre antes del enqueue", line=95)
+    parafraseado = _finding(
+        fid="dos",
+        title="La reanudacion se pierde",
+        why="Se llama a mark_done antes de encolar la reanudacion",
+        line=97,
+    )
+
+    primero = match(case, [literal])
+    segundo = match(case, [parafraseado])
+
+    assert primero.expected["A"] is literal
+    assert segundo.expected["A"] is parafraseado
+
+
+def test_dos_defectos_en_la_misma_linea_no_casan_la_misma_etiqueta() -> None:
+    # Sin fragmento discriminante, file+line (±5) casaria los dos. Con el, cada
+    # defecto tiene su etiqueta y no hay recall por la puerta de atras (R1b).
+    case = _case(
+        expected=[
+            Label(id="fuga", match=("github_token",), file="docker-compose.yml", line=76),
+            Label(id="arranque", match=("arranca",), file="docker-compose.yml", line=76),
+        ],
+    )
+    fuga = _finding(
+        fid="fuga",
+        file="docker-compose.yml",
+        title="env_file filtra github_token",
+        line=76,
+    )
+    arranque = _finding(
+        fid="arranque", file="docker-compose.yml", title="el fix-worker no arranca", line=78
+    )
+
+    result = match(case, [fuga, arranque])
+
+    assert result.expected == {"fuga": fuga, "arranque": arranque}
+    assert result.unmatched == ()
+
+
+def test_el_defecto_equivocado_en_la_misma_linea_queda_sin_casar() -> None:
+    case = _case(
+        expected=[Label(id="fuga", match=("github_token",), file="docker-compose.yml", line=76)],
+    )
+    otro = _finding(
+        fid="otro", file="docker-compose.yml", title="el healthcheck no cubre /tmp", line=76
+    )
+
+    result = match(case, [otro])
+
+    assert result.expected == {}
+    assert result.missing == ("fuga",)
+    assert result.unmatched == (otro,)
+
+
+def test_sin_linea_los_fragmentos_siguen_siendo_conjuntivos() -> None:
+    # El fichero solo no ancla: `settings.py:230` casaba integracion-2,
+    # integracion-3 y R6 a la vez con fragmentos disyuntivos (ADR-0025).
+    case = _case(
+        expected=[Label(id="A", match=("MODELS_CONFIG", "LLM_"), file="src/settings.py")],
+    )
+    parcial = _finding(
+        fid="parcial", file="src/settings.py", title="MODELS_CONFIG cambia el default", line=230
+    )
+    completo = _finding(
+        fid="completo",
+        file="src/settings.py",
+        title="MODELS_CONFIG cambia el default",
+        why="la via LLM_ deja de usarse",
+        line=230,
+    )
+
+    assert match(case, [parcial]).expected == {}
+    assert match(case, [completo]).expected == {"A": completo}
+
+
+def test_una_etiqueta_por_linea_basta_con_un_fragmento() -> None:
+    case = _case(
+        expected=[
+            Label(id="A", match=("mark_done", "enqueue"), file="src/x.py", line=95),
+        ],
+    )
+    finding = _finding(title="mark_done se adelanta", why="", line=95)
+
+    assert match(case, [finding]).expected == {"A": finding}
+
+
+def test_un_hallazgo_que_casa_expected_y_must_not_es_error() -> None:
+    # Sin prioridad silenciosa: el mismo hallazgo no puede ser acierto y FP.
+    case = _case(
+        expected=[Label(id="A", match=("tope de intentos",), file="src/x.py", line=10)],
+        must_not_report=[Label(id="R3", match=("distinto",), file="src/x.py", line=10)],
+    )
+    finding = _finding(title="tope de intentos distinto", line=10)
+
+    with pytest.raises(ValueError, match="A.*R3|R3.*A"):
+        match(case, [finding])
+
+
+def test_cargar_etiquetas_indistinguibles_falla(tmp_path: Path) -> None:
+    _write_case(
+        tmp_path,
+        {
+            "case": "c",
+            "repo": "r",
+            "pr_id": 1,
+            "base_sha": "b",
+            "head_sha": "h",
+            "captured_at": "2026-10-16",
+            "source": "s",
+            "scope": {},
+            "expected": [{"id": "A", "file": "src/x.py", "line": 10, "match": ["boom"]}],
+            "must_not_report": [
+                {"id": "B", "file": "src/x.py", "line": 12, "match": ["boom"], "why": "inventado"}
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match="indistinguibles"):
+        load_case(tmp_path)
+
+
+def test_cargar_linea_sin_fichero_falla(tmp_path: Path) -> None:
+    _write_case(
+        tmp_path,
+        {
+            "case": "c",
+            "repo": "r",
+            "pr_id": 1,
+            "base_sha": "b",
+            "head_sha": "h",
+            "captured_at": "2026-10-16",
+            "source": "s",
+            "scope": {},
+            "expected": [{"id": "A", "line": 10, "match": ["boom"]}],
+        },
+    )
+
+    with pytest.raises(ValueError, match="'line' sin 'file'"):
+        load_case(tmp_path)
+
+
+def test_cargar_id_repetido_falla(tmp_path: Path) -> None:
+    _write_case(
+        tmp_path,
+        {
+            "case": "c",
+            "repo": "r",
+            "pr_id": 1,
+            "base_sha": "b",
+            "head_sha": "h",
+            "captured_at": "2026-10-16",
+            "source": "s",
+            "scope": {},
+            "expected": [{"id": "A", "match": ["uno"]}],
+            "must_not_report": [{"id": "A", "match": ["dos"], "why": "w"}],
+        },
+    )
+
+    with pytest.raises(ValueError, match="repetido"):
+        load_case(tmp_path)
+
+
 # --- E3: metricas y JSON determinista ---
 
 
@@ -297,7 +469,7 @@ def _audit_case() -> Case:
             Label(id="no-detectado-3", match=("TTL",), severity="P2", subset="no_detectado"),
         ],
         must_not_report=[
-            Label(id=fid, match=(fid.lower(),)) for fid in ("B", "C", "D", "E", "F", "G")
+            Label(id=fid, match=(f"falso {fid.lower()}",)) for fid in ("B", "C", "D", "E", "F", "G")
         ],
         acceptable=[Label(id="H", match=("documentada",))],
     )
@@ -310,7 +482,9 @@ def _audit_published() -> list[Finding]:
         _finding(fid="h", title="documentada", severity=Severity.P3, line=3),
     ]
     for index, fid in enumerate(("B", "C", "D", "E", "F", "G")):
-        findings.append(_finding(fid=fid, title=fid.lower(), severity=Severity.P2, line=10 + index))
+        findings.append(
+            _finding(fid=fid, title=f"falso {fid.lower()}", severity=Severity.P2, line=10 + index)
+        )
     return findings
 
 

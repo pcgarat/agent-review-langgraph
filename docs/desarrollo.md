@@ -76,6 +76,14 @@ de congelar `expected_report.json`, cada hallazgo publicado sin etiqueta se juzg
 contra el `head_sha` del caso y se etiqueta en `labels.yaml` (el test exige
 `fp_unknown == 0`).
 
+El matcher mide **el defecto, no la redacción**
+([ADR-0025](adr/0025-matcher-del-gold-set-mide-el-defecto.md)): `file`+`line` (≤ 5)
+es ancla primaria y basta un fragmento discriminante; sin línea el `match` sigue
+siendo conjuntivo. Un caso se valida al cargar: `line` sin `file`, una etiqueta sin
+fragmento, un `id` repetido o un `expected`/`must_not_report` indistinguible fallan
+con el `id` en el mensaje. Las etiquetas se reanclan contra el código del `head_sha`
+(`fixtures/head`), nunca contra la grabación.
+
 ## 2. Mapa de tests
 
 | Zona | Tests |

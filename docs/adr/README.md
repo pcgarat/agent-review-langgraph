@@ -33,6 +33,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0022](0022-contrato-de-secretos-declarado.md) | El contrato de secretos se declara en el modelo, no en listas a mano | Aceptado |
 | [0023](0023-razonamiento-por-streaming-y-stream-de-redis.md) | El razonamiento de los revisores se captura por *streaming* y viaja por un *stream* de Redis por review | Aceptado |
 | [0024](0024-gate-de-severidad-en-la-politica.md) | La severidad publicada la decide un gate de política, no el modelo | Aceptado |
+| [0025](0025-matcher-del-gold-set-mide-el-defecto.md) | El matcher del *gold set* mide el defecto (localización + fragmento discriminante), no la redacción | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))
