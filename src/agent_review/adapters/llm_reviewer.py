@@ -10,7 +10,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agent_review.adapters.context_factory import ReaderFactory
 from agent_review.adapters.diff_parser import (
     FileDiff,
     file_key,
@@ -33,7 +32,7 @@ from agent_review.domain.models import (
 )
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
-from agent_review.ports.context import ContextLimits
+from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
 from agent_review.ports.reasoning import (
     ReasoningEvent,
@@ -45,6 +44,10 @@ from agent_review.scope import split_diff
 from agent_review.verification.l0 import L0Disposition, evaluate_l0
 
 logger = logging.getLogger(__name__)
+
+# Fabrica por lote (014 §5.3): (repo, head_sha, base_sha, diff) → lector. El `diff`
+# alimenta el modo degradado VCS (016); los tests con FixtureContextReader lo ignoran.
+ReviewerReaderFactory = Callable[[str, str, str, str], ContextReaderPort]
 
 _SYSTEM = (
     "Eres un revisor de codigo senior. Analizas un diff unificado y devuelves "
@@ -233,7 +236,7 @@ class LlmReviewer:
         reasoning_sink: ReasoningSink | None = None,
         batch_retries: int = DEFAULT_BATCH_RETRIES,
         sleep: Callable[[float], None] = time.sleep,
-        reader_factory: ReaderFactory | None = None,
+        reader_factory: ReviewerReaderFactory | None = None,
         tool_limits: ContextLimits | None = None,
     ) -> None:
         self.name = name
@@ -271,10 +274,11 @@ class LlmReviewer:
         self.budget_exhausted = False
         self.tokens_used = 0
         self._context: ReviewContext | None = None
-        # Ancla del lote al repo/commit (014): el bucle abre el lector con ellos.
+        # Ancla del lote al repo/commit/diff (014): el bucle abre el lector con ellos.
         self._repo = ""
         self._head_sha = ""
         self._base_sha = ""
+        self._diff = ""
         # Ultimo bucle del lote (014): `served` y metricas para el ReviewerResult.
         self._last_loop: LoopResult | None = None
         # Rutas de L1 omitidas por tope en esta review (cobertura / diagnostico).
@@ -296,12 +300,13 @@ class LlmReviewer:
     ) -> ReviewerResult:
         del pr_id
         self._context = context
-        # El bucle de herramientas (014) necesita repo/head/base para abrir el
+        # El bucle de herramientas (014) necesita repo/head/base/diff para abrir el
         # lector; sin fabrica se guardan igual y `_call` sigue siendo una sola
         # `complete` por lote (comportamiento de 008).
         self._repo = repo
         self._head_sha = head_sha
         self._base_sha = context.base_sha if context is not None else ""
+        self._diff = diff
         # El worker reutiliza la instancia entre reviews: los hechos del presupuesto
         # son **por review**, no acumulados en el objeto (017 B4).
         self.budget_exhausted = False
@@ -513,7 +518,7 @@ class LlmReviewer:
             return None
         # El presupuesto compartido lo reserva el bucle turno a turno (sin doble
         # reserva). Un `False` de `reserve` fuerza el turno final (016/017 B7).
-        reader = factory(self._repo, self._head_sha, self._base_sha)
+        reader = factory(self._repo, self._head_sha, self._base_sha, self._diff)
         try:
             loop = run_tool_loop(
                 self._llm,

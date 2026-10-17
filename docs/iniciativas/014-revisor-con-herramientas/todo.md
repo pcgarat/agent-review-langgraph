@@ -97,34 +97,28 @@ dejaría el *replay* de 008 en riesgo.
 
 ## Bloque 3 — Cableado y degradación (checkpoint C3)
 
-- [ ] **RH8** `build_reviewers` y roles (§5.3, H3, H4)
+- [x] **RH8** `build_reviewers` y roles (§5.3, H3, H4)
   - `worker/main.py`: para cada rol en `settings.review_tools_roles` ∩ roles LLM,
     pasa `reader_factory` (vía `build_reader_factory`, 016) y `tool_limits` desde los
     ajustes. Roles fuera de la lista: sin fábrica.
-  - La fábrica necesita `vcs` + `diff` del lote: mismo patrón que `build_verifier`
-    (cerrar sobre settings/vcs; el diff llega en `review()` / por review). Si el
-    cableado actual del verificador fija el diff al construir, reutilizar esa forma
-    o abrir el lector dentro de `review()` con una fábrica
-    `(repo, head_sha, base_sha) -> ContextReaderPort` que ya conozca el diff del
-    request (decisión al implementar: preferir el patrón de 009 VF8).
+  - Firma `(repo, head_sha, base_sha, diff)`: el `diff` llega en `review()` y
+    alimenta el modo VCS degradado (patrón de 009 VF8).
   - Aceptación: vacío → ningún `LlmReviewer` tiene fábrica; `correctness` en la lista
     → solo ese rol la tiene (test de `build_reviewers`).
-  - Verifica: `tests/test_worker.py`.
-  - Ficheros: `worker/main.py`.
+  - Verifica: `tests/test_worker.py` (`test_build_reviewers_herramientas_opt_in_por_rol`).
+  - Ficheros: `worker/main.py`, `adapters/llm_reviewer.py`.
 
-- [ ] **RH9** Degradación a VCS y rutas vetadas (criterios 5 y 6)
-  - Con runner caído / fábrica que devuelve `VcsContextReader`, el rol activado
-    termina la review (test).
-  - Una ruta vetada no se sirve ni aparece en el `grep` (contra runner o doble;
-    reutiliza cobertura de 016 si basta un test de integración del revisor).
+- [x] **RH9** Degradación a VCS y rutas vetadas (criterios 5 y 6)
+  - Con `VcsContextReader` (sin runner) el rol activado termina la review.
+  - Una ruta vetada (`DEFAULT_CONTEXT_DENYLIST`) no queda en `files_read`.
   - Aceptación: criterios 5 y 6 con test.
-  - Verifica: `tests/test_llm_reviewer.py` y/o `tests/test_context_factory.py`.
-  - Ficheros: tests; código solo si falta un hueco de cableado.
+  - Verifica: `tests/test_llm_reviewer.py`.
+  - Ficheros: tests.
 
 ### Checkpoint 3 (tras RH8–RH9)
 
-- [ ] Opt-in real en el worker; degradación cubierta.
-- [ ] `make ci` en verde.
+- [x] Opt-in real en el worker; degradación cubierta.
+- [x] `make ci` en verde.
 
 ## Bloque 4 — Medida, docs y cierre (checkpoint C4)
 

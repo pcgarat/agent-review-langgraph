@@ -370,6 +370,44 @@ def test_build_reviewers_una_sola_persona_recibe_el_total(tmp_path: Path) -> Non
     assert reviewer._budget_limit == 600_000, "2 * total con una sola persona da holgura"
 
 
+def test_build_reviewers_herramientas_opt_in_por_rol(tmp_path: Path) -> None:
+    # 014 RH8: REVIEW_TOOLS_ROLES vacio → sin fabrica; correctness en la lista → solo ese.
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(_PROFILE_WITH_CHECKS, encoding="utf-8")
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "version: 1\n"
+        "providers:\n"
+        "  p:\n"
+        "    base_url: https://example.test/v1\n"
+        "models:\n"
+        "  m: {provider: p, kind: chat}\n"
+        "bindings:\n"
+        "  correctness: m\n"
+        "  security: m\n",
+        encoding="utf-8",
+    )
+    base = dict(
+        repo_profile_config=str(profile),
+        llm_reviewer_enabled=True,
+        models_config=str(config),
+        llm_api_key="k",
+    )
+    sin = build_reviewers(Settings(**base, review_tools_roles=""))
+    assert all(
+        isinstance(r, LlmReviewer) and r._reader_factory is None
+        for r in sin
+        if isinstance(r, LlmReviewer)
+    )
+
+    con = build_reviewers(Settings(**base, review_tools_roles="correctness"))
+    by_name = {r.name: r for r in con if isinstance(r, LlmReviewer)}
+    assert by_name["correctness"]._reader_factory is not None
+    assert by_name["correctness"]._tool_limits is not None
+    assert by_name["correctness"]._tool_limits.max_turns == 4
+    assert by_name["security"]._reader_factory is None
+
+
 def test_build_registry_sin_habilitar_no_bindea_roles() -> None:
     registry = build_registry(Settings())
     assert registry.port_for("correctness") is None

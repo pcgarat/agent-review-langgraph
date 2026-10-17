@@ -946,8 +946,8 @@ def _tools(*entries: dict) -> str:
 def _fixture_factory(root: Path):
     from agent_review.adapters.context_fixture import FixtureContextReader
 
-    def factory(repo: str, head_sha: str, base_sha: str):
-        del repo, head_sha, base_sha
+    def factory(repo: str, head_sha: str, base_sha: str, diff: str = ""):
+        del repo, head_sha, base_sha, diff
         return FixtureContextReader(root)
 
     return factory
@@ -1118,3 +1118,70 @@ def test_on_reasoning_llega_en_cada_turno_del_bucle(tmp_path: Path) -> None:
 
     assert len(llm.reasoning_pieces) >= 2
     assert any(e.kind == "reasoning" for _, e in sink.events)
+
+
+def test_con_vcs_degradado_la_review_termina(tmp_path: Path) -> None:
+    # 014 RH9 / criterio 6: sin runner, VcsContextReader basta para cerrar.
+    from context_fakes import APP, HEAD, FakeVcs
+    from context_fakes import DIFF as APP_DIFF
+
+    from agent_review.adapters.context_vcs import VcsContextReader
+    from agent_review.ports.context import ContextLimits
+
+    vcs = FakeVcs()
+    reader = VcsContextReader(vcs=vcs, repo="cqm/x", head_sha=HEAD, base_sha="", diff=APP_DIFF)
+    reader.seed()
+
+    def factory(repo: str, head_sha: str, base_sha: str, diff: str):
+        del repo, head_sha, base_sha, diff
+        return reader
+
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": APP}),
+        _response(
+            _finding_json(
+                file=APP,
+                line=3,
+                evidence=[f"{APP}:3 needle = 1"],
+                failure_scenario="input -> src/app.py:3 -> fallo",
+            )
+        ),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=factory,
+        tool_limits=ContextLimits(),
+    ).review(repo="cqm/x", pr_id=1, diff=APP_DIFF, head_sha=HEAD)
+
+    assert len(result.findings) == 1
+    assert result.tool_usage is not None
+    assert APP in result.tool_usage.files_read
+
+
+def test_ruta_vetada_no_se_sirve_en_el_revisor(tmp_path: Path) -> None:
+    # 014 RH9 / criterio 5: denylist del fixture; la ruta no queda en served.
+    from context_fakes import ENV, build_fixture_reader
+
+    from agent_review.ports.context import ContextLimits
+
+    reader = build_fixture_reader(tmp_path)
+
+    def factory(repo: str, head_sha: str, base_sha: str, diff: str = ""):
+        del repo, head_sha, base_sha, diff
+        return reader
+
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": ENV}),
+        _tools({"tool": "grep", "pattern": "SECRET"}),
+        _response(_finding_json()),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=factory,
+        tool_limits=ContextLimits(),
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+
+    assert result.tool_usage is not None
+    assert ENV not in result.tool_usage.files_read
+    # El bucle siguio y publico findings del turno final.
+    assert len(result.findings) == 1

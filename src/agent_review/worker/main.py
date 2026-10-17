@@ -232,6 +232,7 @@ def build_reviewers(
     tooling_source: ToolingOutputSource | None = None,
     registry: ModelRegistry | None = None,
     budget: BudgetPort | None = None,
+    vcs: VcsPort | None = None,
 ) -> list[ReviewerPort]:
     """Personas a partir del perfil del repo y de la configuracion.
 
@@ -244,6 +245,9 @@ def build_reviewers(
     Cada persona LLM recibe el presupuesto **compartido** y su tope blando: el total
     repartido con holgura (el doble del reparto justo) acota lo que una persona con
     prompt grande se comeria del comun (017 B10).
+
+    Roles en `REVIEW_TOOLS_ROLES` (014) reciben `reader_factory` y topes del bucle;
+    el resto sigue con una llamada por lote (008).
     """
     reviewers: list[ReviewerPort] = []
     profile = load_profile(settings)
@@ -262,10 +266,41 @@ def build_reviewers(
     # todo el presupuesto y las demas no revisan.
     limit = 2 * settings.llm_budget_tokens_per_pr // len(roles) if roles else None
     reasoning_sink = build_reasoning_sink(settings) if roles else None
+    tools_roles = frozenset(settings.review_tools_roles_list)
+    tools_vcs = (vcs or build_vcs(settings)) if tools_roles else None
+    denylist = context_denylist(profile) if tools_roles else ()
+    tool_limits = (
+        ContextLimits(
+            max_turns=settings.review_tools_max_turns,
+            max_calls=settings.review_tools_max_calls,
+            max_bytes=settings.review_tools_max_bytes,
+        )
+        if tools_roles
+        else None
+    )
     for role in roles:
         llm = registry.port_for(role)
         if llm is None:
             continue
+        reader_factory = None
+        limits = None
+        if role in tools_roles and tools_vcs is not None and tool_limits is not None:
+            # Cierra sobre settings/vcs/denylist; el diff llega en review() (014 RH8).
+            def open_reader(
+                repo: str,
+                head_sha: str,
+                base_sha: str,
+                diff: str,
+                *,
+                _vcs: VcsPort = tools_vcs,
+                _denylist: tuple[str, ...] = denylist,
+            ) -> ContextReaderPort:
+                return build_reader_factory(settings, vcs=_vcs, diff=diff, denylist=_denylist)(
+                    repo, head_sha, base_sha
+                )
+
+            reader_factory = open_reader
+            limits = tool_limits
         reviewers.append(
             LlmReviewer(
                 llm=llm,
@@ -277,6 +312,8 @@ def build_reviewers(
                 context_max_chars=settings.llm_context_max_chars,
                 reasoning_sink=reasoning_sink,
                 batch_retries=settings.llm_batch_retries,
+                reader_factory=reader_factory,
+                tool_limits=limits,
             )
         )
 
@@ -498,7 +535,7 @@ def build_runtime(
     # puerto durante el `replay`. L2 (009) comparte el mismo contador.
     review_budget = build_budget(settings)
     if reviewers is None:
-        reviewers = build_reviewers(settings, registry=registry, budget=review_budget)
+        reviewers = build_reviewers(settings, registry=registry, budget=review_budget, vcs=vcs)
     validate_models(registry)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
