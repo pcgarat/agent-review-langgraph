@@ -157,6 +157,447 @@ def test_grafo_de_duplica_hallazgos_de_dos_personas() -> None:
     assert vcs.comments, "debe publicar el resumen en el PR"
 
 
+def test_merge_estampa_grounded_si_participa_tooling() -> None:
+    # 009 VF3: si el ToolingReviewer esta en el grupo, el representante queda
+    # grounded aunque la evidencia mas rica sea la copia del LLM.
+    from agent_review.domain.models import ContextScope, Verification
+
+    llm_finding = make_finding().model_copy(
+        update={
+            "id": "llm",
+            "evidence": ["tests/FooTest.php:3 falta assert", "tests/FooTest.php:3 otra"],
+        }
+    )
+    tooling_finding = make_finding().model_copy(
+        update={
+            "id": "tool",
+            "verification": Verification.VERIFIED_STATIC,
+            "verification_evidence": ["tests/FooTest.php:3 falta assert"],
+            "failure_scenario": None,
+            "context_scope": ContextScope.IN_DIFF,
+            "evidence": ["tests/FooTest.php:3 falta assert"],
+        }
+    )
+
+    class GroundedReviewer(StaticReviewer):
+        grounded = True
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    reviewers: list[ReviewerPort] = [
+        StaticReviewer("correctness", [llm_finding]),
+        GroundedReviewer("standards", [tooling_finding]),
+    ]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert len(result["merged"]) == 1
+    # Representante = LLM (mas evidencia), pero el id queda grounded.
+    assert result["merged"][0].id == "llm"
+    assert result["grounded_findings"] == ["llm"]
+
+
+def test_merge_no_estampa_grounded_si_solo_llm() -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [make_finding()])]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert result["grounded_findings"] == []
+
+
+def test_orden_merge_verify_policy() -> None:
+    # 009 VF4: verify vive entre merge y policy.
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    builder = build_graph(vcs=FakeVcs(), reviewers=[StaticReviewer("r", [])], policy=policy)
+    edges = set(builder.edges)
+    assert ("merge", "verify") in edges
+    assert ("verify", "policy") in edges
+    assert ("merge", "policy") not in edges
+    assert "verify" in builder.nodes
+
+
+def test_sin_verificador_no_hay_llamadas_y_todo_queda_sin_veredicto() -> None:
+    # 009 VF4: paso directo — el grafo se comporta como hoy.
+    class CountingVerifier:
+        name = "verifier"
+        calls = 0
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del finding, repo, head_sha, diff, review_key
+            type(self).calls += 1
+            raise AssertionError("sin puerto no debe llamarse")
+
+    CountingVerifier.calls = 0
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding()])],
+        policy=policy,
+        verifier=None,
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert CountingVerifier.calls == 0
+    assert result.get("verifications") == {}
+    assert len(result["merged"]) == 1
+
+
+def test_hallazgo_refutado_sigue_en_merged() -> None:
+    # 009 V6 / VF4: refutar no borra; el hallazgo se conserva en el estado.
+    from agent_review.domain.models import Verification
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class RefutingVerifier:
+        name = "verifier"
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.REFUTED,
+                evidence=["tests/FooTest.php:3 falta assert"],
+                files_read=["tests/FooTest.php"],
+                reason="el codigo no hace lo afirmado",
+            )
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    finding = make_finding(severity=Severity.P1)
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=policy,
+        verifier=RefutingVerifier(),
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert len(result["merged"]) == 1
+    assert result["merged"][0].id == "f1"
+    assert result["verifications"]["f1"].verdict is Verdict.REFUTED
+    assert result["merged"][0].verification is Verification.REFUTED
+    assert result["merged"][0].severity is finding.severity
+
+
+def test_confirmed_sin_escenario_queda_unverified() -> None:
+    # 009 VF6: CONFIRMED sin failure_scenario de tres partes → UNPROVEN.
+    from agent_review.domain.models import Verification
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class ConfirmingVerifier:
+        name = "verifier"
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.CONFIRMED,
+                evidence=["tests/FooTest.php:3 falta assert"],
+                files_read=["tests/FooTest.php"],
+                failure_scenario=None,
+                reason="sin escenario",
+            )
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    finding = make_finding(severity=Severity.P1)
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=policy,
+        verifier=ConfirmingVerifier(),
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert result["verifications"]["f1"].verdict is Verdict.UNPROVEN
+    assert result["merged"][0].verification is Verification.UNVERIFIED
+    assert result["merged"][0].severity is finding.severity
+
+
+def test_cita_no_servida_nunca_es_verified_grounded() -> None:
+    # 009 VF6 / V4: citar un fichero no leido fuerza UNPROVEN.
+    from agent_review.domain.models import Verification
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class LyingVerifier:
+        name = "verifier"
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.CONFIRMED,
+                evidence=["otro/no_leido.py:1 inventado"],
+                files_read=["tests/FooTest.php"],
+                failure_scenario=("estado X -> tests/FooTest.php:3 -> resultado incorrecto"),
+                reason="cita inventada",
+            )
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    finding = make_finding(severity=Severity.P1)
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=policy,
+        verifier=LyingVerifier(),
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert result["verifications"]["f1"].verdict is Verdict.UNPROVEN
+    assert result["merged"][0].verification is not Verification.VERIFIED_GROUNDED
+    assert result["merged"][0].verification is Verification.UNVERIFIED
+    assert result["merged"][0].severity is finding.severity
+
+
+def test_confirmed_estampa_escenario_del_verificador() -> None:
+    # 009 V12 / VF6 / VF12: el Finding adopta el escenario del verificador y el
+    # inline publicado lo lleva (no el del proponente).
+    from agent_review.domain.models import Verification
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    scenario = "estado con intentos -> tests/FooTest.php:3 -> no avanza"
+
+    class ConfirmingVerifier:
+        name = "verifier"
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.CONFIRMED,
+                evidence=["tests/FooTest.php:3 falta assert"],
+                files_read=["tests/FooTest.php"],
+                failure_scenario=scenario,
+                reason="direccion corregida",
+            )
+
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    finding = make_finding(severity=Severity.P1)
+    original_scenario = finding.failure_scenario
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [finding])],
+        policy=policy,
+        verifier=ConfirmingVerifier(),
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    stamped = result["merged"][0]
+    assert stamped.verification is Verification.VERIFIED_GROUNDED
+    assert stamped.failure_scenario == scenario
+    assert stamped.failure_scenario != original_scenario
+    assert stamped.verification_evidence == ["tests/FooTest.php:3 falta assert"]
+    assert stamped.severity is finding.severity
+    assert vcs.inlines, "se publica al menos un inline"
+    published = vcs.inlines[0][4]
+    assert scenario in published
+    assert original_scenario not in published
+
+
+def test_filtro_umbral_grounded_y_tope_no_llaman_al_verificador() -> None:
+    # 009 VF7: fuera del umbral, grounded o más allá del tope → cero llamadas.
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class CountingVerifier:
+        name = "verifier"
+        calls: list[str] = []
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            type(self).calls.append(finding.id)
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.REFUTED,
+                evidence=["tests/FooTest.php:3 ok"],
+                files_read=["tests/FooTest.php"],
+                reason="contado",
+            )
+
+    class GroundedReviewer(StaticReviewer):
+        grounded = True
+
+    CountingVerifier.calls = []
+    # Severidades distintas para que el orden del tope no dependa del fan-out.
+    p0 = make_finding(title="critico", severity=Severity.P0).model_copy(update={"id": "p0"})
+    p1 = make_finding(title="alto", severity=Severity.P1).model_copy(update={"id": "p1"})
+    p1_extra = make_finding(title="alto-extra", severity=Severity.P1).model_copy(
+        update={"id": "p1x"}
+    )
+    p2 = make_finding(title="medio", severity=Severity.P2).model_copy(update={"id": "p2"})
+    grounded = make_finding(title="estatico", severity=Severity.P0).model_copy(
+        update={"id": "grounded"}
+    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[
+            StaticReviewer("correctness", [p0, p1, p1_extra, p2]),
+            GroundedReviewer("phpstan", [grounded]),
+        ],
+        policy=policy,
+        verifier=CountingVerifier(),
+        verifier_max_findings=2,
+        verifier_require_verified_for=["P0", "P1"],
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    # P0 primero; un solo P1 cabe en el tope; P2 fuera del umbral; grounded no se llama.
+    assert CountingVerifier.calls[0] == "p0"
+    assert len(CountingVerifier.calls) == 2
+    assert CountingVerifier.calls[1] in {"p1", "p1x"}
+    assert "p2" not in result.get("verifications", {})
+    assert "grounded" not in result.get("verifications", {})
+    assert len(result.get("verifications", {})) == 2
+
+
+def test_reintento_de_verify_no_reverifica_lo_existente() -> None:
+    # 009 VF9 / V9: el nodo lee verifications como existing; un reintento no paga.
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class CountingVerifier:
+        name = "verifier"
+        calls = 0
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            type(self).calls += 1
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.REFUTED,
+                evidence=["tests/FooTest.php:3 ok"],
+                files_read=["tests/FooTest.php"],
+                reason="contado",
+            )
+
+    CountingVerifier.calls = 0
+    saver = InMemorySaver()
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding(severity=Severity.P1)])],
+        policy=policy,
+        verifier=CountingVerifier(),
+    ).compile(checkpointer=saver)
+    config = {"configurable": {"thread_id": "vf9-idem"}}
+    first = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        },
+        config,
+    )
+    assert CountingVerifier.calls == 1
+    assert first["verifications"]["f1"].verdict is Verdict.REFUTED
+
+    # Como si el nodo se reintentara tras un fallo transitorio posterior: se
+    # vuelve a entrar en `verify` con el estado ya escrito.
+    graph.update_state(config, values={}, as_node="merge")
+    graph.invoke(None, config)
+    assert CountingVerifier.calls == 1, "el existing evita la segunda llamada"
+
+
+def test_umbral_sale_del_severity_gate_de_la_politica() -> None:
+    # 009 V10/Q10: si la política declara require_verified_for, manda sobre Settings.
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class CountingVerifier:
+        name = "verifier"
+        calls: list[str] = []
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            type(self).calls.append(finding.id)
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.UNPROVEN,
+                reason="contado",
+            )
+
+    CountingVerifier.calls = []
+    p2 = make_finding(title="medio", severity=Severity.P2).model_copy(update={"id": "p2"})
+    policy = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "report",
+            "default_action": "report",
+            "rules": [],
+            "guards": {},
+            "severity_gate": {"require_verified_for": ["P2"]},
+        }
+    )
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [p2])],
+        policy=policy,
+        verifier=CountingVerifier(),
+        verifier_require_verified_for=["P0"],  # el gate gana
+    ).compile()
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert CountingVerifier.calls == ["p2"]
+
+
 def test_el_hecho_del_corte_viaja_al_outcome() -> None:
     # P7/B4: una persona que se corta por presupuesto declara el hecho y su gasto;
     # el `ReviewOutcome` los expone (el render como `SkipReason.BUDGET` es de 012).

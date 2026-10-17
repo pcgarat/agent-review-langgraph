@@ -18,7 +18,11 @@ JsonMode = Literal["json_object", "json_schema"]
 
 # Roles que el worker puede bindear. Es un conjunto cerrado a proposito: un typo
 # (`fixerr`) no debe degradar a "sin persona" en silencio, sino fallar al arrancar.
-ROLES = ("correctness", "security", "arch", "fixer")
+ROLES = ("correctness", "security", "arch", "fixer", "verifier")
+
+# Roles de revision: el verificador adversarial debe usar un modelo distinto de
+# todos ellos (009 V2). Sin esa independencia seria un sello de goma.
+REVIEW_ROLES = ("correctness", "security", "arch")
 
 # `${VAR}`: la unica forma de referenciar un secreto. El valor nunca esta en el YAML.
 _REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
@@ -98,7 +102,25 @@ class ModelsConfig(BaseModel):
                     f"el rol {role!r} apunta al modelo {model_name!r}, que es "
                     f"{self.models[model_name].kind!r} y no 'chat'"
                 )
+        self._check_verifier_independence()
         return self
+
+    def _check_verifier_independence(self) -> None:
+        """Fail-fast de 009 V2: `verifier` no puede compartir modelo con un revisor.
+
+        Sin binding `verifier` no hay error (paso directo del nodo). Con binding,
+        coincidir con cualquier rol de `REVIEW_ROLES` rompe el arranque: un sello
+        de goma silencioso es peor que un worker que no arranca.
+        """
+        verifier_model = self.bindings.get("verifier")
+        if verifier_model is None:
+            return
+        for role in REVIEW_ROLES:
+            if self.bindings.get(role) == verifier_model:
+                raise ValueError(
+                    f"el rol 'verifier' no puede usar el mismo modelo que {role!r} "
+                    f"({verifier_model!r}); haria de sello de goma (009 V2)"
+                )
 
     def provider_of(self, model_name: str) -> ProviderSpec:
         return self.providers[self.models[model_name].provider]

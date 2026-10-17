@@ -34,7 +34,9 @@ from agent_review.domain.models import (
     Severity,
     SkipReason,
     ToolingSourceStatus,
+    Verdict,
     Verification,
+    VerificationResult,
     VerifyJob,
 )
 
@@ -57,6 +59,9 @@ _STATE_TYPES: tuple[type, ...] = (
     # 007: estado de verificacion y alcance de contexto del hallazgo.
     Verification,
     ContextScope,
+    # 009: veredicto del verificador adversarial (viaja en `verifications`).
+    Verdict,
+    VerificationResult,
     # 012: cobertura de la review.
     ReviewCoverage,
     SkipReason,

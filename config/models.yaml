@@ -98,3 +98,6 @@ bindings:
   # Los revisores razonan; el fixer no (propone un parche corto con `json_object`).
   correctness: deepseek-v4-flash-revisor
   fixer: deepseek-v4-flash
+  # Verificador adversarial (009 V2): modelo distinto de todos los roles de
+  # revision. `qwen3.6` admite `json_schema`; se calibra contra el gold set (Q1).
+  verifier: qwen3.6

@@ -2,7 +2,7 @@
 
 # Verificador adversarial (L2): otro modelo, con herramientas
 
-> **Estado:** aprobada
+> **Estado:** implementada
 >
 > **Entrega objetivo:** entre `merge` y `policy` hay un nodo `verify` que, con un
 > **modelo distinto** al de las personas que proponen hallazgos y con **acceso de

@@ -338,9 +338,24 @@ class Settings(BaseSettings):
     # no la persona entera; agotados, el lote sale `failed` y se sigue.
     llm_batch_retries: int = 2
 
+    # Verificador adversarial L2 (009 V8/V11): topes por review y por bucle.
+    # Sin binding `verifier` el nodo es paso directo y estos ajustes no se usan.
+    verifier_max_findings: int = 5
+    verifier_max_tool_calls: int = 8
+    verifier_max_context_bytes: int = 60_000
+    # Umbral de candidatos mientras 011 no declare `severity_gate` (Q10). Lista
+    # separada por comas; el nodo prefiere la clave de la política si existe.
+    verifier_require_verified_for: str = "P0,P1"
+
     @property
     def fix_recipes_list(self) -> list[str]:
         return [item.strip() for item in self.fix_recipes.split(",") if item.strip()]
+
+    @property
+    def verifier_require_verified_for_list(self) -> list[str]:
+        return [
+            item.strip() for item in self.verifier_require_verified_for.split(",") if item.strip()
+        ]
 
     @field_validator("vcs_provider", mode="before")
     @classmethod

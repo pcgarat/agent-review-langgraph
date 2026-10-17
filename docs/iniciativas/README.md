@@ -11,15 +11,13 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 hechas · 6 preguntas abiertas |
-| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🟢 Lista para implementar · [plan](009-verificador-adversarial/plan.md) · [todo](009-verificador-adversarial/todo.md) (VF1–VF13) | Dependencias hechas (007, 016 y 017) · el umbral de candidatos lo lee del gate de 011 |
+| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | aprobada | 🟢 Lista para implementar · [plan](008-contexto-del-revisor/plan.md) · [todo](008-contexto-del-revisor/todo.md) (CX1–CX12) | 007 y 012 hechas · D10–D15 cerradas |
+| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | implementada | 🟢 C1–C4 hechos · quedan VF14/VF15 (humanas: modelo del *gold set* y umbral con 011) · [todo](009-verificador-adversarial/todo.md) | Dependencias hechas (007, 016 y 017) · el umbral de candidatos lo lee del gate de 011 |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008 (012, 016 y 017 hechas) · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
-| 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | implementada | ✅ El contrato de secretos se deriva de `Settings` (`secrets_for`), no de listas a mano · `PLACEHOLDER_VALUES` único · cierra D22 · [ADR-0022](../adr/0022-contrato-de-secretos-declarado.md) · [todo](020-secretos-declarados/todo.md) (S1–S7) |
-| 021 | [Razonamiento del revisor visible en el panel](021-razonamiento-visible/spec.md) | aprobada | 🟠 Revisores que razonan siempre, razonamiento en vivo en el panel (SSE) e histórico de reviews; enlace en Teams en fase 2 | Sin dependencias · [plan](021-razonamiento-visible/plan.md) · [todo](021-razonamiento-visible/todo.md) (RZ1–RZ14) · comparte punto de captura con 018 |
 
 ### Orden
 
@@ -27,8 +25,8 @@ Las iniciativas **006–012** son el desglose de una única auditoría de la cal
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
 detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
 y **017** es la pieza compartida que salió de la deuda D17. La **016** (lector de
-contexto), la **017** (presupuesto por PR) y la **019** (panel de operación) ya están
-entregadas y archivadas.
+contexto), la **017** (presupuesto por PR), la **019** (panel), la **020** (secretos)
+y la **021** (razonamiento visible) ya están entregadas y archivadas.
 
 ```mermaid
 flowchart LR
@@ -49,17 +47,17 @@ flowchart LR
 La **016** (lector de contexto) y la **017** (presupuesto por PR) ya están
 entregadas: 009 y 014 las consumen, no las esperan.
 
-- **Implementadas el 2026-10-17:** 007 y 012. Desbloquean 008 y 009. La **009 ya
-  tiene [plan](009-verificador-adversarial/plan.md) y
-  [todo](009-verificador-adversarial/todo.md)**: comparte con 012 el `LlmReviewer` y
-  el *gold set*, así que conviene **regrabar una sola vez** cuando ambas estén listas.
-- **Aprobar después:** 008, que depende de las dos.
-- **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
+- **Implementadas el 2026-10-17:** 007, 012, 020 y 021. 007 y 012 desbloquean 008 y
+  009. La **009 ya tiene [plan](009-verificador-adversarial/plan.md) y
+  [todo](009-verificador-adversarial/todo.md)**. La **021** deja el *gold set* en
+  precisión/recall 0.375 con razonamiento; conviene **regrabar una sola vez** cuando
+  009 (y, si se aprueba, 008) estén listas.
+- **Aprobada el 2026-10-17:** 008 ([plan](008-contexto-del-revisor/plan.md) y
+  [todo](008-contexto-del-revisor/todo.md)). Lista junto a 009.
+- **Se puede empezar ya**, sin esperar a nadie: **008**, **009**, la fase 1 de 010
+  y 015. Conviene regrabar el *gold set* **una sola vez** al cerrar 008+009.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
   no de código.
-- **020** es un refactor interno sin dependencias: se puede hacer en cualquier
-  momento, pero cuanto antes, menos campos secretos habrá que declarar a mano.
-  **Hecha el 2026-10-17**: el contrato se deriva de `Settings` y D22 queda cerrada.
 
 ## Archivadas
 
@@ -81,6 +79,8 @@ conservando sus IDs.
 | 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |
 | 017 | [Presupuesto de tokens por PR](archivo/017-presupuesto-por-pr/spec.md) | implementada | P1–P12 · contador por review compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](archivo/017-presupuesto-por-pr/todo.md) |
 | 019 | [Panel de operación](archivo/019-panel-de-operacion/spec.md) | implementada | OP1–OP51 · servicio `web` con sesión y rol, recorrido y progreso, consola del sandbox por SSE y comandos de cancelar/reintentar/reanudar · cierra D16 · [ADR-0020](../adr/0020-panel-como-servicio-aparte.md) · [todo](archivo/019-panel-de-operacion/todo.md) |
+| 020 | [Contrato de secretos declarado en el modelo](archivo/020-secretos-declarados/spec.md) | implementada | S1–S7 · contrato derivado de `Settings` (`secrets_for`) · cierra D22 · [ADR-0022](../adr/0022-contrato-de-secretos-declarado.md) · [todo](archivo/020-secretos-declarados/todo.md) |
+| 021 | [Razonamiento del revisor visible en el panel](archivo/021-razonamiento-visible/spec.md) | implementada | RZ1–RZ14 · *streaming*, sink Redis, panel en vivo e histórico · *gold set* 0.375/0.375 · [ADR-0023](../adr/0023-razonamiento-por-streaming-y-stream-de-redis.md) · [todo](archivo/021-razonamiento-visible/todo.md) |
 
 ## Pendientes humanos o externos
 

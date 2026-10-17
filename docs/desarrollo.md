@@ -125,7 +125,7 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
    Para usar el **mismo modelo con otros parámetros** en un rol (p. ej. el revisor
    que razona y el fixer que no), declara otra entrada con `api_model` (el nombre
    real en la API) y `params` (se aplican encima de los `defaults` del proveedor):
-   es `deepseek-v4-flash-revisor` en el registro ([021](iniciativas/021-razonamiento-visible/spec.md) R10).
+   es `deepseek-v4-flash-revisor` en el registro ([021](iniciativas/archivo/021-razonamiento-visible/spec.md) R10).
 4. Cubre el contrato en `tests/test_live_models.py` (`-m live`): es lo que verifica
    que las capacidades declaradas se cumplen, cosa que `/v1/models` no publica.
 5. El adaptador pide **siempre** *streaming* y acepta una respuesta normal si el
@@ -151,8 +151,28 @@ Antes de invertir aquí, recuerda que la ingesta es un puente desechable
 
 Añádelo a `checkpointer._STATE_TYPES`. Si no, la reanudación de un hilo pausado
 depende del msgpack permisivo. Ejemplo: `ReviewCoverage`, `SkipReason` y `FileClass`
-(012), con un test de pausa y reanudación en `test_checkpointer`. Los **read models** derivados (como el recorrido de
+(012), o `Verdict` / `VerificationResult` (009), con un test de pausa y reanudación
+en `test_checkpointer`. Los **read models** derivados (como el recorrido de
 019, `domain/trace.py`) no van aquí: no viajan por el estado.
+
+### Un verificador adversarial (009)
+
+El `VerifierPort` (`ports/verifier.py`) es el segundo juicio entre `merge` y
+`policy`. El adaptador `LlmVerifier` (`adapters/llm_verifier.py`) usa el bucle
+`run_tool_loop` y un lector de `build_reader_factory` (016); el *prompt* **refuta**.
+`Verdict` y `VerificationResult` viven en `domain/models` (el puerto los reexporta)
+para viajar en `ReviewState.verifications` y en `ReviewOutcome.verifications`.
+
+Al extenderlo:
+
+1. **Inyección como el fixer**: `build_verifier` en el worker; `build_graph(...,
+   verifier=None)` es paso directo. No construyas el puerto dentro del grafo.
+2. **Independencia del modelo**: el binding `verifier` no puede coincidir con un
+   rol de revisión (`ModelsConfig` falla al cargar).
+3. **Candidatos acotados**: el nodo filtra por umbral, grounded y
+   `VERIFIER_MAX_FINDINGS`; el presupuesto es el de la review (017), no el del fix.
+4. **No toques `severity`**: solo `verification`, evidencia y, en `CONFIRMED`, el
+   `failure_scenario`. El gate de 011 es el dueño de la severidad publicada.
 
 ### Leer el recorrido de una review (sin grafo)
 
@@ -266,6 +286,24 @@ encapsulan las dos reglas para que ningún consumidor olvide mirar el resultado.
 
 Declárala en `checks:` del perfil y, si toca, en `verify:`. Es una decisión humana
 revisada. El runner no ejecuta nada que no esté declarado y nunca usa una shell.
+
+### Una fuente de razonamiento nueva (021)
+
+El razonamiento tiene un solo punto de captura
+([ADR-0023](adr/0023-razonamiento-por-streaming-y-stream-de-redis.md)):
+
+1. **El adaptador** del modelo emite cada trozo por el `on_reasoning` opcional de
+   `LlmPort.complete` y lo deja entero en `LlmReply.reasoning`. Un adaptador que no
+   razone lo ignora; uno nuevo que sí razone solo tiene que llamarlo.
+2. **Quien llama** solo pasa `on_reasoning` si alguien escucha (los dobles de test no
+   tienen por qué aceptarlo) y le añade el contexto en un `ReasoningEvent` (`start`,
+   `reasoning`, `end`, `error`; persona, lote *i/N*, `meta`).
+3. **El destino** es un `ReasoningSink`: `emit_safely` lo hace *best-effort*. El
+   adaptador Redis agrupa trozos y escribe `reviews:reasoning:<review_key>`; el panel
+   lo lee con `ReasoningReader` y lo sirve por SSE (`web/reasoning.py`).
+
+Para que otro rol (el fixer, el verificador de 009) emita su razonamiento, pasa el sink
+al construirlo y emite con su `role`: el panel lo agrupa solo.
 
 ### La consola en vivo del sandbox (019)
 

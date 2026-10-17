@@ -21,6 +21,12 @@ class ReviewerPort(Protocol):
     ([ADR-0005](../../../docs/adr/0005-identidad-de-la-ejecucion.md)): las personas
     con presupuesto compartido lo necesitan para reservar y confirmar contra el
     contador de esa review (017 B1). Las personas sin coste lo ignoran.
+
+    `grounded` (bool, opcional, por defecto `False`): si la hipotesis nace de una
+    herramienta que ya corrio (009 V7). Quien no lo declara se lee como no
+    grounded (`getattr(reviewer, "grounded", False)`). Solo `ToolingReviewer` lo
+    pone a `True`; el merge estampa `grounded_findings` y L2 no vuelve a verificar
+    esos hallazgos.
     """
 
     name: str

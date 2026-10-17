@@ -9,6 +9,15 @@ def test_clave_de_idempotencia() -> None:
     assert request.idempotency_key == "cqm/emotivoo-v2:42:abc123"
 
 
+def test_base_sha_opcional_en_la_peticion() -> None:
+    # 008 CX1: vacío por defecto (compatible con jobs viejos); no entra en la clave.
+    sin = ReviewRequest(repo="r", pr_id=1, head_sha="abc")
+    assert sin.base_sha == ""
+    con = ReviewRequest(repo="r", pr_id=1, head_sha="abc", base_sha="def")
+    assert con.base_sha == "def"
+    assert con.idempotency_key == sin.idempotency_key
+
+
 def test_clave_de_review_por_pipeline() -> None:
     # Sin pipeline, la review es idempotente por commit; con pipeline, un pipeline
     # nuevo sobre el mismo commit es una review nueva.
@@ -158,3 +167,24 @@ def test_combinar_coberturas_gana_quien_reviso() -> None:
     assert merged.files_total == 3
     assert merged.reviewed == ["a.py", "b.py"]
     assert merged.skipped == {"composer.lock": SkipReason.IGNORED}
+
+
+def test_verdict_y_verification_result_del_dominio() -> None:
+    # 009 VF1/VF10: el veredicto vive en el dominio (y el puerto lo reexporta).
+    from agent_review.domain.models import Verdict, VerificationResult
+    from agent_review.ports.verifier import Verdict as PortVerdict
+    from agent_review.ports.verifier import VerificationResult as PortResult
+
+    result = VerificationResult(
+        finding_id="f1",
+        verdict=Verdict.CONFIRMED,
+        failure_scenario="estado → a.py:1 → fallo",
+        evidence=["a.py:1 x"],
+        files_read=["a.py"],
+        reason="citado",
+    )
+    assert result.verdict is Verdict.CONFIRMED
+    assert Verdict.REFUTED.value == "refuted"
+    assert Verdict.UNPROVEN.value == "unproven"
+    assert PortVerdict is Verdict
+    assert PortResult is VerificationResult

@@ -170,6 +170,97 @@ def test_hilo_pausado_serializa_sin_avisos(caplog) -> None:
     assert avisos == [], f"tipos HITL sin registrar en el serde: {avisos}"
 
 
+def test_verifications_sobrevive_pausa_hitl_y_reanudacion(caplog) -> None:
+    # 009 VF9: Verdict/VerificationResult en _STATE_TYPES; el veredicto viaja
+    # por la pausa HITL y sigue ahí tras el resume.
+    import logging
+
+    from agent_review.ports.verifier import Verdict, VerificationResult
+
+    class _P1Finding:
+        name = "standards"
+
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+        ) -> ReviewerResult:
+            del repo, pr_id, diff, head_sha, review_key
+            return ReviewerResult(
+                findings=[
+                    Finding(
+                        id="f1",
+                        title="T",
+                        severity=Severity.P1,
+                        file="a.php",
+                        line=1,
+                        why_it_matters="w",
+                        autofix_class=AutofixClass.ADVISORY,
+                        owner=Owner.HUMAN,
+                        failure_scenario="escenario de prueba",
+                        confidence=75,
+                        evidence=["a.php:1 x"],
+                    )
+                ]
+            )
+
+    class _Confirming:
+        name = "verifier"
+
+        def verify(
+            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+        ):
+            del repo, head_sha, diff, review_key
+            return VerificationResult(
+                finding_id=finding.id,
+                verdict=Verdict.CONFIRMED,
+                failure_scenario="estado X -> a.php:1 -> resultado incorrecto",
+                evidence=["a.php:1 x"],
+                files_read=["a.php"],
+                reason="confirmado",
+            )
+
+    saver = build_checkpointer("")
+    policy = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "fix_with_approval",
+            "default_action": "escalate",
+            "rules": [],
+        }
+    )
+    vcs = _MemoryVcs()
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[_P1Finding()],
+        policy=policy,
+        verifier=_Confirming(),
+    ).compile(checkpointer=saver)
+    request = ReviewRequest(repo="r", pr_id=9, head_sha="abc", pipeline_id="vf9")
+    config = {"configurable": {"thread_id": request.thread_id}}
+    decision = HitlDecision(
+        review_key=request.review_key,
+        actor="alice",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="langgraph.checkpoint.serde.jsonplus"):
+        assert process_request(graph, request).paused
+        paused_state = graph.get_state(config)
+        assert paused_state.values["verifications"]["f1"].verdict is Verdict.CONFIRMED
+        resumed = process_request(graph, request.model_copy(update={"decision": decision}))
+
+    assert not resumed.paused
+    final_state = graph.get_state(config)
+    assert final_state.values["verifications"]["f1"].verdict is Verdict.CONFIRMED
+    avisos = [r.message for r in caplog.records if "unregistered" in r.message]
+    assert avisos == [], f"tipos del verificador sin registrar en el serde: {avisos}"
+
+
 def test_prune_poda_completados_y_respeta_pausados() -> None:
     from agent_review.checkpointer import prune_completed_threads
 

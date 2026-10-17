@@ -120,6 +120,10 @@ class PolicyEngine:
         self._default = FindingAction(config.get("default_action", "report"))
         self._version = str(config.get("version", "0"))
         self._guards: dict[str, Any] = config.get("guards", {}) or {}
+        # Umbral del gate (011) y de candidatos L2 (009 V10). Mientras 011 no
+        # aterrice la clave puede no existir: el nodo `verify` cae al ajuste.
+        gate = config.get("severity_gate")
+        self._severity_gate: dict[str, Any] = gate if isinstance(gate, dict) else {}
         self._rules: list[Rule] = [
             Rule(
                 index=index,
@@ -143,12 +147,20 @@ class PolicyEngine:
     def guards(self) -> dict[str, Any]:
         return self._guards
 
+    @property
+    def severity_gate(self) -> dict[str, Any]:
+        """Bloque `severity_gate` del YAML (011); vacío si aún no está declarado."""
+        return self._severity_gate
+
     def raw(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "version": self._version,
             "max_autonomy": self._max_autonomy.value,
             "guards": self._guards,
         }
+        if self._severity_gate:
+            payload["severity_gate"] = self._severity_gate
+        return payload
 
     def _cap(self, action: FindingAction) -> FindingAction:
         """Aplica el techo global.

@@ -14,6 +14,7 @@ from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.sandbox import SandboxPort, VerifyReport, VerifyRequest
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import PullRequestInfo, VcsPort
+from agent_review.ports.verifier import Verdict, VerificationResult, VerifierPort
 
 __all__ = [
     "DEFAULT_CONTEXT_DENYLIST",
@@ -29,6 +30,9 @@ __all__ = [
     "ReviewerPort",
     "SandboxPort",
     "ToolingOutputSource",
+    "VerificationResult",
+    "VerifierPort",
+    "Verdict",
     "VcsPort",
     "VerifyReport",
     "VerifyRequest",

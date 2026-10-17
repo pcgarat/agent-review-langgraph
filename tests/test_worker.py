@@ -33,8 +33,11 @@ from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.worker.main import (
     _consume,
+    _with_base_sha,
     build_registry,
     build_reviewers,
+    build_runtime,
+    build_verifier,
     process_request,
     start_heartbeat,
     sweep_expired,
@@ -370,6 +373,151 @@ def test_build_registry_sin_habilitar_no_bindea_roles() -> None:
     assert registry.config.models == {}
 
 
+def test_outcome_expone_verifications_y_el_log_cuenta(caplog: pytest.LogCaptureFixture) -> None:
+    # 009 VF10: ReviewOutcome.verifications y el log de cierre con el recuento.
+    import logging
+    import sys
+
+    from agent_review.domain.models import Verdict, VerificationResult
+    from agent_review.graph.build import outcome_from_state
+
+    worker_main = sys.modules["agent_review.worker.main"]
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="vf10")
+    state = {
+        "request": request,
+        "merged": [],
+        "decisions": [],
+        "verifications": {
+            "a": VerificationResult(finding_id="a", verdict=Verdict.CONFIRMED, reason="ok"),
+            "b": VerificationResult(finding_id="b", verdict=Verdict.REFUTED, reason="no"),
+            "c": VerificationResult(finding_id="c", verdict=Verdict.UNPROVEN, reason="?"),
+        },
+    }
+    outcome = outcome_from_state(state)  # type: ignore[arg-type]
+    assert set(outcome.verifications) == {"a", "b", "c"}
+    assert outcome.verification_counts == {
+        "confirmed": 1,
+        "refuted": 1,
+        "unproven": 1,
+    }
+
+    with caplog.at_level(logging.INFO, logger=worker_main.__name__):
+        logged = worker_main._log_outcome(state)  # type: ignore[arg-type]
+    assert logged.verification_counts == outcome.verification_counts
+    assert "L2 confirmed=1 refuted=1 unproven=1" in caplog.text
+
+
+def test_build_verifier_sin_binding_devuelve_none() -> None:
+    # 009 VF8: sin rol verifier el grafo recibe None (paso directo).
+    assert build_verifier(Settings()) is None
+
+
+def test_build_verifier_con_binding_construye_el_puerto(tmp_path: Path) -> None:
+    # 009 VF8: con binding independiente, el composition root arma un LlmVerifier.
+    from agent_review.adapters.llm_verifier import LlmVerifier
+
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        """\
+version: 1
+providers:
+  nan:
+    base_url: https://api.nan.builders/v1
+    api_key: ${LLM_API_KEY}
+models:
+  modelo-a: {provider: nan, kind: chat}
+  modelo-v: {provider: nan, kind: chat}
+bindings:
+  correctness: modelo-a
+  verifier: modelo-v
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        llm_reviewer_enabled=True,
+        models_config=str(config),
+        llm_api_key="sk-test",
+        verifier_max_tool_calls=3,
+        verifier_max_context_bytes=1000,
+    )
+    registry = build_registry(settings)
+    verifier = build_verifier(settings, registry=registry, vcs=FakeVcs())
+    assert isinstance(verifier, LlmVerifier)
+    assert verifier.name == "verifier"
+    assert verifier._limits.max_calls == 3
+    assert verifier._limits.max_bytes == 1000
+    assert verifier._open_reader is not None
+
+
+def _patch_build_runtime(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
+    """Parchea el módulo real del worker (no el `main` reexportado en `__init__`)."""
+    import sys
+
+    worker_main = sys.modules["agent_review.worker.main"]
+
+    def fake_build_graph(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+
+        class _Builder:
+            def compile(self, checkpointer=None):  # noqa: ANN001
+                del checkpointer
+                return "compiled"
+
+        return _Builder()
+
+    monkeypatch.setattr(worker_main, "build_graph", fake_build_graph)
+    monkeypatch.setattr(worker_main, "build_checkpointer", lambda *a, **k: object())
+    monkeypatch.setattr(worker_main, "build_vcs", lambda settings: FakeVcs())
+    monkeypatch.setattr(worker_main, "build_chat", lambda settings: None)
+    monkeypatch.setattr(worker_main, "build_progress", lambda settings: None)
+    monkeypatch.setattr(worker_main, "build_cancellation", lambda settings: None)
+    monkeypatch.setattr(worker_main, "validate_models", lambda registry: None)
+    monkeypatch.setattr(worker_main, "build_reviewers", lambda *a, **k: [])
+
+
+def test_build_runtime_pasa_verifier_none_sin_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 009 VF8: sin binding, build_graph recibe verifier=None.
+    captured: dict[str, object] = {}
+    _patch_build_runtime(monkeypatch, captured)
+    build_runtime(Settings(llm_reviewer_enabled=False, database_url=""))
+    assert captured.get("verifier") is None
+
+
+def test_build_runtime_pasa_el_verifier_construido(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 009 VF8: con binding, el puerto llega a build_graph ya construido.
+    from agent_review.adapters.llm_verifier import LlmVerifier
+
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        """\
+version: 1
+providers:
+  nan:
+    base_url: https://api.nan.builders/v1
+    api_key: ${LLM_API_KEY}
+models:
+  modelo-a: {provider: nan, kind: chat}
+  modelo-v: {provider: nan, kind: chat}
+bindings:
+  correctness: modelo-a
+  verifier: modelo-v
+""",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+    _patch_build_runtime(monkeypatch, captured)
+    settings = Settings(
+        llm_reviewer_enabled=True,
+        models_config=str(config),
+        llm_api_key="sk-test",
+        database_url="",
+    )
+    build_runtime(settings)
+    assert isinstance(captured.get("verifier"), LlmVerifier)
+
+
 def test_sin_models_config_se_usa_el_registro_implicito_de_llm() -> None:
     """D7 de la iniciativa 005: un `.env` con solo `LLM_*` no cambia de proveedor.
 
@@ -507,6 +655,28 @@ class _FailingGraph:
         del state
         self.calls += 1
         raise RuntimeError("twg caido")
+
+
+def test_with_base_sha_rellena_desde_el_vcs_si_falta() -> None:
+    # 008 CX1: el webhook puede no mandar base_sha; el worker lo completa una vez.
+    class _Vcs:
+        def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
+            return PullRequestInfo(
+                repo=repo,
+                pr_id=pr_id,
+                title="t",
+                source_branch="f",
+                destination_branch="main",
+                author="a",
+                head_sha="h",
+                base_sha="base123",
+            )
+
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="h")
+    filled = _with_base_sha(request, _Vcs())
+    assert filled.base_sha == "base123"
+    assert _with_base_sha(filled, _Vcs()).base_sha == "base123"
+    assert _with_base_sha(request, None).base_sha == ""
 
 
 def test_consume_reencola_con_intento_incremental_ante_excepcion() -> None:

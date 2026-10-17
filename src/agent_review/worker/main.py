@@ -12,9 +12,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
+from agent_review.adapters.context_factory import build_reader_factory
 from agent_review.adapters.github_vcs import GithubVcsAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
 from agent_review.adapters.llm_reviewer import LlmReviewer
+from agent_review.adapters.llm_verifier import LlmVerifier
 from agent_review.adapters.null_reviewer import NullReviewer
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
 from agent_review.adapters.tooling_source import FileToolingOutputSource
@@ -63,6 +65,7 @@ from agent_review.pending_store import PendingStore, RedisPendingStore
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
+from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.progress import clear as clear_progress
@@ -70,7 +73,14 @@ from agent_review.ports.reasoning import ReasoningSink
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
-from agent_review.profile import expected_tools, fix_recipes, load_profile, scope_classes
+from agent_review.ports.verifier import VerifierPort
+from agent_review.profile import (
+    context_denylist,
+    expected_tools,
+    fix_recipes,
+    load_profile,
+    scope_classes,
+)
 from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import (
     Settings,
@@ -418,6 +428,42 @@ def build_fixer(
     )
 
 
+def build_verifier(
+    settings: Settings,
+    *,
+    registry: ModelRegistry | None = None,
+    vcs: VcsPort | None = None,
+    budget: BudgetPort | None = None,
+) -> VerifierPort | None:
+    """Verificador adversarial L2 si el rol `verifier` tiene modelo (009 VF8).
+
+    Sin binding el nodo `verify` es paso directo. Con el, abre un lector de
+    contexto por review (`build_reader_factory`, 016) y comparte el presupuesto
+    de la review (no el del fix). Los topes del bucle salen de Settings (VF7).
+    """
+    registry = registry if registry is not None else build_registry(settings)
+    llm = registry.port_for("verifier")
+    if llm is None:
+        return None
+    vcs = vcs or build_vcs(settings)
+    denylist = context_denylist(load_profile(settings))
+
+    def open_reader(repo: str, head_sha: str, diff: str) -> ContextReaderPort:
+        return build_reader_factory(settings, vcs=vcs, diff=diff, denylist=denylist)(
+            repo, head_sha, ""
+        )
+
+    return LlmVerifier(
+        llm,
+        open_reader=open_reader,
+        limits=ContextLimits(
+            max_calls=settings.verifier_max_tool_calls,
+            max_bytes=settings.verifier_max_context_bytes,
+        ),
+        budget=budget,
+    )
+
+
 def build_delivery(settings: Settings) -> DeliveryFormatter:
     """Formato de entrega del parche verificado (E6). `diff` hasta que R1 confirme
     que Bitbucket aplica `suggestion`."""
@@ -435,6 +481,7 @@ def build_runtime(
     policy: PolicyEngine | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     fixer: FixerPort | None = None,
+    verifier: VerifierPort | None = None,
     progress: ProgressPort | None = None,
 ) -> Any:
     validate_tooling_template(settings)
@@ -445,7 +492,7 @@ def build_runtime(
     registry = build_registry(settings)
     # Un unico contador de review para todo el fan-out (017 B1/B10); su tope viaja
     # al grafo para poder derivar el saldo del `ReviewOutcome` sin consultar al
-    # puerto durante el `replay`.
+    # puerto durante el `replay`. L2 (009) comparte el mismo contador.
     review_budget = build_budget(settings)
     if reviewers is None:
         reviewers = build_reviewers(settings, registry=registry, budget=review_budget)
@@ -461,12 +508,15 @@ def build_runtime(
     # asi que el composition root le pasa el chequeo ya construido. Sin Redis,
     # `build_cancellation` es `None` y la frontera no consulta nada (W2).
     cancellation = build_cancellation(settings)
+    if verifier is None:
+        verifier = build_verifier(settings, registry=registry, vcs=vcs, budget=review_budget)
     graph = build_graph(
         vcs=vcs,
         reviewers=reviewers,
         policy=policy,
         chat=chat,
         fixer=fixer if fixer is not None else build_fixer(settings, registry=registry),
+        verifier=verifier,
         delivery=build_delivery(settings),
         fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
@@ -476,6 +526,8 @@ def build_runtime(
         budget_total=settings.llm_budget_tokens_per_pr,
         progress=progress,
         cancel=cancellation.is_cancelled if cancellation is not None else None,
+        verifier_max_findings=settings.verifier_max_findings,
+        verifier_require_verified_for=settings.verifier_require_verified_for_list,
     )
     return graph.compile(checkpointer=saver)
 
@@ -1001,6 +1053,24 @@ def _pr_url(vcs: VcsPort | None, request: ReviewRequest) -> str | None:
         return None
 
 
+def _with_base_sha(request: ReviewRequest, vcs: VcsPort | None) -> ReviewRequest:
+    """Rellena `base_sha` desde el VCS si el webhook no lo mando (008 CX1).
+
+    Best-effort: un fallo del VCS deja el request igual; L0 degradara a calcular
+    `pre_existing` solo con el lado viejo del diff.
+    """
+    if request.base_sha or vcs is None:
+        return request
+    try:
+        base_sha = vcs.get_pull_request(request.repo, request.pr_id).base_sha
+    except Exception:
+        logger.exception("No se pudo resolver base_sha del PR %s#%s", request.repo, request.pr_id)
+        return request
+    if not base_sha:
+        return request
+    return request.model_copy(update={"base_sha": base_sha})
+
+
 def _with_code_links(approval: ApprovalRequest, *, vcs: VcsPort | None) -> ApprovalRequest:
     """Anade a cada pendiente el permalink a su trozo de codigo.
 
@@ -1105,10 +1175,25 @@ def sweep_fix_expired(
 
 def _log_outcome(result: ReviewState) -> ReviewOutcome:
     outcome = outcome_from_state(result)
+    counts = outcome.verification_counts
+    verification_note = (
+        f"; L2 confirmed={counts['confirmed']} refuted={counts['refuted']} "
+        f"unproven={counts['unproven']}"
+        if outcome.verifications
+        else ""
+    )
     if outcome.paused:
-        logger.info("Review PAUSADA %s; esperando decision humana", outcome.request.review_key)
+        logger.info(
+            "Review PAUSADA %s; esperando decision humana%s",
+            outcome.request.review_key,
+            verification_note,
+        )
     elif outcome.complete:
-        logger.info("Review completada %s", outcome.request.review_key)
+        logger.info(
+            "Review completada %s%s",
+            outcome.request.review_key,
+            verification_note,
+        )
     else:
         # No se hizo el analisis declarado: no es una review completada. No se
         # reencola: la ingesta diferida ya espero al artefacto (barrera/TTL), asi
@@ -1123,7 +1208,7 @@ def _log_outcome(result: ReviewState) -> ReviewOutcome:
             else []
         )
         logger.warning(
-            "Review INCOMPLETA %s; sin cobertura de: %s",
+            "Review INCOMPLETA %s; sin cobertura de: %s%s",
             outcome.request.review_key,
             ", ".join(
                 [
@@ -1131,6 +1216,7 @@ def _log_outcome(result: ReviewState) -> ReviewOutcome:
                     *unread,
                 ]
             ),
+            verification_note,
         )
     return outcome
 
@@ -1191,6 +1277,7 @@ def _consume(
     if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
         _on_cancelled(graph, request, paused=paused)
         return
+    request = _with_base_sha(request, vcs)
     try:
         outcome = process_request(
             graph,

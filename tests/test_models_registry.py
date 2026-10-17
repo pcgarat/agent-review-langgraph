@@ -46,6 +46,16 @@ def test_cada_rol_resuelve_su_modelo(tmp_path: Path) -> None:
     # El rol sin binding no tiene puerto (la persona no se construye).
     assert registry.model_for("arch") is None
     assert registry.port_for("arch") is None
+    assert registry.model_for("verifier") is None
+
+
+def test_verifier_independiente_resuelve_su_puerto(tmp_path: Path) -> None:
+    # 009 VF2: binding verifier con modelo distinto de los revisores.
+    text = _CONFIG + "  verifier: modelo-c\n"
+    registry = ModelRegistry.from_settings(_settings(tmp_path, text))
+    assert registry.model_for("verifier") == "modelo-c"
+    assert registry.port_for("verifier") is not None
+    assert registry.port_for("verifier") is not registry.port_for("correctness")
 
 
 def test_roles_con_el_mismo_modelo_comparten_puerto(tmp_path: Path) -> None:

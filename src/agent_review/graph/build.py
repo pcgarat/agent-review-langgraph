@@ -4,8 +4,9 @@ import base64
 import hashlib
 import logging
 import operator
+import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +14,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Send, interrupt
 from pydantic import ValidationError
 
+from agent_review.adapters.tool_loop import LoopResult
 from agent_review.domain.models import (
     PENDING_ACTIONS,
     ApprovalRequest,
@@ -32,6 +34,9 @@ from agent_review.domain.models import (
     Severity,
     SkipReason,
     ToolingSourceStatus,
+    Verdict,
+    Verification,
+    VerificationResult,
 )
 from agent_review.errors import is_transient
 from agent_review.fix.delivery import DeliveryFormatter
@@ -43,6 +48,7 @@ from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.vcs import ReviewMarker, VcsPort
+from agent_review.ports.verifier import VerifierPort
 from agent_review.scope import (
     merge_file_classes,
     merge_ignore_patterns,
@@ -107,6 +113,13 @@ class ReviewState(TypedDict, total=False):
     coverage: Annotated[ReviewCoverage | None, _merge_coverage]
     # Resultado del merge: sin reducer, se sustituye (no se acumula).
     merged: list[Finding]
+    # Ids de hallazgos ya grounded tras el merge (009 V7): alguna persona del
+    # grupo fusionado declaro `grounded=True` (p. ej. ToolingReviewer). Sin
+    # reducer: el merge lo escribe entero. L2 no los vuelve a verificar.
+    grounded_findings: list[str]
+    # Veredictos del verificador adversarial (009 §5.6). Sin reducer: se
+    # sustituye. El nodo lee lo ya verificado como `existing` (idempotencia V9).
+    verifications: dict[str, VerificationResult]
     # Juicio de la politica sobre cada hallazgo mergeado. Sin reducer.
     # `pending_approvals` no vive aqui: es derivado de decisions.
     decisions: list[Decision]
@@ -334,7 +347,12 @@ def _merge_key(finding: Finding) -> tuple[str, int, str]:
 _CROSS_PERSONA_NEAR_LINES = 5
 
 
-def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Finding]:
+def _merge_findings(
+    findings: list[Finding],
+    sources: dict[str, str],
+    *,
+    grounded_personas: frozenset[str] = frozenset(),
+) -> tuple[list[Finding], list[str]]:
     """Deduplica y conserva la evidencia mas rica de cada grupo.
 
     Dos reglas (B5; docs/adr/0014-criterio-de-merge-entre-personas.md):
@@ -347,6 +365,10 @@ def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Fi
 
     El resultado no depende del orden del fan-out: se agrupa en un orden canonico
     (linea, persona, id) y solo se compara dentro de cada (fichero, titulo).
+
+    Devuelve `(merged, grounded_ids)`. Un grupo es grounded si participa **alguna**
+    persona de `grounded_personas` (009 §5.1): el representante puede ser la copia
+    del LLM y aun asi el id queda stamped, para que L2 no lo vuelva a pagar.
     """
 
     def source_of(finding: Finding) -> str:
@@ -384,13 +406,162 @@ def _merge_findings(findings: list[Finding], sources: dict[str, str]) -> list[Fi
     # Se conserva el orden de llegada para no reordenar la publicacion.
     position = {id(f): i for i, f in enumerate(findings)}
     groups.sort(key=lambda group: min(position[id(f)] for f in group))
-    # Representante: la evidencia mas rica; a igualdad, el primero en orden canonico.
-    return [max(group, key=lambda f: len(f.evidence)) for group in groups]
+    merged: list[Finding] = []
+    grounded_ids: list[str] = []
+    for group in groups:
+        # Representante: la evidencia mas rica; a igualdad, el primero en orden
+        # canonico (el de `max` estable).
+        representative = max(group, key=lambda f: len(f.evidence))
+        merged.append(representative)
+        if any(source_of(member) in grounded_personas for member in group):
+            grounded_ids.append(_finding_id(representative))
+    return merged, grounded_ids
 
 
 def _merged(state: ReviewState) -> list[Finding]:
     """Hallazgos tras el merge; si el nodo aun no corrio, cae a los crudos."""
     return state.get("merged") or state.get("findings", [])
+
+
+# Escenario de tres partes: entrada/estado → file:line → resultado (007 D1 / 009 §5.5).
+_SCENARIO_ARROW = re.compile(r"\s*(?:→|->)\s*")
+_SCENARIO_FILE_LINE = re.compile(r"[^:\s]+:\d+")
+
+
+def _has_three_part_scenario(scenario: str | None) -> bool:
+    """¿El escenario traza entrada/estado → file:line → resultado?"""
+    text = (scenario or "").strip()
+    if not text:
+        return False
+    parts = [part.strip() for part in _SCENARIO_ARROW.split(text) if part.strip()]
+    if len(parts) < 3:
+        return False
+    return bool(_SCENARIO_FILE_LINE.search(parts[1]))
+
+
+def _citations_served(evidence: list[str], files_read: list[str]) -> bool:
+    """¿Toda la evidencia cita un fichero que el verificador sirvio? (009 V4)."""
+    if not evidence:
+        return False
+    served = LoopResult(served={path: "head" for path in files_read})
+    return all(served.cite_served(item) for item in evidence)
+
+
+def _adjudicate(result: VerificationResult) -> VerificationResult:
+    """Comprobaciones mecanicas del nodo: cita servida y escenario (009 §5.5).
+
+    No depende de la buena voluntad del modelo. Un fallo cae a `UNPROVEN`, nunca
+    a `REFUTED` ni a un `CONFIRMED` sin prueba.
+    """
+    if result.verdict is Verdict.UNPROVEN:
+        return result
+
+    if not _citations_served(result.evidence, result.files_read):
+        note = "cita no servida o ausente"
+        reason = f"{result.reason}; {note}" if result.reason else note
+        return result.model_copy(update={"verdict": Verdict.UNPROVEN, "reason": reason})
+
+    if result.verdict is Verdict.CONFIRMED and not _has_three_part_scenario(
+        result.failure_scenario
+    ):
+        note = "CONFIRMED sin failure_scenario de tres partes"
+        reason = f"{result.reason}; {note}" if result.reason else note
+        return result.model_copy(
+            update={
+                "verdict": Verdict.UNPROVEN,
+                "reason": reason,
+                "failure_scenario": None,
+            }
+        )
+    return result
+
+
+def _apply_verdict(finding: Finding, result: VerificationResult) -> Finding:
+    """Estampa el veredicto adjudicado en el Finding sin tocar `severity` (V5, V12).
+
+    `model_copy` solo escribe los campos del mapeo 007: la severidad no entra en
+    `update`, asi que L2 no puede cambiarla (el gate de 011 es el dueño).
+    """
+    if result.verdict is Verdict.CONFIRMED:
+        return finding.model_copy(
+            update={
+                "verification": Verification.VERIFIED_GROUNDED,
+                "verification_evidence": list(result.evidence),
+                "failure_scenario": result.failure_scenario,
+            }
+        )
+    if result.verdict is Verdict.REFUTED:
+        return finding.model_copy(
+            update={
+                "verification": Verification.REFUTED,
+                "verification_evidence": list(result.evidence),
+            }
+        )
+    return finding.model_copy(
+        update={
+            "verification": Verification.UNVERIFIED,
+            "verification_evidence": [],
+        }
+    )
+
+
+# Respaldo del umbral L2 mientras 011 no declare `severity_gate` (009 Q10 / V10).
+_DEFAULT_REQUIRE_VERIFIED_FOR = frozenset({Severity.P0, Severity.P1})
+
+
+def _parse_severities(raw: Sequence[str | Severity]) -> frozenset[Severity]:
+    """Convierte etiquetas `P0`…`P3` (o `Severity`) en un conjunto; ignora vacíos."""
+    out: set[Severity] = set()
+    for item in raw:
+        if isinstance(item, Severity):
+            out.add(item)
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        out.add(Severity(text))
+    return frozenset(out)
+
+
+def _require_verified_for(
+    policy: PolicyEngine,
+    fallback: Sequence[str | Severity] | None,
+) -> frozenset[Severity]:
+    """Umbral de candidatos L2: clave del gate si existe; si no, el ajuste (V10)."""
+    gate = policy.severity_gate
+    if gate and "require_verified_for" in gate:
+        declared = gate.get("require_verified_for") or []
+        if isinstance(declared, (str, Severity)):
+            declared = [declared]
+        parsed = _parse_severities(list(declared))
+        if parsed:
+            return parsed
+    if fallback is not None:
+        parsed = _parse_severities(fallback)
+        if parsed:
+            return parsed
+    return _DEFAULT_REQUIRE_VERIFIED_FOR
+
+
+def _verification_candidates(
+    findings: Sequence[Finding],
+    *,
+    grounded: set[str],
+    existing: Mapping[str, VerificationResult],
+    threshold: frozenset[Severity],
+    max_findings: int,
+) -> set[str]:
+    """Ids a verificar: umbral ∧ no grounded ∧ sin veredicto, tope por gravedad (V11)."""
+    eligible = [
+        finding
+        for finding in findings
+        if _finding_id(finding) not in grounded
+        and _finding_id(finding) not in existing
+        and finding.severity in threshold
+    ]
+    eligible.sort(key=lambda finding: _SEVERITY_ORDER[finding.severity])
+    limit = max(0, max_findings)
+    return {_finding_id(finding) for finding in eligible[:limit]}
 
 
 def _quote_for_anchor(finding: Finding) -> str:
@@ -428,6 +599,7 @@ def build_graph(
     policy: PolicyEngine,
     chat: ChatPort | None = None,
     fixer: FixerPort | None = None,
+    verifier: VerifierPort | None = None,
     delivery: DeliveryFormatter | None = None,
     fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
@@ -437,16 +609,26 @@ def build_graph(
     budget_total: int | None = None,
     progress: ProgressPort | None = None,
     cancel: CancelCheck | None = None,
+    verifier_max_findings: int = 5,
+    verifier_require_verified_for: Sequence[str] | None = None,
 ) -> StateGraph[ReviewState]:
     """Construye el grafo de review (Fase 3-E7).
 
-    scope -> fan-out -> merge -> policy -> hitl -> fix_dispatch -> publish ->
-    fix_wait -> publish_fix -> notify_fix -> notify. El grafo **no** recibe un
-    `SandboxPort`: la verificacion vive en el worker de fixes, detras del
-    `interrupt` de `fix_wait`; la ruta de la review nunca espera al sandbox.
-    `fix_dispatch` es un no-op sin hallazgos aprobados con accion `fix_*`.
-    `verification_enabled=False` (sin sandbox ni runner) marca los candidatos
-    `NOT_VERIFIABLE` en `fix_dispatch`, de modo que `fix_wait` no llega a pausar.
+    scope -> fan-out -> merge -> verify -> policy -> hitl -> fix_dispatch ->
+    publish -> fix_wait -> publish_fix -> notify_fix -> notify. El grafo **no**
+    recibe un `SandboxPort`: la verificacion ejecutable vive en el worker de
+    fixes, detras del `interrupt` de `fix_wait`; la ruta de la review nunca
+    espera al sandbox. `fix_dispatch` es un no-op sin hallazgos aprobados con
+    accion `fix_*`. `verification_enabled=False` (sin sandbox ni runner) marca
+    los candidatos `NOT_VERIFIABLE` en `fix_dispatch`, de modo que `fix_wait` no
+    llega a pausar.
+
+    `verifier` (009): segundo juicio adversarial entre `merge` y `policy`. Sin
+    puerto el nodo es un paso directo (todo queda `unverified`, como hoy).
+    Con puerto, solo verifica candidatos del umbral (no grounded, severidad en
+    `require_verified_for`, tope `verifier_max_findings`); el umbral sale de
+    `severity_gate` de la política si existe, si no de
+    `verifier_require_verified_for` (por defecto P0/P1).
 
     `progress` (019 W10) es el puerto de progreso del worker: cada nodo se registra
     envuelto por `wrapper.node_wrapper` (el *seam* único, D2), que anota su frontera
@@ -465,6 +647,11 @@ def build_graph(
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
     recipes = fix_recipes or []
+    # Personas grounded (009 V7): el merge estampa sus hallazgos para que L2 no
+    # los vuelva a verificar. Se resuelve una vez al construir el grafo.
+    grounded_personas = frozenset(
+        reviewer.name for reviewer in reviewers if getattr(reviewer, "grounded", False)
+    )
     # Clases de fichero del perfil sumadas a las de por defecto (012 C5); se
     # resuelven una vez al construir el grafo, no en cada review.
     classes = merge_file_classes(scope_classes)
@@ -551,12 +738,81 @@ def build_graph(
         return update
 
     def merge(state: ReviewState) -> ReviewState:
-        """Deduplica (ver `_merge_findings`) y conserva la evidencia mas rica."""
-        merged = _merge_findings(state.get("findings", []), state.get("finding_sources", {}))
+        """Deduplica (ver `_merge_findings`) y estampa los grounded (009 V7)."""
+        merged, grounded_ids = _merge_findings(
+            state.get("findings", []),
+            state.get("finding_sources", {}),
+            grounded_personas=grounded_personas,
+        )
         deduped = len(state.get("findings", [])) - len(merged)
         if deduped:
             logger.info("Merge: %d hallazgos duplicados eliminados", deduped)
-        return {"merged": merged}
+        return {"merged": merged, "grounded_findings": grounded_ids}
+
+    def verify(state: ReviewState) -> ReviewState:
+        """Segundo juicio adversarial (009). Sin puerto: paso directo.
+
+        Un hallazgo refutado **sigue** en `merged` (V6), con su marca. Lee
+        `verifications` como `existing` para no re-verificar en un reintento (V9).
+        Adjudica cita servida y escenario (§5.5) y estampa el mapeo 007 en el
+        `Finding` sin tocar `severity`. Solo llama para candidatos del umbral
+        (V7/V11): fuera de él, grounded o más allá del tope quedan `unverified`
+        sin gastar una llamada.
+        """
+        existing = dict(state.get("verifications") or {})
+        if verifier is None:
+            return {"verifications": existing}
+
+        request = ReviewRequest.model_validate(state["request"])
+        grounded = set(state.get("grounded_findings") or [])
+        diff = state.get("diff") or ""
+        results = dict(existing)
+        merged = _merged(state)
+        threshold = _require_verified_for(policy, verifier_require_verified_for)
+        candidates = _verification_candidates(
+            merged,
+            grounded=grounded,
+            existing=results,
+            threshold=threshold,
+            max_findings=verifier_max_findings,
+        )
+        stamped: list[Finding] = []
+        for finding in merged:
+            finding_id = _finding_id(finding)
+            if finding_id in grounded:
+                stamped.append(finding)
+                continue
+            if finding_id in results:
+                stamped.append(_apply_verdict(finding, results[finding_id]))
+                continue
+            if finding_id not in candidates:
+                # Fuera del umbral, tope o ya resuelto: unverified sin llamada (V7/V11).
+                stamped.append(finding)
+                continue
+            try:
+                raw = verifier.verify(
+                    finding,
+                    repo=request.repo,
+                    head_sha=request.head_sha,
+                    diff=diff,
+                    review_key=request.review_key,
+                )
+            except Exception as exc:
+                # Fallo permanente del modelo: unverified, nunca refuted (V5).
+                if is_transient(exc):
+                    raise
+                logger.exception(
+                    "Verificador fallo en %s; el hallazgo queda unverified", finding_id
+                )
+                raw = VerificationResult(
+                    finding_id=finding_id,
+                    verdict=Verdict.UNPROVEN,
+                    reason=f"verificador fallo: {exc}",
+                )
+            result = _adjudicate(raw)
+            results[finding_id] = result
+            stamped.append(_apply_verdict(finding, result))
+        return {"verifications": results, "merged": stamped}
 
     def apply_policy(state: ReviewState) -> ReviewState:
         decisions: list[Decision] = []
@@ -886,11 +1142,13 @@ def build_graph(
     # Reintento de nodo (RetryPolicy) solo en los nodos que llaman a fuera: un
     # fallo transitorio de twg/LLM/Teams se recupera sin sacar el job de la cola.
     # `merge` y `policy` son deterministas y no lo llevan; `hitl` tampoco (un
-    # reintento re-ejecutaria `interrupt` y duplicaria la pausa). Cada funcion pasa
-    # por `node` (el *seam* de 019): la firma y la `RetryPolicy` se preservan.
+    # reintento re-ejecutaria `interrupt` y duplicaria la pausa). `verify` si
+    # (llamada al modelo, 009 V9). Cada funcion pasa por `node` (el *seam* de
+    # 019): la firma y la `RetryPolicy` se preservan.
     graph.add_node("scope", node("scope", scope), retry_policy=retry)
     graph.add_node("persona", node("persona", persona), retry_policy=retry)
     graph.add_node("merge", node("merge", merge))
+    graph.add_node("verify", node("verify", verify), retry_policy=retry)
     graph.add_node("policy", node("policy", apply_policy))
     graph.add_node("hitl", node("hitl", hitl))
     graph.add_node("fix_dispatch", node("fix_dispatch", fix_dispatch), retry_policy=retry)
@@ -903,7 +1161,8 @@ def build_graph(
     graph.add_edge(START, "scope")
     graph.add_conditional_edges("scope", dispatch, ["persona"])
     graph.add_edge("persona", "merge")
-    graph.add_edge("merge", "policy")
+    graph.add_edge("merge", "verify")
+    graph.add_edge("verify", "policy")
     graph.add_edge("policy", "hitl")
     graph.add_edge("hitl", "fix_dispatch")
     # `fix_dispatch` despacha y `publish` publica los hallazgos; despues la review
@@ -1034,6 +1293,10 @@ def _render_inline(
     blocks = [f"**[{finding.severity.value}] {header}**"]
     if why and not title_is_truncation:
         blocks.append(why)
+    # 009 V12: el escenario del verificador (o el del proponente si L2 no corro)
+    # viaja al inline; sin el, la direccion del fallo no se ve en el PR.
+    if finding.failure_scenario:
+        blocks.append(f"**Escenario:** {finding.failure_scenario.strip()}")
     blocks.append(f"_Accion: {decision.action.value}_ · confianza {finding.confidence}")
     decision_line = _decision_line(human, decision)
     if decision_line:
@@ -1364,6 +1627,7 @@ def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOut
         tokens_spent=dict(state.get("tokens_spent", {})),
         tokens_remaining=_remaining(state),
         coverage=state.get("coverage"),
+        verifications=dict(state.get("verifications") or {}),
     )
 
 

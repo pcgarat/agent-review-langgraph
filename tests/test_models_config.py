@@ -140,3 +140,23 @@ def test_registro_implicito_sin_modelo_es_vacio() -> None:
     config = implicit_config(Settings(models_config="", llm_model=""))
     assert config.bindings == {}
     assert config.models == {}
+
+
+def test_rol_verifier_con_modelo_distinto_valida(tmp_path: Path) -> None:
+    # 009 VF2: sin binding verifier no es error; con modelo distinto de los
+    # revisores, el registro acepta.
+    text = _VALID + "  verifier: modelo-b\n"
+    config = load_models_config(_write(tmp_path, text))
+    assert config.bindings["verifier"] == "modelo-b"
+
+
+def test_sin_binding_verifier_el_registro_valida(tmp_path: Path) -> None:
+    config = load_models_config(_write(tmp_path, _VALID))
+    assert "verifier" not in config.bindings
+
+
+def test_verifier_con_el_mismo_modelo_que_un_revisor_falla(tmp_path: Path) -> None:
+    # 009 V2: mismo modelo que correctness = sello de goma; fail-fast al cargar.
+    text = _VALID + "  verifier: modelo-a\n"
+    with pytest.raises(ModelsConfigError, match="sello de goma"):
+        load_models_config(_write(tmp_path, text))

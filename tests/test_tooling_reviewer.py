@@ -134,6 +134,13 @@ def _phpstan(line: int) -> str:
     return json.dumps({"files": {"src/A.php": {"messages": [message]}}})
 
 
+def test_persona_estatica_es_grounded() -> None:
+    # 009 V7: L2 no verifica lo que ya nacio de una herramienta.
+    reviewer = ToolingReviewer(phpstan_json="")
+    assert reviewer.grounded is True
+    assert getattr(reviewer, "grounded", False) is True
+
+
 def test_persona_emite_verified_static_con_evidencia() -> None:
     from agent_review.domain.models import ContextScope, Verification
 

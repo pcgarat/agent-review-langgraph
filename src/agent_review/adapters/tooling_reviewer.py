@@ -32,7 +32,12 @@ class ToolingReviewer:
     No ejecuta las herramientas: pide su salida al `ToolingOutputSource` inyectado
     (artefacto de CI en Fase 1, sandbox en Fase 3). Filtra a lo que el PR cambio
     y ancla a lineas del diff.
+
+    `grounded=True`: el hallazgo nace de una herramienta que ya corrio
+    (`verified_static`); L2 no lo vuelve a verificar (009 V7).
     """
+
+    grounded = True
 
     def __init__(
         self,

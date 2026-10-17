@@ -55,6 +55,36 @@ class Verification(StrEnum):
     REFUTED = "refuted"
 
 
+class Verdict(StrEnum):
+    """Veredicto del verificador adversarial (009 §5.2).
+
+    Se mapea al contrato de 007 (`Finding.verification`) en el nodo `verify`:
+    `CONFIRMED` → `verified_grounded`, `REFUTED` → `refuted`, `UNPROVEN` →
+    `unverified`. L2 nunca toca la severidad.
+    """
+
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+    UNPROVEN = "unproven"
+
+
+class VerificationResult(BaseModel):
+    """Resultado de verificar un hallazgo (009 §5.2).
+
+    Distinto del enum `Verification` de 007: este es el *output* del puerto; aquel
+    es el campo del `Finding`. El nodo adjudica (cita servida, escenario) y escribe
+    el mapeo sobre el hallazgo. Vive en el dominio para viajar en `ReviewOutcome`
+    sin ciclo puerto↔modelo.
+    """
+
+    finding_id: str
+    verdict: Verdict
+    failure_scenario: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    files_read: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 class ContextScope(StrEnum):
     """Lo que sostiene la afirmacion: solo el diff o algo que el revisor no ve (007 D5)."""
 
@@ -422,6 +452,10 @@ class ReviewRequest(BaseModel):
     repo: str
     pr_id: int
     head_sha: str
+    # SHA de la base del PR (008 D10). Lo puebla el webhook si lo manda, o el
+    # worker desde `VcsPort.get_pull_request` si llega vacío. Vacío = L0 calcula
+    # `pre_existing` solo con el lado viejo del diff.
+    base_sha: str = ""
     personas: list[str] = Field(default_factory=list)
     # Identifica la ejecucion del CI que produjo los artefactos. Un pipeline
     # nuevo sobre el mismo commit es una review nueva; sin el, se cae a la clave
@@ -526,11 +560,22 @@ class ReviewOutcome(BaseModel):
     tokens_remaining: int | None = None
     # 012: que se reviso y que no. `None` en hilos de antes de 012.
     coverage: ReviewCoverage | None = None
+    # 009: veredictos L2 por finding_id. El eval cuenta confirmed/refuted/unproven
+    # sin releer el estado del grafo (§5.6).
+    verifications: dict[str, VerificationResult] = Field(default_factory=dict)
 
     @property
     def tokens_total(self) -> int:
         """Gasto confirmado de toda la review, sumando a todas las personas."""
         return sum(self.tokens_spent.values())
+
+    @property
+    def verification_counts(self) -> dict[str, int]:
+        """Recuento `confirmed`/`refuted`/`unproven` para el log y el eval (009)."""
+        counts = {v.value: 0 for v in Verdict}
+        for result in self.verifications.values():
+            counts[result.verdict.value] = counts.get(result.verdict.value, 0) + 1
+        return counts
 
     @property
     def complete(self) -> bool:
