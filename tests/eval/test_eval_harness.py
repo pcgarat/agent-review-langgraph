@@ -10,10 +10,9 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
+import harness
 import pytest
 import yaml
-
-import harness
 from harness import (
     Case,
     CaseVcs,

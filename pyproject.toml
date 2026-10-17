@@ -47,6 +47,10 @@ packages = ["src/agent_review"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Los fixtures del gold set son copias literales del repo a un sha (014 Q4): se
+# versionan para el replay y no son codigo de este repo, asi que no se lintean ni
+# se formatean. Tocarlos cambiaria los bytes que el caso sirve.
+extend-exclude = ["tests/eval/pr_3/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
