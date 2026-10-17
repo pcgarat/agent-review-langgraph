@@ -104,17 +104,26 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 4 — Histórico (checkpoint C4)
 
-- [ ] **RZ10** `reviews:history` (R9)
+- [x] **RZ10** `reviews:history` (R9)
   - El worker escribe el resumen al cerrar cada review (`_log_outcome`): `review_key`,
     repo, PR, `head_sha`, completa/parcial/incompleta, hallazgos, tokens y si hay
     razonamiento. Recorte por fecha en cada escritura y en el barrido de
     `prune_completed_threads`.
   - Verifica: `tests/test_worker.py`.
 
-- [ ] **RZ11** Página «Histórico» del panel (§5.5)
+- [x] **RZ11** Página «Histórico» del panel (§5.5)
   - `GET /api/history` y la vista: más reciente primero, filtro por repo y PR, enlace
     al detalle de cada review.
   - Verifica: `tests/test_web.py`, `tests/test_web_ui.py`.
+
+*Notas de implementación 2026-10-17 (bloque 4):*
+
+- El resumen (`domain/history.py`) sale del `ReviewOutcome`; el almacén
+  (`history_store.py`) usa `review_key` como miembro, así que una reentrega actualiza
+  la entrada en lugar de duplicarla. Lo escribe `_consume` cuando la review no queda
+  pausada (incluidas las que terminan al reanudar).
+- «Razonamiento: sí» significa que el sink estaba activo y la review gastó tokens; el
+  detalle dice si el *stream* sigue vivo (10 días).
 
 ## Bloque 5 — Medida y cierre (checkpoint C5)
 

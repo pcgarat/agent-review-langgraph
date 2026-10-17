@@ -15,9 +15,11 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from agent_review.domain.history import ReviewSummary
+from agent_review.history_store import ReviewHistory
 from agent_review.paused_store import RedisPausedStore
 from agent_review.ports.reasoning import ReasoningReader
 from agent_review.queue import RedisReviewQueue
@@ -32,6 +34,7 @@ from agent_review.web.commands import (
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
+from agent_review.web.ui import get_history, recent_reviews
 from agent_review.web.ui import router as ui_router
 from agent_review.worker.cancel import build_cancellation
 
@@ -231,6 +234,19 @@ def review_console(
             yield f"{line}\n"
 
     return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+@app.get("/api/history")
+def get_history_api(
+    session: Annotated[Session, Depends(require_session)],
+    history: Annotated[ReviewHistory | None, Depends(get_history)],
+    repo: Annotated[str | None, Query()] = None,
+    pr_id: Annotated[int | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[ReviewSummary]:
+    """Reviews terminadas, la más reciente primero (021 R9). Vacío sin Redis."""
+    del session
+    return recent_reviews(history, repo=repo, pr_id=pr_id, limit=limit)
 
 
 @app.get("/api/reviews/{review_key:path}/reasoning")

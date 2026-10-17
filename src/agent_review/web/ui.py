@@ -21,10 +21,12 @@ from datetime import datetime
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
+from agent_review.domain.history import ReviewSummary
 from agent_review.domain.trace import ReviewTrace
+from agent_review.history_store import ReviewHistory
 from agent_review.settings import get_settings
 from agent_review.web.auth import Session, require_session
 from agent_review.web.read_model import (
@@ -61,6 +63,47 @@ def get_read_model(request: Request) -> PanelReadModel:
         model = build_panel_read_model(get_settings())
         request.app.state.read_model = model
     return model
+
+
+def build_history_reader(settings: object) -> ReviewHistory | None:
+    """Histórico de reviews para el panel (021 R9), o `None` sin Redis."""
+    url = str(getattr(settings, "redis_url", "") or "").strip()
+    if not url:
+        return None
+    from agent_review.history_store import RedisReviewHistory
+
+    return RedisReviewHistory(
+        url=url, retention_days=float(getattr(settings, "checkpoint_retention_days", 30.0))
+    )
+
+
+def get_history(request: Request) -> ReviewHistory | None:
+    """Histórico del proceso, con el *seam* en `app.state.history` (tests)."""
+    if not hasattr(request.app.state, "history"):
+        request.app.state.history = build_history_reader(get_settings())
+    history: ReviewHistory | None = request.app.state.history
+    return history
+
+
+def recent_reviews(
+    history: ReviewHistory | None, *, repo: str | None, pr_id: int | None, limit: int
+) -> list[ReviewSummary]:
+    if history is None:
+        return []
+    return history.recent(limit=limit, repo=repo or None, pr_id=pr_id)
+
+
+@router.get("/history", response_class=HTMLResponse)
+def history_page(
+    session: Annotated[Session, Depends(require_session)],
+    history: Annotated[ReviewHistory | None, Depends(get_history)],
+    repo: Annotated[str | None, Query()] = None,
+    pr_id: Annotated[int | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> HTMLResponse:
+    """Histórico de reviews terminadas (021 R9, §5.5)."""
+    items = recent_reviews(history, repo=repo, pr_id=pr_id, limit=limit)
+    return HTMLResponse(_history_page(items, session, repo=repo, pr_id=pr_id))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -103,10 +146,66 @@ def _global_page(state: PanelState, session: Session) -> str:
     return _page(
         title="Panel de operación",
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
-        body=body,
+        body='<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a></p>' + body,
         session=session,
         script=_COMMAND_SCRIPT,
     )
+
+
+def _history_page(
+    items: list[ReviewSummary], session: Session, *, repo: str | None, pr_id: int | None
+) -> str:
+    rows = [
+        "<tr>"
+        f"<td>{_fmt_dt(item.finished_at)}</td>"
+        f"<td>{_review_link(item.review_key)}</td>"
+        f"<td>{_esc(item.repo)}#{_esc(item.pr_id)} <code>{_esc(item.head_sha[:8])}</code></td>"
+        f'<td><span class="end end-{_esc(item.end.value)}">{_esc(item.end.value)}</span></td>'
+        f"<td>{_esc(item.findings)} {_severities(item.by_severity)}</td>"
+        f"<td>{_esc(item.files_reviewed)} / {_esc(item.files_skipped)}</td>"
+        f"<td>{_esc(item.tokens)}</td>"
+        f"<td>{'sí' if item.reasoning else '—'}</td>"
+        "</tr>"
+        for item in items
+    ]
+    form = (
+        '<form class="filters" method="get" action="/history">'
+        f'<label>Repo <input name="repo" value="{_esc(repo or "")}"></label> '
+        f'<label>PR <input name="pr_id" type="number" value="{_esc(pr_id or "")}"></label> '
+        '<button class="cmd" type="submit">Filtrar</button> <a href="/history">Quitar</a>'
+        "</form>"
+    )
+    table = _table(
+        [
+            "Terminada",
+            "Review",
+            "PR",
+            "Resultado",
+            "Hallazgos",
+            "Revisados / sin revisar",
+            "Tokens",
+            "Razonamiento",
+        ],
+        rows,
+    )
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
+        + form
+        + _section("Reviews terminadas", table)
+    )
+    return _page(
+        title="Histórico de reviews",
+        meta=f"{len(items)} reviews, la más reciente primero",
+        body=body,
+        session=session,
+        script="",
+    )
+
+
+def _severities(by_severity: dict[str, int]) -> str:
+    if not by_severity:
+        return ""
+    return "(" + ", ".join(f"{_esc(k)}: {_esc(v)}" for k, v in by_severity.items()) + ")"
 
 
 def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session) -> str:
@@ -419,6 +518,10 @@ button.cmd { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line)
   border-radius: .35rem; cursor: pointer; }
 button.cmd:disabled { opacity: .5; cursor: default; }
 .error { color: var(--bad); }
+.filters { display: flex; gap: .75rem; align-items: center; margin: 1rem 0 0; }
+.filters input { font: inherit; padding: .15rem .35rem; }
+.end { padding: 0 .4rem; border-radius: .3rem; border: 1px solid var(--line); }
+.end-parcial, .end-incompleta { color: var(--bad); }
 #reasoning details { margin: .5rem 0; border: 1px solid var(--line); border-radius: .35rem;
   padding: .25rem .6rem; }
 #reasoning summary { cursor: pointer; }

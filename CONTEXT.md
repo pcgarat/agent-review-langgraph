@@ -80,6 +80,8 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Clase de fichero** (`FileClass`) | `config`, `code`, `test` o `docs`, por *globs* (`scope.classify`, ampliable con `scope.classes` del perfil). Decide la prioridad de revisión y si un fichero sin leer hace parcial la review. |
 | **Cobertura** (`ReviewCoverage`) | Qué ficheros del PR se revisaron y cuáles no, con su motivo: `ignored`, `too_large`, `budget` o `failed`. Solo cuenta lo **declarado**. |
 | **Review parcial** | Quedó código o configuración sin leer (nunca por ser ruido ignorado). Se publica con cabecera y marca `:partial`, aunque no haya hallazgos; es informativa, no cambia ninguna acción. Distinta de la *review incompleta*, que es de las fuentes estáticas. |
+| **Razonamiento** | Lo que el modelo piensa antes de responder (`reasoning_content`). Los revisores razonan siempre ([021](docs/iniciativas/021-razonamiento-visible/spec.md)); se ve en vivo en el panel, por persona y lote, y se conserva 10 días. Es material de operación: no se publica en el PR ni entra en el estado del grafo. |
+| **Histórico de reviews** | La lista de reviews terminadas del panel, con su resultado y su coste; enlaza al detalle de cada una. Vive lo mismo que los checkpoints (30 días). |
 
 ---
 

@@ -269,3 +269,76 @@ def test_el_texto_del_modelo_nunca_se_inserta_como_html(panel: Panel) -> None:
     script = script[: script.index("</script>")]
     assert "innerHTML" not in script
     assert "textContent += ev.text" in script
+
+
+# --- Histórico (021 RZ11) ---
+
+
+def _history(*summaries):
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    for summary in summaries:
+        history.record(summary)
+    return history
+
+
+def _summary(key: str, *, repo: str = "cqm/emotivoo-v2", pr_id: int = 42, hours_ago: int = 0, **kw):
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+
+    base = {
+        "review_key": key,
+        "repo": repo,
+        "pr_id": pr_id,
+        "head_sha": "abcdef123456",
+        "finished_at": datetime(2026, 10, 17, 12, tzinfo=UTC) - timedelta(hours=hours_ago),
+        "end": ReviewEnd.COMPLETE,
+    }
+    return ReviewSummary(**(base | kw))
+
+
+def test_el_historico_lista_las_reviews_y_enlaza_al_detalle(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.domain.history import ReviewEnd
+
+    history = _history(
+        _summary(_REVIEW_KEY, hours_ago=1, findings=2, by_severity={"P1": 1, "P3": 1}),
+        _summary("otra:1:x", pr_id=7, end=ReviewEnd.PARTIAL, reasoning=True),
+    )
+    monkeypatch.setattr(panel.client.app.state, "history", history, raising=False)
+
+    body = panel.client.get("/history").text
+
+    assert "Histórico de reviews" in body
+    assert f'href="/review/{_REVIEW_KEY}"' in body
+    assert "(P1: 1, P3: 1)" in body
+    assert 'class="end end-parcial"' in body
+    # La más reciente primero.
+    assert body.index("otra:1:x") < body.index(_REVIEW_KEY)
+
+
+def test_el_historico_filtra_y_escapa(panel: Panel, monkeypatch: pytest.MonkeyPatch) -> None:
+    history = _history(
+        _summary("a:1:x", repo="<b>malo</b>"),
+        _summary("b:2:y", repo="otro"),
+    )
+    monkeypatch.setattr(panel.client.app.state, "history", history, raising=False)
+
+    body = panel.client.get("/history", params={"repo": "<b>malo</b>"}).text
+    assert "<b>malo</b>" not in body
+    assert "&lt;b&gt;malo&lt;/b&gt;" in body
+    assert "b:2:y" not in body
+
+
+def test_sin_redis_el_historico_sale_vacio(panel: Panel, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(panel.client.app.state, "history", None, raising=False)
+    response = panel.client.get("/history")
+    assert response.status_code == 200
+    assert "Sin entradas." in response.text
+
+
+def test_la_vista_global_enlaza_al_historico(panel: Panel) -> None:
+    assert 'href="/history"' in panel.client.get("/").text

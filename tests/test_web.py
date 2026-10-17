@@ -596,3 +596,26 @@ def test_el_stream_se_cierra_por_inactividad() -> None:
     ticks = iter([0.0, 1.0, 999.0])
     chunks = list(reasoning_stream(sink, "rk", block_ms=1, idle_s=10, clock=lambda: next(ticks)))
     assert chunks[-1].startswith("event: fin")
+
+
+def test_api_history_devuelve_json_filtrado(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    for key, pr in (("a", 1), ("b", 2)):
+        history.record(
+            ReviewSummary(
+                review_key=key,
+                repo="r",
+                pr_id=pr,
+                head_sha="x",
+                finished_at=_MOMENT,
+                end=ReviewEnd.COMPLETE,
+            )
+        )
+    monkeypatch.setattr(app.state, "history", history, raising=False)
+
+    data = client.get("/api/history", params={"pr_id": 2}).json()
+    assert [item["review_key"] for item in data] == ["b"]
+    assert data[0]["end"] == "completa"

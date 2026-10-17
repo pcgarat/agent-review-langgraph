@@ -31,6 +31,7 @@ from agent_review.checkpointer import (
     prune_completed_threads,
     prune_fix_threads,
 )
+from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import (
     ApprovalRequest,
     DecisionOutcome,
@@ -55,6 +56,7 @@ from agent_review.graph.build import (
     build_pause,
     outcome_from_state,
 )
+from agent_review.history_store import ReviewHistory
 from agent_review.models_registry import ModelRegistry
 from agent_review.paused_store import InMemoryPausedStore, PausedStore, RedisPausedStore
 from agent_review.pending_store import PendingStore, RedisPendingStore
@@ -320,6 +322,17 @@ def build_reasoning_sink(settings: Settings) -> ReasoningSink | None:
         url=settings.redis_url,
         ttl_s=settings.reasoning_ttl_s,
         max_bytes=settings.reasoning_max_bytes,
+    )
+
+
+def build_history(settings: Settings) -> ReviewHistory | None:
+    """Histórico de reviews terminadas para el panel (021 R9), o `None` sin Redis."""
+    if not settings.redis_url.strip():
+        return None
+    from agent_review.history_store import RedisReviewHistory
+
+    return RedisReviewHistory(
+        url=settings.redis_url, retention_days=settings.checkpoint_retention_days
     )
 
 
@@ -1155,6 +1168,8 @@ def _consume(
     fix_ttl_s: float | None = None,
     progress: ProgressPort | None = None,
     cancel: CancellationPort | None = None,
+    history: ReviewHistory | None = None,
+    reasoning: bool = False,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1176,7 +1191,7 @@ def _consume(
         _on_cancelled(graph, request, paused=paused)
         return
     try:
-        process_request(
+        outcome = process_request(
             graph,
             request,
             paused=paused,
@@ -1185,6 +1200,14 @@ def _consume(
             fix_queue=fix_queue,
             fix_ttl_s=fix_ttl_s,
         )
+        # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
+        # Una reentrega del mismo job actualiza su entrada, no la duplica.
+        if history is not None and not outcome.paused:
+            history.record(
+                ReviewSummary.from_outcome(
+                    outcome, finished_at=datetime.now(UTC), reasoning=reasoning
+                )
+            )
     except Cancelled:
         # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
         # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo
@@ -1326,6 +1349,7 @@ def run_forever(
         graph = build_runtime(settings, chat=chat, vcs=vcs, progress=progress)
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
+    history = build_history(settings)
     saver = getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
@@ -1347,6 +1371,8 @@ def run_forever(
                 fix_ttl_s=settings.fix_verify_ttl_s,
                 progress=progress,
                 cancel=cancellation,
+                history=history,
+                reasoning=settings.reasoning_stream_enabled,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
@@ -1388,6 +1414,9 @@ def run_forever(
                     paused_kinds=paused_thread_kinds(saver, latest=latest),
                     latest=latest,
                 )
+            # El histórico vive lo mismo que el detalle al que enlaza (021 R9).
+            if history is not None:
+                history.prune(older_than_days=settings.checkpoint_retention_days)
             last_prune = now
 
 
