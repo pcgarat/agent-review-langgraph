@@ -26,6 +26,16 @@ class LlmTransientError(LlmError, TransientError):
     """
 
 
+class LlmTruncatedError(LlmError):
+    """El modelo agoto `max_tokens` y cerro sin contenido (`finish_reason=length`).
+
+    No es un fallo del proveedor sino del presupuesto de salida de *esa* llamada
+    (un razonador que se come el turno en `reasoning_content` y devuelve
+    `content: null` con 200 OK). El bucle de herramientas lo trata como un turno
+    perdido —pide el objeto final— en vez de dar el lote entero por caido.
+    """
+
+
 @dataclass(frozen=True)
 class LlmReply:
     """Respuesta del modelo, con el gasto real que reporta el proveedor.

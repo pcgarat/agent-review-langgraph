@@ -62,6 +62,14 @@ eval-tools: ## Informe del gold set con el rol de herramientas activado (replay)
 	REVIEW_TOOLS_ROLES=correctness \
 	  $(UV) run --extra $(EXTRAS) python scripts/eval.py report --recording recorded_tools.json $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
 
+eval-verifier: ## Informe del gold set con verificador L2 (escenario de produccion, replay)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py report --recording recorded_tools.json --verifier on
+
+eval-record-verifier: ## Regraba el gold set con el revisor y el verificador (red)
+	LLM_REVIEWER_ENABLED=true REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py record --recording recorded_tools.json --verifier on
+
 eval-live: ## Mide contra el modelo real (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py live
 

@@ -8,7 +8,13 @@ from typing import Any
 import httpx
 
 from agent_review.errors import is_transient
-from agent_review.ports.llm import JsonMode, LlmError, LlmReply, LlmTransientError
+from agent_review.ports.llm import (
+    JsonMode,
+    LlmError,
+    LlmReply,
+    LlmTransientError,
+    LlmTruncatedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +98,10 @@ class OpenAiCompatibleLlm:
         if finish_reason == "length" and not text.strip():
             # Un razonador agota el presupuesto en `reasoning_content` y devuelve
             # `content: null` con 200 OK. Tratarlo como 0 hallazgos publicaria una
-            # review limpia que no reviso nada: es un error trazable.
-            raise LlmError(
+            # review limpia que no reviso nada: es un error trazable. Es de la
+            # llamada, no del proveedor: `LlmTruncatedError` deja que el bucle de
+            # herramientas pierda solo ese turno en vez del lote entero.
+            raise LlmTruncatedError(
                 f"el modelo {self._model!r} agoto max_tokens={effective_max} sin contenido "
                 f"(finish_reason=length)"
             )

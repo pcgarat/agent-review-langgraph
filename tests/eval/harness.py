@@ -22,12 +22,14 @@ import yaml
 from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
 from agent_review.adapters.llm_reviewer import LlmReviewer, ReviewerReaderFactory
+from agent_review.adapters.llm_verifier import LlmVerifier
 from agent_review.domain.models import PARTIAL_CLASSES, Finding
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, ContextLimits, is_denied
 from agent_review.ports.llm import JsonMode, LlmPort, LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
+from agent_review.ports.verifier import VerifierPort
 from agent_review.scope import changed_files, classify
 
 # Tres etiquetas (E9 de la spec): lo que debe salir, lo que no, y lo tolerable.
@@ -538,6 +540,27 @@ def fixture_reader_factory(case: Case) -> ReviewerReaderFactory | None:
     return factory
 
 
+def fixture_verifier(case: Case, llm: LlmPort) -> LlmVerifier:
+    """Verificador L2 sobre los fixtures del caso (009 / 014 RH11).
+
+    Es el escenario de **produccion**: con verificador, el nodo `verify` corre
+    entre `merge` y `policy` y un hallazgo `REFUTED` sale `DROP` (no se publica).
+    Usa el mismo lector determinista que el revisor, de modo que la comparacion
+    con la base (`ref="base"`) y los ficheros del diff estan disponibles.
+    """
+    limits = ContextLimits(max_calls=8, max_bytes=60_000)
+
+    def open_reader(repo: str, head_sha: str, base_sha: str, diff: str) -> FixtureContextReader:
+        del repo, head_sha, base_sha, diff
+        return FixtureContextReader(
+            case.fixtures,
+            base_root=case.base_fixtures,
+            denylist=DEFAULT_CONTEXT_DENYLIST,
+        )
+
+    return LlmVerifier(llm, open_reader=open_reader, limits=limits)
+
+
 @dataclass(frozen=True)
 class Recording:
     """Respuestas grabadas de un caso, indexadas por fingerprint de prompt.
@@ -845,6 +868,8 @@ def run_case(
     vcs: CaseVcs,
     reader_factory: ReviewerReaderFactory | None = None,
     tool_limits: ContextLimits | None = None,
+    verifier: VerifierPort | None = None,
+    verifier_max_findings: int = 5,
 ) -> Run:
     """Corre el **grafo real** sobre el caso con las personas y el VCS inyectados.
 
@@ -856,6 +881,11 @@ def run_case(
     lote; sin el, una llamada por lote como en 008. La fabrica la construye el
     llamante (`scripts/eval.py` la deriva de `REVIEW_TOOLS_ROLES`): el harness no
     conoce `Settings`.
+
+    Con `verifier` (009) el nodo `verify` corre el segundo juicio adversarial entre
+    `merge` y `policy`: es el escenario de produccion, donde un `REFUTED` sale
+    `DROP` y los P0/P1 no verificados degradan. Sin el, el nodo es paso directo y
+    se mide la precision **cruda** del revisor (el baseline de 008).
     """
     reviewer = LlmReviewer(
         llm=llm,
@@ -868,6 +898,8 @@ def run_case(
         vcs=vcs,
         reviewers=[reviewer],
         policy=policy,
+        verifier=verifier,
+        verifier_max_findings=verifier_max_findings,
         verification_enabled=False,
     ).compile()
     state = graph.invoke(
@@ -901,6 +933,8 @@ def evaluate(
     coverage: float | None = None,
     reader_factory: ReviewerReaderFactory | None = None,
     tool_limits: ContextLimits | None = None,
+    verifier: VerifierPort | None = None,
+    verifier_max_findings: int = 5,
 ) -> Report:
     """Corre el grafo sobre el caso y devuelve el informe (E7/E9).
 
@@ -914,6 +948,8 @@ def evaluate(
         vcs=CaseVcs(case),
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        verifier=verifier,
+        verifier_max_findings=verifier_max_findings,
     )
     fingerprints = fingerprints_by_role(recording) if recording is not None else {}
     return measure(

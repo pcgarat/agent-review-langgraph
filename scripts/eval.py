@@ -85,6 +85,16 @@ def main(argv: list[str] | None = None) -> int:
             "baseline de 008 (014 RH11)"
         ),
     )
+    parser.add_argument(
+        "--verifier",
+        choices=("off", "on"),
+        default="off",
+        help=(
+            "corre el nodo `verify` (009) con el rol `verifier`: es el escenario de "
+            "produccion, donde un REFUTED sale DROP. Off (por defecto) mide la "
+            "precision cruda del revisor, el baseline de 008"
+        ),
+    )
     args = parser.parse_args(argv)
 
     case = harness.load_case(args.case)
@@ -93,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     reader_factory = _reader_factory(case, settings)
     tool_limits = _tool_limits(settings) if reader_factory is not None else None
     recording_path = case_dir / args.recording
+    use_verifier = args.verifier == "on"
 
     if args.mode == "record":
         return _record(
@@ -100,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             recording_path,
             reader_factory=reader_factory,
             tool_limits=tool_limits,
+            verifier=use_verifier,
         )
     if args.mode == "live":
         return _report(
@@ -109,9 +121,11 @@ def main(argv: list[str] | None = None) -> int:
             compare=args.compare,
             reader_factory=reader_factory,
             tool_limits=tool_limits,
+            verifier=use_verifier,
         )
     recording = harness.Recording.load(recording_path)
     llm = harness.ReplayLlm(recording, case, role=ROLE)
+    verifier = harness.fixture_verifier(case, harness.ReplayLlm(recording, case, role="verifier"))
     return _report(
         case,
         llm=llm,
@@ -120,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         recording=recording,
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        verifier=verifier if use_verifier else None,
     )
 
 
@@ -129,6 +144,7 @@ def _record(
     *,
     reader_factory: harness.ReviewerReaderFactory | None,
     tool_limits: ContextLimits | None,
+    verifier: bool = False,
 ) -> int:
     recording = harness.Recording(
         case=case.name,
@@ -142,6 +158,13 @@ def _record(
         recording=recording,
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        verifier=(
+            harness.fixture_verifier(
+                case, _ProgressLlm(_live_llm(recording=recording, role="verifier"), role="verifier")
+            )
+            if verifier
+            else None
+        ),
     )
     recording_path.write_text(recording.dump(), encoding="utf-8")
     print(
@@ -160,6 +183,7 @@ def _report(
     recording: harness.Recording | None = None,
     reader_factory: harness.ReviewerReaderFactory | None = None,
     tool_limits: ContextLimits | None = None,
+    verifier=None,
 ) -> int:
     report = _evaluate(
         case,
@@ -168,6 +192,7 @@ def _report(
         recording=recording,
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        verifier=verifier,
     )
     print(harness.to_json(report), end="")
     if compare:
@@ -184,6 +209,7 @@ def _evaluate(
     recording: harness.Recording | None = None,
     reader_factory: harness.ReviewerReaderFactory | None = None,
     tool_limits: ContextLimits | None = None,
+    verifier=None,
 ):
     return harness.evaluate(
         case,
@@ -193,6 +219,7 @@ def _evaluate(
         recording=recording,
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        verifier=verifier,
     )
 
 
@@ -201,18 +228,18 @@ def _case_policy(case: harness.Case) -> PolicyEngine:
     return PolicyEngine.from_file(ROOT / "config" / "autonomy.yaml")
 
 
-def _live_llm(*, recording: harness.Recording | None):
+def _live_llm(*, recording: harness.Recording | None, role: str = ROLE):
     settings = Settings()
     registry = ModelRegistry.from_settings(settings)
-    port = registry.port_for(ROLE)
+    port = registry.port_for(role)
     if port is None:
         raise SystemExit(
-            f"El rol {ROLE!r} no tiene modelo: declara LLM_* o MODELS_CONFIG con "
+            f"El rol {role!r} no tiene modelo: declara LLM_* o MODELS_CONFIG con "
             "LLM_REVIEWER_ENABLED=true, o pasa credenciales para `make eval-record`."
         )
     if recording is None:
         return port
-    return harness.RecordingLlm(port, recording, role=ROLE)
+    return harness.RecordingLlm(port, recording, role=role)
 
 
 class _ProgressLlm:

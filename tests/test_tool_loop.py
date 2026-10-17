@@ -21,7 +21,7 @@ from agent_review.adapters.tool_loop import (
     run_tool_loop,
 )
 from agent_review.ports.context import ContextLimits
-from agent_review.ports.llm import LlmReply
+from agent_review.ports.llm import LlmReply, LlmTruncatedError
 
 
 class ScriptedLlm:
@@ -189,6 +189,61 @@ def test_una_herramienta_desconocida_se_sirve_como_error(tmp_path: Path) -> None
     result = _run(llm, build_fixture_reader(tmp_path))
     assert result.tool_calls == 0
     assert "ERROR" in llm.calls[-1]["prompt"]
+
+
+def test_acepta_la_forma_de_openai(tmp_path: Path) -> None:
+    # El modelo real usa `{"name": ..., "args"/"arguments": {...}}`. El bucle lo
+    # sirve igual (014 RH11): antes toda peticion caia como invalida y el lector
+    # no servia nada.
+    for key in ("args", "arguments"):
+        llm = ScriptedLlm(
+            _tools({"name": "read_file", key: {"path": APP}}),
+            json.dumps({"findings": []}),
+        )
+        result = _run(llm, build_fixture_reader(tmp_path))
+        assert result.tool_calls == 1
+        assert "needle" in llm.calls[-1]["prompt"]
+
+
+def test_traduce_los_alias_del_modelo(tmp_path: Path) -> None:
+    # `search`→`grep`/`query`→`pattern` y `start_line`/`end_line`→`start`/`end`.
+    llm = ScriptedLlm(
+        _tools({"name": "search", "args": {"query": "needle", "glob": "**/*.py"}}),
+        _tools({"name": "read_file", "args": {"path": APP, "start_line": 1, "end_line": 1}}),
+        json.dumps({"findings": []}),
+    )
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert result.tool_calls == 2
+    assert f"{APP}:3" in llm.calls[-2]["prompt"]
+    assert "import os" in llm.calls[-1]["prompt"]
+
+
+def test_un_turno_truncado_no_tumba_el_lote(tmp_path: Path) -> None:
+    # `finish_reason=length` sin contenido: se pierde el turno, no el lote (014 H6).
+
+    class Truncating(ScriptedLlm):
+        def complete(self, **kwargs: Any) -> LlmReply:  # type: ignore[override]
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise LlmTruncatedError("agoto max_tokens sin contenido")
+            return LlmReply(text=json.dumps({"findings": []}), finish_reason="stop")
+
+    llm = Truncating()
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert result.data == {"findings": []}
+    assert any("length" in note for note in result.notes)
+    assert "final" in llm.calls[-1]["prompt"].lower()
+
+
+def test_un_turno_truncado_reiterado_cierra(tmp_path: Path) -> None:
+    class AlwaysTruncating(ScriptedLlm):
+        def complete(self, **kwargs: Any) -> LlmReply:  # type: ignore[override]
+            self.calls.append(kwargs)
+            raise LlmTruncatedError("agoto max_tokens sin contenido")
+
+    result = _run(AlwaysTruncating(), build_fixture_reader(tmp_path))
+    assert result.data is None
+    assert result.forced_by_truncation is True
 
 
 def test_una_herramienta_que_falla_no_tumba_el_bucle(tmp_path: Path) -> None:
