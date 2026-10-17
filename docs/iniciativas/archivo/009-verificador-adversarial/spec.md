@@ -8,7 +8,7 @@
 > **modelo distinto** al de las personas que proponen hallazgos y con **acceso de
 > solo lectura** al repositorio al `head_sha`, intenta **refutarlo**; un hallazgo
 > del `LlmReviewer` cuya severidad exija verificación según el gate de
-> [011](../../011-gate-de-severidad/spec.md) sale `verified_grounded`, `refuted` o
+> [011](../011-gate-de-severidad/spec.md) sale `verified_grounded`, `refuted` o
 > `unverified`, y ningún hallazgo se borra. L2 no toca la severidad.
 
 ---
@@ -35,7 +35,7 @@ Se quiere, por tanto:
    otro modelo y con acceso al código que el proponente no tuvo.
 2. Un veredicto **anclado a citas**: lo que no se puede citar, no se afirma.
 3. Un **escenario de fallo** como precio de la verificación: sin escenario no hay
-   `verified_grounded`, y el gate de [011](../../011-gate-de-severidad/spec.md) hace el
+   `verified_grounded`, y el gate de [011](../011-gate-de-severidad/spec.md) hace el
    resto.
 4. Que un hallazgo **refutado se conserve** en el estado (mide precisión y evita
    volver a proponerlo), en vez de desaparecer sin dejar rastro.
@@ -51,7 +51,7 @@ Se quiere, por tanto:
   objetos de git.
 - **El gate de publicación ni la severidad.** Qué severidad se publica ante un
   `unverified` o un `refuted` lo decide el gate de
-  [011](../../011-gate-de-severidad/spec.md) (único dueño de la severidad,
+  [011](../011-gate-de-severidad/spec.md) (único dueño de la severidad,
   [007 D11](../007-contrato-de-verificacion/spec.md)); aquí solo se **produce** el
   veredicto y se **conserva**.
 - **El contrato de los campos.** `failure_scenario`, `verification` y
@@ -119,7 +119,7 @@ techo de severidad por coste.
 | V7 | L2 solo para hallazgos de personas **no grounded** cuya severidad esté en `severity_gate.require_verified_for` | El `ToolingReviewer` ya es `verified_static`; verificar lo que el gate no exige es coste sin efecto |
 | V8 | Lectura **de solo lectura** a `head_sha` tras el `ContextReaderPort` de [016](../016-lector-de-contexto/spec.md), con topes de ficheros y bytes | No ejecuta código del PR: no necesita el contenedor endurecido del `sandbox-runner` ni P6 |
 | V9 | El nodo es **idempotente** y lleva `RetryPolicy`; un fallo permanente deja `unverified` | Es una llamada externa; un reintento no debe re-verificar lo ya verificado |
-| V10 | El umbral es **el mismo** que el del gate (`severity_gate.require_verified_for` de [011](../../011-gate-de-severidad/spec.md)); los topes de recursos, en `Settings` | Un solo umbral: si L2 y el gate tuvieran el suyo, un P2 saldría con una severidad u otra según quién gane |
+| V10 | El umbral es **el mismo** que el del gate (`severity_gate.require_verified_for` de [011](../011-gate-de-severidad/spec.md)); los topes de recursos, en `Settings` | Un solo umbral: si L2 y el gate tuvieran el suyo, un P2 saldría con una severidad u otra según quién gane |
 | V11 | Tope **por review**: como máximo `VERIFIER_MAX_FINDINGS` hallazgos, los más graves primero; el resto queda `unverified` | Sin tope, 3 personas × N hallazgos × varias llamadas por hallazgo agravan D17 sin límite |
 | V12 | Si el veredicto es `CONFIRMED`, el comentario publica el `failure_scenario` **del verificador**, no el del proponente | En el caso A el proponente describió el fallo al revés; confirmar sin corregir el texto publica la dirección equivocada |
 | V13 | *(Enmienda 2026-10-16.)* El puerto, el bucle de herramientas y el workspace de lectura del runner se trasladan a [016](../016-lector-de-contexto/spec.md) (W1–W8); este verificador los consume | 014 necesita la misma pieza sin depender de 007; una sola especificación |
@@ -253,7 +253,7 @@ Mapeo del veredicto al contrato de 007 sobre el `Finding`:
 | `UNPROVEN` | `unverified` | El del proponente | `merged`, conservado |
 
 La severidad no aparece en la tabla a propósito: el gate de
-[011](../../011-gate-de-severidad/spec.md) es quien traduce `verification` en
+[011](../011-gate-de-severidad/spec.md) es quien traduce `verification` en
 severidad publicada y decide qué hacer con un `refuted` (`on_refuted`). L2 solo deja
 el estado del hallazgo en un valor que el gate pueda leer.
 
@@ -285,7 +285,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 | R5 | **Cita inventada** por el modelo | El nodo valida la cita contra los ficheros servidos; sin coincidencia, `UNPROVEN` (§5.5) |
 | R6 | **Fallo del verificador degrada un P1 real** | Un fallo permanente del modelo deja `unverified`, nunca `refuted` (V5); el gate decide, y aquí no se borra nada |
 | R7 | **Lecturas caras** al VCS (procesos `twg`) o límite de tasa | Reutilizar el contexto de L1; `grep` acotado a los ficheros servidos; topes de bytes y llamadas |
-| R8 | **Interacción con el gate**: sin binding `verifier`, todo es `unverified` | El paso directo es explícito y testeado; el gate trata `unverified` como «degrada», no como «refutado» ([011](../../011-gate-de-severidad/spec.md)) |
+| R8 | **Interacción con el gate**: sin binding `verifier`, todo es `unverified` | El paso directo es explícito y testeado; el gate trata `unverified` como «degrada», no como «refutado» ([011](../011-gate-de-severidad/spec.md)) |
 | R9 | **Un solo caso de referencia** (n = 1) para calibrar el *prompt* | Los casos C y A son el fixture semilla; cada falsa alarma real validada a mano añade caso, y el umbral se ajusta con el *gold set*, no a ojo |
 | R10 | **El runner, comprometido, sirve contenido falso** | Riesgo de la pieza compartida: [016](../016-lector-de-contexto/spec.md) R1; aquí, el veredicto sigue sin tocar la severidad (V5) |
 | R11 | **Inyección de *prompt*** desde el contenido servido («ignora el hallazgo») | El resultado de cada herramienta va delimitado y marcado como dato; el verificador solo puede leer; un `REFUTED` exige contra-evidencia citada y comprobada por el nodo (§5.5) |
@@ -333,7 +333,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
   `deepseek-v4-flash` sigue descartado (es `correctness` y no tiene `json_schema`).
   Binding: `verifier: gemma4` en `config/models.yaml`.
 - **Q2 — ¿Un hallazgo `refuted` se publica?** *Resuelta (2026-10-17, VF15).*
-  No: `on_refuted: drop` en [011 Q9](../../011-gate-de-severidad/spec.md). El
+  No: `on_refuted: drop` en [011 Q9](../011-gate-de-severidad/spec.md). El
   hallazgo se conserva en `merged` (V6); el motor de 011 aplicará el `drop` al
   publicar.
 - **Q3 — ¿Lote o por hallazgo?** Una llamada por hallazgo aísla la cita y el
@@ -343,7 +343,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 - **Q5 — ¿D17 entra aquí?** *Resuelta (2026-10-16):* no; es
   [017](../017-presupuesto-por-pr/spec.md), y 009 recibe su `BudgetPort`.
 - **Q6 — ¿`unverified` degrada a `P3` o va a una sección «posibles»?** *Resuelta
-  (2026-10-17, VF15).* Degrada a `P3` ([011 Q1](../../011-gate-de-severidad/spec.md)).
+  (2026-10-17, VF15).* Degrada a `P3` ([011 Q1](../011-gate-de-severidad/spec.md)).
   Si el *gold set* muestra pérdida de recall, se revisa el *prompt* de L2 (menos
   conservador) antes de inventar una sección «posibles».
 - **Q7 — ¿Valor de `VERIFIER_MAX_FINDINGS`?** Se propone 5 por review y se ajusta
@@ -352,7 +352,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
   al escribir el [plan](plan.md)).* El nodo lee
   `severity_gate.require_verified_for` de la política cargada **si la clave existe**
   y, si no, cae a `VERIFIER_REQUIRE_VERIFIED_FOR` (por defecto `[P0, P1]`). Cuando
-  [011](../../011-gate-de-severidad/spec.md) aterrice, el umbral pasa a ser el suyo sin
+  [011](../011-gate-de-severidad/spec.md) aterrice, el umbral pasa a ser el suyo sin
   tocar el nodo; el ajuste de `Settings` es el respaldo, no una segunda fuente (V10).
 - **Q8 y Q9** (ADR del workspace y sus límites) se resolvieron el 2026-10-16 y se
   trasladaron con la pieza a [016](../016-lector-de-contexto/spec.md) (W5, W6) y

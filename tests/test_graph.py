@@ -381,6 +381,12 @@ def test_hallazgo_refutado_sigue_en_merged() -> None:
     assert result["verifications"]["f1"].verdict is Verdict.REFUTED
     assert result["merged"][0].verification is Verification.REFUTED
     assert result["merged"][0].severity is finding.severity
+    # 011: on_refuted=drop → sigue en merged, no se publica.
+    decisions = result["decisions"]
+    assert len(decisions) == 1
+    assert decisions[0].publication.value == "drop"
+    assert vcs.inlines == []
+    assert vcs.comments == []
 
 
 def test_confirmed_sin_escenario_queda_unverified() -> None:
@@ -1582,6 +1588,57 @@ def _coverage_run(skipped: dict[str, SkipReason]):
     graph = build_graph(vcs=vcs, reviewers=[_CoverageReviewer(skipped)], policy=policy).compile()
     state = graph.invoke({"request": {"repo": "r", "pr_id": 7, "head_sha": "abc"}, "findings": []})
     return vcs, outcome_from_state(state)
+
+
+def test_merge_conserva_el_veredicto_mas_fuerte() -> None:
+    # 011 §5.3: unverified + verified_grounded → el gate ve el verificado.
+    from agent_review.domain.models import Verification
+    from agent_review.graph.build import _merge_findings
+
+    weak = make_finding(title="mismo").model_copy(
+        update={"id": "a", "verification": Verification.UNVERIFIED, "evidence": ["a:1 x"]}
+    )
+    strong = make_finding(title="mismo").model_copy(
+        update={
+            "id": "b",
+            "verification": Verification.VERIFIED_GROUNDED,
+            "verification_evidence": ["tests/FooTest.php:3 prueba"],
+            "evidence": ["b:1 y", "b:2 z"],
+        }
+    )
+    merged, _ = _merge_findings(
+        [weak, strong],
+        {"a": "correctness", "b": "security"},
+    )
+    assert len(merged) == 1
+    assert merged[0].verification is Verification.VERIFIED_GROUNDED
+    assert merged[0].verification_evidence == ["tests/FooTest.php:3 prueba"]
+
+
+def test_p1_unverified_se_publica_como_p3_degradado() -> None:
+    # 011: sin L2, un P1 unverified degrada; el inline muestra P3 y el motivo.
+    vcs = FakeVcs(anchors={"tests/FooTest.php": InlineAnchor(path="tests/FooTest.php", line=3)})
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(
+        vcs=vcs,
+        reviewers=[StaticReviewer("correctness", [make_finding(severity=Severity.P1)])],
+        policy=policy,
+    ).compile()
+    result = graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    decision = result["decisions"][0]
+    assert decision.severity is Severity.P3
+    assert decision.matched_rule == "gate:degrade"
+    assert result["merged"][0].severity is Severity.P1  # el Finding no se muta
+    assert vcs.inlines
+    body = vcs.inlines[0][4]
+    assert "**[P3]" in body
+    assert "Verificacion:" in body
+    assert "degradado" in body
 
 
 def test_configuracion_sin_revisar_publica_review_parcial_aunque_no_haya_hallazgos() -> None:

@@ -172,7 +172,7 @@ El resumen gana una cabecera cuando `coverage.partial`:
 
 La review parcial es **solo informativa**: no cambia la acción permitida. Si una
 review parcial debe limitar `fix_auto` lo decide el gate de
-[011](../../011-gate-de-severidad/spec.md), único dueño de la política. *Decidido
+[011](../011-gate-de-severidad/spec.md), único dueño de la política. *Decidido
 2026-10-17 (Q3).*
 
 La cobertura del `ToolingReviewer` **no** entra en `ReviewCoverage`: sigue en

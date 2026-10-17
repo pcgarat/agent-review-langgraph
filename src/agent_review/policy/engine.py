@@ -11,7 +11,9 @@ from agent_review.domain.models import (
     Finding,
     FindingAction,
     ProtectedSubject,
+    PublicationMode,
     Severity,
+    Verification,
 )
 from agent_review.globs import path_matches
 
@@ -31,6 +33,14 @@ _AUTONOMY_RANK = {
     FindingAction.ESCALATE: 3,
 }
 
+_VERIFIED_DEFAULT = frozenset(
+    {
+        Verification.VERIFIED_STATIC,
+        Verification.VERIFIED_GROUNDED,
+        Verification.VERIFIED_EXECUTED,
+    }
+)
+
 
 @dataclass(frozen=True)
 class PolicyResult:
@@ -40,6 +50,9 @@ class PolicyResult:
     reason: str
     matched_rule: str
     policy_version: str
+    severity: Severity
+    severity_reason: str = ""
+    publication: PublicationMode = PublicationMode.FULL
 
 
 @dataclass(frozen=True)
@@ -48,6 +61,14 @@ class Rule:
     action: FindingAction
     reason: str
     when: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _GateOutcome:
+    severity: Severity
+    severity_reason: str
+    publication: PublicationMode
+    degraded: bool
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -106,6 +127,67 @@ def _match_condition(condition: dict[str, Any], finding: Finding) -> bool:
     return True
 
 
+def _parse_severities(raw: Any, *, field: str) -> frozenset[Severity]:
+    values = _as_list(raw)
+    if not values:
+        raise PolicyError(f"severity_gate.{field} no puede estar vacio")
+    try:
+        return frozenset(Severity(item) for item in values)
+    except ValueError as exc:
+        raise PolicyError(f"severity_gate.{field} invalido: {raw!r}") from exc
+
+
+def _parse_verified(raw: Any) -> frozenset[Verification]:
+    values = _as_list(raw)
+    if not values:
+        raise PolicyError("severity_gate.verified no puede estar vacio")
+    allowed = {
+        Verification.VERIFIED_STATIC,
+        Verification.VERIFIED_GROUNDED,
+        Verification.VERIFIED_EXECUTED,
+    }
+    parsed: set[Verification] = set()
+    for item in values:
+        try:
+            value = Verification(item)
+        except ValueError as exc:
+            raise PolicyError(f"severity_gate.verified invalido: {item!r}") from exc
+        if value not in allowed:
+            raise PolicyError(
+                f"severity_gate.verified solo admite veredictos positivos, no {value.value!r}"
+            )
+        parsed.add(value)
+    return frozenset(parsed)
+
+
+def _validate_severity_gate(gate: dict[str, Any]) -> dict[str, Any]:
+    """Normaliza y valida el bloque; falla al arrancar si esta mal formado."""
+    require = _parse_severities(gate.get("require_verified_for"), field="require_verified_for")
+    verified = _parse_verified(gate.get("verified", [v.value for v in _VERIFIED_DEFAULT]))
+    degrade_raw = gate.get("degrade_to", "P3")
+    try:
+        degrade_to = Severity(degrade_raw)
+    except ValueError as exc:
+        raise PolicyError(f"severity_gate.degrade_to invalido: {degrade_raw!r}") from exc
+    on_unverified = str(gate.get("on_unverified", "degrade"))
+    if on_unverified == "possibles":
+        raise PolicyError(
+            "severity_gate.on_unverified=possibles aun no esta implementado; usa degrade"
+        )
+    if on_unverified != "degrade":
+        raise PolicyError(f"severity_gate.on_unverified invalido: {on_unverified!r}")
+    on_refuted = str(gate.get("on_refuted", "drop"))
+    if on_refuted not in {"drop", "summary"}:
+        raise PolicyError(f"severity_gate.on_refuted invalido: {on_refuted!r}")
+    return {
+        "require_verified_for": require,
+        "verified": verified,
+        "degrade_to": degrade_to,
+        "on_unverified": on_unverified,
+        "on_refuted": on_refuted,
+    }
+
+
 class PolicyEngine:
     """Enrutamiento por hallazgo. Determinista y auditable: sin LLM.
 
@@ -120,10 +202,25 @@ class PolicyEngine:
         self._default = FindingAction(config.get("default_action", "report"))
         self._version = str(config.get("version", "0"))
         self._guards: dict[str, Any] = config.get("guards", {}) or {}
-        # Umbral del gate (011) y de candidatos L2 (009 V10). Mientras 011 no
-        # aterrice la clave puede no existir: el nodo `verify` cae al ajuste.
         gate = config.get("severity_gate")
-        self._severity_gate: dict[str, Any] = gate if isinstance(gate, dict) else {}
+        if gate is None:
+            self._severity_gate: dict[str, Any] = {}
+            self._gate: dict[str, Any] | None = None
+        elif not isinstance(gate, dict):
+            raise PolicyError("severity_gate debe ser un mapa")
+        elif not gate:
+            self._severity_gate = {}
+            self._gate = None
+        else:
+            self._gate = _validate_severity_gate(gate)
+            # Vista cruda para L2 / raw(): listas serializables como en el YAML.
+            self._severity_gate = {
+                "require_verified_for": [s.value for s in self._gate["require_verified_for"]],
+                "verified": [v.value for v in self._gate["verified"]],
+                "on_unverified": self._gate["on_unverified"],
+                "degrade_to": self._gate["degrade_to"].value,
+                "on_refuted": self._gate["on_refuted"],
+            }
         self._rules: list[Rule] = [
             Rule(
                 index=index,
@@ -149,7 +246,7 @@ class PolicyEngine:
 
     @property
     def severity_gate(self) -> dict[str, Any]:
-        """Bloque `severity_gate` del YAML (011); vacío si aún no está declarado."""
+        """Bloque `severity_gate` del YAML (011); vacío si no está declarado."""
         return self._severity_gate
 
     def raw(self) -> dict[str, Any]:
@@ -183,27 +280,109 @@ class PolicyEngine:
         patterns.append(".cursor/**")
         return any(path_matches(file, pattern) for pattern in patterns)
 
+    def _apply_gate(self, finding: Finding) -> _GateOutcome:
+        """Severidad efectiva y modo de publicacion (011). Sin bloque: no-op."""
+        if self._gate is None:
+            return _GateOutcome(
+                severity=finding.severity,
+                severity_reason="",
+                publication=PublicationMode.FULL,
+                degraded=False,
+            )
+
+        if finding.verification is Verification.REFUTED:
+            mode = (
+                PublicationMode.DROP
+                if self._gate["on_refuted"] == "drop"
+                else PublicationMode.SUMMARY
+            )
+            return _GateOutcome(
+                severity=finding.severity,
+                severity_reason="refutado por el verificador",
+                publication=mode,
+                degraded=False,
+            )
+
+        require: frozenset[Severity] = self._gate["require_verified_for"]
+        verified: frozenset[Verification] = self._gate["verified"]
+        if finding.severity in require and finding.verification not in verified:
+            degrade_to: Severity = self._gate["degrade_to"]
+            return _GateOutcome(
+                severity=degrade_to,
+                severity_reason=(
+                    f"sin verificacion: {finding.severity.value} degradado a {degrade_to.value}"
+                ),
+                publication=PublicationMode.FULL,
+                degraded=True,
+            )
+
+        return _GateOutcome(
+            severity=finding.severity,
+            severity_reason="",
+            publication=PublicationMode.FULL,
+            degraded=False,
+        )
+
     def decide(self, finding: Finding) -> PolicyResult:
+        gate = self._apply_gate(finding)
+
+        if gate.publication is PublicationMode.DROP:
+            return PolicyResult(
+                action=FindingAction.REPORT,
+                reason=gate.severity_reason or "Hallazgo refutado: no se publica",
+                matched_rule="gate:refuted",
+                policy_version=self._version,
+                severity=gate.severity,
+                severity_reason=gate.severity_reason,
+                publication=PublicationMode.DROP,
+            )
+
+        effective = (
+            finding
+            if gate.severity is finding.severity
+            else finding.model_copy(update={"severity": gate.severity})
+        )
+
         action = self._default
         reason = "Sin regla aplicable"
         matched = "default"
         for rule in self._rules:
-            if _match_condition(rule.when, finding):
+            if _match_condition(rule.when, effective):
                 action = rule.action
                 reason = rule.reason or "Regla de politica"
                 matched = f"rule:{rule.index}"
                 break
 
+        if gate.degraded:
+            # G7: un degradado nunca escala ni entra en fix_*.
+            action = FindingAction.REPORT
+            reason = gate.severity_reason
+            matched = "gate:degrade"
+        elif gate.publication is PublicationMode.SUMMARY:
+            # Refutado que solo va al resumen: no pide HITL ni fix.
+            action = FindingAction.REPORT
+            matched = "gate:refuted"
+            if not reason or reason == "Sin regla aplicable":
+                reason = gate.severity_reason
+
         # La guarda de rutas nunca-auto frena cualquier arreglo, pero no rebaja un
         # escalado: un P0 o un tema protegido en `migrations/**` debe llegar a una
         # persona como escalado, no como "¿lo arreglo?" sobre algo que el nodo `fix`
         # bloquearia siempre (ADR-0009).
-        if self.is_never_auto(finding.file) and action is not FindingAction.ESCALATE:
+        if (
+            not gate.degraded
+            and gate.publication is PublicationMode.FULL
+            and self.is_never_auto(finding.file)
+            and action is not FindingAction.ESCALATE
+        ):
             return PolicyResult(
                 action=self._cap(FindingAction.FIX_WITH_APPROVAL),
                 reason=f"Ruta protegida ({finding.file}): requiere aprobacion",
                 matched_rule="guard:never_auto_paths",
                 policy_version=self._version,
+                severity=gate.severity,
+                severity_reason=gate.severity_reason,
+                publication=gate.publication,
             )
 
         return PolicyResult(
@@ -211,4 +390,7 @@ class PolicyEngine:
             reason=reason,
             matched_rule=matched,
             policy_version=self._version,
+            severity=gate.severity,
+            severity_reason=gate.severity_reason,
+            publication=gate.publication,
         )

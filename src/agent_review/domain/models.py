@@ -284,6 +284,19 @@ class ReviewerResult(BaseModel):
     coverage: ReviewCoverage | None = None
 
 
+class PublicationMode(StrEnum):
+    """Como publica el gate un hallazgo (011 G10).
+
+    `full` = inline + resumen; `summary` = solo resumen (refutado con
+    `on_refuted: summary`); `drop` = no se publica (sigue en `merged` para la
+    metrica).
+    """
+
+    FULL = "full"
+    SUMMARY = "summary"
+    DROP = "drop"
+
+
 class Decision(BaseModel):
     finding_id: str
     action: FindingAction
@@ -293,6 +306,11 @@ class Decision(BaseModel):
     matched_rule: str
     # Version de la politica aplicada, para trazabilidad.
     policy_version: str
+    # Severidad efectiva del gate (011). `None` = decisions antiguas / dobles de
+    # test: el render cae a `finding.severity`.
+    severity: Severity | None = None
+    severity_reason: str = ""
+    publication: PublicationMode = PublicationMode.FULL
 
 
 # ---------------------------------------------------------------------------

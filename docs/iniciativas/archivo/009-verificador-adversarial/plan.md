@@ -45,7 +45,7 @@ aterrizar sobre el código de hoy (016, 017 y 007 ya entregadas).
   evidencia más rica venga de una copia del LLM (§5.1).
 - **Umbral provisional mientras 011 no existe.** La spec dice que L2 usa el mismo
   umbral que el gate (`severity_gate.require_verified_for` de
-  [011](../../011-gate-de-severidad/spec.md), G9), pero **011 sigue en borrador**:
+  [011](../011-gate-de-severidad/spec.md), G9), pero **011 sigue en borrador**:
   `config/autonomy.yaml` no tiene hoy la clave `severity_gate` y el motor de
   política no la conoce. Decisión de implementación: el nodo lee
   `severity_gate.require_verified_for` **si la clave existe** en la política

@@ -36,7 +36,7 @@ publicada era la que el modelo decía.
   y evita volver a proponerlo.
 - **Los campos son hechos, no decisiones.** Ninguna capa cambia `severity`; la
   severidad publicada la calcula solo el gate de política de
-  [011](../iniciativas/011-gate-de-severidad/spec.md), desde `autonomy.yaml`
+  [011](../iniciativas/archivo/011-gate-de-severidad/spec.md), desde `autonomy.yaml`
   ([ADR-0003](0003-autonomia-como-politica-por-hallazgo.md)).
 - `requires_verification` se retira del contrato: lo sustituye `verification`.
 

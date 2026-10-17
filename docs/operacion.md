@@ -73,10 +73,11 @@ ficheros versionados:
   - `fix_auto`: además arregla sin preguntar lo que las reglas permitan.
 
   Se sube editando el YAML; `MAX_AUTONOMY_OVERRIDE` solo puede bajarlo.
-  El bloque `severity_gate` (011 / 009 VF15) declara el umbral compartido con L2
-  (`require_verified_for: [P0, P1]`) y la política de publicación
-  (`on_unverified: degrade` → `P3`, `on_refuted: drop`). L2 ya lee el umbral; el
-  motor aplicará degradación/`drop` cuando aterrice 011.
+  El bloque `severity_gate` ([ADR-0024](adr/0024-gate-de-severidad-en-la-politica.md))
+  es el umbral compartido con L2 (`require_verified_for: [P0, P1]`) y la política
+  de publicación: un `P0`/`P1` sin veredicto positivo se degrada a `P3` con acción
+  `report`; un `refuted` con `on_refuted: drop` no se publica (sigue en `merged`
+  para la métrica). Cambiar el bloque exige reiniciar el worker.
 - **[`config/repo_profile.emotivoo-v2.yaml`](../config/repo_profile.emotivoo-v2.yaml)**:
   el perfil del repo. Su contrato se valida al arrancar (`profile.validate_profile`):
   una clave desconocida o un tipo erróneo se registran como aviso.

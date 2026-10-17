@@ -12,7 +12,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
-| 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · Q1/Q2/Q8/Q9 cerradas (VF15); queda aplicar el gate en el motor · 3 preguntas abiertas |
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008 (012, 016 y 017 hechas) · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
@@ -23,7 +22,8 @@ Las iniciativas **006–012** son el desglose de una única auditoría de la cal
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
 detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
 y **017** es la pieza compartida que salió de la deuda D17. La **008**, **009**,
-**016**, **017**, **019**, **020** y **021** ya están entregadas y archivadas.
+**011**, **016**, **017**, **019**, **020** y **021** ya están entregadas y
+archivadas.
 
 ```mermaid
 flowchart LR
@@ -41,9 +41,10 @@ flowchart LR
     I018["018"] -. "recorrido (Q7)" .-> I019["019"]
 ```
 
-- **Archivadas el 2026-10-17:** 008 (L0/L1) y 009 (L2; binding `verifier: gemma4`;
-  VF14–VF15: `severity_gate` en `autonomy.yaml`). Queda regrabar el *gold set*
-  del PR #3 **una sola vez** (CX11 de 008) y **aplicar** el gate en publish (011).
+- **Archivadas el 2026-10-17:** 008 (L0/L1), 009 (L2) y **011** (gate de
+  severidad; [ADR-0024](../adr/0024-gate-de-severidad-en-la-politica.md)). Queda
+  regrabar el *gold set* del PR #3 **una sola vez** (CX11 de 008). Siguiente de
+  la cascada: **014** (plan + todo).
 - **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
   no de código.
@@ -65,6 +66,7 @@ conservando sus IDs.
 | 007 | [Contrato de verificación del hallazgo](archivo/007-contrato-de-verificacion/spec.md) | implementada | V1–V8 · `verification`, `failure_scenario`, `verification_evidence` y `context_scope` en el contrato; fuera `requires_verification` · [ADR-0021](../adr/0021-cascada-de-verificacion-del-hallazgo.md) · [todo](archivo/007-contrato-de-verificacion/todo.md) |
 | 008 | [Contexto del revisor: L0 y L1](archivo/008-contexto-del-revisor/spec.md) | implementada | CX1–CX12 · L0 determinista y L1 `ReviewContext`; queda regrabar *gold set* (CX11) · [todo](archivo/008-contexto-del-revisor/todo.md) |
 | 009 | [Verificador adversarial (L2)](archivo/009-verificador-adversarial/spec.md) | implementada | VF1–VF15 · nodo `verify`, `LlmVerifier`, binding `gemma4`, `severity_gate` declarado · [todo](archivo/009-verificador-adversarial/todo.md) |
+| 011 | [Gate de severidad por política y observabilidad](archivo/011-gate-de-severidad/spec.md) | implementada | G1–G5 · `severity_gate` aplicado en el motor y en publish · [ADR-0024](../adr/0024-gate-de-severidad-en-la-politica.md) · [todo](archivo/011-gate-de-severidad/todo.md) |
 | 012 | [Cobertura de la review](archivo/012-cobertura-de-la-review/spec.md) | implementada | CB1–CB11 · sin `max_files_per_pr`; el `scope` prioriza y el `LlmReviewer` revisa por lotes de ficheros enteros y declara lo que no lee (`ReviewCoverage`, review parcial) · cierra D18 · cobertura del PR #3 de 0.2 a 1.0 · [todo](archivo/012-cobertura-de-la-review/todo.md) |
 | 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
 | 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |

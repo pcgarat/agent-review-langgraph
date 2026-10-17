@@ -82,7 +82,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Capacidad** | Lo que un modelo declara saber hacer (`json_mode`, contexto). Se declara en el registro porque `/v1/models` no lo publica; el adaptador pide al modelo solo lo que declara. |
 | **Estado de la fuente** | `present` / `missing` / `unreadable`. Separa «análisis limpio» de «no se pudo leer la salida». |
 | **Review incompleta** | Alguna fuente estática declarada no estaba `present`. Su «0 hallazgos» **no** significa «PR limpio» y se publica con aviso. |
-| **Merge** | Paso que deduplica: mismo `(fichero, línea, título)`, o mismo `(fichero, título)` a ≤5 líneas visto por **personas distintas**. Conserva la evidencia más rica. |
+| **Merge** | Paso que deduplica: mismo `(fichero, línea, título)`, o mismo `(fichero, título)` a ≤5 líneas visto por **personas distintas**. Conserva la evidencia más rica y el `verification` más fuerte del grupo. |
 | **Scope** | Preparación del diff antes de las personas: fuera el ruido (lockfiles, `vendor/**`, `var/**`, generados) y el resto ordenado por clase y churn. No recorta: el único tope es el presupuesto. También ensambla el `ReviewContext` (L1). |
 | **Clase de fichero** (`FileClass`) | `config`, `code`, `test` o `docs`, por *globs* (`scope.classify`, ampliable con `scope.classes` del perfil). Decide la prioridad de revisión y si un fichero sin leer hace parcial la review. |
 | **Cobertura** (`ReviewCoverage`) | Qué ficheros del PR se revisaron y cuáles no, con su motivo: `ignored`, `too_large`, `budget` o `failed`. `context_omitted` lista rutas cuyo contenido L1 no cupo en el tope (el diff sí se revisó). Solo cuenta lo **declarado**. |
@@ -99,7 +99,9 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Política** | `config/autonomy.yaml`: reglas ordenadas (gana la primera que casa), guardas y techo. Determinista, sin LLM. |
 | **Acción** (`FindingAction`) | Lo que la política asigna a un hallazgo: `report`, `escalate`, `fix_with_approval`, `fix_auto`. |
 | **Acción pendiente** | `escalate` o `fix_with_approval`: necesita a una persona y **pausa** la review. |
-| **Decisión de política** (`Decision`) | Resultado de la política para un hallazgo: acción, razón, `matched_rule` y `policy_version`. **No** confundir con la decisión humana. |
+| **Decisión de política** (`Decision`) | Resultado de la política para un hallazgo: acción, razón, `matched_rule`, `policy_version`, severidad efectiva, motivo del gate y modo de publicación. **No** confundir con la decisión humana. |
+| **Gate de severidad** (`severity_gate`) | Bloque de `autonomy.yaml` que decide la severidad **publicada** antes de las reglas de acción ([011](docs/iniciativas/archivo/011-gate-de-severidad/spec.md), [ADR-0024](docs/adr/0024-gate-de-severidad-en-la-politica.md)). Un `P0`/`P1` sin veredicto positivo se degrada; un `refuted` sigue `on_refuted` (`drop` o `summary`). Mismo umbral que L2. |
+| **Severidad efectiva** | La severidad tras el gate: la original si está verificada (o fuera del umbral), o `degrade_to` si no. Viaja en `Decision.severity`; el `Finding.severity` no se muta. Es la que ven el render, el HITL y las reglas de acción. |
 | **Techo** (`max_autonomy`) | Máxima autonomía permitida. Es un parámetro de uso: lo ajusta quien opera el agente. Con `report` (el valor por defecto), todo (también `escalate`) se degrada a `report`. |
 | **Clamp** | Aplicar el techo a la acción de una regla. |
 | **Override del techo** | `MAX_AUTONOMY_OVERRIDE`: un despliegue puede **bajar** el techo del YAML, nunca subirlo. |

@@ -30,6 +30,7 @@ from agent_review.domain.models import (
     FixWaitRequest,
     HitlDecision,
     PendingDecision,
+    PublicationMode,
     ReviewContext,
     ReviewCoverage,
     ReviewOutcome,
@@ -67,6 +68,15 @@ _SEVERITY_ORDER = {
     Severity.P1: 1,
     Severity.P2: 2,
     Severity.P3: 3,
+}
+
+# Escalera del merge (011 §5.3): el grupo conserva el veredicto más fuerte.
+_VERIFICATION_RANK = {
+    Verification.VERIFIED_EXECUTED: 4,
+    Verification.VERIFIED_GROUNDED: 3,
+    Verification.VERIFIED_STATIC: 2,
+    Verification.REFUTED: 1,
+    Verification.UNVERIFIED: 0,
 }
 
 # Texto de cabecera por estado de fuente estatica, para que "sin hallazgos" no
@@ -217,7 +227,7 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
                 title=finding.title,
                 file=finding.file,
                 line=finding.line,
-                severity=finding.severity,
+                severity=_effective_severity(finding, decision),
                 # La tarjeta del canal explica el problema con esto; el render de
                 # texto del PR (`render_pause_notice`) sigue usando `reason`.
                 why_it_matters=" ".join(finding.why_it_matters.split()),
@@ -419,6 +429,16 @@ def _merge_findings(
         # Representante: la evidencia mas rica; a igualdad, el primero en orden
         # canonico (el de `max` estable).
         representative = max(group, key=lambda f: len(f.evidence))
+        # 011 §5.3: el gate debe ver el veredicto mas fuerte del grupo.
+        strongest = max(group, key=lambda f: _VERIFICATION_RANK[f.verification])
+        if strongest.verification is not representative.verification:
+            update: dict[str, Any] = {
+                "verification": strongest.verification,
+                "verification_evidence": list(strongest.verification_evidence),
+            }
+            if strongest.failure_scenario:
+                update["failure_scenario"] = strongest.failure_scenario
+            representative = representative.model_copy(update=update)
         merged.append(representative)
         if any(source_of(member) in grounded_personas for member in group):
             grounded_ids.append(_finding_id(representative))
@@ -858,6 +878,9 @@ def build_graph(
                     reason=result.reason,
                     matched_rule=result.matched_rule,
                     policy_version=result.policy_version,
+                    severity=result.severity,
+                    severity_reason=result.severity_reason,
+                    publication=result.publication,
                 )
             )
         return {"decisions": decisions}
@@ -1006,8 +1029,24 @@ def build_graph(
         unavailable = _unavailable_sources(state)
         coverage = state.get("coverage")
         partial = coverage is not None and coverage.partial
-        if not findings and not unavailable and not partial:
-            logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
+        by_id = {d.finding_id: d for d in decisions}
+        # 011: los `drop` siguen en `merged` (metrica) pero no se publican.
+        publishable: list[Finding] = []
+        for finding in findings:
+            decision = by_id.get(_finding_id(finding))
+            if decision is None:
+                raise ReviewIntegrityError(
+                    f"Hallazgo sin decision de politica: {_finding_id(finding)}"
+                )
+            if decision.publication is PublicationMode.DROP:
+                continue
+            publishable.append(finding)
+        if not publishable and not unavailable and not partial:
+            logger.info(
+                "PR %s#%s: sin hallazgos publicables",
+                request.repo,
+                request.pr_id,
+            )
             return {}
 
         complete = not unavailable and not partial
@@ -1051,9 +1090,11 @@ def build_graph(
                 ", ".join(f"{path}={reason.value}" for path, reason in coverage.skipped.items()),
             )
 
-        by_id = {d.finding_id: d for d in decisions}
         max_inline = int(policy.guards.get("max_inline_comments", 20))
-        ordered = sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
+        ordered = sorted(
+            publishable,
+            key=lambda f: _SEVERITY_ORDER[_effective_severity(f, by_id[_finding_id(f)])],
+        )
         # 008 CX5: lineas anadidas del diff; una cita de contexto/borrada (L0
         # SUMMARY) va al resumen sin pedir ancla al VCS.
         diff_files = parse_unified_diff(state.get("diff") or "")
@@ -1062,16 +1103,16 @@ def build_graph(
         summary_only: list[Finding] = []
 
         for finding in ordered:
-            decision = by_id.get(_finding_id(finding))
-            if decision is None:
-                raise ReviewIntegrityError(
-                    f"Hallazgo sin decision de politica: {_finding_id(finding)}"
-                )
+            decision = by_id[_finding_id(finding)]
             if (
                 human is not None
                 and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED
             ):
                 # Descartado por una persona: va al resumen, sin inline.
+                summary_only.append(finding)
+                continue
+            if decision.publication is PublicationMode.SUMMARY:
+                # 011 G10: refutado con on_refuted=summary; nunca inline.
                 summary_only.append(finding)
                 continue
             if len(inlined) >= max_inline:
@@ -1123,7 +1164,7 @@ def build_graph(
                 summary_only.append(finding)
 
         summary = _render_summary(
-            findings,
+            publishable,
             decisions,
             summary_only=summary_only,
             inlined=inlined,
@@ -1307,6 +1348,13 @@ _OUTCOME_LABEL = {
 }
 
 
+def _effective_severity(finding: Finding, decision: Decision | None) -> Severity:
+    """Severidad publicada: la del gate si existe; si no, la del hallazgo."""
+    if decision is not None and decision.severity is not None:
+        return decision.severity
+    return finding.severity
+
+
 def _finding_labels(finding: Finding) -> str:
     """Etiquetas de hechos L0/L1 (008 D7): no tocan severidad ni accion."""
     tags: list[str] = []
@@ -1315,6 +1363,36 @@ def _finding_labels(finding: Finding) -> str:
     if finding.context_scope is ContextScope.OUTSIDE_DIFF:
         tags.append("fuera del diff")
     return " · ".join(f"_{tag}_" for tag in tags)
+
+
+def _show_verification(finding: Finding, decision: Decision) -> bool:
+    """¿Mostrar la linea de verificacion? (011 G13)."""
+    if decision.severity_reason:
+        return True
+    if finding.verification is Verification.REFUTED:
+        return True
+    # Umbral del gate: la severidad *original* (antes de degradar).
+    gate_threshold = {Severity.P0, Severity.P1}
+    return finding.severity in gate_threshold
+
+
+def _verification_line(finding: Finding, decision: Decision) -> str:
+    """Linea de veredicto / degradacion para inline (011 G6/G13)."""
+    parts: list[str] = [finding.verification.value]
+    evidence = finding.verification_evidence
+    if evidence:
+        parts.append("; ".join(evidence[:2]))
+    if decision.severity_reason:
+        parts.append(decision.severity_reason)
+    return "_Verificacion: " + " · ".join(parts) + "_"
+
+
+def _verification_suffix(finding: Finding, decision: Decision) -> str:
+    """Sufijo compacto para el resumen."""
+    if decision.severity_reason and "degradado" in decision.severity_reason:
+        effective = _effective_severity(finding, decision)
+        return f" · degradado a {effective.value}"
+    return f" · {finding.verification.value}"
 
 
 def _render_inline(
@@ -1335,7 +1413,8 @@ def _render_inline(
     title = " ".join(finding.title.split())
     title_is_truncation = bool(why) and why.lower().startswith(title.lower())
     header = why if title_is_truncation else title
-    blocks = [f"**[{finding.severity.value}] {header}**"]
+    severity = _effective_severity(finding, decision)
+    blocks = [f"**[{severity.value}] {header}**"]
     labels = _finding_labels(finding)
     if labels:
         blocks.append(labels)
@@ -1345,6 +1424,8 @@ def _render_inline(
     # viaja al inline; sin el, la direccion del fallo no se ve en el PR.
     if finding.failure_scenario:
         blocks.append(f"**Escenario:** {finding.failure_scenario.strip()}")
+    if _show_verification(finding, decision):
+        blocks.append(_verification_line(finding, decision))
     blocks.append(f"_Accion: {decision.action.value}_ · confianza {finding.confidence}")
     decision_line = _decision_line(human, decision)
     if decision_line:
@@ -1449,17 +1530,23 @@ def _render_summary(
     )
     if fixes:
         lines.extend(_render_fixes_section(fixes))
-    for finding in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
+    for finding in sorted(
+        findings, key=lambda f: _SEVERITY_ORDER[_effective_severity(f, by_key.get(_finding_id(f)))]
+    ):
         decision = by_key.get(_finding_id(finding))
         if decision is None:
             raise ReviewIntegrityError(f"Hallazgo sin decision de politica: {_finding_id(finding)}")
         marker = "inline" if finding in inlined else "resumen"
         labels = _finding_labels(finding)
         label_suffix = f" · {labels}" if labels else ""
+        severity = _effective_severity(finding, decision)
+        verif = (
+            _verification_suffix(finding, decision) if _show_verification(finding, decision) else ""
+        )
         lines.append(
-            f"- **[{finding.severity.value}] {finding.title}** "
+            f"- **[{severity.value}] {finding.title}** "
             f"(`{finding.file}:{finding.line}`) · {decision.action.value} · {marker}"
-            f"{label_suffix}"
+            f"{label_suffix}{verif}"
         )
         # El detalle ya vive en el inline; no se repite aqui salvo que sea
         # imprescindible (hallazgo que solo figura en el resumen).

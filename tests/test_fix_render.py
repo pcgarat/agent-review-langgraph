@@ -14,6 +14,7 @@ from agent_review.domain.models import (
     Owner,
     ProposedPatch,
     Severity,
+    Verification,
 )
 from agent_review.fix.delivery import DiffFormatter
 from agent_review.graph.build import (
@@ -135,6 +136,62 @@ def test_resumen_incluye_la_seccion_fixes() -> None:
     )
     assert "### Fixes" in summary
     assert "verified: 1" in summary
+
+
+def test_inline_muestra_severidad_efectiva_y_verificacion_degradada() -> None:
+    # 011 G13: P1 degradado a P3 muestra severidad efectiva y linea de verificacion.
+    finding = _finding().model_copy(
+        update={"severity": Severity.P1, "verification": Verification.UNVERIFIED}
+    )
+    decision = Decision(
+        finding_id="f1",
+        action=FindingAction.REPORT,
+        reason="sin verificacion: P1 degradado a P3",
+        matched_rule="gate:degrade",
+        policy_version="1",
+        severity=Severity.P3,
+        severity_reason="sin verificacion: P1 degradado a P3",
+    )
+    body = _render_inline(finding, decision)
+    assert "**[P3]" in body
+    assert "Verificacion:" in body
+    assert "degradado a P3" in body
+
+
+def test_inline_p3_nativo_no_lleva_verificacion() -> None:
+    # 011 G13: fuera del umbral, sin degradar, no hay linea de verificacion.
+    body = _render_inline(_finding(), _decision())
+    assert "Verificacion:" not in body
+
+
+def test_resumen_distingue_degradado_de_p3_nativo() -> None:
+    degraded = _finding().model_copy(
+        update={"id": "d1", "title": "Hipótesis", "severity": Severity.P1}
+    )
+    native = _finding().model_copy(update={"id": "n1", "title": "Ruido menor"})
+    decisions = [
+        Decision(
+            finding_id="d1",
+            action=FindingAction.REPORT,
+            reason="sin verificacion: P1 degradado a P3",
+            matched_rule="gate:degrade",
+            policy_version="1",
+            severity=Severity.P3,
+            severity_reason="sin verificacion: P1 degradado a P3",
+        ),
+        Decision(
+            finding_id="n1",
+            action=FindingAction.REPORT,
+            reason="r",
+            matched_rule="rule:0",
+            policy_version="1",
+            severity=Severity.P2,
+        ),
+    ]
+    summary = _render_summary([degraded, native], decisions)
+    assert "degradado a P3" in summary
+    assert "**[P3] Hipótesis**" in summary
+    assert "degradado a P2" not in summary
 
 
 # ---------------------------------------------------------------------------

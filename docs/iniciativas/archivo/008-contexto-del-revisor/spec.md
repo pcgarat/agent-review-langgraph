@@ -34,7 +34,7 @@ Se quiere:
    (`context_scope: outside_diff`) en vez de inventar su semántica.
 3. **No perder recall.** L0/L1 **declaran hechos**, no deciden: lo dudoso se marca
    (`pre_existing`, `context_scope`) y es el gate de
-   [011](../../011-gate-de-severidad/spec.md) quien decide su severidad. Solo se
+   [011](../011-gate-de-severidad/spec.md) quien decide su severidad. Solo se
    descarta lo fabricado (una cita que no existe en el diff).
 
 El resto de la solución (verificación adversarial con otro modelo, ejecución en el
@@ -58,7 +58,7 @@ cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado
   caracteres propio; no resuelve D17.
 - **Cambiar el gate de publicación ni la política.** L0/L1 producen hechos en el
   hallazgo; qué se hace con ellos (degradar, publicar en el resumen) lo decide el
-  gate de [011](../../011-gate-de-severidad/spec.md).
+  gate de [011](../011-gate-de-severidad/spec.md).
 - **Que el diff llegue entero al revisor.** Es
   [012](../012-cobertura-de-la-review/spec.md).
 - **Enrutado dinámico de modelos o recarga en caliente.** Sigue la decisión D2 de la
@@ -128,11 +128,11 @@ verifica.
 |---|---|---|
 | D1 | L0 es **determinista y sin tokens**; conserva el anclaje y añade anclaje estricto, cita contrastada y `pre_existing` | El 80% de los falsos positivos son baratos de matar. F muere sin una llamada al modelo. |
 | D2 | `pre_existing` se **calcula**, no se copia del modelo, y significa «el código citado es idéntico en la base», no «el problema ya existía» | Hoy el modelo lo rellena; eso es lo que produce F. Pero un cambio en otro sitio (un llamador nuevo) puede romper una línea vieja: el código preexistente no hace preexistente al problema. |
-| D3 | L0 **no concede verificación** por sí sola: filtra lo fabricado, pero un hallazgo anclado sigue `unverified` | Un ancla correcta no prueba la semántica. La severidad se gana con verificación, en el gate de [011](../../011-gate-de-severidad/spec.md). |
+| D3 | L0 **no concede verificación** por sí sola: filtra lo fabricado, pero un hallazgo anclado sigue `unverified` | Un ancla correcta no prueba la semántica. La severidad se gana con verificación, en el gate de [011](../011-gate-de-severidad/spec.md). |
 | D4 | El contexto (L1) se ensambla **una vez** en `scope` y viaja en el estado hacia el fan-out | Una lectura por review, no una por persona; coherente con el fan-out que comparte *closure*. |
 | D5 | L1 inyecta **fichero completo del hunk + documentos de contexto declarados en el perfil** (`context_docs:`), con tope de caracteres | Da el contexto que falta y las decisiones ya tomadas (H) sin acoplar el código a los documentos de un repo concreto. |
 | D6 | Regla de **humildad** en el *system prompt*: claim que depende de código no visible → `context_scope: outside_diff` y no probado | Ata el hueco de contexto a un campo del contrato en vez de a la inventiva del modelo. |
-| D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
+| D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
 | D8 | El contexto se reparte **por lote** de [012](../012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
 | D9 | Una cita que **no existe** en ninguna línea del fichero (ni añadida, ni de contexto, ni borrada) **se descarta** | No es un caso dudoso que proteger: es evidencia fabricada. Descartarla no cuesta recall real. |
 | D10 | El `base_sha` viaja en `PullRequestInfo`/`ReviewRequest`; lo puebla el VCS (Q1) | La rama de destino se mueve; el SHA de merge-base no. `destination_branch` como `ref` mentiría en `pre_existing` |
@@ -140,7 +140,7 @@ verifica.
 | D12 | El tope de caracteres de L1 es **config** (`Settings` y/o perfil) y cuenta en `_estimate_tokens` (Q3) | Un fijo es rígido; un % del presupuesto de 017 acopla L1 al gasto de razonamiento y L2 |
 | D13 | L0 vive en un módulo compartido `verification/l0.py` desde el día 1; L1 se ensambla **dentro de `LlmReviewer`** hasta que otra persona lo necesite (Q4) | L0 es puro y lo reutilizarán otras capas; L1 es ensamblaje de *prompt* acoplado al revisor |
 | D14 | El fichero completo de L1 se lee al `head_sha`; `base_sha` solo alimenta el cálculo de `pre_existing` (Q5) | El modelo opina sobre el cambio; `pre_existing` compara con la base |
-| D15 | Qué se publica ante `pre_existing`/`outside_diff` **no lo decide 008**: solo marca hechos; la publicación es [011 Q1](../../011-gate-de-severidad/spec.md) (Q6) | Coherente con D7 (un solo dueño de la severidad) |
+| D15 | Qué se publica ante `pre_existing`/`outside_diff` **no lo decide 008**: solo marca hechos; la publicación es [011 Q1](../011-gate-de-severidad/spec.md) (Q6) | Coherente con D7 (un solo dueño de la severidad) |
 
 ## 5. Diseño o contrato
 
@@ -212,7 +212,7 @@ incluye:
 Y una **regla de humildad** explícita en el *system prompt*: «si tu afirmación
 depende de código que no ves, declara el hallazgo `context_scope: outside_diff` y no
 inventes su semántica». Qué severidad se publica para ese hallazgo lo decide el gate
-de [011](../../011-gate-de-severidad/spec.md).
+de [011](../011-gate-de-severidad/spec.md).
 
 ### 5.2 Contrato y cableado
 
@@ -290,7 +290,7 @@ Todas resueltas el 2026-10-17 (salvo Q7, del 2026-10-16). Spec aprobada el
 - **Q5.** *Resuelta:* fichero completo al `head_sha`; `base_sha` solo para
   `pre_existing` (D14).
 - **Q6.** *Resuelta (aparcada):* 008 solo marca hechos; qué se publica lo decide
-  [011 Q1](../../011-gate-de-severidad/spec.md) (D15).
+  [011 Q1](../011-gate-de-severidad/spec.md) (D15).
 - **Q7.** *Resuelta (2026-10-16):* «no probado» es `verification: unverified` con
   `context_scope: outside_diff`
   ([007 D10](../007-contrato-de-verificacion/spec.md)).

@@ -107,9 +107,9 @@ Preguntas abiertas de las specs, resueltas aquí con la propuesta de cada spec. 
 
 | Pregunta | Supuesto en este documento |
 |---|---|
-| [011 Q1](../iniciativas/011-gate-de-severidad/spec.md) · ¿degradar o sección «posibles»? | *Decidido (VF15):* `on_unverified: degrade`, `degrade_to: P3` |
-| [011 Q8](../iniciativas/011-gate-de-severidad/spec.md) · ¿`P2` exige verificación? | *Decidido (VF15):* No: `require_verified_for: [P0, P1]` |
-| [011 Q9](../iniciativas/011-gate-de-severidad/spec.md) · ¿qué se hace con un refutado? | *Decidido (VF15):* `on_refuted: drop` (no se publica) |
+| [011 Q1](../iniciativas/archivo/011-gate-de-severidad/spec.md) · ¿degradar o sección «posibles»? | *Decidido (VF15):* `on_unverified: degrade`, `degrade_to: P3` |
+| [011 Q8](../iniciativas/archivo/011-gate-de-severidad/spec.md) · ¿`P2` exige verificación? | *Decidido (VF15):* No: `require_verified_for: [P0, P1]` |
+| [011 Q9](../iniciativas/archivo/011-gate-de-severidad/spec.md) · ¿qué se hace con un refutado? | *Decidido (VF15):* `on_refuted: drop` (no se publica) |
 | [008 Q1](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿de dónde sale el `base_sha`? | Lo trae el VCS en `PullRequestInfo` y viaja en el `request` |
 | [008 Q2](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿qué ADR se inyectan? | Los que declare el perfil en `context_docs:` |
 | [009 Q3](../iniciativas/archivo/009-verificador-adversarial/spec.md) · ¿verificar por lote o por hallazgo? | Por hallazgo, como dice el diseño de 009 §5.2 |
@@ -501,7 +501,7 @@ Tres reglas nuevas, las tres pequeñas:
 1. **Veredicto más fuerte.** Si H2 (`verified_static`) y H2′ (`unverified`) son el
    mismo problema, el grupo conserva `verified_static`. Sin esta regla, el gate
    podría ver la copia sin verificar y degradar un P1 real
-   ([011 §5.3](../iniciativas/011-gate-de-severidad/spec.md)).
+   ([011 §5.3](../iniciativas/archivo/011-gate-de-severidad/spec.md)).
 2. **Grounding.** Si en el grupo participa una persona grounded, el resultado es
    grounded (`grounded_findings = [H1, H2]`) y no paga el verificador.
 3. **Cobertura.** Un fichero cuenta como revisado si alguna persona LLM lo revisó.
@@ -592,7 +592,7 @@ flowchart TD
 ¿Por qué el gate va **antes** de las reglas? Si fuera después, H5 escalaría a una
 persona como P1 y luego se publicaría como P3. Y si la severidad degradada entrase en
 las reglas sin la guarda de «solo `report`», un P1 dudoso convertido en P3 podría
-acabar en `fix_auto` ([011 G7](../iniciativas/011-gate-de-severidad/spec.md)).
+acabar en `fix_auto` ([011 G7](../iniciativas/archivo/011-gate-de-severidad/spec.md)).
 
 ### 7.6 Lo que se publica
 
@@ -1020,7 +1020,7 @@ specs con el grafo en la cabeza.
 
 4. **Rompe el orden gate → reglas.** En la §7.5, aplica primero las reglas y después
    el gate. Con `max_autonomy: fix_with_approval`, ¿qué le pasa a H5? Es el
-   razonamiento de [011 G7](../iniciativas/011-gate-de-severidad/spec.md).
+   razonamiento de [011 G7](../iniciativas/archivo/011-gate-de-severidad/spec.md).
 
 5. **Cuenta checkpoints frente a llamadas.** Para el caso B, cuenta cuántas llamadas
    al modelo hay entre el checkpoint tras `scope` y el checkpoint tras `verify`

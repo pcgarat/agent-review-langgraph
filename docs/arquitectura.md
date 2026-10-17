@@ -148,7 +148,7 @@ flowchart TD
     persona["persona<br/>fan-out: un rol por rama<br/>(standards · correctness · security…)<br/>modelo segun models.yaml"] --> merge
     merge["merge<br/>(fichero, línea, título) + fusión entre personas<br/>estampa grounded_findings"] --> verify
     verify["verify<br/>L2 adversarial (009)<br/>paso directo sin binding verifier"] --> policy
-    policy["policy<br/>autonomy.yaml → Decision"] --> hitl
+    policy["policy<br/>severity_gate → reglas → Decision"] --> hitl
     hitl{"hitl<br/>¿acciones pendientes?"} -->|no| fix_dispatch
     hitl -.->|"sí: interrupt(ApprovalRequest)"| PAUSE(["pausa durable"])
     PAUSE -.->|"Command(resume=HitlDecision)"| hitl
@@ -169,7 +169,7 @@ flowchart TD
 | `persona` | Sí; degrada en el último intento | Una rama por revisor. Recibe el `ReviewContext` del fan-out. Escribe `findings`, `finding_sources`, `source_status`, `coverage` (el `LlmReviewer` revisa por lotes de ficheros enteros, añade L1 bajo `LLM_CONTEXT_MAX_CHARS` sin recortar el diff, aplica L0 al anclar, y declara lo que no leyó: `too_large`, `budget`, `failed`, `context_omitted`) y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. Una persona que declara cobertura y cae entera marca sus ficheros `failed`. Con razonamiento ([021](iniciativas/archivo/021-razonamiento-visible/spec.md)), el `LlmReviewer` pide *streaming*, manda el diff numerado en lotes de 20 000 caracteres (troceando por hunks lo que no cabe), reintenta **el lote** ante un corte del proveedor y emite su razonamiento a `reviews:reasoning:<review_key>` ([ADR-0023](adr/0023-razonamiento-por-streaming-y-stream-de-redis.md)). |
 | `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). Estampa `grounded_findings` (ids cuyo grupo fusionó a una persona con `grounded=True`, p. ej. `ToolingReviewer`). |
 | `verify` | Sí (llamada externa) | Segundo juicio adversarial ([009](iniciativas/archivo/009-verificador-adversarial/spec.md)): con binding `verifier` y presupuesto compartido de la review, verifica candidatos no grounded cuya severidad esté en `require_verified_for` (del `severity_gate` de la política si existe; si no, `VERIFIER_REQUIRE_VERIFIED_FOR`), hasta `VERIFIER_MAX_FINDINGS`. Escribe `verifications` y estampa `verification` / `failure_scenario` en `merged` sin tocar `severity`. Sin puerto: paso directo. |
-| `policy` | No (puro) | Una `Decision` por hallazgo, con `matched_rule` y `policy_version`. |
+| `policy` | No (puro) | Gate de severidad ([011](iniciativas/archivo/011-gate-de-severidad/spec.md), [ADR-0024](adr/0024-gate-de-severidad-en-la-politica.md)) y luego reglas: una `Decision` por hallazgo con severidad efectiva, `matched_rule` y `policy_version`. |
 | `hitl` | **Nunca** | Sin pendientes o con `human_decisions` ya presente, sigue. Si no, `interrupt`. Si la decisión está incompleta o es ilegible, vuelve a pausar. |
 | `fix_dispatch` | Sí | Selección → bloqueo de seguridad → fixer → validación **local**. Deja `PENDING` (con el `VerifyJob`) o terminal, sin tocar el sandbox. |
 | `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". Con código o configuración sin leer, la review es **parcial**: cabecera, marca `:partial` y se publica aunque no haya hallazgos. |
@@ -389,7 +389,7 @@ suscriptor vivo.
 |---|---|---|
 | 1 — Report-only | Implementada y probada contra el PR 430 de `emotivoo-v2` | Visto bueno humano del formato (P3); el `POST` del CI es opcional (P1). Ambos en [015](iniciativas/015-puesta-en-marcha-real/spec.md) |
 | 2 — HITL | Implementada (CLI + HTTP, inbox, TTL, poda, reconciliación). Canal Teams: bot + outbox ([013](iniciativas/archivo/013-canal-teams-bidireccional/spec.md), [ADR-0016](adr/0016-bot-de-teams-para-el-canal-de-decision.md)) | Smoke contra infraestructura real (S1) y alta del bot en el tenant (T10), en [015](iniciativas/015-puesta-en-marcha-real/spec.md). Se activa subiendo `max_autonomy` (parámetro de uso; por defecto `report`) |
-| 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10), **desacople E7** (F14–F28) y **L2 adversarial** ([009](iniciativas/archivo/009-verificador-adversarial/spec.md), VF1–VF15) hechos; binding `verifier: gemma4`; `severity_gate` declarado | F11 (spike R1 `suggestion`), F12 (smoke real) y P6 (revisión de seguridad; precondición), en [015](iniciativas/015-puesta-en-marcha-real/spec.md). Aplicar el gate en publish es [011](iniciativas/011-gate-de-severidad/spec.md) |
+| 3 — Fix + verificación | Base pura (F1–F6), runner (F7–F10), **desacople E7** (F14–F28), **L2 adversarial** ([009](iniciativas/archivo/009-verificador-adversarial/spec.md)) y **gate de severidad** ([011](iniciativas/archivo/011-gate-de-severidad/spec.md), [ADR-0024](adr/0024-gate-de-severidad-en-la-politica.md)) hechos | F11 (spike R1 `suggestion`), F12 (smoke real) y P6 (revisión de seguridad; precondición), en [015](iniciativas/015-puesta-en-marcha-real/spec.md) |
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
 El estado vivo de cada iniciativa y sus tareas están en

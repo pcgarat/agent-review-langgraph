@@ -47,7 +47,7 @@ Se quiere:
   contrato y se adaptan los emisores actuales.
 - **Cambiar el gate de publicación.** `config/autonomy.yaml` no se toca aquí; esta
   iniciativa añade los campos que leerá el gate de
-  [011](../../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
+  [011](../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
 - **Rediseñar `confidence`.** Se mantiene tal cual (es el síntoma que motiva el
   contrato) como juicio del modelo (Q4).
 - **Ejecutar código del PR.** `verified_executed` se declara pero no se produce aún:
@@ -124,7 +124,7 @@ por la que pasan los emisores.
 | D9 | Se crea un ADR nuevo, **ADR-0021 — Cascada de verificación del hallazgo** (enmienda 2026-10-17: la spec decía ADR-0016, número que ya ocupa el bot de Teams) | La cascada es una decisión de arquitectura con alternativas; se describe en §5.6 y el ADR ya no se reescribe. |
 | D10 | «No probado» **no** es un estado propio: es `verification: unverified` con `context_scope: outside_diff` | Un estado más en el enum solo duplicaría lo que ya dicen dos campos; cierra la Q7 de [008](../008-contexto-del-revisor/spec.md) |
 | D12 | **`requires_verification` se retira en esta iniciativa**: sale del modelo, del JSON (propiedad y `required`), del *prompt* y de los emisores | Lo sustituye `verification`; dejarlo como campo muerto solapado es una fuente de confusión y de deuda. Un checkpoint antiguo que lo lleve sigue cargando: `Finding` ignora campos extra. *Decidido 2026-10-17 (Q2).* |
-| D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
+| D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
 
 ## 5. Diseño o contrato
 
@@ -194,7 +194,7 @@ stateDiagram-v2
 Promover de `unverified` a cualquier `verified_*` o a `refuted` exige
 `verification_evidence` (I2). El gate de publicación —qué estados dejan salir un
 `P0`/`P1` y qué se hace con un `refuted`— es de
-[011](../../011-gate-de-severidad/spec.md) y vive en
+[011](../011-gate-de-severidad/spec.md) y vive en
 [`autonomy.yaml`](../../../../config/autonomy.yaml), no en el contrato.
 
 ### 5.4 Emisión en las personas
@@ -256,7 +256,7 @@ El ADR nuevo documenta la decisión de fondo que este contrato habilita:
   contexto, L2 adversarial con otro rol y otro modelo, L3 ejecutable) cuyo estado se
   materializa en `verification`; la severidad `P0`/`P1` **se gana** con verificación o
   evidencia estática; un hallazgo `refuted` se conserva.
-- **Consecuencias:** el gate ([011](../../011-gate-de-severidad/spec.md)) es el único
+- **Consecuencias:** el gate ([011](../011-gate-de-severidad/spec.md)) es el único
   que traduce `verification` en severidad publicada, desde `autonomy.yaml` (policy-as-data,
   [ADR-0003](../../../adr/0003-autonomia-como-politica-por-hallazgo.md)); el contrato
   gana cuatro campos versionados; L2 añade coste (deuda de presupuesto).
