@@ -32,6 +32,7 @@ from harness import (
     match,
     measure,
     normalize,
+    prompt_fingerprint,
     record_call,
     run_case,
     to_json,
@@ -691,6 +692,134 @@ def test_runner_graba_y_reproduce_el_mismo_conjunto(tmp_path: Path) -> None:
     ]
 
 
+# --- E0e (023): orden, unicidad y lote de cada llamada ---------------------------
+
+
+def _recorded(case: Case, calls: int, *, texts: tuple[str, ...] = ()) -> Recording:
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    for index in range(calls):
+        record_call(
+            recording,
+            role="correctness",
+            system="S",
+            prompt="DIFF:\nx",
+            max_tokens=4096,
+            reply=LlmReply(
+                text=texts[index] if index < len(texts) else '{"findings": []}',
+                prompt_tokens=10,
+                completion_tokens=20,
+            ),
+            batch_index=0,
+            turn=index,
+        )
+    return recording
+
+
+def test_la_grabacion_conserva_el_orden_y_no_colapsa_prompts_iguales(tmp_path: Path) -> None:
+    # Dos turnos con el mismo prompt antes se pisaban en el `dict` y el replay
+    # fallaba con «ya se consumio» (E0e).
+    case = _case()
+    recording = _recorded(case, 2, texts=('{"turno": 1}', '{"turno": 2}'))
+    path = tmp_path / "recorded.json"
+    path.write_text(recording.dump(), encoding="utf-8")
+
+    loaded = Recording.load(path)
+    assert loaded.measurable_by_batch
+    assert [call.seq for call in loaded.order or ()] == [1, 2]
+    assert [call.turn for call in loaded.order or ()] == [0, 1]
+    assert len({call.fingerprint for call in loaded.order or ()}) == 1, "mismo prompt"
+    assert len({call.call_id for call in loaded.order or ()}) == 2, "dos llamadas"
+
+    llm = ReplayLlm(loaded, case, role="correctness")
+    primera = llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+    segunda = llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+    assert (primera.text, segunda.text) == ('{"turno": 1}', '{"turno": 2}')
+    with pytest.raises(FingerprintMismatch, match="ya se consumio"):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+
+def test_una_grabacion_sin_orden_se_reproduce_pero_no_se_mide_por_lote(
+    tmp_path: Path,
+) -> None:
+    # Grabaciones anteriores a E0e: se reproducen por fingerprint, pero nadie les
+    # inventa lote ni turno (Q de la spec).
+    case = _case()
+    fingerprint = prompt_fingerprint(
+        role="correctness", system="S", prompt="DIFF:\nx", max_tokens=4096
+    )
+    path = tmp_path / "vieja.json"
+    path.write_text(
+        json.dumps(
+            {
+                "case": case.name,
+                "case_fingerprint": case_fingerprint(case),
+                "calls": {
+                    fingerprint: {
+                        "role": "correctness",
+                        "text": '{"findings": []}',
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = Recording.load(path)
+
+    assert not loaded.measurable_by_batch
+    assert loaded.order is None
+    llm = ReplayLlm(loaded, case, role="correctness")
+    assert llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096).text == '{"findings": []}'
+    with pytest.raises(FingerprintMismatch, match="ya se consumio"):
+        llm.complete(system="S", prompt="DIFF:\nx", max_tokens=4096)
+
+
+def test_el_tracker_cuenta_lotes_y_turnos_y_reinicia_en_el_reintento() -> None:
+    from agent_review.ports.reasoning import ReasoningEvent
+
+    tracker = harness.BatchTracker()
+    start = ReasoningEvent(kind="start", role="correctness", batch=1, total=2)
+
+    tracker.emit("r:1", start)
+    assert [tracker.take() for _ in range(3)] == [(0, 0), (0, 1), (0, 2)]
+
+    # Un reintento del mismo lote vuelve a empezar en el turno 0.
+    tracker.emit("r:1", start)
+    assert tracker.take() == (0, 0)
+
+    tracker.emit("r:1", ReasoningEvent(kind="start", role="correctness", batch=2, total=2))
+    assert tracker.take() == (1, 0)
+    # Fuera del `start` no se etiqueta nada (p. ej. el verificador).
+    assert harness.BatchTracker().take() == (None, None)
+
+
+def test_el_bucle_con_herramientas_graba_su_turno(tmp_path: Path) -> None:
+    # El turno no se deduce del prompt: lo cuenta el `start` que emite el revisor.
+    from agent_review.ports.context import ContextLimits
+
+    case = _case_con_fixtures(tmp_path)
+    tools = json.dumps({"tools": [{"tool": "read_file", "path": "src/x.py"}]})
+    recording = Recording(case=case.name, case_fingerprint=case_fingerprint(case), calls={})
+    tracker = harness.BatchTracker()
+    llm = RecordingLlm(
+        _ScriptedPort(tools, _finding_payload()), recording, role="correctness", tracker=tracker
+    )
+
+    run_case(
+        case,
+        llm=llm,
+        policy=_pipeline_policy(),
+        vcs=CaseVcs(case),
+        reader_factory=harness.fixture_reader_factory(case),
+        tool_limits=ContextLimits(),
+    )
+
+    assert [(call.batch_index, call.turn) for call in recording.order or ()] == [(0, 0), (0, 1)]
+
+
 # --- E10/E11: cobertura instrumentada ---
 
 
@@ -876,8 +1005,10 @@ class _ScriptedPort:
         self._payloads = list(payloads)
         self.calls = 0
 
-    def complete(self, *, system, prompt, max_tokens, json_mode=None, response_schema=None):
-        del system, prompt, max_tokens, json_mode, response_schema
+    def complete(
+        self, *, system, prompt, max_tokens, json_mode=None, response_schema=None, on_reasoning=None
+    ):
+        del system, prompt, max_tokens, json_mode, response_schema, on_reasoning
         index = min(self.calls, len(self._payloads) - 1)
         self.calls += 1
         return LlmReply(text=self._payloads[index], prompt_tokens=100, completion_tokens=50)

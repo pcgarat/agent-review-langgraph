@@ -151,9 +151,12 @@ def _record(
         case_fingerprint=harness.case_fingerprint(case),
         calls={},
     )
+    # Sin tracker, la grabacion solo sabria el orden global; el tracker etiqueta
+    # lote y turno de cada llamada (023 E0e).
+    tracker = harness.BatchTracker()
     report = _evaluate(
         case,
-        llm=_ProgressLlm(_live_llm(recording=recording), role=ROLE),
+        llm=_ProgressLlm(_live_llm(recording=recording, tracker=tracker), role=ROLE),
         mode="live",
         recording=recording,
         reader_factory=reader_factory,
@@ -228,7 +231,7 @@ def _case_policy(case: harness.Case) -> PolicyEngine:
     return PolicyEngine.from_file(ROOT / "config" / "autonomy.yaml")
 
 
-def _live_llm(*, recording: harness.Recording | None, role: str = ROLE):
+def _live_llm(*, recording: harness.Recording | None, role: str = ROLE, tracker=None):
     settings = Settings()
     registry = ModelRegistry.from_settings(settings)
     port = registry.port_for(role)
@@ -239,7 +242,7 @@ def _live_llm(*, recording: harness.Recording | None, role: str = ROLE):
         )
     if recording is None:
         return port
-    return harness.RecordingLlm(port, recording, role=role)
+    return harness.RecordingLlm(port, recording, role=role, tracker=tracker)
 
 
 class _ProgressLlm:

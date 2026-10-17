@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -28,6 +29,7 @@ from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, ContextLimits, is_denied
 from agent_review.ports.llm import FingerprintMismatch, JsonMode, LlmPort, LlmReply
+from agent_review.ports.reasoning import ReasoningEvent
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from agent_review.ports.verifier import VerifierPort
 from agent_review.scope import changed_files, classify
@@ -558,40 +560,122 @@ def fixture_verifier(case: Case, llm: LlmPort) -> LlmVerifier:
 
 
 @dataclass(frozen=True)
-class Recording:
-    """Respuestas grabadas de un caso, indexadas por fingerprint de prompt.
+class RecordedCall:
+    """Una llamada grabada con su sitio en la corrida (E0e de 023).
 
-    Por rol y por llamada (E4): cada entrada lleva su `fingerprint` y el par
-    `text`/`usage`; regrabar un rol no toca los demas.
+    El fingerprint no basta como clave: dos llamadas pueden compartir prompt
+    (dos turnos con el mismo texto, un reintento) y antes se colapsaban en el
+    `dict`. `call_id` las distingue y `seq` fija el orden global; `batch_index` y
+    `turn` dicen a que lote y a que turno del bucle pertenece.
+    """
+
+    seq: int
+    call_id: int
+    fingerprint: str
+    role: str
+    batch_index: int | None
+    turn: int | None
+    text: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    finish_reason: str = ""
+
+    def entry(self) -> dict[str, Any]:
+        """La respuesta en el formato del indice heredado (`calls`)."""
+        return {
+            "role": self.role,
+            "text": self.text,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "finish_reason": self.finish_reason,
+        }
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq,
+            "call_id": self.call_id,
+            "fingerprint": self.fingerprint,
+            "batch_index": self.batch_index,
+            "turn": self.turn,
+            **self.entry(),
+        }
+
+
+@dataclass
+class Recording:
+    """Respuestas grabadas de un caso, con su orden (E0e de 023).
+
+    `order` es la verdad: la lista de llamadas en el orden en que ocurrieron.
+    `calls` es un indice por fingerprint (la primera ocurrencia de cada prompt)
+    que conserva a los consumidores que solo necesitan saber que se grabo y con
+    que rol. Una grabacion anterior a E0e no trae `order`: se puede reproducir
+    por fingerprint, pero **no** se puede medir por lote y no se le inventa uno.
     """
 
     case: str
     case_fingerprint: str
     calls: dict[str, dict[str, Any]]
+    order: list[RecordedCall] | None = field(default_factory=list)
+
+    @property
+    def measurable_by_batch(self) -> bool:
+        """¿La grabacion declara lote y turno de cada llamada?"""
+        return self.order is not None
 
     @classmethod
     def load(cls, path: str | Path) -> Recording:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw_order = data.get("order")
+        if raw_order is None:
+            return cls(
+                case=str(data["case"]),
+                case_fingerprint=str(data["case_fingerprint"]),
+                calls={str(key): dict(value) for key, value in data.get("calls", {}).items()},
+                order=None,
+            )
+        recorded = [_recorded_call(raw) for raw in raw_order]
+        calls: dict[str, dict[str, Any]] = {}
+        for call in recorded:
+            calls.setdefault(call.fingerprint, call.entry())
         return cls(
             case=str(data["case"]),
             case_fingerprint=str(data["case_fingerprint"]),
-            calls={str(key): value for key, value in data.get("calls", {}).items()},
+            calls=calls,
+            order=recorded,
         )
 
     def dump(self) -> str:
-        return (
-            json.dumps(
-                {
-                    "case": self.case,
-                    "case_fingerprint": self.case_fingerprint,
-                    "calls": self.calls,
-                },
-                sort_keys=True,
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        )
+        # `order` manda; `calls` se deriva de el para que el indice no discrepe.
+        payload: dict[str, Any] = {
+            "case": self.case,
+            "case_fingerprint": self.case_fingerprint,
+            "calls": self.calls,
+        }
+        if self.order is not None:
+            index: dict[str, int] = {}
+            for call in self.order:
+                index.setdefault(call.fingerprint, call.call_id)
+            payload["calls"] = index
+            payload["order"] = [call.to_json() for call in self.order]
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n"
+
+
+def _recorded_call(raw: Mapping[str, Any]) -> RecordedCall:
+    return RecordedCall(
+        seq=int(raw.get("seq", 0)),
+        call_id=int(raw.get("call_id", 0)),
+        fingerprint=str(raw.get("fingerprint", "")),
+        role=str(raw.get("role", "")),
+        batch_index=None if raw.get("batch_index") is None else int(raw["batch_index"]),
+        turn=None if raw.get("turn") is None else int(raw["turn"]),
+        text=str(raw.get("text", "")),
+        prompt_tokens=int(raw.get("prompt_tokens", 0)),
+        completion_tokens=int(raw.get("completion_tokens", 0)),
+        reasoning_tokens=int(raw.get("reasoning_tokens", 0)),
+        finish_reason=str(raw.get("finish_reason", "")),
+    )
 
 
 class ReplayLlm:
@@ -610,6 +694,12 @@ class ReplayLlm:
         self._recording = recording
         self._role = role
         self._used: set[str] = set()
+        # Con `order`, cada llamada grabada se sirve una vez y en su orden: dos
+        # turnos con el mismo prompt dejan de confundirse (E0e).
+        self._pending: dict[str, deque[RecordedCall]] = {}
+        for call in recording.order or ():
+            if call.role == role:
+                self._pending.setdefault(call.fingerprint, deque()).append(call)
         # Tokens de las respuestas servidas: es el gasto del run (E13). El `usage`
         # real lo reporta el proveedor y viaja en la grabacion; en replay se suma.
         self.total_tokens = 0
@@ -640,6 +730,32 @@ class ReplayLlm:
             json_mode=json_mode,
             response_schema=response_schema,
         )
+        entry = self._next_entry(fingerprint)
+        reply = LlmReply(
+            text=str(entry["text"]),
+            prompt_tokens=int(entry.get("prompt_tokens", 0)),
+            completion_tokens=int(entry.get("completion_tokens", 0)),
+            reasoning_tokens=int(entry.get("reasoning_tokens", 0)),
+            finish_reason=str(entry.get("finish_reason", "")),
+        )
+        self.total_tokens += reply.total_tokens
+        return reply
+
+    def _next_entry(self, fingerprint: str) -> Mapping[str, Any]:
+        """La siguiente respuesta para ese prompt, o aborto si la grabacion no llega."""
+        if self._recording.order is not None:
+            queue = self._pending.get(fingerprint)
+            if not queue:
+                if fingerprint in self._recording.calls:
+                    raise FingerprintMismatch(
+                        f"el fingerprint {fingerprint} ya se consumio: la grabacion no "
+                        f"cubre estos turnos; regraba con `make eval-record`"
+                    )
+                raise FingerprintMismatch(
+                    f"el prompt del rol {self._role!r} no casa la grabacion "
+                    f"(fingerprint {fingerprint}); regraba con `make eval-record`"
+                )
+            return queue.popleft().entry()
         entry = self._recording.calls.get(fingerprint)
         if entry is None:
             raise FingerprintMismatch(
@@ -652,15 +768,7 @@ class ReplayLlm:
                 f"esta llamada; regraba con `make eval-record`"
             )
         self._used.add(fingerprint)
-        reply = LlmReply(
-            text=str(entry["text"]),
-            prompt_tokens=int(entry.get("prompt_tokens", 0)),
-            completion_tokens=int(entry.get("completion_tokens", 0)),
-            reasoning_tokens=int(entry.get("reasoning_tokens", 0)),
-            finish_reason=str(entry.get("finish_reason", "")),
-        )
-        self.total_tokens += reply.total_tokens
-        return reply
+        return entry
 
 
 def record_call(
@@ -673,11 +781,16 @@ def record_call(
     reply: LlmReply,
     json_mode: JsonMode | None = None,
     response_schema: dict[str, Any] | None = None,
+    batch_index: int | None = None,
+    turn: int | None = None,
 ) -> str:
-    """Guarda una respuesta real en `recording` bajo su fingerprint. Devuelve la huella.
+    """Guarda una respuesta real en `recording` con su sitio en la corrida.
 
-    Lo usa `make eval-record` (E7): graba cada llamada a medida que ocurre, por
-    rol, para que regrabar un rol no invalide los demas.
+    Devuelve la huella del prompt. Lo usa `make eval-record` (E7): graba cada
+    llamada a medida que ocurre, por rol, para que regrabar un rol no invalide
+    los demas. `batch_index`/`turn` los aporta el `BatchTracker`; sin el (p. ej.
+    el verificador) quedan `None`, que es «no se», no un cero. Una grabacion
+    cargada de un fichero sin `order` no se puede ampliar: su orden no existe.
     """
     fingerprint = prompt_fingerprint(
         role=role,
@@ -687,7 +800,7 @@ def record_call(
         json_mode=json_mode,
         response_schema=response_schema,
     )
-    recording.calls[fingerprint] = {
+    entry = {
         "role": role,
         "text": reply.text,
         "prompt_tokens": reply.prompt_tokens,
@@ -695,6 +808,30 @@ def record_call(
         "reasoning_tokens": reply.reasoning_tokens,
         "finish_reason": reply.finish_reason,
     }
+    # El indice conserva la primera ocurrencia del prompt; las repeticiones viven
+    # en `order`, que es la verdad (E0e).
+    if recording.order is None:
+        raise ValueError(
+            "la grabacion se cargo de un fichero sin `order`: no se puede ampliar "
+            "sin inventar el orden de lo ya grabado; empieza una grabacion nueva"
+        )
+    recording.calls.setdefault(fingerprint, entry)
+    call_id = len(recording.order)
+    recording.order.append(
+        RecordedCall(
+            seq=call_id + 1,
+            call_id=call_id,
+            fingerprint=fingerprint,
+            role=role,
+            batch_index=batch_index,
+            turn=turn,
+            text=reply.text,
+            prompt_tokens=reply.prompt_tokens,
+            completion_tokens=reply.completion_tokens,
+            reasoning_tokens=reply.reasoning_tokens,
+            finish_reason=reply.finish_reason,
+        )
+    )
     return fingerprint
 
 
@@ -711,6 +848,35 @@ def fingerprints_by_role(recording: Recording) -> dict[str, str]:
     return {role: ",".join(sorted(values)) for role, values in sorted(result.items())}
 
 
+@dataclass
+class BatchTracker:
+    """Etiqueta cada llamada grabada con su lote y su turno (E0e de 023).
+
+    Es un `ReasoningSink`: el revisor ya emite un `start` por lote antes de cada
+    intento (el mismo evento que consume el panel), asi que el lote no se
+    adivina ni se deduce del prompt. Los turnos del bucle se cuentan desde ese
+    `start`; un reintento del lote vuelve a emitirlo y reinicia el turno.
+    """
+
+    batch_index: int | None = None
+    turn: int = 0
+
+    def emit(self, review_key: str, event: ReasoningEvent) -> None:
+        del review_key
+        if event.kind != "start":
+            return
+        self.batch_index = event.batch - 1
+        self.turn = 0
+
+    def take(self) -> tuple[int | None, int | None]:
+        """Lote y turno de la llamada que empieza; avanza el turno."""
+        if self.batch_index is None:
+            return None, None
+        turn = self.turn
+        self.turn += 1
+        return self.batch_index, turn
+
+
 class RecordingLlm:
     """`LlmPort` que envuelve al modelo real y graba cada respuesta (E7).
 
@@ -719,10 +885,20 @@ class RecordingLlm:
     reproduzca exactamente lo mismo. `total_tokens` acumula el gasto del run.
     """
 
-    def __init__(self, inner: LlmPort, recording: Recording, *, role: str) -> None:
+    def __init__(
+        self,
+        inner: LlmPort,
+        recording: Recording,
+        *,
+        role: str,
+        tracker: BatchTracker | None = None,
+    ) -> None:
         self._inner = inner
         self._recording = recording
         self._role = role
+        # El mismo tracker que escucha el `start` del lote etiqueta la grabacion
+        # (E0e); se expone para que `run_case` no tenga que recibirlo aparte.
+        self.tracker = tracker
         self.total_tokens = 0
 
     def complete(
@@ -746,6 +922,7 @@ class RecordingLlm:
             response_schema=response_schema,
             **extra,
         )
+        batch_index, turn = self.tracker.take() if self.tracker is not None else (None, None)
         record_call(
             self._recording,
             role=self._role,
@@ -755,6 +932,8 @@ class RecordingLlm:
             reply=reply,
             json_mode=json_mode,
             response_schema=response_schema,
+            batch_index=batch_index,
+            turn=turn,
         )
         self.total_tokens += reply.total_tokens
         return reply
@@ -900,6 +1079,9 @@ def run_case(
     `merge` y `policy`: es el escenario de produccion, donde un `REFUTED` sale
     `DROP` y los P0/P1 no verificados degradan. Sin el, el nodo es paso directo y
     se mide la precision **cruda** del revisor (el baseline de 008).
+
+    El revisor escucha por el `tracker` del grabador (`RecordingLlm`), que es lo
+    que permite etiquetar cada llamada con lote y turno (023 E0e).
     """
     reviewer = LlmReviewer(
         llm=llm,
@@ -907,6 +1089,9 @@ def run_case(
         max_findings=int(case.scope.get("review_max_findings", 10)),
         reader_factory=reader_factory,
         tool_limits=tool_limits,
+        # El grabador trae su tracker (`RecordingLlm.tracker`): el mismo objeto
+        # escucha el `start` y etiqueta la llamada, sin pasarlo por dos sitios.
+        reasoning_sink=getattr(llm, "tracker", None),
     )
     graph = build_graph(
         vcs=vcs,

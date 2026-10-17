@@ -54,6 +54,13 @@ altera lo que recibe el modelo invalida el fingerprint y CI **falla** pidiendo
 regrabar (ver [ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)). El
 harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.py`.
 
+Una grabación guarda `order`: la lista de llamadas en el orden en que ocurrieron,
+con `seq`, `call_id`, `batch_index` y `turn`, y `calls` como índice por *fingerprint*.
+El *replay* consume una llamada por vez, así que dos turnos con el mismo *prompt* no
+se confunden. Una grabación anterior a ese formato (sin `order`) sigue sirviendo para
+*replay* por *fingerprint*, pero `Recording.measurable_by_batch` es `False`: no se le
+inventa el orden ni el lote.
+
 Un caso declara sus ficheros en `fixtures/head/` y `fixtures/base/` (los árboles a
 `head_sha` y `base_sha` de `labels.yaml`; los directorios tocados por el diff más los
 que lea la grabación, Q4 de [014](iniciativas/014-revisor-con-herramientas/spec.md)).

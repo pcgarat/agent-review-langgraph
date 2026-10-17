@@ -60,7 +60,7 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     parcial).
   - Ficheros: `tests/test_llm_reviewer.py`, `tests/test_graph_*.py`.
 
-- [ ] **T3** La grabación guarda **orden y unicidad** (E0e, R10)
+- [x] **T3** La grabación guarda **orden y unicidad** (E0e, R10)
   - `tests/eval/harness.py`: además de `calls` (índice por *fingerprint*), guardar
     una lista ordenada `order` con `{call_id, fingerprint, role, batch_index, turn}`
     por llamada. `call_id` único (contador), no el *fingerprint*: dos llamadas con el
@@ -75,6 +75,10 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/eval/test_eval_harness.py`, `tests/eval/test_eval_pr_3.py`.
   - Ficheros: `tests/eval/harness.py`, `tests/eval/pr_3/recorded_tools.json` (nuevo
     campo), `docs/arquitectura.md` §7 (D28).
+  - Hecho: el formato, el *replay* por llamada y el `BatchTracker` (escucha el
+    `start` del lote, sin tocar el *prompt* ni el *fingerprint*). Las grabaciones
+    actuales siguen en el formato viejo y se declaran **no medibles por lote**; la
+    regrabación que estrena el formato es la **única** de F1.
 
 - [ ] **F1** Flags de verdad: `Settings`, `.env.example` y *prompt* de capacidades
   (E11, E11b, criterio 9)
