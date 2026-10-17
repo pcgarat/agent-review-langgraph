@@ -5,6 +5,7 @@ import hashlib
 import logging
 import operator
 import shlex
+from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -17,6 +18,7 @@ from agent_review.domain.models import (
     ApprovalRequest,
     Decision,
     DecisionOutcome,
+    FileClass,
     Finding,
     FixResolutions,
     FixResult,
@@ -24,9 +26,11 @@ from agent_review.domain.models import (
     FixWaitRequest,
     HitlDecision,
     PendingDecision,
+    ReviewCoverage,
     ReviewOutcome,
     ReviewRequest,
     Severity,
+    SkipReason,
     ToolingSourceStatus,
 )
 from agent_review.errors import is_transient
@@ -39,7 +43,12 @@ from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.vcs import ReviewMarker, VcsPort
-from agent_review.scope import filter_diff, limit_files, merge_ignore_patterns
+from agent_review.scope import (
+    merge_file_classes,
+    merge_ignore_patterns,
+    prioritize_diff,
+    split_diff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +101,10 @@ class ReviewState(TypedDict, total=False):
     # `ReviewOutcome` se deriva de el (`tokens_spent`) sin consultar el puerto: el
     # hecho viaja en el estado y el `replay` sigue siendo determinista (017 B4).
     budget_total: int | None
+    # Cobertura de la review (012 C1): `scope` la crea con los ignorados y la clase
+    # de cada fichero; cada persona que revisa por lotes anade lo que leyo y lo que
+    # no. El reducer las combina: un fichero cuenta como revisado si alguien lo leyo.
+    coverage: Annotated[ReviewCoverage | None, _merge_coverage]
     # Resultado del merge: sin reducer, se sustituye (no se acumula).
     merged: list[Finding]
     # Juicio de la politica sobre cada hallazgo mergeado. Sin reducer.
@@ -119,6 +132,16 @@ class ReviewState(TypedDict, total=False):
     # Valor del `Command(resume=...)` de `fix_wait`: la wave resuelta por el worker
     # de fixes. Al reanudar, el nodo lo lee; una reentrega sin resolucion no lo toca.
     fix_resolution: FixResolutions | None
+
+
+def _merge_coverage(
+    left: ReviewCoverage | None, right: ReviewCoverage | None
+) -> ReviewCoverage | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return left.combine(right)
 
 
 def _merge_sources(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
@@ -408,6 +431,7 @@ def build_graph(
     delivery: DeliveryFormatter | None = None,
     fix_recipes: list[str] | None = None,
     scope_ignore: str = "",
+    scope_classes: Mapping[str, list[str]] | None = None,
     retry_policy: RetryPolicy | None = None,
     verification_enabled: bool = True,
     budget_total: int | None = None,
@@ -441,29 +465,17 @@ def build_graph(
     # Antes de definir los nodos: `persona` necesita saber cuantos intentos tiene.
     retry = retry_policy if retry_policy is not None else default_retry_policy()
     recipes = fix_recipes or []
+    # Clases de fichero del perfil sumadas a las de por defecto (012 C5); se
+    # resuelven una vez al construir el grafo, no en cada review.
+    classes = merge_file_classes(scope_classes)
 
     def scope(state: ReviewState) -> ReviewState:
         request = ReviewRequest.model_validate(state["request"])
         diff = vcs.get_diff(request.repo, request.pr_id)
-        # Ruido fuera (lockfiles, generados, vendor) y, si se declara, tope de
-        # ficheros por PR. Ambas cosas acotan lo que ven las personas.
-        allowed: list[str] | None = None
-        max_files = int(policy.guards.get("max_files_per_pr", 0) or 0)
-        if max_files > 0:
-            diffstat = vcs.get_diffstat(request.repo, request.pr_id)
-            if diffstat:
-                kept, truncated = limit_files(diffstat, max_files)
-                if truncated:
-                    logger.warning(
-                        "PR %s#%s: %d ficheros superan max_files_per_pr=%d; se revisan %d",
-                        request.repo,
-                        request.pr_id,
-                        len(diffstat),
-                        max_files,
-                        len(kept),
-                    )
-                allowed = kept
-        diff = filter_diff(diff, merge_ignore_patterns(scope_ignore), allowed=allowed)
+        # Ruido fuera (lockfiles, generados, vendor) y el resto ordenado por
+        # prioridad, sin recortar (012 C8): el unico tope de coste es el presupuesto
+        # por review, y quien se corta por el lo declara en la cobertura.
+        diff, coverage = prioritize_diff(diff, merge_ignore_patterns(scope_ignore), classes)
         # Las recetas y targets se fijan aqui (una vez por review, del perfil) y
         # viajan en el estado: `build_fix_wait` los necesita para armar la wave sin
         # conocer la configuracion.
@@ -475,6 +487,7 @@ def build_graph(
             "fix_recipes": list(recipes),
             "fix_max_attempts": int(policy.guards.get("max_fix_attempts", 2) or 1),
             "budget_total": budget_total,
+            "coverage": coverage,
         }
 
     def dispatch(state: ReviewState) -> list[Send]:
@@ -517,11 +530,18 @@ def build_graph(
                 attempt,
                 exc,
             )
-            return {"findings": []}
+            if not getattr(reviewer, "declares_coverage", False):
+                return {"findings": []}
+            # Quien declara cobertura y cae entera no leyo nada: se dice, para que
+            # "sin hallazgos" no se lea como "revisado y limpio" (012).
+            failed = {path: SkipReason.FAILED for path, _ in split_diff(state["diff"])}
+            return {"findings": [], "coverage": ReviewCoverage(skipped=failed)}
         update: ReviewState = {
             "findings": result.findings,
             "finding_sources": {_finding_id(f): reviewer.name for f in result.findings},
         }
+        if result.coverage is not None:
+            update["coverage"] = result.coverage
         if result.tooling_status is not None:
             update["source_status"] = {reviewer.name: result.tooling_status}
         if result.budget_exhausted:
@@ -700,11 +720,13 @@ def build_graph(
         human = state.get("human_decisions")
         fixes = state.get("fixes", {})
         unavailable = _unavailable_sources(state)
-        if not findings and not unavailable:
+        coverage = state.get("coverage")
+        partial = coverage is not None and coverage.partial
+        if not findings and not unavailable and not partial:
             logger.info("PR %s#%s: sin hallazgos", request.repo, request.pr_id)
             return {}
 
-        complete = not unavailable
+        complete = not unavailable and not partial
         published = _published_markers(vcs, request)
         # Solo se salta si ESTA ejecucion ya dejo su marca con la misma
         # completitud (o una completa, que no se degrada). Un reintento
@@ -734,6 +756,15 @@ def build_graph(
                 request.repo,
                 request.pr_id,
                 ", ".join(f"{name}={status.value}" for name, status in unavailable),
+            )
+        if partial and coverage is not None:
+            # Codigo o configuracion sin leer (012 C7): mismo trato que una fuente
+            # estatica sin cubrir. Es informativo: no cambia ninguna accion (Q3).
+            logger.warning(
+                "PR %s#%s: review parcial, sin revisar: %s",
+                request.repo,
+                request.pr_id,
+                ", ".join(f"{path}={reason.value}" for path, reason in coverage.skipped.items()),
             )
 
         by_id = {d.finding_id: d for d in decisions}
@@ -810,6 +841,7 @@ def build_graph(
             token=request.dedupe_token,
             complete=complete,
             human=human,
+            coverage=coverage,
         )
         if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
             vcs.post_comment(request.repo, request.pr_id, summary)
@@ -1084,6 +1116,7 @@ def _render_summary(
     token: str = "",
     complete: bool = True,
     human: HitlDecision | None = None,
+    coverage: ReviewCoverage | None = None,
 ) -> str:
     by_key = {d.finding_id: d for d in decisions}
     fixes = fixes or {}
@@ -1092,6 +1125,8 @@ def _render_summary(
     lines: list[str] = []
     if unavailable:
         lines.extend(_render_incomplete_header(unavailable))
+    if coverage is not None:
+        lines.extend(_render_partial_header(coverage))
     lines.extend(
         [
             "## Code review automatica",
@@ -1135,6 +1170,65 @@ def _render_fixes_section(fixes: dict[str, FixResult]) -> list[str]:
         counts[result.status] = counts.get(result.status, 0) + 1
     detail = ", ".join(f"{status.value}: {count}" for status, count in sorted(counts.items()))
     return ["### Fixes", "", detail, ""]
+
+
+_SKIP_NOTE = {
+    SkipReason.TOO_LARGE: "demasiado grande para un lote",
+    SkipReason.BUDGET: "presupuesto agotado",
+    SkipReason.FAILED: "fallo del modelo",
+}
+_CLASS_NOTE = {
+    FileClass.CONFIG: "de configuración",
+    FileClass.CODE: "de código",
+    FileClass.TEST: "de tests",
+    FileClass.DOCS: "de documentación",
+}
+
+
+def _render_partial_header(coverage: ReviewCoverage) -> list[str]:
+    """Cabecera de review parcial y lista plegable de tests/docs sin leer (012 §5.5).
+
+    Lo ignorado (ruido) no se lista. Codigo o configuracion sin leer hacen la review
+    parcial; tests y docs solo se mencionan, plegados.
+    """
+    unread = {
+        path: reason
+        for path, reason in coverage.skipped.items()
+        if reason is not SkipReason.IGNORED
+    }
+    if not unread:
+        return []
+    by_class: dict[FileClass, list[str]] = {}
+    for path, reason in unread.items():
+        note = f"`{path}` ({_SKIP_NOTE.get(reason, reason.value)})"
+        by_class.setdefault(coverage.class_of(path), []).append(note)
+    lines: list[str] = []
+    major = [c for c in (FileClass.CONFIG, FileClass.CODE) if c in by_class]
+    if major:
+        relevant = coverage.files_total - sum(
+            1 for reason in coverage.skipped.values() if reason is SkipReason.IGNORED
+        )
+        detail = "; ".join(
+            f"{len(by_class[c])} {_CLASS_NOTE[c]}: {', '.join(by_class[c])}" for c in major
+        )
+        lines += [
+            f"> **Review parcial:** sin revisar {sum(len(by_class[c]) for c in major)} de "
+            f"{relevant} ficheros relevantes. {detail}. Los hallazgos de abajo no cubren "
+            "esos ficheros.",
+            "",
+        ]
+    minor = [c for c in (FileClass.TEST, FileClass.DOCS) if c in by_class]
+    if minor:
+        items = "; ".join(f"{_CLASS_NOTE[c]}: {', '.join(by_class[c])}" for c in minor)
+        lines += [
+            "<details><summary>Sin revisar (no cambia el resultado)</summary>",
+            "",
+            items,
+            "",
+            "</details>",
+            "",
+        ]
+    return lines
 
 
 def _render_incomplete_header(
@@ -1269,6 +1363,7 @@ def outcome_from_state(state: ReviewState, *, paused: bool = False) -> ReviewOut
         budget_exhausted=sorted(state.get("budget_exhausted", set())),
         tokens_spent=dict(state.get("tokens_spent", {})),
         tokens_remaining=_remaining(state),
+        coverage=state.get("coverage"),
     )
 
 

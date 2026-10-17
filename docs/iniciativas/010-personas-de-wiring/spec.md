@@ -20,7 +20,7 @@ Los **tres P1 que la review no detectó** eran **deriva entre ficheros de
 configuración** (el aislamiento del `fix-worker`, su contrato de arranque y el valor
 por defecto de `MODELS_CONFIG`). Estaban en el diff del PR, pero el `scope` dejó
 fuera `docker-compose.yml` y `settings.py` (ver
-[012](../012-cobertura-de-la-review/spec.md)). Arreglar la cobertura es necesario,
+[012](../archivo/012-cobertura-de-la-review/spec.md)). Arreglar la cobertura es necesario,
 pero no suficiente: aunque el LLM vea los dos ficheros, nada garantiza que cruce un
 `environment:` de compose con una llamada en `fixworker/main.py`. Hace falta mirar
 pares que deben concordar, y hoy nadie lo comprueba.

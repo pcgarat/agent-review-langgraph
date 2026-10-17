@@ -43,6 +43,7 @@ from agent_review.domain.models import (
     PendingDecision,
     ReviewOutcome,
     ReviewRequest,
+    SkipReason,
 )
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
@@ -66,7 +67,7 @@ from agent_review.ports.progress import clear as clear_progress
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
-from agent_review.profile import expected_tools, fix_recipes, load_profile
+from agent_review.profile import expected_tools, fix_recipes, load_profile, scope_classes
 from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import (
     Settings,
@@ -256,6 +257,7 @@ def build_reviewers(
                 max_findings=settings.llm_max_findings,
                 budget=budget,
                 budget_limit=limit,
+                batch_max_chars=settings.llm_batch_max_chars,
             )
         )
 
@@ -434,6 +436,7 @@ def build_runtime(
         delivery=build_delivery(settings),
         fix_recipes=fix_recipes(settings),
         scope_ignore=settings.scope_ignore,
+        scope_classes=scope_classes(load_profile(settings)),
         retry_policy=node_retry_policy(settings),
         verification_enabled=verification_enabled(settings),
         budget_total=settings.llm_budget_tokens_per_pr,
@@ -1076,11 +1079,23 @@ def _log_outcome(result: ReviewState) -> ReviewOutcome:
         # No se hizo el analisis declarado: no es una review completada. No se
         # reencola: la ingesta diferida ya espero al artefacto (barrera/TTL), asi
         # que reintentar aqui solo duplicaria la publicacion.
+        unread = (
+            [
+                f"{path}={reason.value}"
+                for path, reason in outcome.coverage.skipped.items()
+                if reason is not SkipReason.IGNORED
+            ]
+            if outcome.coverage is not None
+            else []
+        )
         logger.warning(
             "Review INCOMPLETA %s; sin cobertura de: %s",
             outcome.request.review_key,
             ", ".join(
-                f"{name}={status.value}" for name, status in outcome.unavailable_sources.items()
+                [
+                    *(f"{n}={s.value}" for n, s in outcome.unavailable_sources.items()),
+                    *unread,
+                ]
             ),
         )
     return outcome

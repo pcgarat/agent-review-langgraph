@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Evaluación de la review: gold set y métricas
 
@@ -23,7 +23,7 @@ y **1** era cierto en parte. La revisión del código a mano fijó **7 hallazgos
 en total: además de ese fallo invertido y del cierto en parte, **no detectó 3 `P1`** de
 integración y configuración **ni 3 `P2`** de código. Los seis estaban en el diff del
 PR, pero el `scope` y el recorte del prompt los dejaron fuera de lo que vio el modelo
-(ver [012](../../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona,
+(ver [012](../012-cobertura-de-la-review/spec.md)). Ese juicio —hecho por una persona,
 hallazgo a hallazgo— es valiosísimo y hoy no está en ninguna parte: se pierde al cerrar
 la pestaña. Y sin un número no hay forma de saber si un *prompt* nuevo mejora o solo
 cambia el ruido.
@@ -96,7 +96,7 @@ Los seis últimos **sí estaban en el diff del PR**, pero no en lo que vio el mo
 #1, #2, #3 y #5 por **cobertura**, el #6 y #7 por **contexto**: de 51 ficheros,
 `max_files_per_pr: 10` dejó 10 (ordenados por churn) y el corte a
 60 000 caracteres dejó ≈ 5 (reproducción en
-[012 §3.1](../../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
+[012 §3.1](../012-cobertura-de-la-review/spec.md)). El *gold set* tiene que poder
 decir eso en dos números: el `recall` del subconjunto `integracion`/`no_detectado` y la
 cobertura.
 
@@ -269,7 +269,7 @@ de CI reproduce el baseline exacto y las mejoras que actúan **después** del mo
 [011](../../011-gate-de-severidad/spec.md)) se ven **sin gastar un token**.
 
 Las que cambian **lo que recibe** el modelo (lotes de
-[012](../../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
+[012](../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
 verificador de [009](../../009-verificador-adversarial/spec.md)) invalidan el
 fingerprint: exigen regrabar con `make eval-record`, y esa regrabación es parte del
 PR que las introduce. Las grabaciones se guardan **por rol y por llamada**

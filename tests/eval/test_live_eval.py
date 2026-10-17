@@ -33,9 +33,6 @@ ROLE = "correctness"
 
 def _policy(case: harness.Case) -> PolicyEngine:
     engine = PolicyEngine.from_file(ROOT / "config" / "autonomy.yaml")
-    max_files = case.scope.get("max_files_per_pr")
-    if max_files is not None:
-        engine.guards["max_files_per_pr"] = int(max_files)
     return engine
 
 
@@ -53,8 +50,8 @@ def test_la_corrida_real_emite_el_informe_y_compara() -> None:
     report = harness.evaluate(case, llm=port, policy=_policy(case), mode="live")
 
     assert report.case == case.name
-    # `coverage` sale de `last_seen_files`, independiente del modelo: si el
-    # recorte cambia, la corrida real lo ve igual que el replay.
+    # `coverage` sale de la `ReviewCoverage` del grafo (012): lo que el modelo
+    # llego a leer, independiente de lo que respondiera.
     assert report.metrics["coverage"] is not None
     assert harness.compare(report, _load_report(BASELINE)) in tuple(harness.Verdict)
 

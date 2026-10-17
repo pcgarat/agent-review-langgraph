@@ -76,7 +76,10 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Estado de la fuente** | `present` / `missing` / `unreadable`. Separa «análisis limpio» de «no se pudo leer la salida». |
 | **Review incompleta** | Alguna fuente estática declarada no estaba `present`. Su «0 hallazgos» **no** significa «PR limpio» y se publica con aviso. |
 | **Merge** | Paso que deduplica: mismo `(fichero, línea, título)`, o mismo `(fichero, título)` a ≤5 líneas visto por **personas distintas**. Conserva la evidencia más rica. |
-| **Scope** | Recorte del diff antes de las personas: fuera el ruido (lockfiles, `vendor/**`, `var/**`, generados) y, si se declara, solo los `max_files_per_pr` ficheros con más churn. |
+| **Scope** | Preparación del diff antes de las personas: fuera el ruido (lockfiles, `vendor/**`, `var/**`, generados) y el resto ordenado por clase y churn. No recorta: el único tope es el presupuesto. |
+| **Clase de fichero** (`FileClass`) | `config`, `code`, `test` o `docs`, por *globs* (`scope.classify`, ampliable con `scope.classes` del perfil). Decide la prioridad de revisión y si un fichero sin leer hace parcial la review. |
+| **Cobertura** (`ReviewCoverage`) | Qué ficheros del PR se revisaron y cuáles no, con su motivo: `ignored`, `too_large`, `budget` o `failed`. Solo cuenta lo **declarado**. |
+| **Review parcial** | Quedó código o configuración sin leer (nunca por ser ruido ignorado). Se publica con cabecera y marca `:partial`, aunque no haya hallazgos; es informativa, no cambia ninguna acción. Distinta de la *review incompleta*, que es de las fuentes estáticas. |
 
 ---
 
@@ -91,7 +94,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Techo** (`max_autonomy`) | Máxima autonomía permitida. Es un parámetro de uso: lo ajusta quien opera el agente. Con `report` (el valor por defecto), todo (también `escalate`) se degrada a `report`. |
 | **Clamp** | Aplicar el techo a la acción de una regla. |
 | **Override del techo** | `MAX_AUTONOMY_OVERRIDE`: un despliegue puede **bajar** el techo del YAML, nunca subirlo. |
-| **Guarda** | Límite de `guards:` en el YAML (`max_inline_comments`, `max_files_per_pr`, `max_fix_attempts`…). |
+| **Guarda** | Límite de `guards:` en el YAML (`max_inline_comments`, `max_fix_attempts`, `never_auto_paths`…). |
 | **Ruta nunca-auto** | Fichero que casa con `never_auto_paths` (migraciones, `docker/**`, `.github/**`, auth…). Convierte la acción en `fix_with_approval` salvo que las reglas digan `escalate`, y bloquea cualquier fix. |
 
 ---
@@ -169,7 +172,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Reserva** | Antes de cada llamada se **reserva** la estimación (`len(text)//4`); al volver se **confirma** el gasto real del `usage`. Sin reserva, varias ramas en paralelo pasarían la comprobación a la vez y la superarían entre todas. Un `reserve` que devuelve `False` es **vinculante**: la llamada no se hace. |
 | **`remaining`** | Saldo = `total − confirmado − reservado sin confirmar`. Descuenta lo reservado y aún no confirmado: si solo contara lo confirmado, dos ramas verían el mismo saldo. |
 | **Tope blando por persona** | Reparto «el primero que llega» sobre el contador compartido, con un tope por persona de `2 × total / N` (`N` = personas LLM). Acota lo que una persona con *prompt* grande se come del común sin desperdiciar lo que otra no usa. |
-| **Corte por presupuesto** | Agotado el tope, la persona **no llama al modelo** y anota el hecho: `budget_exhausted` en el `ReviewerResult` y `tokens_spent`/`tokens_remaining` en el `ReviewOutcome`. La review termina con menos cobertura, nunca caída ([012](docs/iniciativas/012-cobertura-de-la-review/spec.md) lo pinta como `SkipReason.BUDGET`). |
+| **Corte por presupuesto** | Agotado el tope, la persona **no llama al modelo** y anota el hecho: `budget_exhausted` en el `ReviewerResult` y `tokens_spent`/`tokens_remaining` en el `ReviewOutcome`. La review termina con menos cobertura, nunca caída ([012](docs/iniciativas/archivo/012-cobertura-de-la-review/spec.md) lo pinta como `SkipReason.BUDGET`). |
 
 ---
 

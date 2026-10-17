@@ -42,7 +42,7 @@ sandbox y personas de *wiring*) queda **fuera** y vive en otras tajadas.
 Depende de la iniciativa [007 — contrato de verificación](../archivo/007-contrato-de-verificacion/spec.md),
 que añade al contrato de hallazgo los campos `verification` y `context_scope` que L0
 y L1 necesitan para expresar sus veredictos, y de
-[012 — cobertura](../012-cobertura-de-la-review/spec.md): el fichero completo solo
+[012 — cobertura](../archivo/012-cobertura-de-la-review/spec.md): el fichero completo solo
 cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado.
 
 ## 2. No-objetivos
@@ -59,7 +59,7 @@ cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado
   hallazgo; qué se hace con ellos (degradar, publicar en el resumen) lo decide el
   gate de [011](../011-gate-de-severidad/spec.md).
 - **Que el diff llegue entero al revisor.** Es
-  [012](../012-cobertura-de-la-review/spec.md).
+  [012](../archivo/012-cobertura-de-la-review/spec.md).
 - **Enrutado dinámico de modelos o recarga en caliente.** Sigue la decisión D2 de la
   iniciativa 005 ([ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)).
 - **Sustituir al `ToolingReviewer`.** PHPStan ya está *grounded*; L0/L1 son para las
@@ -85,7 +85,7 @@ también la fuente del baseline. Los hallazgos relevantes para L0/L1:
 Los tres P1 no detectados (el `fix-worker` con todos los secretos, un worker que no
 arranca en producción y `MODELS_CONFIG` que pisa `LLM_*`) estaban en el diff del PR,
 pero el `scope` y el corte de caracteres los dejaron fuera de lo que vio el modelo:
-es [012](../012-cobertura-de-la-review/spec.md). Su detección determinista como pares
+es [012](../archivo/012-cobertura-de-la-review/spec.md). Su detección determinista como pares
 de configuración es [010](../010-personas-de-wiring/spec.md). L1 ataca la otra causa:
 el contexto inventado sobre lo que sí se ve.
 
@@ -132,7 +132,7 @@ verifica.
 | D5 | L1 inyecta **fichero completo del hunk + documentos de contexto declarados en el perfil** (`context_docs:`), con tope de caracteres | Da el contexto que falta y las decisiones ya tomadas (H) sin acoplar el código a los documentos de un repo concreto. |
 | D6 | Regla de **humildad** en el *system prompt*: claim que depende de código no visible → `context_scope: outside_diff` y no probado | Ata el hueco de contexto a un campo del contrato en vez de a la inventiva del modelo. |
 | D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
-| D8 | El contexto se reparte **por lote** de [012](../012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
+| D8 | El contexto se reparte **por lote** de [012](../archivo/012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
 | D9 | Una cita que **no existe** en ninguna línea del fichero (ni añadida, ni de contexto, ni borrada) **se descarta** | No es un caso dudoso que proteger: es evidencia fabricada. Descartarla no cuesta recall real. |
 
 ## 5. Diseño o contrato
@@ -220,7 +220,7 @@ de [011](../011-gate-de-severidad/spec.md).
 
 ### 5.3 Presupuesto por lote
 
-Los lotes de [012](../012-cobertura-de-la-review/spec.md) ya garantizan que ningún
+Los lotes de [012](../archivo/012-cobertura-de-la-review/spec.md) ya garantizan que ningún
 fichero del diff se corta. L1 añade al lote su contexto con prioridad —diff, luego
 fichero completo, luego documentos de contexto— y un tope de caracteres propio.
 Cuando el contexto no entra, el lote sale sin él y la cobertura lo anota; nunca se

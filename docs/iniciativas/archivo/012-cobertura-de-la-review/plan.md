@@ -4,7 +4,7 @@
 
 El *qué y por qué* vive en [`spec.md`](spec.md); las tareas, en [`todo.md`](todo.md).
 Este plan fija el orden, las dependencias y lo que puede romperse por el camino.
-Cierra la deuda [D18](../../arquitectura.md) §7.
+Cierra la deuda [D18](../../../arquitectura.md) §7.
 
 ## Overview
 
@@ -17,7 +17,7 @@ Cinco piezas, en este orden:
    crea la cobertura con los ignorados y la deja en el estado.
 3. **Los lotes del `LlmReviewer`.** Ficheros enteros hasta `LLM_BATCH_MAX_CHARS`,
    cada lote reserva y confirma contra el presupuesto de
-   [017](../archivo/017-presupuesto-por-pr/spec.md), y la persona devuelve su
+   [017](../017-presupuesto-por-pr/spec.md), y la persona devuelve su
    cobertura (`too_large`, `budget`, `failed`).
 4. **La publicación.** Cabecera de review parcial (C7), marca `:partial` y cobertura
    en el `ReviewOutcome`.

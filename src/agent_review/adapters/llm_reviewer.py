@@ -13,14 +13,16 @@ from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
     ContextScope,
     Finding,
+    ReviewCoverage,
     ReviewerResult,
     Severity,
+    SkipReason,
     Verification,
 )
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.llm import LlmError, LlmPort, LlmReply
-from agent_review.scope import changed_files
+from agent_review.scope import split_diff
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,9 @@ el diff (una firma, una configuracion, otro fichero); `in_diff` si basta el diff
 Como maximo %d hallazgos.
 """
 
-# Un diff enorme no debe dispararse como prompt entero: se acota por coste.
-_MAX_DIFF_CHARS = 60_000
+# Tamano de lote por defecto (`LLM_BATCH_MAX_CHARS`): el antiguo corte unico.
+DEFAULT_BATCH_MAX_CHARS = 60_000
+_SEVERITY_RANK = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 3}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
 _CHARS_PER_TOKEN = 4
@@ -67,6 +70,33 @@ _CHARS_PER_TOKEN = 4
 
 def _estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
+
+
+def _batches(
+    blocks: list[tuple[str, str]], max_chars: int
+) -> tuple[list[list[tuple[str, str]]], list[str]]:
+    """Lotes de ficheros **enteros** en el orden recibido (ya priorizado por `scope`).
+
+    Nunca se corta un fichero (012 C2): el que solo ya no cabe va a `too_large` sin
+    gastar llamada (C3). Llenar en orden mantiene la prioridad: si el presupuesto se
+    agota, lo que se queda fuera es lo ultimo (tests y docs).
+    """
+    batches: list[list[tuple[str, str]]] = []
+    too_large: list[str] = []
+    current: list[tuple[str, str]] = []
+    size = 0
+    for path, block in blocks:
+        if len(block) > max_chars:
+            too_large.append(path)
+            continue
+        if current and size + len(block) > max_chars:
+            batches.append(current)
+            current, size = [], 0
+        current.append((path, block))
+        size += len(block)
+    if current:
+        batches.append(current)
+    return batches, too_large
 
 
 class LlmReviewer:
@@ -89,11 +119,13 @@ class LlmReviewer:
         max_tokens: int = 4096,
         budget: BudgetPort | None = None,
         budget_limit: int | None = None,
+        batch_max_chars: int = DEFAULT_BATCH_MAX_CHARS,
     ) -> None:
         self.name = name
         self._llm = llm
         self._max_findings = max_findings
         self._max_tokens = max_tokens
+        self._batch_max_chars = batch_max_chars
         # Presupuesto **compartido** por review (017 B1/B6): el puerto se consulta por
         # `review_key` y el contador lo ven a la vez todas las personas. `budget_limit`
         # es el tope blando por persona (B10) que calcula el wiring; sin el, el puerto
@@ -110,11 +142,10 @@ class LlmReviewer:
         # El **hecho** lo consume 012 para la cobertura; aqui solo se declara.
         self.budget_exhausted = False
         self.tokens_used = 0
-        # Ficheros que entraron de verdad en el prompt de la ultima llamada. Sale
-        # del diff ya recortado a `_MAX_DIFF_CHARS` (lo que el modelo vio, no lo
-        # que el PR traia): es la cota fiel para medir cobertura (E11 de 006) sin
-        # depender de una constante externa. Solo lectura.
-        self.last_seen_files: tuple[str, ...] = ()
+
+    # Revisa por lotes y declara lo que no lee (012): si la persona cae entera, el
+    # nodo marca sus ficheros como `failed` en vez de callar.
+    declares_coverage = True
 
     def review(
         self,
@@ -133,49 +164,64 @@ class LlmReviewer:
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
-        # del CI, asi que su ausencia de hallazgos si es un analisis limpio.
-        reply = self._call(diff, review_key)
-        if reply is None:
-            return ReviewerResult(
-                budget_exhausted=self.budget_exhausted, tokens_used=self.tokens_used
-            )
-        entries = self._entries(reply.text)
-        if entries is None:
-            return ReviewerResult(
-                budget_exhausted=self.budget_exhausted, tokens_used=self.tokens_used
-            )
-        files = parse_unified_diff(diff)
+        # del CI, asi que su ausencia de hallazgos si es un analisis limpio. Lo que no
+        # lee, en cambio, lo declara en la cobertura (012).
+        batches, too_large = _batches(split_diff(diff), self._batch_max_chars)
+        reviewed: list[str] = []
+        skipped: dict[str, SkipReason] = {path: SkipReason.TOO_LARGE for path in too_large}
         findings: list[Finding] = []
-        for entry in entries:
-            if len(findings) >= self._max_findings:
-                logger.info("correctness: tope de %d hallazgos alcanzado", self._max_findings)
-                break
-            finding = _to_finding(entry, files)
-            if finding is not None:
-                findings.append(finding)
+        for index, batch in enumerate(batches):
+            paths = [path for path, _ in batch]
+            if self.budget_exhausted:
+                skipped.update(dict.fromkeys(paths, SkipReason.BUDGET))
+                continue
+            text = "".join(block for _, block in batch)
+            reply = self._call(text, review_key)
+            if reply is None:
+                reason = SkipReason.BUDGET if self.budget_exhausted else SkipReason.FAILED
+                skipped.update(dict.fromkeys(paths, reason))
+                continue
+            entries = self._entries(reply.text)
+            if entries is None:
+                skipped.update(dict.fromkeys(paths, SkipReason.FAILED))
+                continue
+            reviewed.extend(paths)
+            files = parse_unified_diff(text)
+            findings.extend(f for f in (_to_finding(e, files) for e in entries) if f is not None)
+            logger.info(
+                "correctness: lote %d/%d revisado (%d ficheros)",
+                index + 1,
+                len(batches),
+                len(paths),
+            )
         return ReviewerResult(
-            findings=findings,
+            findings=self._cap(findings),
             budget_exhausted=self.budget_exhausted,
             tokens_used=self.tokens_used,
+            coverage=ReviewCoverage(reviewed=reviewed, skipped=skipped),
         )
 
+    def _cap(self, findings: list[Finding]) -> list[Finding]:
+        """`max_findings` sobre el total de la persona, primero lo mas grave (012 §5.3)."""
+        if len(findings) <= self._max_findings:
+            return findings
+        logger.info("correctness: tope de %d hallazgos alcanzado", self._max_findings)
+        ranked = sorted(findings, key=lambda f: _SEVERITY_RANK[f.severity])
+        return ranked[: self._max_findings]
+
     def _call(self, diff: str, review_key: str = "") -> LlmReply | None:
-        if len(diff) > _MAX_DIFF_CHARS:
-            logger.warning(
-                "correctness: diff truncado de %d a %d chars", len(diff), _MAX_DIFF_CHARS
-            )
-        window = diff[:_MAX_DIFF_CHARS]
-        # Los ficheros que el modelo ve de verdad: se derivan del diff ya recortado,
-        # de modo que la cobertura mide el recorte real y no una constante aparte.
-        self.last_seen_files = tuple(changed_files(window))
-        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{window}"
+        """Una llamada por lote. `None` y `budget_exhausted` = sin presupuesto; `None`
+        sin el = fallo permanente del modelo."""
+        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{diff}"
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
-        # Tope blando por persona (B10): acota lo que una persona con prompt grande
-        # puede comerse del presupuesto compartido.
-        if self._budget_limit is not None and estimated > self._budget_limit:
+        # Tope blando por persona (B10), sobre lo **acumulado** entre lotes: acota lo
+        # que una persona con muchos lotes puede comerse del presupuesto compartido.
+        if self._budget_limit is not None and self.tokens_used + estimated > self._budget_limit:
             logger.warning(
-                "correctness: coste estimado %d tokens supera el tope de la persona %d; se omite",
+                "correctness: %d tokens gastados + %d estimados superan el tope de la "
+                "persona %d; se omite el resto",
+                self.tokens_used,
                 estimated,
                 self._budget_limit,
             )
@@ -186,7 +232,7 @@ class LlmReviewer:
         if not reserve_tokens(self._budget, review_key, estimated):
             logger.warning(
                 "correctness: sin presupuesto compartido para esta review (%d tokens); "
-                "se omite la persona",
+                "se omite el resto",
                 estimated,
             )
             self.budget_exhausted = True

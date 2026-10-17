@@ -102,16 +102,8 @@ def _evaluate(case: harness.Case, *, llm, mode: str, recording: harness.Recordin
 
 
 def _case_policy(case: harness.Case) -> PolicyEngine:
-    """Politica del caso: la versionada con los guards congelados en `scope` (E10).
-
-    El caso corre con el `max_files_per_pr` con el que se audito; sin fijarlo, el
-    *replay* miraria mas (o menos) ficheros que la review original.
-    """
-    engine = PolicyEngine.from_file(ROOT / "config" / "autonomy.yaml")
-    max_files = case.scope.get("max_files_per_pr")
-    if max_files is not None:
-        engine.guards["max_files_per_pr"] = int(max_files)
-    return engine
+    """Politica del caso: la versionada. Desde 012 el `scope` no recorta por numero."""
+    return PolicyEngine.from_file(ROOT / "config" / "autonomy.yaml")
 
 
 def _live_llm(*, recording: harness.Recording | None):

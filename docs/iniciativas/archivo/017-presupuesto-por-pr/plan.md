@@ -93,7 +93,7 @@ después; el hecho y los docs al final, en el mismo commit que el código.
 
 - [016](../016-lector-de-contexto/spec.md) dejó el
   `BudgetPort` y su consumo en `run_tool_loop`; 017 afina la semántica.
-- [012](../../012-cobertura-de-la-review/spec.md) consume el hecho del corte para la
+- [012](../012-cobertura-de-la-review/spec.md) consume el hecho del corte para la
   `ReviewCoverage`, pero 017 **no** la espera: entrega el mecanismo y el dato.
 - [ADR-0007](../../../adr/0007-reintento-en-dos-capas.md): el reintento del nodo es lo
   que obliga a devolver la reserva en el error (B8).

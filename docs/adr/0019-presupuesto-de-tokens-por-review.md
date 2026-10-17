@@ -43,7 +43,7 @@ compartido.
 - Agotado el tope, la llamada **no se hace** y el corte se registra como un hecho
   (`budget_exhausted` en el `ReviewerResult`, `tokens_spent`/`tokens_remaining` en el
   `ReviewOutcome`). El **render** en la cobertura (`SkipReason.BUDGET`) es de
-  [012](../iniciativas/012-cobertura-de-la-review/spec.md).
+  [012](../iniciativas/archivo/012-cobertura-de-la-review/spec.md).
 
 ## Consecuencias
 

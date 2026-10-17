@@ -166,22 +166,6 @@ class GithubVcsAdapter:
         self._diff_cache[pr_id] = text
         return text
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo
-        result: list[tuple[str, int, int]] = []
-        for entry in self._paginate(self._repo_path(f"/pulls/{pr_id}/files")):
-            path = str(entry.get("filename", ""))
-            if not path:
-                continue
-            result.append(
-                (
-                    path,
-                    int(entry.get("additions", 0) or 0),
-                    int(entry.get("deletions", 0) or 0),
-                )
-            )
-        return result
-
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
         data = self._get_json(self._repo_path(f"/contents/{path}"), params={"ref": ref})

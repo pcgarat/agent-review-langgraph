@@ -124,3 +124,37 @@ def test_requires_verification_ya_no_existe_y_se_ignora() -> None:
     # 007 D12: un hallazgo antiguo con el campo sigue validando; el campo se pierde.
     finding = Finding.model_validate(_p("P3", requires_verification=True))
     assert "requires_verification" not in finding.model_dump()
+
+
+def test_cobertura_parcial_solo_por_codigo_o_configuracion() -> None:
+    from agent_review.domain.models import FileClass, ReviewCoverage, SkipReason
+
+    classes = {
+        "src/a.py": FileClass.CODE,
+        "docs/a.md": FileClass.DOCS,
+        "docker-compose.yml": FileClass.CONFIG,
+    }
+    solo_docs = ReviewCoverage(
+        files_total=3,
+        reviewed=["src/a.py", "docker-compose.yml"],
+        skipped={"docs/a.md": SkipReason.BUDGET},
+        file_class=classes,
+    )
+    assert not solo_docs.partial
+    config = solo_docs.model_copy(update={"skipped": {"docker-compose.yml": SkipReason.BUDGET}})
+    assert config.partial
+    # Lo no declarado no cuenta: una review sin persona LLM no sale parcial.
+    assert not ReviewCoverage(files_total=3, file_class=classes).partial
+
+
+def test_combinar_coberturas_gana_quien_reviso() -> None:
+    from agent_review.domain.models import ReviewCoverage, SkipReason
+
+    scope = ReviewCoverage(files_total=3, skipped={"composer.lock": SkipReason.IGNORED})
+    llm = ReviewCoverage(reviewed=["a.py"], skipped={"b.py": SkipReason.BUDGET})
+    otra = ReviewCoverage(reviewed=["b.py"], skipped={"a.py": SkipReason.FAILED})
+
+    merged = scope.combine(llm).combine(otra)
+    assert merged.files_total == 3
+    assert merged.reviewed == ["a.py", "b.py"]
+    assert merged.skipped == {"composer.lock": SkipReason.IGNORED}

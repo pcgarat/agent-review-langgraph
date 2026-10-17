@@ -2,7 +2,7 @@
 
 # Cobertura de la review: nada se recorta en silencio
 
-> **Estado:** aprobada *(2026-10-17)*
+> **Estado:** implementada *(2026-10-17)*
 > **Entrega objetivo:** que el `LlmReviewer` vea todo el código y la configuración
 > del PR que el presupuesto permita, en lotes de ficheros enteros, y que la review
 > publicada diga qué no ha visto; una review parcial nunca se lee como completa.
@@ -11,13 +11,13 @@
 
 ## 1. Objetivo
 
-La auditoría de la review del PR #3 (ver [006](../archivo/006-eval-de-la-review/spec.md))
+La auditoría de la review del PR #3 (ver [006](../006-eval-de-la-review/spec.md))
 atribuyó los falsos positivos y los `P1` perdidos a que el revisor «solo ve el
 diff». Al reproducir el `scope` sobre ese PR, la causa primera es otra: **el revisor
 no vio la mayor parte del diff, y nadie lo dijo**.
 
 - El PR tocaba **51 ficheros** (≈ 300 KB de diff). `max_files_per_pr: 10`
-  ([`autonomy.yaml`](../../../config/autonomy.yaml)) dejó 10, ordenados solo por
+  ([`autonomy.yaml`](../../../../config/autonomy.yaml)) dejó 10, ordenados solo por
   churn: fuera quedaron `docker-compose.yml`, `settings.py` y `.env.example`, que es
   donde vivían dos de los tres `P1` no detectados.
 - Los 10 supervivientes sumaban ≈ 133 KB y el `LlmReviewer` corta a
@@ -25,7 +25,7 @@ no vio la mayor parte del diff, y nadie lo dijo**.
   `fix/node.py`, `fixworker/main.py`, `graph/build.py` y parte de
   `models_config.py`. **`worker/main.py`, el fichero de más churn (+388), no llegó.**
 - Ambos recortes solo dejan un `logger.warning`. La review publicada no lo menciona.
-- [`best_line`](../../../src/agent_review/adapters/diff_parser.py) siempre devuelve
+- [`best_line`](../../../../src/agent_review/adapters/diff_parser.py) siempre devuelve
   una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea
   visible más cercana al número que dé el modelo.
 
@@ -35,22 +35,22 @@ Se quiere:
    revisaron, cuáles no y por qué; el resumen publicado lo muestra.
 2. **Fail-closed.** Una review con ficheros relevantes sin revisar se publica como
    **parcial**, igual que una fuente de tooling sin cubrir
-   ([`ToolingSourceStatus`](../../../src/agent_review/domain/models.py)): «sin
+   ([`ToolingSourceStatus`](../../../../src/agent_review/domain/models.py)): «sin
    hallazgos» nunca significa «limpio» si no se miró.
 3. **Revisión por lotes de ficheros enteros** en vez de un prompt único cortado a
    mitad de fichero.
 4. **Selección por relevancia**, no solo por churn: código y configuración antes que
    tests y documentación.
-5. Medir la cobertura en el *gold set* (métrica de [006](../archivo/006-eval-de-la-review/spec.md)).
+5. Medir la cobertura en el *gold set* (métrica de [006](../006-eval-de-la-review/spec.md)).
 
 ## 2. No-objetivos
 
 - **Dar contexto fuera del diff** (fichero completo, ADR, glosario). Es
-  [008](../008-contexto-del-revisor/spec.md); esta iniciativa solo garantiza que el
+  [008](../../008-contexto-del-revisor/spec.md); esta iniciativa solo garantiza que el
   diff mismo llegue.
 - **El anclaje estricto.** Que `best_line` deje de recolocar por cercanía es L0 de
-  [008](../008-contexto-del-revisor/spec.md); aquí solo se documenta el síntoma.
-- **El presupuesto de tokens.** Lo resolvió [017](../archivo/017-presupuesto-por-pr/spec.md):
+  [008](../../008-contexto-del-revisor/spec.md); aquí solo se documenta el síntoma.
+- **El presupuesto de tokens.** Lo resolvió [017](../017-presupuesto-por-pr/spec.md):
   un contador por review, compartido y atómico. Esta iniciativa lo consume lote a
   lote; no lo redefine.
 - **Cambiar el contrato de hallazgo** ni la política de acciones.
@@ -60,7 +60,7 @@ Se quiere:
 ### 3.1 Reproducción sobre el PR #3
 
 Diff `a8ead73..008da57` pasado por `limit_files(…, 10)` y `filter_diff`
-([`scope.py`](../../../src/agent_review/scope.py)), en el orden del diff:
+([`scope.py`](../../../../src/agent_review/scope.py)), en el orden del diff:
 
 | Offset (chars) | Fichero | ¿Lo vio el modelo? |
 |---|---|---|
@@ -80,10 +80,10 @@ alfabético, como `git diff`, y la review corrió con el `autonomy.yaml` actual.
 
 | Pieza | Comportamiento | Dónde |
 |---|---|---|
-| Tope de ficheros | Ordena por `added + removed` y corta; loguea | [`limit_files`](../../../src/agent_review/scope.py), nodo `scope` en [`build.py`](../../../src/agent_review/graph/build.py) |
-| Tope de caracteres | `diff[:60_000]`, a mitad de hunk; loguea | `LlmReviewer._call` en [`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py) |
+| Tope de ficheros | Ordena por `added + removed` y corta; loguea | [`limit_files`](../../../../src/agent_review/scope.py), nodo `scope` en [`build.py`](../../../../src/agent_review/graph/build.py) |
+| Tope de caracteres | `diff[:60_000]`, a mitad de hunk; loguea | `LlmReviewer._call` en [`llm_reviewer.py`](../../../../src/agent_review/adapters/llm_reviewer.py) |
 | Presupuesto | Reserva la estimación de su única llamada contra el contador por review de 017; si no cabe, la omite entera y marca `budget_exhausted` | Ídem |
-| Review parcial | Solo existe para fuentes de tooling (`tooling_status`) | `publish` en [`build.py`](../../../src/agent_review/graph/build.py) |
+| Review parcial | Solo existe para fuentes de tooling (`tooling_status`) | `publish` en [`build.py`](../../../../src/agent_review/graph/build.py) |
 
 ## 4. Decisiones
 
@@ -94,7 +94,7 @@ alfabético, como `git diff`, y la review corrió con el `autonomy.yaml` actual.
 | C3 | Un fichero que no cabe solo en un lote se marca `too_large` en la cobertura, no se trocea | Trocear un fichero por hunks es una optimización posterior; marcarlo es honesto ya |
 | C4 | La selección prioriza por **clase** (código y configuración > tests > docs) y dentro de cada clase por churn | El churn sólo premia ficheros grandes; la configuración pequeña es donde se rompe producción |
 | C5 | Las clases se declaran por *globs* con un default razonable, ampliable en el perfil del repo | Mismo patrón que `SCOPE_IGNORE` y el perfil: datos, no código |
-| C6 | Cada lote **reserva y confirma** contra el presupuesto por review de [017](../archivo/017-presupuesto-por-pr/spec.md) (`BudgetPort`); al agotarse, los lotes pendientes pasan a la cobertura como `budget` | El contador ya es compartido por todas las personas; con lotes, cada llamada paga lo suyo y lo que no cabe se declara |
+| C6 | Cada lote **reserva y confirma** contra el presupuesto por review de [017](../017-presupuesto-por-pr/spec.md) (`BudgetPort`); al agotarse, los lotes pendientes pasan a la cobertura como `budget` | El contador ya es compartido por todas las personas; con lotes, cada llamada paga lo suyo y lo que no cabe se declara |
 | C7 | Review parcial = algún fichero de clase código o configuración sin revisar. Docs o tests sin revisar se listan pero no la hacen parcial | Evita que todo PR grande se marque parcial por documentación |
 | C8 | **Se elimina `max_files_per_pr`** (guarda, `autonomy.yaml` y su lectura en `scope`). El único tope de coste es el presupuesto por review de 017; la priorización por clase (C4) decide qué lotes entran antes de agotarlo | Con lotes y presupuesto real, un tope por número de ficheros es una segunda guarda de coste más tosca: cuenta ficheros, no tokens, y es la que dejó fuera la configuración en el PR #3. *Decidido 2026-10-17 (Q1).* |
 
@@ -137,7 +137,7 @@ class ReviewCoverage(BaseModel):
   `coverage`), y el `merge` la combina: un fichero cuenta como revisado si alguna
   persona LLM lo revisó.
 - Entra en la *allowlist* `_STATE_TYPES` del checkpointer
-  ([`desarrollo.md`](../../desarrollo.md) §3).
+  ([`desarrollo.md`](../../../desarrollo.md) §3).
 
 ### 5.3 Lotes en el `LlmReviewer`
 
@@ -172,7 +172,7 @@ El resumen gana una cabecera cuando `coverage.partial`:
 
 La review parcial es **solo informativa**: no cambia la acción permitida. Si una
 review parcial debe limitar `fix_auto` lo decide el gate de
-[011](../011-gate-de-severidad/spec.md), único dueño de la política. *Decidido
+[011](../../011-gate-de-severidad/spec.md), único dueño de la política. *Decidido
 2026-10-17 (Q3).*
 
 La cobertura del `ToolingReviewer` **no** entra en `ReviewCoverage`: sigue en
@@ -195,7 +195,7 @@ parcial (C7).
 
 ## 7. Criterios de hecho
 
-1. Reproducir el PR #3 (fixture de [006](../archivo/006-eval-de-la-review/spec.md)) con el
+1. Reproducir el PR #3 (fixture de [006](../006-eval-de-la-review/spec.md)) con el
    presupuesto por defecto deja `docker-compose.yml`, `settings.py` y `.env.example`
    dentro de los ficheros revisados, y `worker/main.py` revisado o declarado
    `too_large`/`budget`. `max_files_per_pr` ya no existe en `autonomy.yaml` ni en el

@@ -259,23 +259,6 @@ def test_un_fallo_transitorio_del_modelo_devuelve_la_reserva() -> None:
     assert budget.spent("r:1") == 0
 
 
-def test_last_seen_files_expoe_lo_que_entro_en_el_prompt() -> None:
-    # E11 de 006: la cobertura se mide sobre lo que el modelo vio de verdad.
-    llm = FakeLlm(_response(_finding_json()))
-    reviewer = LlmReviewer(llm=llm)
-    reviewer.review(repo="r", pr_id=1, diff=DIFF)
-    assert TRANSFER in reviewer.last_seen_files
-    # Deduplicado y en el orden del diff (cada fichero una sola vez).
-    assert len(reviewer.last_seen_files) == len(set(reviewer.last_seen_files))
-    assert reviewer.last_seen_files == tuple(reviewer.last_seen_files)
-
-
-def test_last_seen_files_vacio_si_no_hay_diff() -> None:
-    reviewer = LlmReviewer(llm=FakeLlm(_response(_finding_json())))
-    reviewer.review(repo="r", pr_id=1, diff="   ")
-    assert reviewer.last_seen_files == ()
-
-
 # --- Integracion con el grafo: merge deduplica por (fichero, titulo) ---
 
 
@@ -317,10 +300,6 @@ class FakeVcs:
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
         return DIFF
-
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [(TRANSFER, 3, 0)]
 
     def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
         del repo, pr_id, text
@@ -421,3 +400,145 @@ def test_el_prompt_pide_escenario_y_alcance_y_no_requires_verification() -> None
     assert "failure_scenario" in prompt
     assert "context_scope" in prompt
     assert "requires_verification" not in prompt
+
+
+def _file_block(path: str, lines: int) -> str:
+    body = "".join(f"+linea {i} de {path}\n" for i in range(1, lines + 1))
+    return (
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{lines} @@\n{body}"
+    )
+
+
+class _ScriptedLlm(FakeLlm):
+    """Una respuesta por llamada, en orden; registra el prompt de cada lote."""
+
+    def __init__(self, responses: list[str]) -> None:
+        super().__init__("")
+        self._responses = list(responses)
+
+    def complete(self, **kwargs) -> LlmReply:
+        import dataclasses
+
+        reply = super().complete(**kwargs)
+        if not self._responses:
+            return reply
+        return dataclasses.replace(reply, text=self._responses.pop(0))
+
+
+def test_lotes_de_ficheros_enteros_nunca_cortan_un_fichero() -> None:
+    # 012 C2 (criterio 2): un diff mayor que un lote se reparte en varias llamadas y
+    # cada fichero entra entero en una sola.
+    from agent_review.domain.models import SkipReason
+
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(4)]
+    size = len(blocks[0])
+    llm = _ScriptedLlm([_response()] * 4)
+    reviewer = LlmReviewer(llm=llm, batch_max_chars=2 * size)
+
+    result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks))
+
+    assert len(llm.calls) == 2
+    for _system, prompt, _max in llm.calls:
+        for i in range(4):
+            path = f"src/f{i}.py"
+            if path in prompt:
+                assert f"+linea 20 de {path}" in prompt, "un fichero se corto a mitad"
+    assert result.coverage is not None
+    assert sorted(result.coverage.reviewed) == [f"src/f{i}.py" for i in range(4)]
+    assert result.coverage.skipped == {}
+    assert SkipReason.TOO_LARGE not in result.coverage.skipped.values()
+
+
+def test_un_fichero_mayor_que_el_lote_es_too_large_sin_llamada() -> None:
+    from agent_review.domain.models import SkipReason
+
+    llm = _ScriptedLlm([_response()])
+    reviewer = LlmReviewer(llm=llm, batch_max_chars=len(_file_block("a.py", 5)) + 10)
+    diff = _file_block("a.py", 5) + _file_block("enorme.py", 200)
+
+    result = reviewer.review(repo="r", pr_id=1, diff=diff)
+
+    assert len(llm.calls) == 1
+    assert "enorme.py" not in llm.calls[0][1]
+    assert result.coverage.skipped == {"enorme.py": SkipReason.TOO_LARGE}
+    assert result.coverage.reviewed == ["a.py"]
+
+
+def test_el_presupuesto_se_reparte_por_lotes_y_el_resto_sale_budget() -> None:
+    # 012 C6 (criterio 4): cada lote reserva contra el contador de 017; al primer
+    # `False`, ese lote y los siguientes se declaran `budget`.
+    from agent_review.domain.models import SkipReason
+
+    class _CountingBudget(InMemoryBudget):
+        def __init__(self, allow: int) -> None:
+            super().__init__(total=10_000_000)
+            self.allow = allow
+            self.reserves = 0
+
+        def reserve(self, review_key: str, tokens: int) -> bool:
+            self.reserves += 1
+            return self.reserves <= self.allow and super().reserve(review_key, tokens)
+
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(3)]
+    budget = _CountingBudget(allow=1)
+    llm = _ScriptedLlm([_response()] * 3)
+    reviewer = LlmReviewer(llm=llm, budget=budget, batch_max_chars=len(blocks[0]))
+
+    result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks), review_key="rk")
+
+    assert len(llm.calls) == 1
+    assert budget.reserves == 2  # el segundo lote no cabe; el tercero ni lo intenta
+    assert result.budget_exhausted
+    assert result.coverage.reviewed == ["src/f0.py"]
+    assert result.coverage.skipped == {
+        "src/f1.py": SkipReason.BUDGET,
+        "src/f2.py": SkipReason.BUDGET,
+    }
+
+
+def test_el_tope_blando_de_la_persona_es_sobre_lo_acumulado() -> None:
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(3)]
+    llm = _ScriptedLlm([_response()] * 3)
+    llm._prompt_tokens = 4000  # cada llamada gasta 4000 tokens reales
+    reviewer = LlmReviewer(llm=llm, budget_limit=8000, batch_max_chars=len(blocks[0]))
+
+    result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks))
+
+    # Cada lote estima ~4500 (max_tokens 4096 + prompt): el primero cabe en 8000, el
+    # segundo no, porque se suma a los 4000 ya gastados.
+    assert len(llm.calls) == 1
+    assert result.budget_exhausted
+
+
+def test_un_lote_con_fallo_permanente_sale_failed_y_sigue_el_resto() -> None:
+    from agent_review.domain.models import SkipReason
+
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(2)]
+    llm = _ScriptedLlm(["{esto no es json", _response()])
+    reviewer = LlmReviewer(llm=llm, batch_max_chars=len(blocks[0]))
+
+    result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks))
+
+    assert len(llm.calls) == 2
+    assert result.coverage.reviewed == ["src/f1.py"]
+    assert result.coverage.skipped == {"src/f0.py": SkipReason.FAILED}
+
+
+def test_max_findings_sobre_el_total_prioriza_severidad() -> None:
+    a, b = _file_block("src/a.py", 3), _file_block("src/b.py", 3)
+
+    def finding(path: str, severity: str) -> dict:
+        return _finding_json(
+            file=path,
+            line=1,
+            severity=severity,
+            evidence=[f"{path}:1 linea 1 de {path}"],
+            title=f"Hallazgo {severity} en {path}",
+        )
+
+    llm = _ScriptedLlm([_response(finding("src/a.py", "P3")), _response(finding("src/b.py", "P1"))])
+    reviewer = LlmReviewer(llm=llm, max_findings=1, batch_max_chars=len(a))
+
+    findings = reviewer.review(repo="r", pr_id=1, diff=a + b).findings
+
+    assert [(f.file, f.severity) for f in findings] == [("src/b.py", Severity.P1)]

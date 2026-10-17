@@ -50,30 +50,6 @@ def test_get_pull_request_mapea_campos_reales(monkeypatch) -> None:
     assert pr.url.endswith("/417")
 
 
-def test_get_diffstat_usa_old_new_paths(monkeypatch) -> None:
-    adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
-    payload = [
-        {
-            "lines_added": 1,
-            "lines_removed": 0,
-            "status": "modified",
-            "old": {"path": "config/packages/messenger.yaml"},
-            "new": {"path": "config/packages/messenger.yaml"},
-        },
-        {
-            "lines_added": 0,
-            "lines_removed": 76,
-            "status": "removed",
-            "old": {"path": "tests/Migrations/Version20261005110000Test.php"},
-            "new": None,
-        },
-    ]
-    monkeypatch.setattr(adapter, "_run", lambda *a, **k: json.dumps(payload))
-    stats = adapter.get_diffstat("cqm/emotivoo-v2", 417)
-    assert ("config/packages/messenger.yaml", 1, 0) in stats
-    assert ("tests/Migrations/Version20261005110000Test.php", 0, 76) in stats
-
-
 def test_resolve_inline_anchor_parsea_matches(monkeypatch) -> None:
     adapter = TwgVcsAdapter(workspace="cqm", repo="emotivoo-v2")
     payload = {

@@ -115,7 +115,7 @@ Preguntas abiertas de las specs, resueltas aquí con la propuesta de cada spec. 
 | [009 Q3](../iniciativas/009-verificador-adversarial/spec.md) · ¿verificar por lote o por hallazgo? | Por hallazgo, como dice el diseño de 009 §5.2 |
 | [009 Q7](../iniciativas/009-verificador-adversarial/spec.md) · `VERIFIER_MAX_FINDINGS` | 5 por review |
 | [010 Q1](../iniciativas/010-personas-de-wiring/spec.md) · ¿dónde vive el contrato de wiring? | En el perfil del repo revisado (bloque `wiring:`); la persona existe solo si el perfil lo declara |
-| [012 Q1](../iniciativas/012-cobertura-de-la-review/spec.md) · ¿se mantiene `max_files_per_pr`? | Sí, como guarda de coste aplicada tras priorizar |
+| [012 Q1](../iniciativas/archivo/012-cobertura-de-la-review/spec.md) · ¿se mantiene `max_files_per_pr`? | No: se elimina; el único tope es el presupuesto de 017 |
 | [014 H4](../iniciativas/014-revisor-con-herramientas/spec.md) · roles con herramientas | Solo `correctness`; con 017 ya entregada se podría activar otro |
 | [018 Q2/Q4](../iniciativas/018-trazas-de-la-review/spec.md) · cómo se instrumenta | Decorador `TracedLlm` sobre el puerto y envoltura de nodos en `build_graph` |
 | Nombre de los ADR nuevos | Sin número: 007, 011 y 018 piden ADR, pero el número se asigna al escribirlo |
@@ -189,7 +189,7 @@ se publica como `P1`.
 
 | # | Nodo | Qué hace en la foto final | Iniciativas | ¿Reintento? |
 |---|---|---|---|---|
-| ① | `scope` | Lee el diff y el `base_sha`; quita ruido; **prioriza por clase** (código y configuración > tests > docs) antes de aplicar `max_files_per_pr`; crea la `ReviewCoverage` con lo descartado y su motivo; ensambla una vez el `ReviewContext` (ficheros completos a `head_sha` y `context_docs:` del perfil) | 012, 008 | Sí |
+| ① | `scope` | Lee el diff y el `base_sha`; quita ruido; **prioriza por clase** (configuración > código > tests > docs) y por churn, sin recortar; crea la `ReviewCoverage` con lo ignorado y la clase de cada fichero; ensambla una vez el `ReviewContext` (ficheros completos a `head_sha` y `context_docs:` del perfil) | 012, 008 | Sí |
 | ② | `persona` | Según el tipo: **LLM** revisa por lotes de ficheros enteros con su contexto L1 (y, si su rol está en `REVIEW_TOOLS_ROLES`, con bucle de herramientas) y pasa L0 a cada hallazgo; **tooling** convierte el artefacto del CI en hallazgos `verified_static`; **wiring** contrasta pares de configuración, también `verified_static`. Todas descuentan del presupuesto compartido | 012, 008, 014, 010, 007, 017 | Sí; en el último intento degrada a 0 hallazgos |
 | ③ | `merge` | Deduplica como hoy ([ADR-0014](../adr/0014-criterio-de-merge-entre-personas.md)), pero conserva el **veredicto más fuerte** de cada grupo, estampa `grounded_findings` si participó una persona grounded, y consolida la cobertura | 011, 009, 012 | No (puro) |
 | ④ | `verify` | Para cada candidato (no grounded, severidad en `require_verified_for`, hasta `VERIFIER_MAX_FINDINGS`), un modelo distinto lee el repo e **intenta refutar**. Escribe `verifications`; no toca `severity` | 009 | Sí; fallo permanente → `unverified` |
@@ -433,8 +433,8 @@ estado:
 
 - **H2 existe** porque `wiring` contrasta `docker-compose.yml` con su contrato
   declarado; y **H2′ existe** porque 012 priorizó `docker-compose.yml` (clase
-  `config`) por delante de los tests. Hoy los dos ficheros caían por
-  `max_files_per_pr` ordenado por churn.
+  `config`) por delante de todo lo demás. En la review auditada los dos ficheros
+  caían por el antiguo `max_files_per_pr` ordenado por churn.
 - **H6 no llega:** L0 busca la cita en el fichero y no está en ninguna línea
   (ni añadida, ni de contexto, ni borrada). Es evidencia fabricada y se descarta
   ([008 D9](../iniciativas/008-contexto-del-revisor/spec.md)).
@@ -648,7 +648,7 @@ llamada.
 
 012 cambia la unidad de trabajo: el `LlmReviewer` ya no corta el diff a 60 000
 caracteres, sino que lo agrupa en **lotes de ficheros enteros** (`LLM_BATCH_MAX_CHARS`),
-juntando los del mismo directorio. Un fichero que no cabe solo en un lote no se
+en el orden de prioridad del `scope`. Un fichero que no cabe solo en un lote no se
 trocea: se marca `too_large` en la cobertura. A cada lote, L1 le añade su contexto
 con prioridad: diff, después el fichero completo, después los `context_docs:`.
 **El contexto nunca desplaza diff**: si no cabe, el lote sale sin él.
@@ -782,7 +782,7 @@ Cambios de la foto final:
 
 **Situación:** el PR #3 completo: 51 ficheros, unos 300 KB de diff. Hoy, este PR se
 revisó **sin que nadie dijera** que el modelo solo había visto 5 ficheros
-([012 §3.1](../iniciativas/012-cobertura-de-la-review/spec.md)).
+([012 §3.1](../iniciativas/archivo/012-cobertura-de-la-review/spec.md)).
 
 ### 11.1 Qué sobrevive al `scope`
 
@@ -790,15 +790,17 @@ revisó **sin que nadie dijera** que el modelo solo había visto 5 ficheros
 flowchart LR
     D["51 ficheros"] --> IG["SCOPE_IGNORE<br/>(lockfiles, generados)"]
     IG --> PR["priorizar por clase<br/>config · code > test > docs"]
-    PR --> MX["max_files_per_pr: 10"]
-    MX --> REV["10 revisables<br/>docker-compose.yml, settings.py,<br/>.env.example, worker/main.py, …"]
-    MX --> SK["41 descartados<br/>motivo: max_files"]
+    PR --> LOT["lotes de ficheros enteros<br/>(LLM_BATCH_MAX_CHARS)"]
+    LOT --> REV["revisados<br/>docker-compose.yml, settings.py,<br/>.env.example, worker/main.py, …"]
+    LOT --> SK["sin revisar, con motivo<br/>too_large · budget · failed"]
     REV --> COV["coverage"]
     SK --> COV
 ```
 
-Con la priorización de 012, `docker-compose.yml`, `settings.py` y `.env.example`
-entran en los 10 revisables; hoy salían por tener poco churn.
+Nada se recorta por número de ficheros. `docker-compose.yml`, `settings.py` y
+`.env.example` van en el primer lote por ser configuración; en la review auditada
+salían por tener poco churn. Medido en el *gold set* (2026-10-17): los 51 ficheros
+del PR #3 entran en 6 lotes y la cobertura pasa de 0.2 a 1.0.
 
 ### 11.2 Presupuesto agotado a mitad
 
@@ -821,9 +823,9 @@ sequenceDiagram
 
 Y lo que se ve en el PR:
 
-> **Review parcial:** revisados 9 de 51 ficheros. Sin revisar: 1 de código
-> (`worker/main.py`; presupuesto). 41 descartados por el tope de ficheros (lista
-> por clase). Los hallazgos de abajo no cubren esos ficheros.
+> **Review parcial:** sin revisar 1 de 48 ficheros relevantes. 1 de código:
+> `worker/main.py` (presupuesto agotado). Los hallazgos de abajo no cubren esos
+> ficheros.
 >
 > ▸ Docs y tests sin revisar (plegable)
 
@@ -836,7 +838,7 @@ Tres cosas a notar:
    etiquetado «sin verificar» que un P1 sin prueba.
 3. **«Parcial» se reserva para código y configuración.** Docs y tests sin revisar se
    listan, pero no marcan la review como parcial; si no, todo PR grande saldría
-   parcial y el aviso se ignoraría ([012 C7](../iniciativas/012-cobertura-de-la-review/spec.md)).
+   parcial y el aviso se ignoraría ([012 C7](../iniciativas/archivo/012-cobertura-de-la-review/spec.md)).
 
 `ReviewOutcome` expone `tokens_spent` y `tokens_remaining`, y la cobertura, para que
 la eval de 006 mida cuánto se perdió.

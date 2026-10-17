@@ -25,7 +25,6 @@ from harness import (
     case_fingerprint,
     compare,
     coverage_of,
-    file_class,
     load_case,
     match,
     measure,
@@ -710,13 +709,18 @@ def _case_con_clases() -> Case:
     )
 
 
-def test_file_class_clasifica_por_ruta() -> None:
-    assert file_class("src/app.py") == "code"
-    assert file_class("docker-compose.yml") == "config"
-    assert file_class("config/models.yaml") == "config"
-    assert file_class(".env.example") == "config"
-    assert file_class("tests/test_app.py") == "test"
-    assert file_class("docs/adr/0001-x.md") == "docs"
+def test_la_cobertura_clasifica_igual_que_la_review() -> None:
+    # Una sola clasificacion (012): la metrica usa `scope.classify`, la misma con la
+    # que la review prioriza y decide si es parcial.
+    from agent_review.domain.models import FileClass
+    from agent_review.scope import classify
+
+    assert classify("src/app.py") is FileClass.CODE
+    assert classify("docker-compose.yml") is FileClass.CONFIG
+    assert classify("config/models.yaml") is FileClass.CONFIG
+    assert classify(".env.example") is FileClass.CONFIG
+    assert classify("tests/test_app.py") is FileClass.TEST
+    assert classify("docs/adr/0001-x.md") is FileClass.DOCS
 
 
 def test_cobertura_cuenta_solo_codigo_y_configuracion() -> None:
@@ -739,10 +743,10 @@ def test_cobertura_none_si_no_hay_codigo_ni_configuracion() -> None:
     assert coverage_of(solo_docs, []) is None
 
 
-def test_el_runner_expoe_los_ficheros_vistos(tmp_path: Path) -> None:
+def test_el_runner_expoe_los_ficheros_revisados(tmp_path: Path) -> None:
     case = _toy_case(tmp_path)
     port = _FakePort(_finding_payload())
     run = run_case(case, llm=port, policy=_pipeline_policy(), vcs=CaseVcs(case))
 
-    # El diff de juguete solo trae x.py; el campo lo refleja (E11).
-    assert run.seen_files == ("x.py",)
+    # El diff de juguete solo trae x.py; sale de la `ReviewCoverage` del grafo (012).
+    assert run.reviewed == ("x.py",)

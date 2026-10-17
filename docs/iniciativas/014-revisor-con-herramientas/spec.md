@@ -32,7 +32,7 @@ Se quiere:
 2. Que lo leído **sustituya a la suposición**: un hallazgo que depende de otro
    fichero cita ese fichero o no se afirma.
 3. Que el coste quede **acotado y medido**: un tope de turnos, de bytes servidos y
-   del presupuesto acumulado de [012](../012-cobertura-de-la-review/spec.md) (C6).
+   del presupuesto acumulado de [012](../archivo/012-cobertura-de-la-review/spec.md) (C6).
 4. Que esto sea **opt-in por rol** y que, desactivado, el comportamiento sea
    exactamente el de 008.
 
@@ -80,7 +80,7 @@ Esta tabla es la hipótesis que se mide; no es un resultado.
   `sandbox-runner` están en [016](../archivo/016-lector-de-contexto/spec.md) *(enmienda
   2026-10-16: antes estaban en 009 §5.4)*.
 - Los **lotes** de ficheros enteros y el presupuesto acumulado entre lotes son de
-  [012](../012-cobertura-de-la-review/spec.md) (C2, C6).
+  [012](../archivo/012-cobertura-de-la-review/spec.md) (C2, C6).
 - `ReviewContext`, la regla de humildad y L0 son de
   [008](../008-contexto-del-revisor/spec.md).
 

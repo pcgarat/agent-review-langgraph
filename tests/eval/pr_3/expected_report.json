@@ -1,25 +1,28 @@
 {
-  "acceptable": [],
+  "acceptable": [
+    "Q1",
+    "Q2"
+  ],
   "case": "pr-3-agent-review",
   "counts": {
-    "acceptable": 0,
+    "acceptable": 2,
     "fn": 8,
-    "fp": 7,
-    "fp_labeled": 7,
-    "fp_p0_p1": 1,
+    "fp": 8,
+    "fp_labeled": 8,
+    "fp_p0_p1": 4,
     "fp_unknown": 0,
-    "published": 7,
+    "published": 10,
     "tp": 0,
     "tp_inverted": 0
   },
   "fingerprints": {
-    "correctness": "sha256:fd1dc1abbda59df24057094b473e099ef6f0bdbca38e45e3f25b6f8d1c173a13"
+    "correctness": "sha256:1c650872638c5951c9c059308ef61602bb83bac5fecf82e050b02066fbb6d3a5,sha256:33e555dada49d4fbecaaf36dd6f2862d403628d4d98a1ce0007fb9869a2b20c3,sha256:391567ef1928786e59336818d73a5482da9e2693953bf82d08c83a7f350bdbc6,sha256:589f926c320ea81de74e05c6ee50ad7a9d012b49395e9346a657e777878388cf,sha256:d8cc8f9e8ecd5c43ef06529b2bbc9bc02ea12b19e3b94f1bfdbc01633cecc116,sha256:f124235db3d21d45a41782470c14e9e8ffef182d488bfa55ecde357181228237"
   },
   "inverted": [],
   "matched": [],
   "metrics": {
     "cost_per_tp_tokens": null,
-    "coverage": 0.2,
+    "coverage": 1.0,
     "precision": 0.0,
     "recall": 0.0,
     "recall_by_subset": {

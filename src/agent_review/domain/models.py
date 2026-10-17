@@ -146,6 +146,74 @@ class Finding(BaseModel):
         return self
 
 
+class SkipReason(StrEnum):
+    """Por que un fichero del PR no se reviso (012 §5.2)."""
+
+    IGNORED = "ignored"  # SCOPE_IGNORE / patrones por defecto
+    TOO_LARGE = "too_large"  # no cabe solo en un lote
+    BUDGET = "budget"  # presupuesto agotado antes de su lote
+    FAILED = "failed"  # su lote fallo de forma permanente
+
+
+class FileClass(StrEnum):
+    """Clase de un fichero para priorizar y para decidir si la review es parcial."""
+
+    CODE = "code"
+    CONFIG = "config"
+    TEST = "test"
+    DOCS = "docs"
+
+
+# Clases cuya ausencia hace parcial una review (012 C7): docs o tests sin revisar
+# se listan, pero no la marcan como parcial.
+PARTIAL_CLASSES = frozenset({FileClass.CODE, FileClass.CONFIG})
+
+
+class ReviewCoverage(BaseModel):
+    """Que ficheros del PR se revisaron, cuales no y por que (012 C1).
+
+    Solo cuenta lo **declarado**: un fichero que nadie revisa ni declara saltado
+    (p. ej. una review sin persona LLM, que es opcional) no hace parcial la review.
+    Quien revisa por lotes declara todo lo que no llego a mirar.
+    """
+
+    files_total: int = 0
+    reviewed: list[str] = Field(default_factory=list)
+    skipped: dict[str, SkipReason] = Field(default_factory=dict)
+    file_class: dict[str, FileClass] = Field(default_factory=dict)
+
+    @property
+    def partial(self) -> bool:
+        # Lo ignorado es ruido por decision (lockfiles, generados): no cuenta.
+        return any(
+            self.class_of(path) in PARTIAL_CLASSES and reason is not SkipReason.IGNORED
+            for path, reason in self.skipped.items()
+        )
+
+    def class_of(self, path: str) -> FileClass:
+        return self.file_class.get(path, FileClass.CODE)
+
+    def combine(self, other: ReviewCoverage) -> ReviewCoverage:
+        """Une dos coberturas: revisado si **alguien** lo reviso (012 §5.2).
+
+        Un fichero saltado por varios conserva el primer motivo declarado; uno que
+        alguien reviso deja de contar como saltado.
+        """
+        reviewed = list(dict.fromkeys([*self.reviewed, *other.reviewed]))
+        done = set(reviewed)
+        skipped = {
+            path: reason
+            for path, reason in {**other.skipped, **self.skipped}.items()
+            if path not in done
+        }
+        return ReviewCoverage(
+            files_total=max(self.files_total, other.files_total),
+            reviewed=reviewed,
+            skipped=skipped,
+            file_class={**other.file_class, **self.file_class},
+        )
+
+
 class ReviewerResult(BaseModel):
     """Hallazgos de una persona mas el estado de su fuente de datos.
 
@@ -154,15 +222,16 @@ class ReviewerResult(BaseModel):
     review. Cuando una persona estatica no puede leer su salida, el estado
     viaja hasta el publish para que "sin hallazgos" no se lea como "sin errores".
 
-    `budget_exhausted` y `tokens_used` son el **hecho** del presupuesto (017 B4):
-    la persona se corto por tope o gasto real. Poblar la cobertura con ese hecho
-    (`SkipReason.BUDGET`) es de la iniciativa 012; aqui solo se declara.
+    `budget_exhausted` y `tokens_used` son el **hecho** del presupuesto (017 B4).
+    `coverage` es lo que la persona leyo de verdad (012): solo la pueblan las
+    personas que revisan el diff por lotes; `None` = no declara cobertura.
     """
 
     findings: list[Finding] = Field(default_factory=list)
     tooling_status: ToolingSourceStatus | None = None
     budget_exhausted: bool = False
     tokens_used: int = 0
+    coverage: ReviewCoverage | None = None
 
 
 class Decision(BaseModel):
@@ -455,6 +524,8 @@ class ReviewOutcome(BaseModel):
     # tope (`None` en tests sin presupuesto). Informativo y derivado del estado:
     # nunca se consulta el puerto durante el `replay` (017 B4).
     tokens_remaining: int | None = None
+    # 012: que se reviso y que no. `None` en hilos de antes de 012.
+    coverage: ReviewCoverage | None = None
 
     @property
     def tokens_total(self) -> int:
@@ -463,7 +534,9 @@ class ReviewOutcome(BaseModel):
 
     @property
     def complete(self) -> bool:
-        return not self.unavailable_sources
+        # Ni una fuente estatica sin cubrir ni codigo o configuracion sin leer (012).
+        partial = self.coverage is not None and self.coverage.partial
+        return not self.unavailable_sources and not partial
 
     @property
     def pending_approvals(self) -> list[str]:

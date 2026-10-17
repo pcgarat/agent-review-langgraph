@@ -8,7 +8,7 @@
 > review**. Lo comparten todas las personas, sus lotes, los bucles de herramientas,
 > el verificador, el fixer (con su propio contador) y los reintentos. Al agotarse, lo
 > que falta se registra como un hecho (`budget_exhausted`) en vez de fallar o de
-> gastar de más; [012](../../012-cobertura-de-la-review/spec.md) lo pinta en la cobertura.
+> gastar de más; [012](../012-cobertura-de-la-review/spec.md) lo pinta en la cobertura.
 
 ---
 
@@ -19,7 +19,7 @@ Hoy cada `LlmReviewer` y el `LlmFixer` comparan **su propia** llamada contra
 fixer, ni entre reintentos (deuda D17 de [`arquitectura.md`](../../../arquitectura.md)
 §7). El tope real es N veces el declarado. La cascada lo agrava:
 
-- [012](../../012-cobertura-de-la-review/spec.md) acumula el gasto entre los lotes de
+- [012](../012-cobertura-de-la-review/spec.md) acumula el gasto entre los lotes de
   **una** persona (C6), no entre personas; y es quien **pinta** el corte por
   presupuesto en la `ReviewCoverage` (`SkipReason.BUDGET`), que aún no existe.
 - [009](../../009-verificador-adversarial/spec.md) añade varias llamadas por hallazgo
@@ -59,7 +59,7 @@ Se quiere:
 | B1 | El presupuesto es **por review** (`review_key`, [ADR-0005](../../../adr/0005-identidad-de-la-ejecucion.md)) y lo comparten personas, lotes, bucles de herramientas y verificador | Es lo que el nombre de la variable ya promete |
 | B2 | El contador vive en **Redis** (`INCRBY` atómico, con TTL) | Es lo único que ven a la vez las ramas paralelas del fan-out y el `fix-worker` |
 | B3 | Antes de cada llamada se **reserva** la estimación; después se **ajusta** con el `usage` real | Sin reserva, varias ramas en paralelo pasan la comprobación a la vez y lo superan entre todas |
-| B4 | Agotado el presupuesto, la llamada **no se hace**: el verificador deja `unverified`, el bucle de herramientas pide el turno final y el `LlmReviewer` corta los lotes que falten **anotando el hecho** (`budget_exhausted` en `ReviewerResult`); [012](../../012-cobertura-de-la-review/spec.md) es quien lo pinta como `SkipReason.BUDGET` en la `ReviewCoverage` | Mejor menos hallazgos y avisado que una factura desbocada o una review caída. 017 entrega el **hecho**; el **render** es de 012 (que aún no existe) |
+| B4 | Agotado el presupuesto, la llamada **no se hace**: el verificador deja `unverified`, el bucle de herramientas pide el turno final y el `LlmReviewer` corta los lotes que falten **anotando el hecho** (`budget_exhausted` en `ReviewerResult`); [012](../012-cobertura-de-la-review/spec.md) es quien lo pinta como `SkipReason.BUDGET` en la `ReviewCoverage` | Mejor menos hallazgos y avisado que una factura desbocada o una review caída. 017 entrega el **hecho**; el **render** es de 012 (que aún no existe) |
 | B5 | Los **reintentos cuentan** | Un reintento gasta tokens de verdad |
 | B6 | Un puerto `BudgetPort` (`reserve`, `commit`, `remaining`) con un adaptador Redis y otro en memoria para tests y *replay* | Los consumidores no conocen Redis; el *replay* sigue siendo determinista |
 | B7 | El **resultado de `reserve` es vinculante**: un `False` corta la llamada igual que un `remaining` corto | Es el único punto que cierra la carrera entre `remaining` y `reserve`; sin él, el adaptador real de Redis puede dejarse gastar (enmienda 2026-10-16, deuda D21) |
@@ -100,7 +100,7 @@ class BudgetPort(Protocol):
 - **El hecho, no el render.** `LlmReviewer` expone en `ReviewerResult` que se cortó
   por presupuesto (`budget_exhausted`) y los tokens que gastó; `ReviewOutcome` expone
   `tokens_spent` y `tokens_remaining`. Convertir eso en `ReviewCoverage`/`SkipReason.BUDGET`
-  es de [012](../../012-cobertura-de-la-review/spec.md) C6, que aún no existe: 017 no la
+  es de [012](../012-cobertura-de-la-review/spec.md) C6, que aún no existe: 017 no la
   espera para entregar el mecanismo.
 - **Enmienda 2026-10-16 (deuda D21).** `reserve` devuelve `bool` pero hoy nadie lo
   mira: en el bucle de [016](../016-lector-de-contexto/spec.md) la guarda es
@@ -140,7 +140,7 @@ class BudgetPort(Protocol):
    fallido colgada (test con un modelo que falla una vez; cierra B8).
 3. Agotado el presupuesto, la review termina anotando `budget_exhausted` en la persona
    y `tokens_spent`/`tokens_remaining` en el `ReviewOutcome`; el render como
-   `SkipReason.BUDGET` de [012](../../012-cobertura-de-la-review/spec.md) lo consume
+   `SkipReason.BUDGET` de [012](../012-cobertura-de-la-review/spec.md) lo consume
    cuando 012 exista (test del hecho, no del render).
 4. El fixer descuenta de **su** contador (`budget:fix:{review_key}`), no del de la
    review (test entre procesos con Redis falso; cierra B11).

@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from agent_review.domain.models import FileClass
 from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST
 from agent_review.settings import Settings
 
@@ -28,7 +29,7 @@ _FLAT_KEYS = {
     "ci_image_digest",
     "source",
 }
-_MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox"}
+_MAP_KEYS = {"env", "checks", "extra_checks", "caches", "sandbox", "scope"}
 _LIST_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
 _LIST_OF_STR_KEYS = {"setup", "setup_network", "verify", "expected_tools", "context_denylist"}
 
@@ -56,6 +57,24 @@ def validate_profile(profile: dict[str, Any]) -> list[str]:
             problems.append(f"{key!r} debe contener solo texto")
     if not profile.get("repo"):
         problems.append("falta 'repo' (identidad del perfil)")
+    problems.extend(_scope_problems(profile.get("scope")))
+    return problems
+
+
+def _scope_problems(scope: object) -> list[str]:
+    """`scope.classes`: clase conocida -> lista de globs (012 C5)."""
+    if not isinstance(scope, dict):
+        return []
+    problems = [f"scope: clave desconocida {key!r}" for key in scope if key != "classes"]
+    classes = scope.get("classes", {})
+    if not isinstance(classes, dict):
+        return [*problems, "scope.classes debe ser un mapa"]
+    known = {item.value for item in FileClass}
+    for name, patterns in classes.items():
+        if name not in known:
+            problems.append(f"scope.classes: clase desconocida {name!r} (validas: {sorted(known)})")
+        elif not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
+            problems.append(f"scope.classes.{name} debe ser una lista de globs")
     return problems
 
 
@@ -144,6 +163,19 @@ def sandbox_timeout_s(settings: Settings, profile: dict[str, Any] | None = None)
         if isinstance(declared, (int, float)) and declared > 0:
             return float(declared)
     return settings.sandbox_timeout_s
+
+
+def scope_classes(profile: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Clases de fichero que el perfil anade a las de por defecto (012 C5).
+
+    Un perfil invalido ya se avisa al cargarlo; aqui se ignora lo que no encaja en
+    vez de tumbar el `scope`.
+    """
+    scope = (profile or {}).get("scope")
+    classes = scope.get("classes") if isinstance(scope, dict) else None
+    if not isinstance(classes, dict) or _scope_problems(scope):
+        return {}
+    return {str(name): [str(p) for p in patterns] for name, patterns in classes.items()}
 
 
 def context_denylist(profile: dict[str, Any] | None) -> tuple[str, ...]:

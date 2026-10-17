@@ -47,10 +47,6 @@ class VcsPort(Protocol):
         """Diff unificado del PR, acotado. Es la entrada de las personas."""
         ...
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        """(fichero, lineas anadidas, lineas borradas) por fichero."""
-        ...
-
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         """Contenido de un fichero en un `ref` (commit/branch). Fase 3: leer el
         fichero al `head_sha` para que el fixer proponga sobre codigo real."""

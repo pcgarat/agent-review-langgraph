@@ -140,29 +140,6 @@ class TwgVcsAdapter:
             f"/src/{ref}/{path.lstrip('/')}#lines-{line}"
         )
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo
-        entries = self._run_json(["prs", "diffstat", str(pr_id)])
-        if not isinstance(entries, list):
-            return []
-        result: list[tuple[str, int, int]] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            new = entry.get("new") or {}
-            old = entry.get("old") or {}
-            path = str((new or {}).get("path") or (old or {}).get("path") or "")
-            if not path:
-                continue
-            result.append(
-                (
-                    path,
-                    int(entry.get("lines_added", 0) or 0),
-                    int(entry.get("lines_removed", 0) or 0),
-                )
-            )
-        return result
-
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
     ) -> InlineAnchor | None:

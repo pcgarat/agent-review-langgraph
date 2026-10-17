@@ -69,10 +69,6 @@ class FakeVcs:
         del repo, pr_id
         return "+x\n"
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [("a.php", 1, 0)]
-
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo, path, ref
         return "$x = 1;\n"
@@ -199,10 +195,6 @@ class _DiffVcs:
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
         return DIFF
-
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [(path, len(fd.added), 0) for path, fd in self._files.items()]
 
     def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
         del repo, pr_id

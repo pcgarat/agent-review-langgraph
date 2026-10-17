@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from agent_review.adapters.diff_parser import parse_unified_diff
-from agent_review.globs import matches_any
+from agent_review.domain.models import FileClass, ReviewCoverage, SkipReason
+from agent_review.globs import matches_any, path_matches
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,27 @@ DEFAULT_IGNORE_PATTERNS = (
     "**/*.generated.*",
 )
 
+# Clases de fichero por defecto (012 C4/C5, spec §5.4). `code` es el resto. Un
+# patron `**/x` casa tambien `x` en la raiz (ver `_class_matches`). El perfil del
+# repo las amplia con `scope.classes`; nunca las sustituye.
+DEFAULT_FILE_CLASSES: dict[FileClass, tuple[str, ...]] = {
+    FileClass.TEST: ("**/tests/**", "**/test_*.py", "**/*Test.php"),
+    FileClass.DOCS: ("**/*.md", "**/docs/**"),
+    FileClass.CONFIG: (
+        "**/docker-compose*.yml",
+        "**/docker-compose*.yaml",
+        "**/Dockerfile*",
+        "**/*.yaml",
+        "**/*.yml",
+        "**/*.toml",
+        "**/.env.example",
+        "**/settings.py",
+        "**/config/**",
+    ),
+}
+# Orden de comprobacion: `tests/config/a.yaml` es test, no configuracion.
+_CLASS_ORDER = (FileClass.TEST, FileClass.DOCS, FileClass.CONFIG)
+
 _DIFF_HEADER = "diff --git "
 
 
@@ -37,41 +60,100 @@ def merge_ignore_patterns(configured: str) -> list[str]:
 
 
 def is_ignored(path: str, patterns: list[str]) -> bool:
-    return matches_any(path.lstrip("./"), patterns)
+    return matches_any(path.removeprefix("./"), patterns)
 
 
-def limit_files(files: list[tuple[str, int, int]], max_files: int) -> tuple[list[str], bool]:
-    """Recorta la lista de ficheros por tamano.
-
-    Devuelve los ficheros que se revisan (ordenados por churn descendente) y si
-    se truncaron. El orden determinista evita que dos ejecuciones del mismo PR
-    revisen subconjuntos distintos.
-    """
-    ordered = sorted(files, key=lambda item: (item[1] + item[2], item[0]), reverse=True)
-    if max_files > 0 and len(ordered) > max_files:
-        return [path for path, _added, _removed in ordered[:max_files]], True
-    return [path for path, _added, _removed in ordered], False
+def merge_file_classes(
+    extra: Mapping[str, list[str]] | None = None,
+) -> dict[FileClass, tuple[str, ...]]:
+    """Clases por defecto mas las del perfil (`scope.classes`), sumadas."""
+    merged = dict(DEFAULT_FILE_CLASSES)
+    for name, patterns in (extra or {}).items():
+        file_class = FileClass(name)
+        merged[file_class] = (*merged.get(file_class, ()), *patterns)
+    return merged
 
 
-def filter_diff(diff: str, patterns: list[str], *, allowed: list[str] | None = None) -> str:
-    """Trocea el diff unificado y descarta los ficheros ignorados o fuera de `allowed`."""
-    blocks: list[str] = []
+def classify(path: str, classes: Mapping[FileClass, tuple[str, ...]] | None = None) -> FileClass:
+    """Clase del fichero: test, docs, config o, si no casa ninguna, code (012 C4)."""
+    table = DEFAULT_FILE_CLASSES if classes is None else classes
+    clean = path.removeprefix("./")
+    for file_class in _CLASS_ORDER:
+        if any(_class_matches(clean, pattern) for pattern in table.get(file_class, ())):
+            return file_class
+    return FileClass.CODE
+
+
+def _class_matches(path: str, pattern: str) -> bool:
+    # `**/x` en `path_matches` exige un directorio delante; para clasificar, un
+    # `docker-compose.yml` o un `config/` en la raiz cuentan igual.
+    if path_matches(path, pattern):
+        return True
+    return pattern.startswith("**/") and path_matches(path, pattern[3:])
+
+
+# Prioridad de revision por clase (012 C4). La configuracion va antes que el codigo:
+# es pequena y es donde se rompe produccion (en el PR #3, dos de los tres P1 vivian
+# en `docker-compose.yml` y `settings.py`); con el presupuesto justo, lo que se
+# queda fuera debe ser lo grande y lo de menos riesgo.
+_CLASS_PRIORITY = {FileClass.CONFIG: 0, FileClass.CODE: 1, FileClass.TEST: 2, FileClass.DOCS: 3}
+
+
+def split_diff(diff: str) -> list[tuple[str, str]]:
+    """Trocea el diff unificado en `(ruta, bloque)` por fichero, en su orden."""
+    blocks: list[tuple[str, str]] = []
+    path: str | None = None
     current: list[str] = []
-    keep = False
     for line in diff.splitlines(keepends=True):
         if line.startswith(_DIFF_HEADER):
-            if current and keep:
-                blocks.append("".join(current))
-            current = [line]
+            if path is not None:
+                blocks.append((path, "".join(current)))
             path = _block_path(line)
-            keep = path is not None and not is_ignored(path, patterns)
-            if keep and allowed is not None:
-                keep = path in allowed
-        elif current:
+            current = [line]
+        elif path is not None:
             current.append(line)
-    if current and keep:
-        blocks.append("".join(current))
-    return "".join(blocks)
+    if path is not None:
+        blocks.append((path, "".join(current)))
+    return blocks
+
+
+def filter_diff(diff: str, patterns: list[str]) -> str:
+    """El diff sin los ficheros ignorados."""
+    return "".join(block for path, block in split_diff(diff) if not is_ignored(path, patterns))
+
+
+def churn(block: str) -> int:
+    """Lineas anadidas mas quitadas de un bloque del diff (sin las cabeceras)."""
+    return sum(
+        1 for line in block.splitlines() if line[:1] in "+-" and not line.startswith(("+++", "---"))
+    )
+
+
+def prioritize_diff(
+    diff: str,
+    ignore: list[str],
+    classes: Mapping[FileClass, tuple[str, ...]] | None = None,
+) -> tuple[str, ReviewCoverage]:
+    """Quita el ruido, ordena por prioridad y crea la cobertura (012 C1, C4).
+
+    No recorta: todo lo que no es ruido llega a las personas, ordenado por clase
+    (configuracion, codigo, tests, docs) y, dentro de cada clase, por churn. Quien
+    revisa por lotes corta por presupuesto y lo declara; aqui solo se declaran los
+    ignorados.
+    """
+    kept: list[tuple[str, str, FileClass]] = []
+    skipped: dict[str, SkipReason] = {}
+    file_class: dict[str, FileClass] = {}
+    blocks = split_diff(diff)
+    for path, block in blocks:
+        file_class[path] = classify(path, classes)
+        if is_ignored(path, ignore):
+            skipped[path] = SkipReason.IGNORED
+        else:
+            kept.append((path, block, file_class[path]))
+    kept.sort(key=lambda item: (_CLASS_PRIORITY[item[2]], -churn(item[1]), item[0]))
+    coverage = ReviewCoverage(files_total=len(blocks), skipped=skipped, file_class=file_class)
+    return "".join(block for _path, block, _cls in kept), coverage
 
 
 def changed_files(diff: str) -> list[str]:

@@ -11,12 +11,11 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 · 6 preguntas abiertas |
-| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | 007, 016 y 017 · falta plan y todo |
+| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 hechas · 6 preguntas abiertas |
+| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | Dependencias hechas (007, 016, 017) · falta plan y todo |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
-| 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | aprobada | 🟢 Lista para implementar · [plan](012-cobertura-de-la-review/plan.md) · [todo](012-cobertura-de-la-review/todo.md) (CB1–CB11) · elimina `max_files_per_pr` | Sin dependencias · **siguiente** · habilita 008 y 014 |
-| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008, 012 y 016; un segundo rol, también 017 · falta plan y todo |
+| 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008 (012, 016 y 017 hechas) · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | borrador | 🟠 Refactor: el contrato de secretos se deriva de `Settings`, no de listas a mano | Sin dependencias de diseño · nace del hueco que dejó `92dea1e` (D22) · 3 preguntas abiertas |
@@ -49,7 +48,7 @@ flowchart LR
 La **016** (lector de contexto) y la **017** (presupuesto por PR) ya están
 entregadas: 009 y 014 las consumen, no las esperan.
 
-- **Implementar ya:** 012 (aprobada el 2026-10-17). La 007 está implementada.
+- **Implementadas el 2026-10-17:** 007 y 012. Desbloquean 008 y 009.
 - **Aprobar después:** 008, que depende de las dos.
 - **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
@@ -72,6 +71,7 @@ conservando sus IDs.
 | 005 | [Fase 3.5 — Modelos declarativos por rol](archivo/005-modelos-declarativos/spec.md) | implementada | M1–M11 · [todo](archivo/005-modelos-declarativos/todo.md) |
 | 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | E1–E12; mide el resto de iniciativas · [todo](archivo/006-eval-de-la-review/todo.md) |
 | 007 | [Contrato de verificación del hallazgo](archivo/007-contrato-de-verificacion/spec.md) | implementada | V1–V8 · `verification`, `failure_scenario`, `verification_evidence` y `context_scope` en el contrato; fuera `requires_verification` · [ADR-0021](../adr/0021-cascada-de-verificacion-del-hallazgo.md) · [todo](archivo/007-contrato-de-verificacion/todo.md) |
+| 012 | [Cobertura de la review](archivo/012-cobertura-de-la-review/spec.md) | implementada | CB1–CB11 · sin `max_files_per_pr`; el `scope` prioriza y el `LlmReviewer` revisa por lotes de ficheros enteros y declara lo que no lee (`ReviewCoverage`, review parcial) · cierra D18 · cobertura del PR #3 de 0.2 a 1.0 · [todo](archivo/012-cobertura-de-la-review/todo.md) |
 | 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
 | 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |
 | 017 | [Presupuesto de tokens por PR](archivo/017-presupuesto-por-pr/spec.md) | implementada | P1–P12 · contador por review compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](archivo/017-presupuesto-por-pr/todo.md) |

@@ -14,11 +14,11 @@ head_sha: 008da57
 captured_at: 2026-10-16
 source: "auditoria manual: comentario publicado del PR #3 + revision del codigo en 886f8d4"
 
-# E10: configuracion de `scope` con la que corrio la review auditada. Con 51
-# ficheros, `max_files_per_pr: 10` (por churn) dejo fuera docker-compose.yml,
-# settings.py y worker/main.py, porque el corte a 60000 chars dejo ~5 vistos.
+# E10: configuracion de `scope` del caso. La review auditada corrio con
+# `max_files_per_pr: 10` (por churn), que dejo fuera docker-compose.yml, settings.py
+# y worker/main.py, y con el corte a 60000 chars solo vio ~5 ficheros. Desde 012 esa
+# guarda no existe: el `scope` prioriza y el `LlmReviewer` revisa por lotes.
 scope:
-  max_files_per_pr: 10
   scope_ignore: ""
 
 expected:
@@ -143,7 +143,60 @@ must_not_report:
     match: ["puede no converger", "que no avanza"]
     why: "una excepcion aborta fix_dispatch y no llega a _route_fix_wait; cada vuelta consume un intento (familia de C)"
 
+  # P2-P9: falsos positivos de la regrabacion con lotes (012, 2026-10-17). Con la
+  # cobertura completa el modelo ve el worker y el fix-worker y fabrica fallos de
+  # orquestacion no alcanzables. Verificados contra 008da57.
+  - id: P2
+    file: src/agent_review/worker/main.py
+    match: ["sweep_fix_expired usa review.fix_request sin comprobar none"]
+    why: "fix_request nunca es None: lanza TypeError y la unica pausa FIX se crea con un FixWaitRequest"
+
+  - id: P3
+    file: src/agent_review/worker/main.py
+    match: ["no comprueba si la pausa ya fue marcada como expirada"]
+    why: "PausedStore.sweep filtra con _is_due: una pausa ya encolada no vuelve hasta EXPIRED_REQUEUE_AFTER_S"
+
+  - id: P4
+    file: src/agent_review/fix/node.py
+    match: ["usa result.attempts como attempt del run_key"]
+    why: "una reentrega con el hilo pausado en fix_wait es un no-op y un PENDING nunca se re-propone: attempts no cambia"
+
+  - id: P5
+    file: src/agent_review/graph/build.py
+    match: ["fix_wait re-pausa con la misma wave"]
+    why: "fix_wait no re-pausa y verify_job emite una resolucion por job (o se reencola); el propio texto admite que no hay ciclo"
+
+  - id: P6
+    file: src/agent_review/worker/main.py
+    match: ["validate_models solo es fatal si hay bindings"]
+    why: "sin bindings no hay persona LLM: un modelo sin binding nunca se usa"
+
+  - id: P7
+    file: src/agent_review/settings.py
+    match: ["insecure_secrets silencia errores de carga"]
+    why: "un YAML roto ya falla al arrancar en build_registry; el comentario lo documenta"
+
+  - id: P8
+    file: src/agent_review/worker/main.py
+    match: ["_resolution_matches acepta cualquier resolucion si pending esta vacio"]
+    why: "pending nunca esta vacio (solo se despacha con wave) y apply_resolutions indexa por run_key"
+
+  - id: P9
+    match: ["api key de nan.builders expuesta"]
+    why: "es la tarea humana P7 ya registrada en el todo; el diff no contiene ninguna clave"
+
 acceptable:
   - id: H
     match: ["env_for", "Settings"]
     why: "cierto, pero es una decision ya documentada"
+
+  # Q1-Q2: ciertos pero intencionados o ya documentados (regrabacion de 012).
+  - id: Q1
+    file: src/agent_review/graph/build.py
+    match: ["notify_fix captura exception"]
+    why: "copia a proposito el patron documentado de notify: un aviso best-effort no tumba una review publicada"
+
+  - id: Q2
+    file: src/agent_review/worker/main.py
+    match: ["cae a inmemoryfixqueue en produccion"]
+    why: "es la deuda D6 documentada (fallback a memoria sin Redis); la cubre S4 de 015"

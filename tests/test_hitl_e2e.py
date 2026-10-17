@@ -116,10 +116,6 @@ class _Vcs:
         del repo, pr_id
         return "+x\n"
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [("a.php", 1, 0)]
-
     def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
         del repo, pr_id, text
         return InlineAnchor(path=path, line=1)

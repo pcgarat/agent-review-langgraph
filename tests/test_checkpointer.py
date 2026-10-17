@@ -49,10 +49,6 @@ class _MemoryVcs:
         del repo, path, ref
         return "$x = 0;\n"
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [("a.php", 1, 0)]
-
     def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
         del repo, pr_id, text
         return InlineAnchor(path=path, line=1)
@@ -580,3 +576,56 @@ def test_serde_roundtrip_de_los_campos_de_verificacion(caplog) -> None:
     with caplog.at_level("WARNING"):
         assert serde.loads_typed(serde.dumps_typed(finding)) == finding
     assert not [r for r in caplog.records if "msgpack" in r.getMessage().lower()]
+
+
+class _CoverageFinding(_OneFinding):
+    """Persona que declara cobertura, como hara el `LlmReviewer` por lotes (012)."""
+
+    def review(self, **kwargs) -> ReviewerResult:
+        from agent_review.domain.models import ReviewCoverage, SkipReason
+
+        result = super().review(**kwargs)
+        return result.model_copy(
+            update={
+                "coverage": ReviewCoverage(
+                    reviewed=["a.php"], skipped={"docker-compose.yml": SkipReason.BUDGET}
+                )
+            }
+        )
+
+
+def test_la_cobertura_sobrevive_a_pausa_y_reanudacion(caplog) -> None:
+    import logging
+
+    from agent_review.domain.models import DecisionOutcome, FindingDecision, SkipReason
+
+    saver = build_checkpointer("")
+    policy = PolicyEngine(
+        {
+            "version": 1,
+            "max_autonomy": "fix_with_approval",
+            "default_action": "escalate",
+            "rules": [],
+        }
+    )
+    graph = build_graph(vcs=_MemoryVcs(), reviewers=[_CoverageFinding()], policy=policy).compile(
+        checkpointer=saver
+    )
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="7")
+    config = {"configurable": {"thread_id": request.thread_id}}
+
+    with caplog.at_level(logging.WARNING, logger="langgraph.checkpoint.serde.jsonplus"):
+        assert process_request(graph, request).paused
+        paused = graph.get_state(config).values["coverage"]
+        decision = HitlDecision(
+            review_key=request.review_key,
+            actor="alice",
+            items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+        )
+        process_request(graph, request.model_copy(update={"decision": decision}))
+
+    assert paused.reviewed == ["a.php"]
+    assert paused.skipped["docker-compose.yml"] is SkipReason.BUDGET
+    assert graph.get_state(config).values["coverage"] == paused
+    avisos = [r.message for r in caplog.records if "unregistered" in r.message]
+    assert avisos == [], f"tipos de cobertura sin registrar en el serde: {avisos}"

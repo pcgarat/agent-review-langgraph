@@ -66,7 +66,7 @@ contra el `head_sha` del caso y se etiqueta en `labels.yaml` (el test exige
 | Contrato y dominio | `test_domain`, `test_contracts`, `test_fix_domain` |
 | Política | `test_policy` |
 | Ingesta y API | `test_api`, `test_pending`, `test_queue` |
-| Grafo y publicación | `test_graph`, `test_scope`, `test_e2e_tooling` |
+| Grafo y publicación | `test_graph` (incluida la review parcial: cabecera, marca y lista plegable), `test_scope` (clasificación, prioridad y cobertura de 012), `test_e2e_tooling` |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
 | Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar); `test_compose` cubre el perfil `panel` |
@@ -140,7 +140,8 @@ Antes de invertir aquí, recuerda que la ingesta es un puente desechable
 ### Un tipo nuevo en el estado del grafo
 
 Añádelo a `checkpointer._STATE_TYPES`. Si no, la reanudación de un hilo pausado
-depende del msgpack permisivo. Los **read models** derivados (como el recorrido de
+depende del msgpack permisivo. Ejemplo: `ReviewCoverage`, `SkipReason` y `FileClass`
+(012), con un test de pausa y reanudación en `test_checkpointer`. Los **read models** derivados (como el recorrido de
 019, `domain/trace.py`) no van aquí: no viajan por el estado.
 
 ### Leer el recorrido de una review (sin grafo)

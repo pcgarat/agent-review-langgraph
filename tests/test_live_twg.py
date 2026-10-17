@@ -39,9 +39,6 @@ def test_adaptador_contra_pr_real() -> None:
     files = parse_unified_diff(diff)
     assert files, "el PR no tiene cambios parseables"
 
-    stats = adapter.get_diffstat(f"{WORKSPACE}/{REPO}", int(PR_ID))
-    assert stats, "diffstat vacio"
-
     path, added = next(((p, fd.added) for p, fd in files.items() if fd.added), (None, {}))
     assert path and added
     line_no = sorted(added)[0]

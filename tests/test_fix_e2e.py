@@ -58,10 +58,6 @@ class _Vcs:
             " function foo() {\n"
         )
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [("src/Foo.php", 1, 0)]
-
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo, path, ref
         return self.source

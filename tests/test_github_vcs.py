@@ -88,28 +88,6 @@ def test_get_diff_se_cachea_por_pr() -> None:
     assert calls["n"] == 1
 
 
-def test_get_diffstat_suma_additions_y_deletions() -> None:
-    payload = [
-        {"filename": "src/Foo.php", "additions": 3, "deletions": 1},
-        {"filename": "src/Bar.php", "additions": 0, "deletions": 5},
-    ]
-    adapter = _adapter(lambda r: httpx.Response(200, json=payload))
-    stats = adapter.get_diffstat("", 417)
-    assert ("src/Foo.php", 3, 1) in stats
-    assert ("src/Bar.php", 0, 5) in stats
-
-
-def test_get_diffstat_pagina_hasta_llenar() -> None:
-    full = [{"filename": f"f{i}.php", "additions": 1, "deletions": 0} for i in range(100)]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        page = request.url.params.get("page")
-        return httpx.Response(200, json=full if page == "1" else [full[0]])
-
-    adapter = _adapter(handler)
-    assert len(adapter.get_diffstat("", 417)) == 101
-
-
 def test_get_file_decodifica_base64() -> None:
     content = base64.b64encode(b"<?php echo 1;\n").decode()
     payload = {"content": content, "encoding": "base64"}

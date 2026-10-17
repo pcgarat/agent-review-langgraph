@@ -41,10 +41,6 @@ class DiffLineVcs:
         del repo, pr_id
         return self._diff
 
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [(path, len(fd.added), 0) for path, fd in self._files.items()]
-
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
     ) -> InlineAnchor | None:

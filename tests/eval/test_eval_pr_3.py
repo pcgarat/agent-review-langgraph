@@ -24,11 +24,8 @@ BASELINE = CASE_DIR / "expected_report.json"
 
 
 def _policy(case: harness.Case) -> PolicyEngine:
-    """Politica del caso: la versionada con el `scope` congelado (E10)."""
+    """Politica del caso: la versionada. Desde 012 el `scope` no recorta por numero."""
     engine = PolicyEngine.from_file(Path(__file__).parents[2] / "config" / "autonomy.yaml")
-    max_files = case.scope.get("max_files_per_pr")
-    if max_files is not None:
-        engine.guards["max_files_per_pr"] = int(max_files)
     return engine
 
 
@@ -59,7 +56,6 @@ def test_el_caso_carga_con_su_procedencia() -> None:
 
     assert case.pr_id == 3
     assert case.head_sha == "008da57"
-    assert case.scope["max_files_per_pr"] == 10
 
 
 def test_la_grabacion_casa_el_caso() -> None:
@@ -88,24 +84,43 @@ def test_replay_es_determinista() -> None:
 
 
 def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
-    # Regrabacion del 2026-10-17 (deepseek-v4-flash, contrato de 007). La auditoria
-    # original (9 publicados, 2 TP, precision 0.25) vive en la spec de 006 §3.1.
+    # Regrabacion del 2026-10-17 (deepseek-v4-flash, contrato de 007, lotes de 012).
+    # La auditoria original (9 publicados, 2 TP, precision 0.25, cobertura 0.2) vive
+    # en la spec de 006 §3.1.
     case = harness.load_case(CASE_DIR)
     report = _replay_report(case)
 
     assert report.counts["fp_unknown"] == 0, "todo hallazgo publicado debe estar etiquetado"
-    # Los 7 publicados son FP etiquetados (F, G y J-O): todos traen escenario de
-    # fallo, pero ninguno alcanzable. El escenario no basta; hace falta verificar (009).
-    assert report.counts["published"] == 7
-    assert report.counts["fp_labeled"] == 7
+    # 012: el revisor lee todo el codigo y la configuracion del PR.
+    assert report.metrics["coverage"] == 1.0
+    # Pero ver mas no basta: los 10 publicados son 8 FP (P2-P9) y 2 aceptables
+    # (Q1-Q2); ningun real. Falta contexto entre ficheros (008) y verificar (009).
+    assert report.counts["published"] == 10
+    assert report.counts["fp_labeled"] == 8
+    assert report.counts["acceptable"] == 2
     assert report.counts["tp"] == 0
-    # Los 8 reales (A, I, integracion 1-3, no-detectado 1-3) quedan sin detectar:
-    # la cobertura sigue en 0.2 hasta la 012.
     assert report.counts["fn"] == 8
     assert report.metrics["precision"] == 0.0
     assert report.metrics["recall"] == 0.0
-    assert report.metrics["coverage"] == 0.2
     assert report.inverted == ()
+
+
+def test_el_pr_3_entero_llega_al_revisor() -> None:
+    # 012 criterio 1: sin `max_files_per_pr` ni el corte a 60000 chars, la
+    # configuracion que dejo fuera la review auditada entra en la review.
+    case = harness.load_case(CASE_DIR)
+    recording = harness.Recording.load(CASE_DIR / "recorded.json")
+    llm = ReplayLlm(recording, case, role="correctness")
+    run = harness.run_case(case, llm=llm, policy=_policy(case), vcs=harness.CaseVcs(case))
+
+    reviewed = set(run.reviewed)
+    for path in (
+        "docker-compose.yml",
+        "src/agent_review/settings.py",
+        ".env.example",
+        "src/agent_review/worker/main.py",
+    ):
+        assert path in reviewed, f"{path} no llego al revisor"
 
 
 def test_sin_deriva_frente_al_baseline() -> None:

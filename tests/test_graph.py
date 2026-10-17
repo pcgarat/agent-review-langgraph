@@ -11,6 +11,7 @@ from agent_review.domain.models import (
     ReviewerResult,
     ReviewRequest,
     Severity,
+    SkipReason,
     ToolingSourceStatus,
 )
 from agent_review.graph.build import build_graph, outcome_from_state
@@ -48,10 +49,6 @@ class FakeVcs:
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
         return "diff --git a/src/foo.py b/src/foo.py\n+amor\n"
-
-    def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-        del repo, pr_id
-        return [("src/foo.py", 1, 0)]
 
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str
@@ -389,20 +386,20 @@ def test_scope_filtra_ruido_antes_de_las_personas() -> None:
     assert "src/foo.py" in captured["diff"]
 
 
-def test_scope_aplica_max_files_per_pr() -> None:
+def test_scope_no_recorta_y_deja_la_cobertura_en_el_estado() -> None:
+    # 012 C8: sin `max_files_per_pr`; todo lo que no es ruido llega a las personas,
+    # ordenado por prioridad (config > code), y la cobertura viaja en el estado.
     class DiffVcs(FakeVcs):
         def get_diff(self, repo: str, pr_id: int) -> str:
             del repo, pr_id
             return (
                 "diff --git a/src/a.py b/src/a.py\n"
                 "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+b\n"
-                "diff --git a/src/b.py b/src/b.py\n"
-                "--- a/src/b.py\n+++ b/src/b.py\n@@ -1 +1 @@\n-a\n+b\n"
+                "diff --git a/composer.lock b/composer.lock\n"
+                "--- a/composer.lock\n+++ b/composer.lock\n@@ -1 +1 @@\n-a\n+b\n"
+                "diff --git a/docker-compose.yml b/docker-compose.yml\n"
+                "--- a/docker-compose.yml\n+++ b/docker-compose.yml\n@@ -1 +1 @@\n-a\n+b\n"
             )
-
-        def get_diffstat(self, repo: str, pr_id: int) -> list[tuple[str, int, int]]:
-            del repo, pr_id
-            return [("src/a.py", 1, 0), ("src/b.py", 100, 0)]
 
     captured: dict[str, str] = {}
 
@@ -418,29 +415,26 @@ def test_scope_aplica_max_files_per_pr() -> None:
             head_sha: str = "",
             review_key: str = "",
         ):
-            del repo, pr_id, head_sha
+            del repo, pr_id, head_sha, review_key
             captured["diff"] = diff
             return ReviewerResult()
 
     policy = PolicyEngine(
-        {
-            "version": 1,
-            "max_autonomy": "report",
-            "default_action": "report",
-            "rules": [],
-            "guards": {"max_files_per_pr": 1},
-        }
+        {"version": 1, "max_autonomy": "report", "default_action": "report", "rules": []}
     )
     graph = build_graph(vcs=DiffVcs(), reviewers=[CaptureReviewer()], policy=policy).compile()
-    graph.invoke(
+    state = graph.invoke(
         {
             "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
             "findings": [],
         }
     )
-    # Se conserva el fichero con mas churn (src/b.py) y se descarta el otro.
-    assert "src/b.py" in captured["diff"]
-    assert "src/a.py" not in captured["diff"]
+    assert captured["diff"].index("docker-compose.yml") < captured["diff"].index("src/a.py")
+    assert "composer.lock" not in captured["diff"]
+    coverage = state["coverage"]
+    assert coverage.files_total == 3
+    assert coverage.skipped == {"composer.lock": SkipReason.IGNORED}
+    assert not coverage.partial
 
 
 def test_grafo_avisa_cuando_la_fuente_estatica_no_esta() -> None:
@@ -927,3 +921,105 @@ def test_hitl_rechazo_va_al_resumen_sin_inline() -> None:
     assert vcs.comments
     assert "Descartado por una persona" in vcs.comments[0][2]
     assert "Decision: descartado · alice" in vcs.comments[0][2]
+
+
+def test_persona_con_cobertura_que_cae_entera_declara_todo_failed() -> None:
+    # 012: si la persona que revisa por lotes agota los reintentos, no leyo nada;
+    # eso se declara, o "sin hallazgos" se leeria como "revisado y limpio".
+    from agent_review.errors import TransientError
+
+    class DiffVcs(FakeVcs):
+        def get_diff(self, repo: str, pr_id: int) -> str:
+            del repo, pr_id
+            return (
+                "diff --git a/src/a.py b/src/a.py\n"
+                "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+
+    class FallingReviewer:
+        name = "correctness"
+        declares_coverage = True
+
+        def review(self, **kwargs) -> ReviewerResult:
+            raise TransientError("modelo caido")
+
+    from langgraph.types import RetryPolicy
+
+    policy = PolicyEngine(
+        {"version": 1, "max_autonomy": "report", "default_action": "report", "rules": []}
+    )
+    graph = build_graph(
+        vcs=DiffVcs(),
+        reviewers=[FallingReviewer()],
+        policy=policy,
+        retry_policy=RetryPolicy(max_attempts=1),
+    ).compile()
+    state = graph.invoke({"request": {"repo": "r", "pr_id": 7, "head_sha": "abc"}, "findings": []})
+    assert state["coverage"].skipped == {"src/a.py": SkipReason.FAILED}
+    assert state["coverage"].partial
+
+
+class _CoverageVcs(FakeVcs):
+    def get_diff(self, repo: str, pr_id: int) -> str:
+        del repo, pr_id
+        return "".join(
+            f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-a\n+b\n"
+            for p in ("docker-compose.yml", "src/a.py", "docs/guia.md", "composer.lock")
+        )
+
+
+class _CoverageReviewer:
+    name = "correctness"
+    declares_coverage = True
+
+    def __init__(self, skipped: dict[str, SkipReason]) -> None:
+        self._skipped = skipped
+
+    def review(self, **kwargs) -> ReviewerResult:
+        from agent_review.domain.models import ReviewCoverage
+
+        all_files = ["docker-compose.yml", "src/a.py", "docs/guia.md"]
+        reviewed = [p for p in all_files if p not in self._skipped]
+        return ReviewerResult(coverage=ReviewCoverage(reviewed=reviewed, skipped=self._skipped))
+
+
+def _coverage_run(skipped: dict[str, SkipReason]):
+    vcs = _CoverageVcs()
+    policy = PolicyEngine(
+        {"version": 1, "max_autonomy": "report", "default_action": "report", "rules": []}
+    )
+    graph = build_graph(vcs=vcs, reviewers=[_CoverageReviewer(skipped)], policy=policy).compile()
+    state = graph.invoke({"request": {"repo": "r", "pr_id": 7, "head_sha": "abc"}, "findings": []})
+    return vcs, outcome_from_state(state)
+
+
+def test_configuracion_sin_revisar_publica_review_parcial_aunque_no_haya_hallazgos() -> None:
+    # 012 C7 (criterio 3): "sin hallazgos" con configuracion sin leer no es limpio.
+    vcs, outcome = _coverage_run({"docker-compose.yml": SkipReason.BUDGET})
+
+    assert not outcome.complete
+    assert outcome.coverage is not None and outcome.coverage.partial
+    [(_, _, body)] = vcs.comments
+    assert "**Review parcial:**" in body
+    assert "`docker-compose.yml` (presupuesto agotado)" in body
+    assert "1 de configuración" in body
+    # 4 ficheros en el diff, uno ignorado (composer.lock): 3 relevantes.
+    assert "sin revisar 1 de 3 ficheros relevantes" in body
+    assert "composer.lock" not in body
+    assert ":partial" in body
+
+
+def test_solo_docs_sin_revisar_no_hace_parcial_la_review() -> None:
+    vcs, outcome = _coverage_run({"docs/guia.md": SkipReason.TOO_LARGE})
+
+    assert outcome.complete
+    # Sin hallazgos y completa: no se publica nada (como siempre).
+    assert vcs.comments == []
+
+
+def test_la_lista_plegable_de_docs_acompana_a_una_review_parcial() -> None:
+    vcs, _ = _coverage_run({"src/a.py": SkipReason.FAILED, "docs/guia.md": SkipReason.TOO_LARGE})
+    [(_, _, body)] = vcs.comments
+    assert "1 de código: `src/a.py` (fallo del modelo)" in body
+    assert "<details><summary>Sin revisar (no cambia el resultado)</summary>" in body
+    assert "de documentación: `docs/guia.md` (demasiado grande para un lote)" in body

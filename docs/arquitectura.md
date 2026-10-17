@@ -143,7 +143,7 @@ hallazgos silenciosos.
 ```mermaid
 flowchart TD
     START([START]) --> scope
-    scope["scope<br/>diff · filtro de ruido · max_files_per_pr"] -->|"Send ×N"| persona
+    scope["scope<br/>diff · filtro de ruido · prioridad · cobertura"] -->|"Send ×N"| persona
     persona["persona<br/>fan-out: un rol por rama<br/>(standards · correctness · security…)<br/>modelo segun models.yaml"] --> merge
     merge["merge<br/>(fichero, línea, título) + fusión entre personas"] --> policy
     policy["policy<br/>autonomy.yaml → Decision"] --> hitl
@@ -163,13 +163,13 @@ flowchart TD
 
 | Nodo | Reintento de nodo | Qué hace |
 |---|---|---|
-| `scope` | Sí | `get_diff`; con `max_files_per_pr`, también `get_diffstat` y recorte por churn. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`). Vacía `findings` y `source_status`; fija `budget_total`. |
-| `persona` | Sí; degrada en el último intento | Una rama por revisor. Escribe `findings`, `finding_sources`, `source_status` y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. |
+| `scope` | Sí | `get_diff`. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`) y ordena el resto por clase (configuración → código → tests → docs; `scope.classify`, ampliable con `scope.classes` del perfil) y por churn, **sin recortar** ([012](iniciativas/archivo/012-cobertura-de-la-review/spec.md)). Crea la `coverage` con los ignorados y la clase de cada fichero. Vacía `findings` y `source_status`; fija `budget_total`. |
+| `persona` | Sí; degrada en el último intento | Una rama por revisor. Escribe `findings`, `finding_sources`, `source_status`, `coverage` (el `LlmReviewer` revisa por lotes de ficheros enteros y declara lo que no leyó: `too_large`, `budget`, `failed`) y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. Una persona que declara cobertura y cae entera marca sus ficheros `failed`. |
 | `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). |
 | `policy` | No (puro) | Una `Decision` por hallazgo, con `matched_rule` y `policy_version`. |
 | `hitl` | **Nunca** | Sin pendientes o con `human_decisions` ya presente, sigue. Si no, `interrupt`. Si la decisión está incompleta o es ilegible, vuelve a pausar. |
 | `fix_dispatch` | Sí | Selección → bloqueo de seguridad → fixer → validación **local**. Deja `PENDING` (con el `VerifyJob`) o terminal, sin tocar el sandbox. |
-| `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". |
+| `publish` | Sí | [ADR-0006](adr/0006-publicacion-inline-primero-resumen-al-final.md). Escribe `published` e `inlined_count`. Un `PENDING` se rotula "en verificación". Con código o configuración sin leer, la review es **parcial**: cabecera, marca `:partial` y se publica aunque no haya hallazgos. |
 | `fix_wait` | **Nunca** | `interrupt(FixWaitRequest)` si hay `PENDING`; al reanudar aplica la `FixResolutions`. Re-propone si un `FAILED` tiene intentos; si no, sigue. |
 | `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
 | `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
@@ -193,6 +193,7 @@ LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
 | `budget_exhausted` | `operator.or_` | Personas que se cortaron por presupuesto (017); cada rama escribe la suya en paralelo |
 | `tokens_spent` | Suma de dict | Tokens confirmados por persona: el gasto real de la review |
 | `budget_total` | Sustituye | Tope del contador compartido, escrito por `scope`; el saldo del `ReviewOutcome` se deriva de él |
+| `coverage` | `ReviewCoverage.combine` | La crea `scope`; cada persona que revisa por lotes añade lo que leyó. Un fichero cuenta como revisado si alguien lo leyó |
 | `merged`, `decisions` | Sustituye | Si compartieran campo con `findings`, se reacumularían |
 | `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
 | `fix_wait` (wave) | Sustituye | La wave pendiente; la escribe `fix_wait` al pausar |
@@ -410,7 +411,6 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D14 | **Observabilidad** | **Parcial:** no hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. El **recorrido** de una review (nodos, orden y punto de parada) se lee del checkpointer con `trace.read_trace` y el **panel** de operación ([019](iniciativas/archivo/019-panel-de-operacion/spec.md)) muestra cola, en vuelo, pausas, descartes y gasto, además de la consola del sandbox en vivo. Las trazas con prompt/`usage`/latencia por llamada las aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
 | D16 | **Heartbeat sin progreso** | **Resuelta (019).** El latido de compose sigue midiendo solo que el proceso vive, pero el worker deja en `reviews:active:<review_key>` el nodo en curso y su `started_at` (hash de progreso, W10) y el **panel** lo muestra: se distingue «vivo» de «avanzando». El latido se queda como healthcheck a propósito ([ADR-0020](adr/0020-panel-como-servicio-aparte.md)): no debe depender de Redis. |
-| D18 | **Recorte silencioso de lo que ve el revisor** | `max_files_per_pr` (por churn) y el corte del `LlmReviewer` a 60 000 caracteres, a mitad de fichero, solo dejan un `logger.warning`; la review publicada no dice qué no se revisó. En el PR #3 el modelo vio ≈ 5 de 51 ficheros. Lo aborda la [012](iniciativas/012-cobertura-de-la-review/spec.md). |
 | D19 | **Anclaje por cercanía** | `best_line` siempre devuelve una línea si hay añadidas: un hallazgo sobre código no visto se ancla a la línea visible más cercana. Lo aborda L0 de la [008](iniciativas/008-contexto-del-revisor/spec.md). |
 | D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |
 | D22 | **Contrato de secretos a mano** | El contrato de producción (ADR-0013) se escribe secreto a secreto en cinco funciones y repite el set de placeholders en cuatro módulos. El refactor `is_missing` (`92dea1e`) se dejó cuatro comprobaciones con el predicado viejo: `TOOLING_WEBHOOK_SECRET` y `REVIEWS_DECISION_TOKEN` vacíos no fallaban en `production`, y `SANDBOX_RUNNER_TOKEN` se juzgaba distinto en el worker y en el fix-worker. Corregido en `9fe30b0`; la causa raíz la aborda la [020](iniciativas/020-secretos-declarados/spec.md). |

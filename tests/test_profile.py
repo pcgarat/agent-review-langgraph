@@ -116,3 +116,19 @@ def test_sandbox_timeout_cae_al_env_sin_perfil(tmp_path: Path) -> None:
         repo_profile_config=str(tmp_path / "no-existe.yaml"), sandbox_timeout_s=99.0
     )
     assert sandbox_timeout_s(settings) == 99.0
+
+
+def test_scope_classes_valida_clase_y_globs() -> None:
+    from agent_review.profile import scope_classes
+
+    ok = {"repo": "r", "scope": {"classes": {"config": ["infra/**"]}}}
+    assert validate_profile(ok) == []
+    assert scope_classes(ok) == {"config": ["infra/**"]}
+
+    mala = {"repo": "r", "scope": {"classes": {"raro": ["x"]}, "otra": 1}}
+    problems = validate_profile(mala)
+    assert any("clase desconocida 'raro'" in p for p in problems)
+    assert any("clave desconocida 'otra'" in p for p in problems)
+    # Un perfil invalido no tumba el scope: se ignora lo que no encaja.
+    assert scope_classes(mala) == {}
+    assert scope_classes(None) == {}
