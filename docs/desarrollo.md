@@ -462,8 +462,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   Un intento que lanza (`LlmTruncatedError`, `LlmTransientError`) guarda su tipo y
   su mensaje, y el *replay* levanta el mismo error; sin esa entrada el *replay* se
   salta un turno y aborta por *fingerprint* (023 T0c/D30). Un turno con contenido en
-  blanco no es una review limpia: el bucle lo repite con un recordatorio y, si el
-  lote cierra sin JSON de hallazgos, el lote se reintenta antes de darlo por `failed`.
+  blanco no es una review limpia: el bucle lo repite con un recordatorio, un lote que
+  cierra sin JSON de hallazgos se reintenta y, si aun así no lo cierra, se parte en
+  dos para que sus ficheros no salgan `failed` (solo se rinde con un único bloque).
 
 ## 5. Convenciones
 

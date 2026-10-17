@@ -1190,6 +1190,64 @@ def test_un_lote_con_herramientas_que_cierra_sin_json_se_reintenta(tmp_path: Pat
     assert len(result.findings) == 1
 
 
+def test_un_lote_que_el_modelo_no_cierra_se_parte_y_no_deja_ficheros_failed(
+    tmp_path: Path,
+) -> None:
+    # El razonador devolvio contenido en blanco con dos ficheros en el lote y
+    # respondio con un fichero: partir el lote cambia lo que ve el modelo y la
+    # cobertura deja de perder dos ficheros (T0c).
+    from agent_review.ports.context import ContextLimits
+
+    class PorLote:
+        """Blanco mientras el prompt traiga dos ficheros; hallazgos con uno."""
+
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def complete(self, **kwargs) -> LlmReply:
+            self.prompts.append(kwargs["prompt"])
+            if kwargs["prompt"].count("diff --git") > 1:
+                return LlmReply(text="   ", finish_reason="stop")
+            return LlmReply(text=json.dumps({"findings": []}))
+
+    diff = _file_block("a.py", 5) + _file_block("b.py", 5)
+    llm = PorLote()
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_max_chars=100_000,
+        batch_retries=0,
+    )
+
+    result = reviewer.review(repo="r", pr_id=1, diff=diff, head_sha="h")
+
+    assert result.coverage is not None
+    assert result.coverage.skipped == {}
+    assert set(result.coverage.reviewed) == {"a.py", "b.py"}
+    mitades = [p for p in llm.prompts if p.count("diff --git") == 1]
+    assert len(mitades) == 2, "los dos trozos se revisan por separado"
+
+
+def test_un_lote_de_un_solo_fichero_que_no_se_cierra_sale_failed(tmp_path: Path) -> None:
+    from agent_review.domain.models import SkipReason
+    from agent_review.ports.context import ContextLimits
+
+    llm = _ScriptedToolsLlm("   ", "   ", "   ")
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_max_chars=100_000,
+        batch_retries=0,
+    )
+
+    result = reviewer.review(repo="r", pr_id=1, diff=_file_block("a.py", 5), head_sha="h")
+
+    assert result.coverage is not None
+    assert set(result.coverage.skipped.values()) == {SkipReason.FAILED}
+
+
 def test_un_lote_sin_herramientas_con_prosa_no_se_reintenta() -> None:
     # Sin herramientas la grabacion de 008 manda: cambiar el numero de llamadas de
     # un lote que ya estaba congelado rompe su replay por fingerprint.

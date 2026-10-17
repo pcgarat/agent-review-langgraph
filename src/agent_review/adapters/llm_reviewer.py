@@ -115,6 +115,9 @@ DEFAULT_CONTEXT_MAX_CHARS = 40_000
 # espera base entre ellos (se dobla en cada intento).
 DEFAULT_BATCH_RETRIES = 2
 _RETRY_BASE_S = 5.0
+# Profundidad de particion de un lote que el modelo no cierra: 1 -> dos trozos, 2 ->
+# cuatro. Mas alla se acumulan llamadas sin cambiar lo que ve el modelo.
+_MAX_SPLIT_DEPTH = 2
 # Reintento de lote: ademas de espaciar, pide la respuesta ya. Un razonador que
 # agoto la salida en pensamiento tiende a repetir el fallo con el mismo prompt.
 _RETRY_HINT = (
@@ -385,29 +388,44 @@ class LlmReviewer:
         findings: list[Finding] = []
         tool_usage = ToolUsage() if self._reader_factory is not None else None
         total = len(batches)
-        for index, batch in enumerate(batches):
+        # Cola de lotes: un lote que el modelo no cierra se parte por la mitad y sus
+        # trozos vuelven a la cola en su sitio (ver `_puede_partirse`).
+        pending: list[tuple[list[tuple[str, str]], int]] = [(batch, 0) for batch in batches]
+        index = 0
+        while pending:
+            batch, depth = pending.pop(0)
+            index += 1
             paths = list(dict.fromkeys(path for path, _ in batch))
             if self.budget_exhausted:
                 for path in paths:
                     missing.setdefault(path, SkipReason.BUDGET)
                 continue
             text = "".join(block for _, block in batch)
-            event = functools.partial(self._event, review_key, index + 1, total)
+            event = functools.partial(self._event, review_key, index, max(total, index))
             reply = self._call_with_retries(text, review_key, paths, event)
-            if reply is None:
+            entries = None
+            if reply is not None:
+                entries = self._entries(reply.text)
+                event(
+                    "end",
+                    meta=_usage_meta(reply, findings=None if entries is None else len(entries)),
+                )
+            if entries is None:
+                if self._puede_partirse(batch, depth, reply):
+                    half = len(batch) // 2
+                    logger.warning(
+                        "correctness: el lote no se cerro (%s); se parte en dos",
+                        self._last_error or "cierre sin JSON",
+                    )
+                    event("error", text="lote partido en dos: el modelo no lo cerro")
+                    pending[0:0] = [(batch[:half], depth + 1), (batch[half:], depth + 1)]
+                    continue
                 reason = SkipReason.BUDGET if self.budget_exhausted else SkipReason.FAILED
-                note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
-                event("error", text=note)
+                if reply is None:
+                    note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
+                    event("error", text=note)
                 for path in paths:
                     missing.setdefault(path, reason)
-                continue
-            entries = self._entries(reply.text)
-            event(
-                "end", meta=_usage_meta(reply, findings=None if entries is None else len(entries))
-            )
-            if entries is None:
-                for path in paths:
-                    missing.setdefault(path, SkipReason.FAILED)
                 continue
             files = parse_unified_diff(text)
             served = self._last_loop.readings if self._last_loop is not None else None
@@ -420,8 +438,8 @@ class LlmReviewer:
                 tool_usage = _accumulate_usage(tool_usage, self._last_loop)
             logger.info(
                 "correctness: lote %d/%d revisado (%d ficheros)",
-                index + 1,
-                len(batches),
+                index,
+                max(total, index),
                 len(paths),
             )
         reviewed = [path for path in order if path not in missing]
@@ -594,6 +612,26 @@ class LlmReviewer:
         ):
             raise LlmTransientError("el modelo cerro el lote sin JSON de hallazgos")
         return reply
+
+    def _puede_partirse(
+        self, batch: list[tuple[str, str]], depth: int, reply: LlmReply | None
+    ) -> bool:
+        """¿Se puede partir el lote en dos y reintentarlo?
+
+        Solo si el fallo es **del lote**: sin presupuesto agotado, con mas de un
+        bloque y sin agotar la profundidad. Un razonador que devuelve contenido en
+        blanco lo hace por el **contenido** del lote (los mismos ficheros fallan en
+        corridas distintas), asi que la unica palanca que cambia el resultado es
+        mandarle menos. Un lote de un solo bloque no se puede partir: esos ficheros
+        salen `failed` y la review queda parcial (T0c), nunca limpia.
+        """
+        if self._reader_factory is None:
+            # Sin herramientas la grabacion de 008 manda: partir un lote cambiaria el
+            # numero de llamadas de un caso ya congelado y su replay por fingerprint.
+            return False
+        if reply is None and self.budget_exhausted:
+            return False
+        return depth < _MAX_SPLIT_DEPTH and len(batch) > 1
 
     def _call_with_tools(
         self,

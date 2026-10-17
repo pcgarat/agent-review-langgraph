@@ -299,14 +299,15 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     correctivo (`_MAX_BLANK_TURNS`), (b) un lote que cierra sin JSON de hallazgos
     se **reintenta** en vez de publicarse como limpio, (c) el reintento de lote
     añade un aviso al final del *prompt* (una repetición idéntica tiende a repetir
-    el vacío), y (d) la grabación guarda también los **intentos fallidos**, sin lo
-    cual el *replay* se salta una llamada y aborta por *fingerprint*. Con (a)–(d)
-    una corrida pasa de 5 lotes en blanco a 1–2, no a 0. El vacío persistente
-    depende del **contenido del lote** (los mismos ficheros fallan en corridas
-    distintas), así que la salida es partir el lote que falla o cambiar de modelo,
-    no más reintentos iguales. `recorded_tools.json` se dejó como estaba (no
-    reproduce con el código nuevo: los turnos en blanco ahora se repiten) y
-    `expected_report_tools.json` sigue sin existir.
+    el vacío), (d) la grabación guarda también los **intentos fallidos**, sin lo
+    cual el *replay* se salta una llamada y aborta por *fingerprint*, y (e) un lote
+    que aun así no se cierra se **parte en dos** y se revisa por mitades (hasta dos
+    niveles; solo un lote de un único bloque sale `failed`). Con (a)–(d) una corrida
+    pasaba de 5 lotes en blanco a 1–2, no a 0: el vacío persistente depende del
+    **contenido del lote** (los mismos ficheros fallan en corridas distintas), que
+    es lo que (e) ataca. Falta la regrabación con (e) y congelar
+    `expected_report_tools.json`. `recorded_tools.json` se dejó como estaba (no
+    reproduce con el código nuevo: los turnos en blanco ahora se repiten).
 
 ### Checkpoint K0.5
 
