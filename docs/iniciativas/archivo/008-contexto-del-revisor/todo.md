@@ -125,6 +125,13 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     `make eval-record`.
   - *Hecho 2026-10-17 (parcial):* F y humildad cubiertos en unitarios; el *gold set*
     del PR #3 queda en `xfail` hasta `make eval-record` conjunto con 009 (criterio 7).
+  - *Hecho 2026-10-17 (RH10 de [014](../../014-revisor-con-herramientas/spec.md)):*
+    la regrabación se hizo con el bucle de herramientas y el `xfail` se retiró. El PR
+    #3 entero (cobertura 1.0) da 10 publicados, 3 TP, 7 FP etiquetados (todos de
+    orquestación inventada al leer el worker completo), precisión 0.30 y recall 0.375.
+    Dos etiquetas del *ground truth* se afinaron al detectarse una atribución que
+    colgaba de la palabra «secreto» y no del hallazgo (<./spec.md>, nota en
+    `labels.yaml`).
 
 - [x] **CX12** Documentos vivos y CI
   - `docs/arquitectura.md` §3–4 (persona, `ReviewContext`, L0).

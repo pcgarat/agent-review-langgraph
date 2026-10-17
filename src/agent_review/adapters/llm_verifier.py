@@ -11,8 +11,8 @@ from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.llm import LlmPort
 from agent_review.scope import split_diff
 
-# Fabrica por review: (repo, head_sha, diff) → lector anclado al commit (VF8).
-OpenReader = Callable[[str, str, str], ContextReaderPort]
+# Fabrica por review: (repo, head_sha, base_sha, diff) → lector anclado al commit.
+OpenReader = Callable[[str, str, str, str], ContextReaderPort]
 
 # Prompt que **refuta** (009 V3 / §5.5): un verificador que aprueba por defecto
 # no verifica. El escenario de fallo obliga a recorrer la ruta.
@@ -81,11 +81,12 @@ class LlmVerifier:
         *,
         repo: str,
         head_sha: str,
+        base_sha: str = "",
         diff: str = "",
         review_key: str = "",
     ) -> VerificationResult:
         if self._open_reader is not None:
-            reader: ContextReaderPort = self._open_reader(repo, head_sha, diff)
+            reader: ContextReaderPort = self._open_reader(repo, head_sha, base_sha, diff)
         else:
             fixed = self._reader
             if fixed is None:

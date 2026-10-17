@@ -19,11 +19,13 @@ from typing import Any
 
 import yaml
 
+from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
-from agent_review.adapters.llm_reviewer import LlmReviewer
+from agent_review.adapters.llm_reviewer import LlmReviewer, ReviewerReaderFactory
 from agent_review.domain.models import PARTIAL_CLASSES, Finding
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
+from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, ContextLimits, is_denied
 from agent_review.ports.llm import JsonMode, LlmPort, LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from agent_review.scope import changed_files, classify
@@ -90,6 +92,11 @@ class Case:
     expected: tuple[Label, ...] = ()
     must_not_report: tuple[Label, ...] = ()
     acceptable: tuple[Label, ...] = ()
+    # Arboles del caso (Q4 de 014): `fixtures/head` y `fixtures/base` a los `sha`
+    # declarados arriba. Sin ellos, el caso no se puede medir con herramientas ni
+    # ensamblar L1 fiel; el replay del caso de juguete no los necesita.
+    fixtures: Path | None = None
+    base_fixtures: Path | None = None
 
     def labels(self) -> tuple[Label, ...]:
         return (*self.expected, *self.must_not_report, *self.acceptable)
@@ -125,6 +132,8 @@ def load_case(directory: str | Path) -> Case:
     data = _read_yaml(base / "labels.yaml")
     diff = (base / "diff.patch").read_text(encoding="utf-8")
     scope = data.get("scope") or {}
+    head_root = base / "fixtures" / "head"
+    base_root = base / "fixtures" / "base"
     return Case(
         name=str(data["case"]),
         repo=str(data["repo"]),
@@ -138,6 +147,8 @@ def load_case(directory: str | Path) -> Case:
         expected=tuple(_label(item) for item in data.get(LBL_EXPECTED, [])),
         must_not_report=tuple(_label(item) for item in data.get(LBL_MUST_NOT, [])),
         acceptable=tuple(_label(item) for item in data.get(LBL_ACCEPTABLE, [])),
+        fixtures=head_root if head_root.is_dir() else None,
+        base_fixtures=base_root if base_root.is_dir() else None,
     )
 
 
@@ -505,6 +516,28 @@ def case_fingerprint(case: Case) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def fixture_reader_factory(case: Case) -> ReviewerReaderFactory | None:
+    """Fabrica de lectura determinista sobre los fixtures del caso (014 H10).
+
+    Con `fixtures/head` (y, si el caso lo trae, `fixtures/base`) devuelve un lector
+    que sirve exactamente esos bytes turno a turno: el *replay* reproduce el
+    *fingerprint* de cada turno (ADR-0017). Sin fixtures, `None`: el caso solo se
+    puede correr en el camino de 008 (una llamada por lote).
+    """
+    if case.fixtures is None:
+        return None
+
+    def factory(repo: str, head_sha: str, base_sha: str, diff: str = "") -> FixtureContextReader:
+        del repo, head_sha, base_sha, diff
+        return FixtureContextReader(
+            case.fixtures,
+            base_root=case.base_fixtures,
+            denylist=DEFAULT_CONTEXT_DENYLIST,
+        )
+
+    return factory
+
+
 @dataclass(frozen=True)
 class Recording:
     """Respuestas grabadas de un caso, indexadas por fingerprint de prompt.
@@ -745,8 +778,24 @@ class CaseVcs:
         return self.case.diff
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
-        del repo, path, ref
-        return ""
+        del repo
+        # Con fixtures versionados, el caso sirve el fichero a cada lado (008 L1 y
+        # el lector de herramientas usan el mismo arbol). Sin ellos, vacio: el
+        # replay del caso de juguete no ensambla contexto.
+        root = self.case.fixtures
+        if ref == self.case.base_sha and self.case.base_fixtures is not None:
+            root = self.case.base_fixtures
+        if root is None or is_denied(path, DEFAULT_CONTEXT_DENYLIST):
+            return ""
+        # Resolver la raiz: `root` puede llegar relativa (`--case tests/eval/pr_3`)
+        # y la contencion compara contra `Path.parents`, que son absolutos.
+        base = Path(root).resolve()
+        target = (base / path).resolve()
+        if target != base and base not in target.parents:
+            return ""
+        if not target.is_file():
+            return ""
+        return target.read_text(encoding="utf-8", errors="replace")
 
     def list_review_markers(self, repo: str, pr_id: int) -> list[ReviewMarker]:
         del repo, pr_id
@@ -788,17 +837,32 @@ class Run:
     reviewed: tuple[str, ...] = ()
 
 
-def run_case(case: Case, *, llm: LlmPort, policy: PolicyEngine, vcs: CaseVcs) -> Run:
+def run_case(
+    case: Case,
+    *,
+    llm: LlmPort,
+    policy: PolicyEngine,
+    vcs: CaseVcs,
+    reader_factory: ReviewerReaderFactory | None = None,
+    tool_limits: ContextLimits | None = None,
+) -> Run:
     """Corre el **grafo real** sobre el caso con las personas y el VCS inyectados.
 
     Lo unico que cambia entre *replay* y real es el `LlmPort` (E7 de la spec). El
     resultado se lee del estado del grafo y de lo que el `CaseVcs` registro: el
     harness no reconstruye el recorte ni la publicacion a mano.
+
+    Con `reader_factory` (014 RH10) el revisor corre el bucle de herramientas por
+    lote; sin el, una llamada por lote como en 008. La fabrica la construye el
+    llamante (`scripts/eval.py` la deriva de `REVIEW_TOOLS_ROLES`): el harness no
+    conoce `Settings`.
     """
     reviewer = LlmReviewer(
         llm=llm,
         name="correctness",
         max_findings=int(case.scope.get("review_max_findings", 10)),
+        reader_factory=reader_factory,
+        tool_limits=tool_limits,
     )
     graph = build_graph(
         vcs=vcs,
@@ -835,13 +899,22 @@ def evaluate(
     mode: str = "replay",
     recording: Recording | None = None,
     coverage: float | None = None,
+    reader_factory: ReviewerReaderFactory | None = None,
+    tool_limits: ContextLimits | None = None,
 ) -> Report:
     """Corre el grafo sobre el caso y devuelve el informe (E7/E9).
 
     Ata el runner (`run_case`), las metricas (`measure`) y las huellas de la
     grabacion para que el informe declare de donde salio cada respuesta.
     """
-    run = run_case(case, llm=llm, policy=policy, vcs=CaseVcs(case))
+    run = run_case(
+        case,
+        llm=llm,
+        policy=policy,
+        vcs=CaseVcs(case),
+        reader_factory=reader_factory,
+        tool_limits=tool_limits,
+    )
     fingerprints = fingerprints_by_role(recording) if recording is not None else {}
     return measure(
         case,

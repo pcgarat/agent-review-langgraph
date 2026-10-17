@@ -1,45 +1,42 @@
 {
-  "acceptable": [
-    "Q3",
-    "Q4"
-  ],
+  "acceptable": [],
   "case": "pr-3-agent-review",
   "counts": {
-    "acceptable": 2,
+    "acceptable": 0,
     "fn": 5,
-    "fp": 5,
-    "fp_labeled": 5,
-    "fp_p0_p1": 2,
+    "fp": 7,
+    "fp_labeled": 7,
+    "fp_p0_p1": 5,
     "fp_unknown": 0,
     "published": 10,
     "tp": 3,
     "tp_inverted": 0
   },
   "fingerprints": {
-    "correctness": "sha256:089534307f4fbf71112c1b9ea9e8e4e0d0ea437e2d9567ede93e161c38dcb523,sha256:25d394110321efb099be2513be5b592dd7afcd4a502c566861382676c9b1cf12,sha256:333fa78ff0a43edfe2239163b035e98865ee8e6639427121b443d0222b8816d3,sha256:3e3871016ddad11a989c23ebbad5b22f506f3f113c13343162d036ca8c928859,sha256:4a806b3d208ffbc8b1a616567176c0a1242c2171648a9d3785c41970d92050e6,sha256:5d2dd0fcbb68d98c766105e2f62e81846c4a7562f2fb3560d0193744141aa520,sha256:5d7c1704b4d020c6b2784743d3edfc61484045419c18593e8f5b7b8500b4119e,sha256:6cfeeabcd2253c43f1f6d821aad0eca93053cda2788f9fd2b2a8dc6e0173b5a0,sha256:7de04647a6c14ff44219605050555be21c3237d9a410fdbb845aeb593851fb01,sha256:7e5bfdabf41777f14056fdab2f7d25ba425ccfa513eae1489fa60c042042494a,sha256:8f766fcc8094cabe1e6480676bfcba2b47b0ee5aa9d4b50dbcfe811153f29364,sha256:9e1b7cedcbabd2d36f30b8fdf80557e36e242a4c45ec77c147dbb3838f4010b4,sha256:a28c957885ea5bb892de632c05e2afe51046e1006a0c5fc7ca0dd9bf8820f871,sha256:a496ec1d3cdae68d208db90585c6ea2cb5d2cef55c3da098a0f8022217be5181,sha256:b6bb1230842ac4f9ed77bdf921af87b558ac7ada49eee0187895424d4bec5d26,sha256:d253687bc430f55904133d90b7fc59aa62b953afb6cd7058ee1cb0230aa269e0,sha256:d41fcd5822ddb1a02cc6b276fb8b43ff6b079a05e94bd10eb0b725a07e371b09,sha256:e8b8c83bc164540e9a82f6496934ff4f8d9ce9e32c88cfd3e3959bcafb025901,sha256:f2cf02e29dbf5986d174d3de137024d3d841500b864892381b4c1c5e1e29c9c8"
+    "correctness": "sha256:17256b5c301bfe6747d2490bae2a3a3db26507205fea4a6036880b4df899386e,sha256:2846dd69eb2fc4f563b2831275c7f3ef30bebd39b1ba2b8a1176f63ffb04d39c,sha256:28a4826c2f63774c47af055b9194b6f9e6fcf27d9203affbbe6c0008d3d29920,sha256:2a95a8daa5e1a3945c13b516a0ebfee83277d78d4f6d256e892dd057d41171f9,sha256:31ec6b5ef1f8151579fa193cf6740f28b8f323baee11a710e7cae444bc79f6a5,sha256:3375c6581556756de44ab0ab16728551fe0d3853e250ac886399b0d48491859c,sha256:4c06fae5ce8f0603fde356048d7c7fc99d9ed50293e67d6b380b1ba6292cdf44,sha256:64395fe4776fd985f8d4432f3bdf96800dadcf6ed99951cc4a9134d8d68664fc,sha256:6a633f784c41b7e393d313a9cf0633180a27efadec02efae85da4c0e9172249b,sha256:8dc5ab93ac682eb8589d13521a8fafbf9aede69e2c4b281493aebf21798ab486,sha256:973454c79c56ebfc8890dad01b883ac2b05da895e03dfca93e1b69f4f1f5d8af,sha256:9e166fa17517b97564e7f930cb118bb8e4346c6e48a08a1f8b831259843b199f,sha256:b0ba699cc808dda93ea645c360da57f5685b556f600bae052a8dabf1b72b0d4d,sha256:baae2d0cb36f385f923c10b748979f57fc76dc848adce7be9191ba43245d7bed,sha256:c5b1b2dc03dc5b24c5cb61480e9541a07124f5ab7e9a75c03c8c50947b8c938b,sha256:d2515af4eed262ad4298c7203090d29219084bbb16ff08522604494720eda977,sha256:e966edf8627ccc729b12df110bf1b8b888985e49bc9b3f561792cc1c37361e38,sha256:f6f64f12685eb0385211c2198c1751657fdfdb0eadd5f261fe1291f5566d2296,sha256:f9e543b2ad2679094d0a03c381760d58e8df37e1bb39ecb1dbaf5f86808a9134"
   },
   "inverted": [],
   "matched": [
-    "A",
     "integracion-1",
+    "integracion-3",
     "no-detectado-1"
   ],
   "metrics": {
-    "cost_per_tp_tokens": 112082.0,
+    "cost_per_tp_tokens": 157920.0,
     "coverage": 1.0,
-    "precision": 0.375,
+    "precision": 0.3,
     "recall": 0.375,
     "recall_by_subset": {
-      "correctness": 0.5,
-      "integracion": 0.3333,
+      "correctness": 0.0,
+      "integracion": 0.6667,
       "no_detectado": 0.3333
     },
     "severity_accuracy": 0.3333
   },
   "missing": [
+    "A",
     "I",
     "integracion-2",
-    "integracion-3",
     "no-detectado-2",
     "no-detectado-3"
   ],

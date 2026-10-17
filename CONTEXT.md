@@ -169,6 +169,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Workspace de lectura** | Clon *bare* de `repo@head_sha` que el `sandbox-runner` sirve con `git show`/`git grep -F`/`git ls-tree`, sin *checkout* ni contenedor ([ADR-0018](docs/adr/0018-workspace-de-lectura-en-el-runner.md)). Idempotente por `(repo, head_sha)`, con TTL (1800 s) y máximo 4 abiertos. |
 | **Lector degradado** | `VcsContextReader` como red de seguridad: cuando el `sandbox-runner` no está o falla, la review sigue leyendo fichero a fichero (con `grep` solo sobre lo servido y los ficheros del diff). La fábrica de lectores decide y degrada una sola vez por lote. |
 | **Bucle de herramientas** | `run_tool_loop`: bucle *ReAct* en JSON sobre `LlmPort`. Cada turno es `{"tools": [...]}` o el objeto final; como máximo 3 peticiones por turno, un turno correctivo ante JSON inválido y un turno final forzado al agotar un tope (turnos, peticiones, bytes o presupuesto). Devuelve un `LoopResult`. |
+| **Revisor con herramientas** | Opt-in por rol (`REVIEW_TOOLS_ROLES`): ese `LlmReviewer` corre el bucle de herramientas por lote en vez de una sola llamada. El contenido servido es **dato, no instrucción** (H9 de [014](docs/iniciativas/014-revisor-con-herramientas/spec.md)); el anclaje al diff y L0 no cambian. El `ToolUsage` del resultado (`turns`, `tool_calls`, `bytes_served`, `files_read`) lo expone el `ReviewOutcome` por persona. |
 | **`served` / `cite_served`** | Registro de lo que el bucle sirvió (`dict[path, ref]`) y la comprobación de que una cita `path:line` referencia un fichero servido. Es la validación de citas de 009 y 014, escrita una sola vez. |
 | **Rutas vetadas** (`context_denylist`) | Rutas que el runner nunca sirve (default `.env*`, `*.pem`, `*.key`, `**/secrets/**`). Las declara el perfil y las aplica el runner: el modelo no puede saltárselas pidiendo otra ruta. |
 
@@ -230,7 +231,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | Término | Definición |
 |---|---|
 | ***Gold set*** | El conjunto versionado de casos auditados a mano (`tests/eval/pr_3/`), con diff, `scope`, etiquetas y grabaciones. La fuente única del baseline es la spec [006](docs/iniciativas/archivo/006-eval-de-la-review/spec.md). |
-| **Caso de evaluación** | Un directorio del *gold set*: `labels.yaml` (procedencia, `scope`, etiquetas), `diff.patch`, `recorded.json` y `expected_report.json`. |
+| **Caso de evaluación** | Un directorio del *gold set*: `labels.yaml` (procedencia, `scope`, etiquetas), `diff.patch`, `fixtures/` (los arboles a `head_sha` y `base_sha` que sirven L1 y el bucle de herramientas), `recorded.json` y `expected_report.json`. |
 | **Etiqueta (`expected`/`must_not_report`/`acceptable`)** | Veredicto humano por hallazgo: debe salir, no debe salir (con motivo) o es cierto pero sin valor. Un hallazgo no etiquetado cuenta como falso positivo. |
 | ***Replay*** | Correr el grafo real con un `LlmPort` que devuelve las respuestas grabadas, abortando si el *fingerprint* del prompt o del caso no casa. Es el modo de CI. |
 | ***Fingerprint*** | Huella del prompt (rol + `system` + prompt + `max_tokens`) y del caso (nombre + diff + `scope`). Una grabación vieja con un prompt nuevo aborta en vez de medir el pasado ([ADR-0017](docs/adr/0017-replay-determinista-con-fingerprint.md)). |

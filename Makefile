@@ -55,11 +55,22 @@ EVAL_COMPARE ?=
 eval: ## Informe del gold set (replay, sin red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py report $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
 
+# `REVIEW_TOOLS_ROLES=correctness` mide la variante con herramientas; lee la
+# grabacion aparte (`--recording recorded_tools.json`) para no pisar el baseline
+# de 008 (014 RH11).
+eval-tools: ## Informe del gold set con el rol de herramientas activado (replay)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py report --recording recorded_tools.json $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
+
 eval-live: ## Mide contra el modelo real (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py live
 
 eval-record: ## Regraba las respuestas del gold set (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py record
+
+eval-record-tools: ## Regraba el gold set con el rol de herramientas activado (red)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py record --recording recorded_tools.json
 
 ##@ Entorno local (docker compose)
 

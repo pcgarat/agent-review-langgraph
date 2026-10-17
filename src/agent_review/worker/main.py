@@ -488,9 +488,9 @@ def build_verifier(
     vcs = vcs or build_vcs(settings)
     denylist = context_denylist(load_profile(settings))
 
-    def open_reader(repo: str, head_sha: str, diff: str) -> ContextReaderPort:
+    def open_reader(repo: str, head_sha: str, base_sha: str, diff: str) -> ContextReaderPort:
         return build_reader_factory(settings, vcs=vcs, diff=diff, denylist=denylist)(
-            repo, head_sha, ""
+            repo, head_sha, base_sha
         )
 
     return LlmVerifier(

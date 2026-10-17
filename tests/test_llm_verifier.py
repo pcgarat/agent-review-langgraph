@@ -23,7 +23,7 @@ from agent_review.domain.models import (
     Severity,
     Verification,
 )
-from agent_review.ports.context import ContextLimits
+from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.llm import LlmReply
 from agent_review.ports.verifier import Verdict
 
@@ -286,3 +286,19 @@ def test_confirmed_conserva_escenario_y_evidencia(tmp_path: Path) -> None:
     assert result.failure_scenario is not None
     assert "->" in result.failure_scenario
     assert result.evidence == [f"{APP}:3 needle = 1"]
+
+
+def test_open_reader_recibe_base_sha_y_diff(tmp_path: Path) -> None:
+    # 009 V8: la fabrica del worker necesita (repo, head_sha, base_sha, diff) para que
+    # el modo degradado del lector pueda servir `ref=base` y sembrar los ficheros del
+    # diff; sin ellos el verificador no puede comprobar `pre_existing`.
+    seen: list[tuple[str, str, str, str]] = []
+
+    def factory(repo: str, head_sha: str, base_sha: str, diff: str) -> ContextReaderPort:
+        seen.append((repo, head_sha, base_sha, diff))
+        return build_fixture_reader(tmp_path)
+
+    LlmVerifier(ScriptedLlm(_verdict()), open_reader=factory).verify(
+        _finding(), repo="r", head_sha="abc", base_sha="base1", diff=DIFF
+    )
+    assert seen == [("r", "abc", "base1", DIFF)]

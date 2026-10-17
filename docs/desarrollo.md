@@ -43,14 +43,24 @@ red). Los comandos son:
 ```bash
 make eval                  # informe replay por consola
 EVAL_COMPARE=tests/eval/pr_3/expected_report.json make eval   # + delta por dominancia
+make eval-tools            # replay con el rol `correctness` con herramientas (014)
 make eval-live             # corrida real (marca live, a mano, fuera de CI)
 make eval-record           # regraba recorded.json contra el modelo real
+make eval-record-tools     # regraba la variante con herramientas (recorded_tools.json)
 ```
 
 `make eval-record` es el **único** camino que produce grabaciones. Un cambio que
 altera lo que recibe el modelo invalida el fingerprint y CI **falla** pidiendo
 regrabar (ver [ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)). El
 harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.py`.
+
+Un caso declara sus ficheros en `fixtures/head/` y `fixtures/base/` (los árboles a
+`head_sha` y `base_sha` de `labels.yaml`; los directorios tocados por el diff más los
+que lea la grabación, Q4 de [014](iniciativas/014-revisor-con-herramientas/spec.md)).
+El harness los carga solos: `CaseVcs` sirve el árbol a L1 (008) y `fixture_reader_factory`
+construye el `FixtureContextReader` determinista del bucle de herramientas. La variante
+con herramientas es **opt-in** por `REVIEW_TOOLS_ROLES`, igual que el worker, y graba
+en `recorded_tools.json` para no pisar el baseline de 008.
 
 Grabar necesita el rol `correctness` activo y una credencial real:
 `LLM_REVIEWER_ENABLED=true make eval-record`, con `LLM_API_KEY` (o la clave que pida
@@ -180,7 +190,9 @@ en `test_checkpointer`. Los **read models** derivados (como el recorrido de
 El `VerifierPort` (`ports/verifier.py`) es el segundo juicio entre `merge` y
 `policy`. El adaptador `LlmVerifier` (`adapters/llm_verifier.py`) usa el bucle
 `run_tool_loop` y un lector de `build_reader_factory` (016); el *prompt* **refuta**.
-`Verdict` y `VerificationResult` viven en `domain/models` (el puerto los reexporta)
+El nodo le pasa `repo`, `head_sha`, `base_sha` y el `diff` para que el lector pueda
+comparar con la base (`pre_existing`) y sembrar el modo degradado. `Verdict` y
+`VerificationResult` viven en `domain/models` (el puerto los reexporta)
 para viajar en `ReviewState.verifications` y en `ReviewOutcome.verifications`.
 
 Al extenderlo:
@@ -268,7 +280,9 @@ bucle `run_tool_loop` (`adapters/tool_loop.py`) sirve turno a turno. Hay tres
 adaptadores y todos pasan el mismo test de contrato:
 
 1. **`FixtureContextReader`** (`adapters/context_fixture.py`): sirve un directorio
-   local. Es el lector determinista del *replay* ([ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)).
+   local (y, con `base_root`, el arbol de `base` para `ref="base"`). Es el lector
+   determinista del *replay* ([ADR-0017](adr/0017-replay-determinista-con-fingerprint.md))
+   y el que usa el gold set (`fixtures/head`, `fixtures/base`).
 2. **`VcsContextReader`** (`adapters/context_vcs.py`): modo degradado por
    `VcsPort.get_file`. Sin árbol, `grep` y `list_dir` solo ven lo ya servido y los
    ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`).

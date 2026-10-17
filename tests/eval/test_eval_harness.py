@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+import harness
 from harness import (
     Case,
     CaseVcs,
@@ -750,3 +752,113 @@ def test_el_runner_expoe_los_ficheros_revisados(tmp_path: Path) -> None:
 
     # El diff de juguete solo trae x.py; sale de la `ReviewCoverage` del grafo (012).
     assert run.reviewed == ("x.py",)
+
+
+# --- 014 RH10: fixtures del caso y camino con herramientas ------------------------
+
+
+def _case_con_fixtures(tmp_path: Path) -> Case:
+    """Caso con `fixtures/head` y `fixtures/base`: el arbol que sirve el lector."""
+    _write_case(
+        tmp_path,
+        {
+            "case": "c",
+            "repo": "r",
+            "pr_id": 1,
+            "base_sha": "B",
+            "head_sha": "H",
+            "captured_at": "2026-10-16",
+            "source": "s",
+        },
+    )
+    (tmp_path / "fixtures" / "head" / "src").mkdir(parents=True)
+    (tmp_path / "fixtures" / "base" / "src").mkdir(parents=True)
+    (tmp_path / "fixtures" / "head" / "src" / "x.py").write_text("amor = 2\n", encoding="utf-8")
+    (tmp_path / "fixtures" / "base" / "src" / "x.py").write_text("amor = 1\n", encoding="utf-8")
+    return load_case(tmp_path)
+
+
+def test_el_caso_carga_sus_fixtures(tmp_path: Path) -> None:
+    case = _case_con_fixtures(tmp_path)
+    assert case.fixtures is not None and case.fixtures.name == "head"
+    assert case.base_fixtures is not None
+
+    otro = tmp_path / "otro"
+    otro.mkdir()
+    sin_fixtures = _toy_case(otro)
+    assert sin_fixtures.fixtures is None
+
+
+def test_case_vcs_sirve_los_ficheros_del_caso(tmp_path: Path) -> None:
+    # L1 (008) y el lector de herramientas ven el mismo arbol: el VCS del caso
+    # responde con el fichero versionado, no con "".
+    case = _case_con_fixtures(tmp_path)
+    vcs = CaseVcs(case)
+
+    assert vcs.get_file("r", "src/x.py", ref="H") == "amor = 2\n"
+    assert vcs.get_file("r", "src/x.py", ref="B") == "amor = 1\n"
+    assert vcs.get_file("r", "src/no-existe.py", ref="H") == ""
+    assert vcs.get_file("r", ".env", ref="H") == ""
+
+
+def test_la_fabrica_de_fixtures_sirve_el_arbol(tmp_path: Path) -> None:
+    case = _case_con_fixtures(tmp_path)
+    factory = harness.fixture_reader_factory(case)
+    assert factory is not None
+    reader = factory(case.repo, case.head_sha, case.base_sha, case.diff)
+
+    assert reader.read_file("src/x.py") == "amor = 2\n"
+    assert reader.read_file("src/x.py", ref="base") == "amor = 1\n"
+
+
+def test_sin_fixtures_no_hay_fabrica() -> None:
+    assert harness.fixture_reader_factory(_case_vacia()) is None
+
+
+def _case_vacia() -> Case:
+    return Case(
+        name="c",
+        repo="r",
+        pr_id=1,
+        base_sha="b",
+        head_sha="h",
+        captured_at="2026-10-16",
+        source="s",
+        scope={},
+        diff="",
+    )
+
+
+class _ScriptedPort:
+    """Modelo falso con respuestas en orden (guion de herramientas → findings)."""
+
+    def __init__(self, *payloads: str) -> None:
+        self._payloads = list(payloads)
+        self.calls = 0
+
+    def complete(self, *, system, prompt, max_tokens, json_mode=None, response_schema=None):
+        del system, prompt, max_tokens, json_mode, response_schema
+        index = min(self.calls, len(self._payloads) - 1)
+        self.calls += 1
+        return LlmReply(text=self._payloads[index], prompt_tokens=100, completion_tokens=50)
+
+
+def test_el_runner_con_herramientas_publica_por_el_grafo(tmp_path: Path) -> None:
+    # 014 RH4/RH10: con fabrica, el grafo corre el bucle; el hallazgo sigue anclado.
+    from agent_review.ports.context import ContextLimits
+
+    case = _case_con_fixtures(tmp_path)
+    tools = json.dumps({"tools": [{"tool": "read_file", "path": "src/x.py"}]})
+    port = _ScriptedPort(tools, _finding_payload())
+    factory = harness.fixture_reader_factory(case)
+    run = run_case(
+        case,
+        llm=port,
+        policy=_pipeline_policy(),
+        vcs=CaseVcs(case),
+        reader_factory=factory,
+        tool_limits=ContextLimits(),
+    )
+
+    assert port.calls == 2, "un turno de herramientas y el final"
+    assert [finding.id for finding in run.published] == ["correctness-x-py-1-amor-no-validado"]

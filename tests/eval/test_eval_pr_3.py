@@ -15,17 +15,9 @@ import json
 from pathlib import Path
 
 import harness
-import pytest
 from harness import ReplayLlm, case_fingerprint, compare, to_json
 
 from agent_review.policy.engine import PolicyEngine
-
-# 008 L1/humildad cambia el system/prompt; la grabacion del gold set queda
-# desfasada hasta `make eval-record` (CX11, preferible junto con 009).
-_XFAIL_REGRABAR = pytest.mark.xfail(
-    reason="008 CX8/CX9: fingerprint del prompt; regrabar gold set en CX11",
-    strict=True,
-)
 
 CASE_DIR = Path(__file__).parent / "pr_3"
 BASELINE = CASE_DIR / "expected_report.json"
@@ -73,7 +65,6 @@ def test_la_grabacion_casa_el_caso() -> None:
     assert recording.case_fingerprint == case_fingerprint(case)
 
 
-@_XFAIL_REGRABAR
 def test_replay_reproduce_el_baseline_byte_a_byte() -> None:
     case = harness.load_case(CASE_DIR)
 
@@ -92,30 +83,31 @@ def test_replay_es_determinista() -> None:
     assert to_json(_replay_report(case)) == to_json(_replay_report(case))
 
 
-@_XFAIL_REGRABAR
 def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
-    # Regrabacion del 2026-10-17 (021): deepseek-v4-flash con razonamiento alto,
-    # lotes de 20 000, diff numerado y troceo por hunks, grabada en una review real en
-    # el stack. La auditoria original (9 publicados, 2 TP, precision 0.25, cobertura
-    # 0.2) vive en la spec de 006 §3.1; sin razonamiento (012) eran 0 TP.
+    # Regrabacion del 2026-10-17 (014 RH10): deepseek-v4-flash con razonamiento alto y
+    # el bucle de lectura de herramientas sobre el arbol `fixtures/head`. La auditoria
+    # original (9 publicados, 2 TP, precision 0.25, cobertura 0.2) vive en la spec de
+    # 006 §3.1. Con L1 completo y el lector el modelo resuelve el PR entero (cobertura
+    # 1.0) y reconoce tres reales, pero fabrica siete FP de orquestacion (R1-R6) que
+    # ve por leer el worker completo; el detalle del veredicto esta en `labels.yaml`.
     case = harness.load_case(CASE_DIR)
     report = _replay_report(case)
 
     assert report.counts["fp_unknown"] == 0, "todo hallazgo publicado debe estar etiquetado"
     assert report.metrics["coverage"] == 1.0
-    # Tres reales: A (en la direccion correcta), integracion-1 y no-detectado-1.
+    # Tres reales: integracion-1 (fuga del fix-worker), integracion-3 (MODELS_CONFIG)
+    # y no-detectado-1 (clasificacion por substring del mensaje de probe).
     assert report.counts["published"] == 10
     assert report.counts["tp"] == 3
     assert report.counts["tp_inverted"] == 0
-    assert report.counts["fp_labeled"] == 5
-    assert report.counts["acceptable"] == 2
+    assert report.counts["fp_labeled"] == 7
+    assert report.counts["acceptable"] == 0
     assert report.counts["fn"] == 5
-    assert report.metrics["precision"] == 0.375
+    assert report.metrics["precision"] == 0.3
     assert report.metrics["recall"] == 0.375
     assert report.inverted == ()
 
 
-@_XFAIL_REGRABAR
 def test_el_pr_3_entero_llega_al_revisor() -> None:
     # 012 criterio 1: sin `max_files_per_pr` ni el corte a 60000 chars, la
     # configuracion que dejo fuera la review auditada entra en la review.

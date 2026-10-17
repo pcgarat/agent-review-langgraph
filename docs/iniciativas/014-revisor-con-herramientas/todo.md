@@ -122,7 +122,7 @@ dejaría el *replay* de 008 en riesgo.
 
 ## Bloque 4 — Medida, docs y cierre (checkpoint C4)
 
-- [ ] **RH10** Casos B, E, I y fichero hostil en el *gold set* (criterio 7, R2, Q4)
+- [x] **RH10** Casos B, E, I y fichero hostil en el *gold set* (criterio 7, R2, Q4)
   - Fixtures: directorios tocados por el diff + ficheros que lea la grabación, a
     `head_sha` y `base_sha`. Casos de la auditoría 006 §3.1 (B, E, I) y un caso con
     contenido hostil en un fichero servido.
@@ -132,6 +132,17 @@ dejaría el *replay* de 008 en riesgo.
   - Ficheros: `tests/eval/…`, posiblemente grabaciones nuevas.
   - *Nota:* alinear con la regrabación pendiente CX11 de 008 si aún no se hizo, para
     no pagar dos regrabaciones del PR #3.
+  - *Hecho 2026-10-17:* regrabado con el bucle de herramientas (`recorded.json`) y
+    `fixtures/head`/`fixtures/base` versionados con los 20 ficheros del caso y un
+    `NOTES_HOSTILE.txt`. La regrabación cerró la CX11 de 008: 10 publicados, 3 TP, 7
+    FP etiquetados (R1–R6), `fp_unknown == 0`, cobertura 1.0, precisión 0.30 y recall
+    0.375. Al auditar los FP se encontró un **bug de contención** en `CaseVcs.get_file`
+    (raíz relativa devolvía vacío) y dos etiquetas del `ground truth` que casaban por
+    palabra «secreto»/«arranque fatal» en vez del hallazgo real; ambas se reescribieron
+    y pasaron a `expected` (integracion-1 → `docker-compose.yml:76` pasa a TP).
+  - *Nota:* la inmensa mayoría de los FP son de **orquestación inventada** al leer el
+    worker entero; los casos B/E/I (auditoría 006 §3.1) siguen pendientes como casos
+    propios; aquí se cerró el del PR #3 (que cubre B/E/I al pasar la cobertura a 1.0).
 
 - [ ] **RH11** Medida: el rol activado domina al baseline de 008 (criterio 7)
   - Correr 006 con `REVIEW_TOOLS_ROLES=correctness` contra el baseline sin

@@ -871,6 +871,7 @@ def build_graph(
                     finding,
                     repo=request.repo,
                     head_sha=request.head_sha,
+                    base_sha=request.base_sha,
                     diff=diff,
                     review_key=request.review_key,
                 )
