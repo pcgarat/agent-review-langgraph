@@ -19,7 +19,7 @@ Tanto 009 como 014 necesitan lo mismo: que el modelo pida un fichero o haga un `
 que el sistema se lo sirva con límites y que lo que cite se pueda comprobar. Hasta el
 2026-10-16 esa pieza estaba especificada dentro de 009 (§5.4 y §5.4.1) y 014 decía
 que «la crea la primera que se implemente». Pero la pieza no depende del contrato de
-verificación de [007](../../007-contrato-de-verificacion/spec.md). Dejarla dentro de 009
+verificación de [007](../007-contrato-de-verificacion/spec.md). Dejarla dentro de 009
 obligaba a 014 a esperar toda la cadena 007 → 009.
 
 Se quiere:

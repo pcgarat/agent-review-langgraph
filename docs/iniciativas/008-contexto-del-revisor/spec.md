@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Contexto del revisor: verificación determinista (L0) y contexto (L1)
 
@@ -39,7 +39,7 @@ Se quiere:
 El resto de la solución (verificación adversarial con otro modelo, ejecución en el
 sandbox y personas de *wiring*) queda **fuera** y vive en otras tajadas.
 
-Depende de la iniciativa [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md),
+Depende de la iniciativa [007 — contrato de verificación](../archivo/007-contrato-de-verificacion/spec.md),
 que añade al contrato de hallazgo los campos `verification` y `context_scope` que L0
 y L1 necesitan para expresar sus veredictos, y de
 [012 — cobertura](../012-cobertura-de-la-review/spec.md): el fichero completo solo
@@ -281,4 +281,4 @@ presupuesto mide de menos (D17).
   [011 Q1](../011-gate-de-severidad/spec.md).
 - **Q7.** *Resuelta (2026-10-16):* «no probado» es `verification: unverified` con
   `context_scope: outside_diff`
-  ([007 D10](../007-contrato-de-verificacion/spec.md)).
+  ([007 D10](../archivo/007-contrato-de-verificacion/spec.md)).

@@ -38,7 +38,7 @@ Se quiere un chequeo **determinista** —«un linter no alucina»— que:
    `LLM_*` no es un par: queda como test de regresión (W10).
 
 Emite `Finding` con `verification: verified_static`, el campo que define el contrato
-de la iniciativa [007](../007-contrato-de-verificacion/spec.md).
+de la iniciativa [007](../archivo/007-contrato-de-verificacion/spec.md).
 
 ## 2. No-objetivos
 
@@ -179,7 +179,7 @@ enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón 
 | `owner` | `human` |
 | `confidence` | `100` (contraste determinista, sin modelo) |
 | `evidence` | Las citas de los dos lados que deberían concordar |
-| `verification` | `verified_static` (contrato de [007](../007-contrato-de-verificacion/spec.md)) |
+| `verification` | `verified_static` (contrato de [007](../archivo/007-contrato-de-verificacion/spec.md)) |
 
 ## 6. Riesgos
 

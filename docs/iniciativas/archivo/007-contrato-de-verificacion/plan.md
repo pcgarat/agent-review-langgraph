@@ -17,7 +17,7 @@ Cuatro piezas, en este orden:
    `context_scope` según dónde reporte la herramienta. El `LlmReviewer` pide los
    campos en el *prompt*, los lee y normaliza `verification` a `unverified`.
 3. **El *gold set*.** El *prompt* cambia, así que su *fingerprint* también
-   ([ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md)) y hay que
+   ([ADR-0017](../../../adr/0017-replay-determinista-con-fingerprint.md)) y hay que
    regrabar con el modelo real.
 4. **El ADR-0021 y los documentos vivos.**
 

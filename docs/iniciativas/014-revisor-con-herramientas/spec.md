@@ -39,11 +39,11 @@ Se quiere:
 ## 2. No-objetivos
 
 - **Ejecutar código (L3).** Escribir un test de reproducción y correrlo en `/verify`
-  produciría `verified_executed` ([007](../007-contrato-de-verificacion/spec.md)),
+  produciría `verified_executed` ([007](../archivo/007-contrato-de-verificacion/spec.md)),
   pero tarda minutos y compite con los fixes por el runner (concurrencia 1). Es otra
   iniciativa (Q6).
 - **Verificar hallazgos.** El revisor sigue emitiendo hipótesis (`unverified`,
-  [007 D6](../007-contrato-de-verificacion/spec.md)); verificar es del nodo `verify`
+  [007 D6](../archivo/007-contrato-de-verificacion/spec.md)); verificar es del nodo `verify`
   de [009](../009-verificador-adversarial/spec.md).
 - ***Function calling* nativo del proveedor.** Se mantiene el bucle *ReAct* en JSON
   sobre `LlmPort` ([009 §3.3](../009-verificador-adversarial/spec.md)).

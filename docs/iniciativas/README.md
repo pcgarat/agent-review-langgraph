@@ -11,7 +11,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | implementada | ✅ `verification`, `failure_scenario`, `verification_evidence` y `context_scope` en el contrato; fuera `requires_verification` · [ADR-0021](../adr/0021-cascada-de-verificacion-del-hallazgo.md) · [todo](007-contrato-de-verificacion/todo.md) | Habilita 008, 009, 010 (fase 2) y 011 · el *gold set* muestra que el escenario no filtra FP solo: lo hará 009 |
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 · 6 preguntas abiertas |
 | 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | 007, 016 y 017 · falta plan y todo |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
@@ -20,7 +19,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008, 012 y 016; un segundo rol, también 017 · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
-| 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | borrador | 🟠 Refactor: el contrato de secretos se deriva de `Settings`, no de listas a mano | Sin dependencias de diseño · nace del hueco que dejó `92dea1e` (D22) · 4 preguntas abiertas |
+| 020 | [Contrato de secretos declarado en el modelo](020-secretos-declarados/spec.md) | borrador | 🟠 Refactor: el contrato de secretos se deriva de `Settings`, no de listas a mano | Sin dependencias de diseño · nace del hueco que dejó `92dea1e` (D22) · 3 preguntas abiertas |
 
 ### Orden
 
@@ -72,6 +71,7 @@ conservando sus IDs.
 | 004 | [Fase 3-E7 — Desacople fuerte de la verificación](archivo/004-fase3-e7-desacople/spec.md) | implementada | F14–F28 · [todo](archivo/004-fase3-e7-desacople/todo.md) |
 | 005 | [Fase 3.5 — Modelos declarativos por rol](archivo/005-modelos-declarativos/spec.md) | implementada | M1–M11 · [todo](archivo/005-modelos-declarativos/todo.md) |
 | 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | E1–E12; mide el resto de iniciativas · [todo](archivo/006-eval-de-la-review/todo.md) |
+| 007 | [Contrato de verificación del hallazgo](archivo/007-contrato-de-verificacion/spec.md) | implementada | V1–V8 · `verification`, `failure_scenario`, `verification_evidence` y `context_scope` en el contrato; fuera `requires_verification` · [ADR-0021](../adr/0021-cascada-de-verificacion-del-hallazgo.md) · [todo](archivo/007-contrato-de-verificacion/todo.md) |
 | 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
 | 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |
 | 017 | [Presupuesto de tokens por PR](archivo/017-presupuesto-por-pr/spec.md) | implementada | P1–P12 · contador por review compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](archivo/017-presupuesto-por-pr/todo.md) |

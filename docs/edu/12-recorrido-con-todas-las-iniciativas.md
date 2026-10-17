@@ -95,7 +95,7 @@ la 017 reparte el gasto entre todas las piezas de la cascada.
 **La regla que ordena todo:** las capas de la cascada producen **hechos**
 (`verification`, `pre_existing`, `context_scope`); solo el gate de 011, dentro de
 `policy`, los traduce en **severidad publicada**
-([007 D11](../iniciativas/007-contrato-de-verificacion/spec.md)). Un hallazgo
+([007 D11](../iniciativas/archivo/007-contrato-de-verificacion/spec.md)). Un hallazgo
 publicado como `P3` tiene una única explicación, y está en un sitio.
 
 ---
@@ -227,7 +227,7 @@ del plan de 012.
 ### 4.2 Lo que cambia dentro de un `Finding`
 
 El hallazgo gana cuatro campos del contrato de
-[007](../iniciativas/007-contrato-de-verificacion/spec.md), y `pre_existing` pasa a
+[007](../iniciativas/archivo/007-contrato-de-verificacion/spec.md), y `pre_existing` pasa a
 **calcularse** en vez de copiarse del modelo
 ([008 D2](../iniciativas/008-contexto-del-revisor/spec.md)):
 

@@ -66,7 +66,7 @@ campos. El `if/then` del JSON no lleva `required: [verification]` en el `if`
 
 - [x] **V6** *(Red)* Regrabar el *gold set*
   - `make eval-record` con una credencial válida; revisar el diff del baseline
-    congelado ([ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md)).
+    congelado ([ADR-0017](../../../adr/0017-replay-determinista-con-fingerprint.md)).
   - Aceptación: el *replay* de CI pasa con la grabación nueva; el informe anota
     cuántos `P0`–`P2` descartó I1 (dato para revisar Q5 y R1).
   - *Resultado 2026-10-17* (`deepseek-v4-flash`, una muestra): 7 hallazgos, todos
@@ -75,7 +75,7 @@ campos. El `if/then` del JSON no lleva `required: [verification]` en el `if`
     verificados contra `008da57`. Baseline: precisión 0.0, recall 0.0, cobertura 0.2
     (antes 0.25 / 0.25 / 0.2). Lectura: el modelo rellena escenarios plausibles pero
     inalcanzables (R1 se materializa); el escenario no filtra FP por sí solo y la
-    verificación de [009](../009-verificador-adversarial/spec.md) es la que debe
+    verificación de [009](../../009-verificador-adversarial/spec.md) es la que debe
     hacerlo. Los TP de la auditoría (A, I) no salieron en esta muestra: con una sola
     grabación no se separa el efecto del *prompt* del ruido del muestreo.
 

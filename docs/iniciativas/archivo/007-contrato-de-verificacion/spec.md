@@ -37,7 +37,7 @@ Se quiere:
 5. Que cada persona **emita su nivel**: `ToolingReviewer` emite `verified_static`;
    `LlmReviewer` emite `unverified` y añade los campos a su esquema de prompt.
 6. Que el contrato siga siendo **compatible y reutilizable** por `ce-code-review`
-   ([ADR-0002](../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)), con
+   ([ADR-0002](../../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)), con
    campos nuevos opcionales y versionados.
 
 ## 2. No-objetivos
@@ -47,14 +47,14 @@ Se quiere:
   contrato y se adaptan los emisores actuales.
 - **Cambiar el gate de publicación.** `config/autonomy.yaml` no se toca aquí; esta
   iniciativa añade los campos que leerá el gate de
-  [011](../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
+  [011](../../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
 - **Rediseñar `confidence`.** Se mantiene tal cual (es el síntoma que motiva el
   contrato) como juicio del modelo (Q4).
 - **Ejecutar código del PR.** `verified_executed` se declara pero no se produce aún:
   depende del `sandbox-runner`
-  ([ADR-0011](../../adr/0011-sandbox-runner-aislado.md)).
+  ([ADR-0011](../../../adr/0011-sandbox-runner-aislado.md)).
 - **Reescribir los ADR de publicación.** El gate seguirá usando
-  [ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md).
+  [ADR-0003](../../../adr/0003-autonomia-como-politica-por-hallazgo.md).
 
 ## 3. Contexto y evidencia
 
@@ -64,12 +64,12 @@ Se quiere:
 `requires_verification`. En el código:
 
 - `confidence` lo autoasigna el modelo (`_confidence` → 50 por defecto en
-  [`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py)) y solo lo
-  consume la política ([`engine.py`](../../../src/agent_review/policy/engine.py)) y
+  [`llm_reviewer.py`](../../../../src/agent_review/adapters/llm_reviewer.py)) y solo lo
+  consume la política ([`engine.py`](../../../../src/agent_review/policy/engine.py)) y
   el render del comentario; nadie lo **comprueba**.
 - `requires_verification` **no lo lee ningún código**; se rellena y se ignora.
 - El `merge` solo deduplica
-  ([ADR-0014](../../adr/0014-criterio-de-merge-entre-personas.md)); no filtra por
+  ([ADR-0014](../../../adr/0014-criterio-de-merge-entre-personas.md)); no filtra por
   estos campos.
 
 Es decir: la severidad publicada es la que el modelo dice, y ningún campo del
@@ -77,13 +77,13 @@ contrato expresa *cuánto* se ha verificado el hallazgo.
 
 ### 3.2 La evidencia empírica de una review real
 
-La auditoría del PR #3 ([006 §3.1](../archivo/006-eval-de-la-review/spec.md)) dejó 9
+La auditoría del PR #3 ([006 §3.1](../006-eval-de-la-review/spec.md)) dejó 9
 hallazgos publicados: **6 falsos positivos**, 1 confirmado con el fallo descrito
 **invertido** y con la severidad inflada, 1 que confirmaba una decisión ya documentada
 y 1 cierto en parte; y la revisión a mano fijó **6 hallazgos reales no detectados**
 (3 `P1` de integración y 3 `P2` de código). Los no detectados son sobre todo de
 cobertura (el modelo no vio esos ficheros,
-[012](../012-cobertura-de-la-review/spec.md)). Los falsos
+[012](../../012-cobertura-de-la-review/spec.md)). Los falsos
 positivos tienen otra causa, que es la que ataca este contrato: sobre lo que sí ve,
 el revisor afirma sobre código que no ve y **fabrica** el contexto que falta.
 
@@ -101,12 +101,12 @@ como falla».
 ### 3.3 Restricción de sincronía
 
 El modelo Pydantic `Finding` y el contrato JSON son espejo y hay un test que compara
-ambos: [`test_contracts.py`](../../../tests/test_contracts.py)
+ambos: [`test_contracts.py`](../../../../tests/test_contracts.py)
 (`schema_matches_domain`). Cualquier campo nuevo debe entrar **en el mismo commit**
-en [`models.py`](../../../src/agent_review/domain/models.py) y en
-[`findings-schema.json`](../../../contracts/findings-schema.json), o el test de drift
+en [`models.py`](../../../../src/agent_review/domain/models.py) y en
+[`findings-schema.json`](../../../../contracts/findings-schema.json), o el test de drift
 rompe. `validate_finding`
-([`contracts.py`](../../../src/agent_review/domain/contracts.py)) es la puerta única
+([`contracts.py`](../../../../src/agent_review/domain/contracts.py)) es la puerta única
 por la que pasan los emisores.
 
 ## 4. Decisiones
@@ -120,11 +120,11 @@ por la que pasan los emisores.
 | D5 | `context_scope` es **opcional** y lo declara el revisor (`in_diff` \| `outside_diff`) | Permite a la cascada acotar un claim que se apoya en lo que no ve, sin exigir el dato a quien sí ve todo el fichero. |
 | D6 | Los emisores declaran su nivel: `ToolingReviewer` → `verified_static`, `LlmReviewer` → `unverified`. Los dos declaran `context_scope` (§5.4) | El `ToolingReviewer` ya está *grounded* (su hallazgo nace de una herramienta que corre); el LLM, por definición, emite hipótesis. |
 | D7 | El contrato es la **fuente única**; modelo y JSON cambian en el mismo commit | Lo impone `schema_matches_domain`; es la garantía de que el contrato publicado no miente. |
-| D8 | Los campos nuevos entran **opcionales** en el JSON (con *default*), salvo el endurecimiento condicional de `failure_scenario`, que **solo se exige en este repo** | El contrato es una copia versionada del de `ce-code-review` ([ADR-0002](../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)); endurecerlo allí se decide tras medir cuántos hallazgos descartaría. *Decidido 2026-10-17 (Q1).* |
+| D8 | Los campos nuevos entran **opcionales** en el JSON (con *default*), salvo el endurecimiento condicional de `failure_scenario`, que **solo se exige en este repo** | El contrato es una copia versionada del de `ce-code-review` ([ADR-0002](../../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)); endurecerlo allí se decide tras medir cuántos hallazgos descartaría. *Decidido 2026-10-17 (Q1).* |
 | D9 | Se crea un ADR nuevo, **ADR-0021 — Cascada de verificación del hallazgo** (enmienda 2026-10-17: la spec decía ADR-0016, número que ya ocupa el bot de Teams) | La cascada es una decisión de arquitectura con alternativas; se describe en §5.6 y el ADR ya no se reescribe. |
-| D10 | «No probado» **no** es un estado propio: es `verification: unverified` con `context_scope: outside_diff` | Un estado más en el enum solo duplicaría lo que ya dicen dos campos; cierra la Q7 de [008](../008-contexto-del-revisor/spec.md) |
+| D10 | «No probado» **no** es un estado propio: es `verification: unverified` con `context_scope: outside_diff` | Un estado más en el enum solo duplicaría lo que ya dicen dos campos; cierra la Q7 de [008](../../008-contexto-del-revisor/spec.md) |
 | D12 | **`requires_verification` se retira en esta iniciativa**: sale del modelo, del JSON (propiedad y `required`), del *prompt* y de los emisores | Lo sustituye `verification`; dejarlo como campo muerto solapado es una fuente de confusión y de deuda. Un checkpoint antiguo que lo lleve sigue cargando: `Finding` ignora campos extra. *Decidido 2026-10-17 (Q2).* |
-| D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
+| D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
 
 ## 5. Diseño o contrato
 
@@ -194,13 +194,13 @@ stateDiagram-v2
 Promover de `unverified` a cualquier `verified_*` o a `refuted` exige
 `verification_evidence` (I2). El gate de publicación —qué estados dejan salir un
 `P0`/`P1` y qué se hace con un `refuted`— es de
-[011](../011-gate-de-severidad/spec.md) y vive en
-[`autonomy.yaml`](../../../config/autonomy.yaml), no en el contrato.
+[011](../../011-gate-de-severidad/spec.md) y vive en
+[`autonomy.yaml`](../../../../config/autonomy.yaml), no en el contrato.
 
 ### 5.4 Emisión en las personas
 
 - **`ToolingReviewer`**
-  ([`tooling_reviewer.py`](../../../src/agent_review/adapters/tooling_reviewer.py)):
+  ([`tooling_reviewer.py`](../../../../src/agent_review/adapters/tooling_reviewer.py)):
   añade `"verification": "verified_static"` y `"verification_evidence": ["<file>:<line> <texto>"]`.
   `context_scope` sale de dónde reporta la herramienta: `in_diff` si la línea que da
   es una línea añadida del diff; `outside_diff` si la herramienta señala código del
@@ -209,7 +209,7 @@ Promover de `unverified` a cualquier `verified_*` o a `refuted` exige
   como hoy. *Decidido 2026-10-17 (Q3).* Sus severidades son `P2` (error) y `P3` (warning);
   al ser `verified_static`, no necesita `failure_scenario` (I1 no dispara).
 - **`LlmReviewer`**
-  ([`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py)): añade los
+  ([`llm_reviewer.py`](../../../../src/agent_review/adapters/llm_reviewer.py)): añade los
   cuatro campos al `_SCHEMA_HINT`, lee `failure_scenario`, `verification_evidence` y
   `context_scope` de la respuesta, y fija `verification: "unverified"` (el valor por
   defecto; el modelo no puede auto-promoverse). El `failure_scenario` es lo que la
@@ -256,9 +256,9 @@ El ADR nuevo documenta la decisión de fondo que este contrato habilita:
   contexto, L2 adversarial con otro rol y otro modelo, L3 ejecutable) cuyo estado se
   materializa en `verification`; la severidad `P0`/`P1` **se gana** con verificación o
   evidencia estática; un hallazgo `refuted` se conserva.
-- **Consecuencias:** el gate ([011](../011-gate-de-severidad/spec.md)) es el único
+- **Consecuencias:** el gate ([011](../../011-gate-de-severidad/spec.md)) es el único
   que traduce `verification` en severidad publicada, desde `autonomy.yaml` (policy-as-data,
-  [ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md)); el contrato
+  [ADR-0003](../../../adr/0003-autonomia-como-politica-por-hallazgo.md)); el contrato
   gana cuatro campos versionados; L2 añade coste (deuda de presupuesto).
 - **Alternativas descartadas:** seguir opinando con el mismo modelo (sello de goma),
   y publicar todo con `confidence` alto (falsa precisión).

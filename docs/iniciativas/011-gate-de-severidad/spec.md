@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Gate de severidad por política y observabilidad del veredicto
 
@@ -29,7 +29,7 @@ Se quiere:
 3. **Un solo dueño de la severidad.** L0/L1 ([008](../008-contexto-del-revisor/spec.md))
    y L2 ([009](../009-verificador-adversarial/spec.md)) solo emiten hechos
    (`pre_existing`, `context_scope`, `verification`); este gate es el único que los
-   traduce en severidad publicada ([007 D11](../007-contrato-de-verificacion/spec.md)).
+   traduce en severidad publicada ([007 D11](../archivo/007-contrato-de-verificacion/spec.md)).
    Eso incluye qué se hace con un `refuted`.
 4. **Que el veredicto se vea.** El comentario inline y el resumen muestran por qué
    se sostiene el hallazgo (veredicto + evidencia), no solo la acción.
@@ -38,7 +38,7 @@ Se quiere:
    ([ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md)); modificable
    sin desplegar.
 
-Depende del contrato `verification` ([007](../007-contrato-de-verificacion/spec.md)),
+Depende del contrato `verification` ([007](../archivo/007-contrato-de-verificacion/spec.md)),
 del contexto que reduce el `unverified` legítimo
 ([008](../008-contexto-del-revisor/spec.md)) y del verificador que produce el
 veredicto ([009](../009-verificador-adversarial/spec.md)). Esta iniciativa **consume**
@@ -113,7 +113,7 @@ compartiendo el umbral con el verificador (G9).
 | G5 | La degradación es determinista y trazable: el motor devuelve la severidad **efectiva** y su motivo | El motor no usa LLM; la decisión debe poder auditarse igual que la acción. |
 | G6 | El veredicto y su evidencia viajan al inline y al resumen | El lector humano debe ver **por qué** se sostiene (o se degrada) el hallazgo. |
 | G7 | La severidad efectiva se calcula **antes** de elegir la regla de acción, y un hallazgo degradado solo puede tener acción `report` | Si se degrada después, un P1 sin verificar sigue escalando a una persona con etiqueta P3; si la severidad degradada entra en las reglas sin guarda, un P1 dudoso convertido en P3 podría acabar en `fix_auto`. Cierra Q3. |
-| G8 | El gate es el **único** que cambia la severidad publicada; L0/L1 y L2 solo emiten hechos | Una explicación por hallazgo; el umbral se calibra en un sitio ([007 D11](../007-contrato-de-verificacion/spec.md)) |
+| G8 | El gate es el **único** que cambia la severidad publicada; L0/L1 y L2 solo emiten hechos | Una explicación por hallazgo; el umbral se calibra en un sitio ([007 D11](../archivo/007-contrato-de-verificacion/spec.md)) |
 | G9 | `require_verified_for` es también el umbral de candidatos del verificador ([009 V10](../009-verificador-adversarial/spec.md)) | Si L2 y el gate tuvieran umbrales distintos, verificar fuera del umbral sería coste sin efecto y quedarse corto dejaría severidades sin poder ganarse |
 | G10 | Un `refuted` se trata con `on_refuted`: `drop` (por defecto: no se publica) o `summary` (en el resumen, marcado, nunca inline) | Sin regla explícita, un P1 refutado contaría como «no verificado», se degradaría a P3 y se publicaría |
 | G11 | `pre_existing` y `context_scope: outside_diff` no cambian la severidad por sí solos: se muestran como etiqueta | Un `P0`/`P1` con esas marcas que siga `unverified` ya lo degrada G1; uno verificado es real aunque el código fuera viejo |

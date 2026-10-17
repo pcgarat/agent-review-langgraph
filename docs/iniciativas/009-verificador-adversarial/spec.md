@@ -52,10 +52,10 @@ Se quiere, por tanto:
 - **El gate de publicación ni la severidad.** Qué severidad se publica ante un
   `unverified` o un `refuted` lo decide el gate de
   [011](../011-gate-de-severidad/spec.md) (único dueño de la severidad,
-  [007 D11](../007-contrato-de-verificacion/spec.md)); aquí solo se **produce** el
+  [007 D11](../archivo/007-contrato-de-verificacion/spec.md)); aquí solo se **produce** el
   veredicto y se **conserva**.
 - **El contrato de los campos.** `failure_scenario`, `verification` y
-  `verification_evidence` los define [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md).
+  `verification_evidence` los define [007 — contrato de verificación](../archivo/007-contrato-de-verificacion/spec.md).
   Esta iniciativa los **consume**; no los rediseña.
 - **La medida.** Precisión y recall se miden con [006 — eval de la review](../archivo/006-eval-de-la-review/spec.md);
   aquí solo se exponen los datos que esa medida necesita.
@@ -242,7 +242,7 @@ modelo:
 - **Escenario exigido.** `CONFIRMED` sin `failure_scenario` (o con un escenario sin
   las tres partes: entrada/estado → ruta `file:line` → resultado incorrecto) →
   `UNPROVEN`. El contrato de `failure_scenario` es de
-  [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md); aquí se exige que esté.
+  [007 — contrato de verificación](../archivo/007-contrato-de-verificacion/spec.md); aquí se exige que esté.
 
 Mapeo del veredicto al contrato de 007 sobre el `Finding`:
 
