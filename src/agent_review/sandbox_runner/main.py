@@ -30,8 +30,6 @@ from agent_review.settings import Settings, get_settings, is_missing
 
 logger = logging.getLogger(__name__)
 
-_INSECURE_TOKENS = {"change-me", "changeme"}
-
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -45,7 +43,7 @@ app = FastAPI(title="Sandbox Runner", version="0.1.0", lifespan=lifespan)
 def _verify_token(settings: Settings, authorization: str | None) -> None:
     """Bearer compartido worker<->runner. Relajado con el valor de ejemplo en dev."""
     token = settings.sandbox_runner_token.strip()
-    if not token or token in _INSECURE_TOKENS:
+    if is_missing(token):
         return
     expected = f"Bearer {token}"
     if not authorization or not hmac.compare_digest(expected, authorization):
@@ -60,11 +58,11 @@ def _verify_console_token(settings: Settings, authorization: str | None) -> None
     relaja igual que `_verify_token` (sin token compartido real, en dev).
     """
     token = settings.sandbox_runner_token.strip()
-    if not token or token in _INSECURE_TOKENS:
+    if is_missing(token):
         return
     accepted = [token]
     console_token = settings.sandbox_console_token.strip()
-    if console_token and console_token not in _INSECURE_TOKENS:
+    if console_token and not is_missing(console_token):
         accepted.append(console_token)
     provided = authorization or ""
     if not any(hmac.compare_digest(f"Bearer {item}", provided) for item in accepted):
@@ -297,7 +295,7 @@ def build_verifier(settings: Settings) -> Verifier:
             profile_source=_FileProfileSource(settings.repo_profile_config),
             workspace=GitWorkspace(git_token=settings.sandbox_git_token),
             runtime=DockerCliRuntime(docker_bin=settings.sandbox_docker_bin),
-            # El placeholder de `.env.example` (`change-me`) cuenta como vacio: sin
+            # El placeholder de `.env.example` cuenta como vacio (020 D5): sin
             # usuario no se hace `docker login` (imagen publica o ya autenticada).
             registry_user=_configured(settings.sandbox_registry_user),
             registry_token=_configured(settings.sandbox_registry_token),

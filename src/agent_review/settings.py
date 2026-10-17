@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +11,65 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Proveedores de VCS soportados. Un valor distinto es un error de configuracion:
 # falla al construir `Settings` (arranque), no en la primera review.
 _VCS_PROVIDERS = {"twg", "github"}
+
+# Procesos que tienen contrato de secretos propio (I3). Un `required_in` con otro
+# nombre es un error al construir el descriptor: un secreto que nadie exige nunca.
+PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot"})
+
+# Condiciones de activacion del contrato (020 §5.3). Lo unico que la declaracion de
+# un campo no puede capturar: el nombre se declara en el `Secret` y aqui vive como se
+# evalua. `sandbox` y `panel` miran el proceso porque su condicion cambia segun quien
+# pregunte: el contrato del `fix-worker` es hablar con el runner (siempre), y el `web`
+# **es** el panel (siempre). Escrito aqui, no escondido en una lista.
+_FEATURES: Mapping[str, Callable[[Settings, str], bool]] = {
+    "sandbox": lambda s, process: s.sandbox_enabled or process == "fix-worker",
+    "panel": lambda s, process: s.panel_enabled or process == "web",
+    "teams": lambda s, _process: s.teams_enabled,
+    "vcs_twg": lambda s, _process: s.vcs_provider != "github",
+    "vcs_github": lambda s, _process: s.vcs_provider == "github",
+    "llm_legacy": lambda s, _process: s.llm_reviewer_enabled and not s.models_config.strip(),
+    "llm_registry": lambda s, _process: s.llm_reviewer_enabled and bool(s.models_config.strip()),
+    # Campo declarado para que el inventario de secretos (I1) sea completo, pero que
+    # **no** forma parte del contrato de arranque de hoy: `TWG_TOKEN` es de Fase 4,
+    # `SANDBOX_REGISTRY_TOKEN` lo usa el runner para el `pull` de la imagen y
+    # `SANDBOX_CONSOLE_TOKEN` es una guarda de peticion. Declararlos documenta que
+    # existen y donde, sin cambiar un solo veredicto.
+    "solo_inventario": lambda _s, _process: False,
+}
+
+
+@dataclass(frozen=True)
+class Secret:
+    """Declaracion de un campo del contrato de secretos (020 D1, ADR-0022).
+
+    Vive en el `metadata` del `Field`, asi que el inventario del modelo
+    (`model_fields`) y la declaracion de seguridad son el mismo sitio y no pueden
+    desincronizarse. La **unica** via de lectura es `secrets_for`; leer
+    `model_fields[...].metadata` a mano se salta esta declaracion (R5).
+    """
+
+    # Procesos que pueden preguntar por este campo. Vacio = todos. No es una lista
+    # de «quien lo exige»: quien decide es `feature`; esto solo acota donde aplica.
+    required_in: frozenset[str] = frozenset()
+    # Condicion de activacion, por nombre de la tabla `_FEATURES`. `None` = siempre.
+    # Es el segundo eje del contrato: la condicion puede depender del proceso
+    # (p. ej. `sandbox`, que en el `fix-worker` es siempre).
+    feature: str | None = None
+    # Se exige por estar VACIO, no por llevar un placeholder: un valor no vacio es
+    # legitimo aunque no sea un secreto (`TEAMS_NOTICES_KEY`).
+    required_when_empty: bool = False
+    # Que se espera del valor. `secret`: vacio o placeholder es «sin configurar».
+    # `url`/`value`: solo el vacio cuenta (una URL no es un secreto).
+    expect: str = "secret"
+
+    def __post_init__(self) -> None:
+        unknown = self.required_in - PROCESSES
+        if unknown:
+            raise ValueError(f"procesos desconocidos en `required_in`: {sorted(unknown)}")
+        if self.expect not in {"secret", "url", "value"}:
+            raise ValueError(f"`expect` desconocido: {self.expect!r}")
+        if self.feature is not None and self.feature not in _FEATURES:
+            raise ValueError(f"`feature` desconocida: {self.feature!r}")
 
 
 class Settings(BaseSettings):
@@ -26,20 +88,25 @@ class Settings(BaseSettings):
     # scoped de un actor de servicio, no el OAuth de una persona: no caduca cada
     # hora y se revoca sin tocar a nadie. twg lo lee de `TWG_BBC_TOKEN`
     # (verificado: no necesita auth.conf si esta la variable).
-    twg_bbc_token: str = ""
+    twg_bbc_token: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker"}), feature="vcs_twg")
+    ] = ""
     # Site y usuario del actor de servicio; los consume twg directamente.
     twg_site: str = ""
     twg_user: str = ""
     # API token de Atlassian (Jira/Confluence). Solo necesario si se usa
-    # `twg jira` (escalado a workitem); twg lo lee de `TWG_TOKEN`.
-    twg_token: str = ""
+    # `twg jira` (escalado a workitem); twg lo lee de `TWG_TOKEN`. Fase 4: entra en
+    # el inventario de secretos, no en el contrato de arranque de hoy.
+    twg_token: Annotated[str, Secret(feature="solo_inventario")] = ""
 
     # GitHub (VCS_PROVIDER=github). `github_owner`/`github_repo` son la identidad
     # del repo revisado (equivalente a BITBUCKET_WORKSPACE/BITBUCKET_REPO). El
     # token es un PAT fine-grained con `pull_requests: write` + `contents: read`.
     github_owner: str = ""
     github_repo: str = ""
-    github_token: str = ""
+    github_token: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker"}), feature="vcs_github")
+    ] = ""
     # Base de la API. Se cambia para GitHub Enterprise Server.
     github_api_url: str = "https://api.github.com"
 
@@ -47,21 +114,39 @@ class Settings(BaseSettings):
     # avisos en la outbox (`TEAMS_NOTICES_KEY`) y el bot los publica (C10).
     teams_enabled: bool = False
     # Outbox de avisos al canal (C10). El worker encola aqui; el bot la consume.
-    teams_notices_key: str = "reviews:notices"
+    # No es un secreto: se exige por estar VACIA, y `reviews:notices` (su valor por
+    # defecto) es legitimo. El placeholder no debe contar aqui.
+    teams_notices_key: Annotated[
+        str,
+        Secret(
+            required_in=frozenset({"api", "worker"}),
+            feature="teams",
+            required_when_empty=True,
+            expect="value",
+        ),
+    ] = "reviews:notices"
     # Espera de la lectura bloqueante de la outbox por parte del bot. Vencida, el
     # bucle vuelve a intentarlo (no distingue "sin avisos" de un Redis caido).
     teams_bot_poll_s: float = 5.0
     # Identidad y secreto del bot (T6). El SDK elige el metodo de auth: con
     # `client_secret` usa *client secret*; sin el, identidad gestionada. Los lee
     # SOLO el proceso `teams-bot`.
-    teams_bot_id: str = ""
-    teams_bot_tenant_id: str = ""
-    teams_bot_token: str = ""
+    teams_bot_id: Annotated[str, Secret(required_in=frozenset({"teams-bot"}), feature="teams")] = ""
+    teams_bot_tenant_id: Annotated[
+        str, Secret(required_in=frozenset({"teams-bot"}), feature="teams")
+    ] = ""
+    teams_bot_token: Annotated[
+        str, Secret(required_in=frozenset({"teams-bot"}), feature="teams")
+    ] = ""
     # Puerto del *messaging endpoint* (`POST /api/messages`) dentro del contenedor.
     teams_bot_port: int = 3978
     # Bearer del **ingress interno** del bot (T7): protege `/healthz` y la
-    # observabilidad. El egress no lo usa (va por la outbox).
-    teams_bot_shared_secret: str = "change-me"
+    # observabilidad. El egress no lo usa (va por la outbox). El `change-me` es un
+    # valor por defecto del campo (no duplica la lista `PLACEHOLDER_VALUES`): su
+    # forma documenta que es un secreto y `.env.example` trae un valor.
+    teams_bot_shared_secret: Annotated[
+        str, Secret(required_in=frozenset({"teams-bot"}), feature="teams")
+    ] = "change-me"
 
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://reviews:reviews@localhost:5432/reviews"
@@ -94,28 +179,42 @@ class Settings(BaseSettings):
     panel_port: int = 8090
     # Sesion del panel: NO es el bearer de decision. Identifica a la persona y su
     # rol en la forma `<usuario>:<lector|operador>`; un `lector` puede mirar pero
-    # no ejecutar comandos. Un secreto real por despliegue.
-    panel_session_secret: str = ""
+    # no ejecutar comandos. Un secreto real por despliegue. Lo exige el `web`
+    # siempre (`panel_always`) y el `api`/`worker` con el panel desplegado.
+    panel_session_secret: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker", "web"}), feature="panel")
+    ] = ""
     # Tope de la consola en vivo por verificacion (lineas del buffer del runner).
     sandbox_console_buffer_lines: int = 2000
 
     sandbox_enabled: bool = False
     sandbox_registry_user: str = ""
-    sandbox_registry_token: str = ""
+    # Credencial del registro de la imagen del CI. La usa el runner para el `pull`;
+    # entra en el inventario, no en el contrato de arranque de hoy.
+    sandbox_registry_token: Annotated[str, Secret(feature="solo_inventario")] = ""
     # Token de Bitbucket de SOLO LECTURA que usa el runner para clonar. Distinto
     # del de `twg` del worker: aunque un PR malicioso lo viera, no da push (Q3).
-    sandbox_git_token: str = ""
+    sandbox_git_token: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker"}), feature="sandbox")
+    ] = ""
     # Binario de Docker del runner (rootless en el host del runner).
     sandbox_docker_bin: str = "docker"
     # URL interna del `sandbox-runner` (Fase 3). Con `SANDBOX_ENABLED=true` y esta
     # URL, el nodo `fix` puede verificar parches; sin ellas, queda `NOT_VERIFIABLE`.
-    sandbox_runner_url: str = ""
-    sandbox_runner_token: str = ""
+    # No es un secreto: es una URL que el fix-worker necesita SIEMPRE para arrancar.
+    # Solo su contrato la exige (el worker de reviews la usa, pero no la exige).
+    sandbox_runner_url: Annotated[
+        str, Secret(required_in=frozenset({"fix-worker"}), expect="url")
+    ] = ""
+    sandbox_runner_token: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker", "fix-worker"}), feature="sandbox")
+    ] = ""
     # Bearer de **solo lectura** de la consola en vivo del runner (019 OP24): lo
     # recibe el panel para reenviar el SSE. Solo abre `GET /verify/{run_key}/console`;
     # no sirve para `POST /verify` ni para los workspaces, asi que el panel no puede
     # lanzar verificaciones. Vacio: la consola solo acepta `SANDBOX_RUNNER_TOKEN`.
-    sandbox_console_token: str = ""
+    # Es una guarda de **peticion**: entra en el inventario, no en el arranque.
+    sandbox_console_token: Annotated[str, Secret(feature="solo_inventario")] = ""
     # Techo de una verificacion en el sandbox, si el perfil no lo declara. Vive en
     # el perfil (`sandbox.timeout_s`); esto es el fallback sin perfil.
     sandbox_timeout_s: float = 1200.0
@@ -144,10 +243,15 @@ class Settings(BaseSettings):
     # Directorio raiz bajo el que se resuelve la plantilla (compartido api/worker).
     tooling_output_root: str = "."
     # Secreto para firmar el POST del CI que deposita el artefacto (HMAC-SHA256).
-    tooling_webhook_secret: str = "change-me"
+    # El `change-me` es el valor por defecto del campo, no una copia de la lista.
+    tooling_webhook_secret: Annotated[str, Secret(required_in=frozenset({"api", "worker"}))] = (
+        "change-me"
+    )
     # Bearer del canal de decision (CLI/API). En `development` se relaja como el
     # secreto de tooling: con el valor de ejemplo, el endpoint no exige token.
-    reviews_decision_token: str = "change-me"
+    reviews_decision_token: Annotated[str, Secret(required_in=frozenset({"api", "worker"}))] = (
+        "change-me"
+    )
     # Entorno de despliegue. En `production` se exige que los secretos no sean el
     # valor de ejemplo (fallo ruidoso al arrancar, no un agujero silencioso).
     environment: str = "development"
@@ -212,7 +316,9 @@ class Settings(BaseSettings):
     models_config: str = ""
     llm_model: str = ""
     llm_base_url: str = ""
-    llm_api_key: str = ""
+    llm_api_key: Annotated[
+        str, Secret(required_in=frozenset({"api", "worker"}), feature="llm_legacy")
+    ] = ""
     llm_max_findings: int = 10
     llm_budget_tokens_per_pr: int = 2000000
     # Tamano maximo de un lote del `LlmReviewer`, en caracteres de diff (012 C2): se
@@ -244,13 +350,14 @@ def get_settings() -> Settings:
 
 
 # Valores de ejemplo que no deben llegar a produccion: con ellos la firma del
-# webhook se omite y cualquiera podria inyectar artefactos.
-_INSECURE_DEFAULTS = {"change-me", "changeme"}
+# webhook se omite y cualquiera podria inyectar artefactos. Es la unica definicion de
+# la lista: `api`, `web` y el `sandbox_runner` la importan de aqui (020 D5).
+PLACEHOLDER_VALUES = frozenset({"change-me", "changeme"})
 
 
 def _is_placeholder(value: str) -> bool:
     """¿Sigue en uno de los valores de ejemplo de `.env.example`?"""
-    return value.strip() in _INSECURE_DEFAULTS
+    return value.strip() in PLACEHOLDER_VALUES
 
 
 def is_missing(value: str) -> bool:
@@ -266,62 +373,80 @@ def is_missing(value: str) -> bool:
     return not value.strip() or _is_placeholder(value)
 
 
+def _secret_of(field_info: object) -> Secret | None:
+    """El `Secret` declarado en el `metadata` del campo, si lo hay."""
+    metadata = getattr(field_info, "metadata", ())
+    return next((item for item in metadata if isinstance(item, Secret)), None)
+
+
+def _is_unset(value: str, secret: Secret) -> bool:
+    """¿El campo cuenta como «sin configurar» segun lo que se espera de el?"""
+    if secret.expect == "secret" and not secret.required_when_empty:
+        return is_missing(value)
+    return not value.strip()
+
+
+def secrets_for(
+    settings: Settings,
+    process: str,
+    feature_enabled: Mapping[str, Callable[[Settings, str], bool]] | None = None,
+) -> list[str]:
+    """Nombres de los secretos sin configurar que este proceso exige al arrancar.
+
+    Un unico recorrido de `model_fields`, no una lista a mano (020 D4, ADR-0022):
+    anadir un campo secreto y olvidar su comprobacion deja de ser posible porque el
+    contrato se deriva de la declaracion. El orden es el de `model_fields`, estable.
+
+    La unica rama que no sale del descriptor es el registro declarativo de modelos:
+    los secretos que exige los nombra el YAML (`unresolved_secrets`), no un campo de
+    `Settings` (R6).
+    """
+    table = _FEATURES if feature_enabled is None else feature_enabled
+    insecure: list[str] = []
+    for name, field_info in Settings.model_fields.items():
+        secret = _secret_of(field_info)
+        if secret is None:
+            continue
+        if secret.required_in and process not in secret.required_in:
+            continue
+        if secret.feature is not None and not table[secret.feature](settings, process):
+            continue
+        if _is_unset(getattr(settings, name), secret):
+            insecure.append(name.upper())
+    if process in {"api", "worker"} and settings.llm_reviewer_enabled:
+        insecure.extend(_unresolved_registry_secrets(settings))
+    return insecure
+
+
+def _unresolved_registry_secrets(settings: Settings) -> list[str]:
+    """Secretos sin resolver que el registro declarativo de modelos referencia.
+
+    Con registro, el secreto lo nombra el YAML (`${VAR}`), no un campo: por eso no
+    cabe en la declaracion y se resuelve aqui. Sin registro, no hay nada que mirar
+    (la via de compatibilidad la cubre `llm_api_key`).
+    """
+    if not settings.models_config.strip():
+        return []
+    from agent_review.models_config import env_for, load_models_config, unresolved_secrets
+
+    try:
+        config = load_models_config(settings.models_config)
+    except Exception:
+        # Un registro ilegible ya falla al construir el worker con un error mas
+        # util; aqui no se duplica.
+        return []
+    return unresolved_secrets(config, env_for(settings))
+
+
 def insecure_secrets(settings: Settings) -> list[str]:
     """Nombres de secretos que siguen en su valor de ejemplo o sin rellenar (D4).
 
-    Cubre el contrato completo, no solo la firma del webhook: un despliegue en
-    produccion sin credencial de Bitbucket arranca pero falla en la primera
-    review, que es exactamente el fallo silencioso que se quiere evitar.
+    Cubre el contrato completo del proceso `api`/`worker`, no solo la firma del
+    webhook: un despliegue en produccion sin credencial de Bitbucket arranca pero
+    falla en la primera review, que es exactamente el fallo silencioso que se quiere
+    evitar. El contrato se deriva de la declaracion de cada campo (020, ADR-0022).
     """
-    insecure: list[str] = []
-    if is_missing(settings.tooling_webhook_secret):
-        insecure.append("TOOLING_WEBHOOK_SECRET")
-    # El token de decision autoriza a un humano a mandar sobre el clamp; en Fase 3
-    # sera la llave del repo (spec §2.1). No puede quedarse en el valor de ejemplo.
-    if is_missing(settings.reviews_decision_token):
-        insecure.append("REVIEWS_DECISION_TOKEN")
-    # La credencial del proveedor de VCS es obligatoria: sin ella no hay diff ni
-    # comentarios. Se exige la del proveedor activo, no siempre la de Bitbucket.
-    if settings.vcs_provider == "github":
-        if is_missing(settings.github_token):
-            insecure.append("GITHUB_TOKEN")
-    elif is_missing(settings.twg_bbc_token):
-        insecure.append("TWG_BBC_TOKEN")
-    if settings.teams_enabled and not settings.teams_notices_key.strip():
-        insecure.append("TEAMS_NOTICES_KEY")
-    if settings.llm_reviewer_enabled:
-        # Con registro declarativo, el secreto es el que referencia el YAML. Sin el,
-        # la via de compatibilidad exige `LLM_API_KEY` como antes.
-        if settings.models_config.strip():
-            from agent_review.models_config import (
-                env_for,
-                load_models_config,
-                unresolved_secrets,
-            )
-
-            try:
-                config = load_models_config(settings.models_config)
-            except Exception:
-                # Un registro ilegible ya falla al construir el worker con un error
-                # mas util; aqui no se duplica.
-                config = None
-            if config is not None:
-                insecure.extend(unresolved_secrets(config, env_for(settings)))
-        elif is_missing(settings.llm_api_key):
-            insecure.append("LLM_API_KEY")
-    # Con el sandbox activo hay dos superficies nuevas: el token compartido
-    # worker<->runner y el token de clonado de solo lectura del runner. Sin ellos
-    # el worker no puede pedir la verificacion o el runner no puede clonar.
-    if settings.sandbox_enabled:
-        if is_missing(settings.sandbox_runner_token):
-            insecure.append("SANDBOX_RUNNER_TOKEN")
-        if is_missing(settings.sandbox_git_token):
-            insecure.append("SANDBOX_GIT_TOKEN")
-    # El secreto de sesion del panel (019 W7) solo se exige si el panel esta
-    # desplegado: un despliegue sin `web` no debe fallar por un secreto que no usa.
-    if settings.panel_enabled:
-        insecure.extend(panel_insecure_secrets(settings))
-    return insecure
+    return secrets_for(settings, "worker")
 
 
 def panel_insecure_secrets(settings: Settings) -> list[str]:
@@ -333,9 +458,7 @@ def panel_insecure_secrets(settings: Settings) -> list[str]:
     ejemplo (`change-me`) o vacia dejaria el panel sin autenticacion: es
     exactamente el agujero que el fail-closed debe evitar.
     """
-    if is_missing(settings.panel_session_secret):
-        return ["PANEL_SESSION_SECRET"]
-    return []
+    return secrets_for(settings, "web")
 
 
 def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
@@ -345,12 +468,7 @@ def fix_worker_insecure_secrets(settings: Settings) -> list[str]:
     con el runner. No recibe credencial de VCS, token de decision ni clave del LLM
     (vive aislado), asi que exigirle el contrato completo lo tumbaria en produccion.
     """
-    insecure: list[str] = []
-    if not settings.sandbox_runner_url.strip():
-        insecure.append("SANDBOX_RUNNER_URL")
-    if is_missing(settings.sandbox_runner_token):
-        insecure.append("SANDBOX_RUNNER_TOKEN")
-    return insecure
+    return secrets_for(settings, "fix-worker")
 
 
 def teams_bot_insecure_secrets(settings: Settings) -> list[str]:
@@ -361,20 +479,7 @@ def teams_bot_insecure_secrets(settings: Settings) -> list[str]:
     VCS ni clave del LLM. Solo con `TEAMS_ENABLED=true`; sin el canal, el servicio
     no debe arrancar, asi que su ausencia no es un fallo.
     """
-    insecure: list[str] = []
-    if not settings.teams_enabled:
-        return insecure
-    if is_missing(settings.teams_bot_id):
-        insecure.append("TEAMS_BOT_ID")
-    if is_missing(settings.teams_bot_tenant_id):
-        insecure.append("TEAMS_BOT_TENANT_ID")
-    # El token es el secreto del bot (client secret). Sin el, el SDK no valida el
-    # JWT del Bot Framework: en produccion no puede quedarse vacio ni de ejemplo.
-    if is_missing(settings.teams_bot_token):
-        insecure.append("TEAMS_BOT_TOKEN")
-    if is_missing(settings.teams_bot_shared_secret):
-        insecure.append("TEAMS_BOT_SHARED_SECRET")
-    return insecure
+    return secrets_for(settings, "teams-bot")
 
 
 def is_production(settings: Settings) -> bool:
