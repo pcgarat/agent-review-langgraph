@@ -11,7 +11,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | aprobada | 🟢 Lista para implementar · [plan](008-contexto-del-revisor/plan.md) · [todo](008-contexto-del-revisor/todo.md) (CX1–CX12) | 007 y 012 hechas · D10–D15 cerradas |
+| 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | implementada | 🟢 C1–C3 hechos · queda regrabar *gold set* (CX11, con 009) · [todo](008-contexto-del-revisor/todo.md) | 007 y 012 hechas · D10–D15 cerradas |
 | 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | implementada | 🟢 C1–C4 hechos · quedan VF14/VF15 (humanas: modelo del *gold set* y umbral con 011) · [todo](009-verificador-adversarial/todo.md) | Dependencias hechas (007, 016 y 017) · el umbral de candidatos lo lee del gate de 011 |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
@@ -52,10 +52,11 @@ entregadas: 009 y 014 las consumen, no las esperan.
   [todo](009-verificador-adversarial/todo.md)**. La **021** deja el *gold set* en
   precisión/recall 0.375 con razonamiento; conviene **regrabar una sola vez** cuando
   009 (y, si se aprueba, 008) estén listas.
-- **Aprobada el 2026-10-17:** 008 ([plan](008-contexto-del-revisor/plan.md) y
-  [todo](008-contexto-del-revisor/todo.md)). Lista junto a 009.
-- **Se puede empezar ya**, sin esperar a nadie: **008**, **009**, la fase 1 de 010
-  y 015. Conviene regrabar el *gold set* **una sola vez** al cerrar 008+009.
+- **Implementada el 2026-10-17:** 008 ([plan](008-contexto-del-revisor/plan.md) y
+  [todo](008-contexto-del-revisor/todo.md)). Queda regrabar el *gold set* (CX11)
+  junto con 009.
+- **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015. Conviene
+  regrabar el *gold set* **una sola vez** al cerrar el pending de 008+009.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
   no de código.
 

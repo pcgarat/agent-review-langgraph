@@ -405,16 +405,15 @@ def test_l0_ignora_pre_existing_del_modelo() -> None:
 
 def test_l0_descarta_cita_inventada() -> None:
     entry = _finding_json(evidence=[f"{TRANSFER}:14 invented_function_xyz();"])
-    assert LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings == []
+    result = LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF)
+    assert result.findings == []
 
 
 def test_l0_cita_de_contexto_no_se_recoloca_a_anadida() -> None:
     # El modelo apunta a la anadida; la evidencia cita contexto → SUMMARY (linea 12).
     entry = _finding_json(
         line=14,
-        evidence=[
-            f"{TRANSFER}:12 $balance = $this->repository->find($command->walletId);"
-        ],
+        evidence=[f"{TRANSFER}:12 $balance = $this->repository->find($command->walletId);"],
     )
     [finding] = (
         LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings
@@ -455,9 +454,7 @@ def test_l1_incluye_fichero_y_docs_sin_desplazar_el_diff() -> None:
         contents={TRANSFER: "<?php\nclass Transfer {}\n"},
         docs={"CONTEXT.md": "# glosario\n"},
     )
-    LlmReviewer(llm=llm, context_max_chars=10_000).review(
-        repo="r", pr_id=1, diff=DIFF, context=ctx
-    )
+    LlmReviewer(llm=llm, context_max_chars=10_000).review(repo="r", pr_id=1, diff=DIFF, context=ctx)
     prompt = llm.calls[0][1]
     assert "DIFF:\n" in prompt
     assert "throw new InsufficientBalance" in prompt  # diff no recortado

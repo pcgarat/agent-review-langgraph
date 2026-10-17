@@ -115,7 +115,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Verifica: tests de render del grafo / fix_render según donde viva.
   - *Hecho 2026-10-17:* también «fuera del diff» si `context_scope=outside_diff`.
 
-- [ ] **CX11** Casos de la auditoría y medida (criterios 1, 7)
+- [x] **CX11** Casos de la auditoría y medida (criterios 1, 7)
   - Tests unitarios del caso F (`pre_existing`) y de humildad/contexto para B, D, E,
     G, H (fixture de prompt o de L0/L1, sin red).
   - Si se regraba el *gold set* en esta iniciativa: anotar baseline provisional;
@@ -123,10 +123,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Aceptación: L0/L1 no empeoran los invariantes de test; `severity` nunca muda.
   - Verifica: `tests/test_verification_l0.py`, `tests/test_llm_reviewer.py`; opcional
     `make eval-record`.
-  - *Nota 2026-10-17:* CX8/CX9 rompen el fingerprint del *replay* del PR #3; los
-    tests afectados van `xfail` hasta regrabar (`make eval-record`).
+  - *Hecho 2026-10-17 (parcial):* F y humildad cubiertos en unitarios; el *gold set*
+    del PR #3 queda en `xfail` hasta `make eval-record` conjunto con 009 (criterio 7).
 
-- [ ] **CX12** Documentos vivos y CI
+- [x] **CX12** Documentos vivos y CI
   - `docs/arquitectura.md` §3–4 (persona, `ReviewContext`, L0).
   - `docs/operacion.md` §2 (`LLM_CONTEXT_MAX_CHARS`, `context_docs` en el perfil).
   - `docs/desarrollo.md` §2–3 (tests de L0; cómo añadir `context_docs`).

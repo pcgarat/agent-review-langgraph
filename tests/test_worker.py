@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
+from diff_helpers import added_lines_diff
 
 from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from agent_review.adapters.llm_reviewer import LlmReviewer
@@ -45,7 +46,6 @@ from agent_review.worker.main import (
     validate_models,
     verification_enabled,
 )
-from diff_helpers import added_lines_diff
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")

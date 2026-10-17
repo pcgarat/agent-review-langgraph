@@ -2,7 +2,7 @@
 
 # Contexto del revisor: verificación determinista (L0) y contexto (L1)
 
-> **Estado:** aprobada *(2026-10-17)*
+> **Estado:** implementada *(2026-10-17)*
 >
 > **Entrega objetivo:** que el `LlmReviewer` deje de afirmar sobre lo que no ve y
 > de publicar como regresión lo que ya estaba en la base, sin gastar un token de más:
@@ -254,21 +254,22 @@ presupuesto mide de menos (D17).
 
 ## 7. Criterios de hecho
 
-- [ ] L0 trata, con test, los tres casos: cita sobre línea de contexto (al resumen),
+- [x] L0 trata, con test, los tres casos: cita sobre línea de contexto (al resumen),
       cita que no existe (descartada) y `pre_existing` contra la base (el caso **F**
       del análisis, etiquetado «preexistente»).
-- [ ] `pre_existing` se **calcula** de forma determinista; el valor que devuelva el
+- [x] `pre_existing` se **calcula** de forma determinista; el valor que devuelva el
       modelo ya no se copia.
-- [ ] Con el perfil de este repo, el `LlmReviewer` recibe por lote el fichero
+- [x] Con el perfil de este repo, el `LlmReviewer` recibe por lote el fichero
       completo y los `context_docs:` declarados; con un perfil sin `context_docs:`,
       solo el fichero completo.
-- [ ] La regla de humildad está en el *system prompt* y un test comprueba que un
+- [x] La regla de humildad está en el *system prompt* y un test comprueba que un
       claim fuera del diff sale con `context_scope: outside_diff`.
-- [ ] L0/L1 no modifican `severity` en ningún caso (test).
-- [ ] El contexto nunca desplaza diff dentro de un lote (test).
+- [x] L0/L1 no modifican `severity` en ningún caso (test).
+- [x] El contexto nunca desplaza diff dentro de un lote (test).
 - [ ] L0/L1 son una **mejora** sobre el baseline de
       [006](../archivo/006-eval-de-la-review/spec.md) según su criterio de dominancia.
-- [ ] `make ci` en verde, con `make docs-check`; y los vivos al día: procedimientos
+      *(Pendiente: `make eval-record` conjunto con 009; replay en `xfail`.)*
+- [x] `make ci` en verde, con `make docs-check`; y los vivos al día: procedimientos
       de `arquitectura.md` §3–4 (persona y contexto) y `desarrollo.md` §2–3 (tests y
       extensión), más `CONTEXT.md` si nace un término (`L0`, `context_scope`).
 

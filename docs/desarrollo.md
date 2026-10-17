@@ -66,7 +66,8 @@ contra el `head_sha` del caso y se etiqueta en `labels.yaml` (el test exige
 | Contrato y dominio | `test_domain`, `test_contracts`, `test_fix_domain` |
 | Política | `test_policy` |
 | Ingesta y API | `test_api`, `test_pending`, `test_queue` |
-| Grafo y publicación | `test_graph` (incluida la review parcial: cabecera, marca y lista plegable), `test_scope` (clasificación, prioridad y cobertura de 012), `test_e2e_tooling` |
+| Grafo y publicación | `test_graph` (incluida la review parcial: cabecera, marca y lista plegable; L0 en publish; etiqueta preexistente; `ReviewContext` leído una vez), `test_scope` (clasificación, prioridad y cobertura de 012; ensamblaje L1), `test_e2e_tooling` |
+| L0 / L1 (008) | `test_verification_l0` (anclaje estricto, cita, `pre_existing`), `test_diff_parser` (lado viejo del diff), `test_llm_reviewer` (L0 en `_to_finding`, L1 por lote y humildad), `test_profile` (`context_docs`) |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
 | Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar); `test_compose` cubre el perfil `panel` |
@@ -106,13 +107,32 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
 
 ### Una persona nueva
 
-1. Implementa `ReviewerPort` (`name` + `review(...) -> ReviewerResult`).
+1. Implementa `ReviewerPort` (`name` + `review(...) -> ReviewerResult`). Acepta
+   `context: ReviewContext | None` (008); ignóralo si no usas L1.
 2. Valida cada hallazgo con `domain.contracts.validate_finding` y ancla solo en
-   líneas **añadidas** del diff.
+   líneas **añadidas** del diff. Si la persona emite hipótesis, invoca L0
+   (`verification.l0.evaluate_l0`) y no copies `pre_existing` del modelo.
 3. Si depende de una fuente externa, devuelve `tooling_status`. Si no, `None`.
 4. Regístrala en `worker.build_reviewers` y añade su rol a `LLM_REVIEW_ROLES` si es
    LLM. El merge la tratará como una persona distinta para la fusión
    ([ADR-0014](adr/0014-criterio-de-merge-entre-personas.md)).
+
+### Documentos de contexto del perfil (`context_docs`)
+
+En el perfil del repo revisado (YAML):
+
+```yaml
+context_docs:
+  glossary: CONTEXT.md
+  decisions:
+    - docs/adr/0013-secretos-por-entorno-fail-closed.md
+  extra: ["docs/operacion.md#2"]
+```
+
+`scope` los lee una vez al `head_sha` (con recorte de sección si hay `#N`) y viajan
+en `ReviewContext.docs`. El `LlmReviewer` los mete en cada lote bajo
+`LLM_CONTEXT_MAX_CHARS` sin desplazar el diff. Sin la clave, solo hay fichero
+completo del hunk.
 
 ### Un proveedor de modelo nuevo
 
