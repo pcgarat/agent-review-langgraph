@@ -139,6 +139,12 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - ADR nuevo (siguiente número libre): por qué un value object y no un `str`; qué
     pasa cuando `total_bytes` no está disponible (se declara `None`, **no** se
     inventa).
+  - **Unidades explícitas**: `total_bytes` cuenta **bytes UTF-8**, no `len(text)`
+    (hoy los tres topes y el aviso mezclan caracteres con bytes). Se nombra y se
+    documenta; el corte no parte una línea a mitad.
+  - **`_slice` se unifica**: hoy está triplicado (`context_fixture`, `context_vcs`,
+    `read_workspace`) y no valida `start=0`, negativos ni `end < start`. Una sola
+    función compartida con tests en las tres superficies.
   - Migrar el puerto, los tres adaptadores y los dobles; el bucle renderiza con el
     resultado, no con `len(content)`.
   - Aceptación: el puerto solo devuelve value objects; ningún `read_file(...) ==
@@ -157,6 +163,9 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - `adapters/context_workspace.py`: envía y lee los campos nuevos.
   - **Negociación de capacidad**: si el runner no soporta un campo, `ERROR`
     explícito; nunca degradar en silencio.
+  - **Errores tipados**: `_serve_one` hoy convierte cualquier excepción en «la
+    herramienta X falló». Un `ToolError` con mensaje útil llega al modelo; el
+    `except Exception` genérico se reserva para lo inesperado (y se registra).
   - `search` → `grep` en `_serve_one`, o se retira de la spec (E15).
   - Aceptación: test de contrato que verifica que **cada** argumento documentado
     llega al adaptador y de ahí al runner; test de ida y vuelta worker ↔ runner.
@@ -204,6 +213,10 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     coincidencias» (hoy `git grep` devuelve código 2 y el adaptador lo traga).
   - `context_vcs.grep`: distinguir `head` de `base` (hoy recorre `self._cache` y
     mezcla refs) y honrar `path`. Declarar el lector como **parcial**.
+  - **Semántica de `glob` unificada**: hoy `context_fixture` usa `matches_any`,
+    `context_vcs` usa `path_matches` y el runner usa `pathspec` de git. Se define
+    si es relativo a `path` o a la raíz y se prueba la **matriz** (`glob` solo,
+    `path` + `glob`, `**`) en las cuatro superficies.
   - Aceptación: `mode="regex"` casa `complete\(|model_for\(`; `mode` ausente es
     idéntico a hoy; un `path` acota de verdad; **el mismo patrón canónico da el
     mismo resultado en las cuatro superficies** (VCS sobre la intersección visible).
