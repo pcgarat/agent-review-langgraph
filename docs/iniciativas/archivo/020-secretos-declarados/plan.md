@@ -4,7 +4,7 @@
 
 El *qué y por qué* viven en [`spec.md`](spec.md) —incluida la **enmienda del
 2026-10-17**, que es la que manda donde divergan—; las tareas, en [`todo.md`](todo.md).
-Decisión: [ADR-0022](../../adr/0022-contrato-de-secretos-declarado.md).
+Decisión: [ADR-0022](../../../adr/0022-contrato-de-secretos-declarado.md).
 
 ## Overview
 

@@ -2,7 +2,7 @@
 
 # Razonamiento del revisor visible en el panel
 
-> **Estado:** aprobada *(2026-10-17)*
+> **Estado:** implementada *(2026-10-17)*
 >
 > **Entrega objetivo:** los revisores LLM razonan siempre, y mientras revisan el panel
 > de operación muestra **en vivo** lo que el modelo razona en cada lote, igual que un
@@ -15,7 +15,7 @@
 
 Hoy el razonamiento del modelo se pierde. El proveedor lo devuelve
 (`message.reasoning_content`), pero `OpenAiLlm` solo lee `content`
-([`openai_llm.py`](../../../src/agent_review/adapters/openai_llm.py)), así que nadie
+([`openai_llm.py`](../../../../src/agent_review/adapters/openai_llm.py)), así que nadie
 puede ver por qué el revisor afirmó lo que afirmó, ni seguir una review larga mientras
 ocurre. Con razonamiento alto, una review del PR #3 tarda decenas de minutos y el panel
 solo enseña «nodo `persona` en curso».
@@ -24,11 +24,11 @@ Se quiere:
 
 1. **Capturar** el razonamiento de cada llamada sin cambiar lo que se publica.
 2. **Verlo en vivo** en el panel, por review, por persona y por lote, como ya se ve la
-   consola del sandbox ([019](../archivo/019-panel-de-operacion/spec.md)).
+   consola del sandbox ([019](../019-panel-de-operacion/spec.md)).
 3. **Releerlo** después durante un tiempo acotado, para entender un falso positivo
    o un hallazgo que sorprende.
 4. Dejar **un único punto de captura** que también puedan usar las trazas de
-   [018](../018-trazas-de-la-review/spec.md) y, más adelante, Teams.
+   [018](../../018-trazas-de-la-review/spec.md) y, más adelante, Teams.
 5. **Histórico de reviews** en el panel: la lista de las reviews terminadas, con su
    resultado, desde la que se abre el detalle y el razonamiento (Q3).
 6. **Razonamiento activo en los revisores** por configuración del modelo, no del
@@ -101,7 +101,7 @@ El razonamiento de ese lote dice, sobre `build_fix_wait`: *«`build_wave` is not
 diff, this depends on outside code. Hard to say»*, y aun así lo publica como hallazgo
 (variante del FP F del *gold set*). Verlo explica el fallo en segundos: el modelo
 razona bien pero no puede abrir el fichero (lo resuelve
-[014](../014-revisor-con-herramientas/spec.md)). Sin el razonamiento, ese diagnóstico
+[014](../../014-revisor-con-herramientas/spec.md)). Sin el razonamiento, ese diagnóstico
 costó verificar a mano diez hallazgos.
 
 ### 3.4 Lo que ya existe y se reutiliza
@@ -131,7 +131,7 @@ costó verificar a mano diez hallazgos.
 | R13 | El `LlmReviewer` entrega el diff con el **número de línea del lado nuevo** en cada línea añadida o de contexto | El modelo deja de gastar razonamiento en aritmética (§3.5) y el anclaje mejora. Cambia el *prompt*: se regraba el *gold set* (criterio 6) |
 | R14 | **Reintento por lote** dentro del `LlmReviewer`: un fallo transitorio reintenta *ese* lote (hasta `LLM_BATCH_RETRIES`, 2, con espera creciente); si sigue fallando, el lote sale `failed` en la cobertura y se sigue con los demás. El reintento del nodo `persona` queda solo para lo que falle fuera de las llamadas | Repetir la persona entera tira minutos de trabajo hecho y puede acabar con todo `failed` por un solo lote. *Enmienda 2026-10-17 (§3.4b).* |
 | R15 | Con razonamiento alto, el lote por defecto baja a **20 000 caracteres** | Mantiene cada llamada holgada por debajo del tope de duración del proveedor (§3.4b). Sustituye a R12 (30 000) |
-| R16 | Un fichero que no cabe en un lote **se trocea por hunks** (cada trozo con sus cabeceras) y los trozos van en lotes como cualquier fichero. El fichero cuenta como revisado si se revisaron todos sus trozos; si no, sale con el motivo del primero que faltó. Solo un hunk que por sí solo no cabe sigue siendo `too_large` | En la corrida real, `worker/main.py` (donde vive un real no detectado) salió `too_large` con lotes de 30 000, y R15 los baja a 20 000. Enmienda C3 y Q2 de [012](../archivo/012-cobertura-de-la-review/spec.md) |
+| R16 | Un fichero que no cabe en un lote **se trocea por hunks** (cada trozo con sus cabeceras) y los trozos van en lotes como cualquier fichero. El fichero cuenta como revisado si se revisaron todos sus trozos; si no, sale con el motivo del primero que faltó. Solo un hunk que por sí solo no cabe sigue siendo `too_large` | En la corrida real, `worker/main.py` (donde vive un real no detectado) salió `too_large` con lotes de 30 000, y R15 los baja a 20 000. Enmienda C3 y Q2 de [012](../012-cobertura-de-la-review/spec.md) |
 | R11 | **Los revisores razonan siempre**, con nivel `high` (el del experimento de §3.1) y `reasoning_min_max_tokens` de 65 536 | Pensar es lo que el usuario espera de una review «como con un agente de chat». El coste y la latencia se miden en el *gold set* (criterio 6) |
 
 ## 5. Diseño o contrato

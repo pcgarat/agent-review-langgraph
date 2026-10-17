@@ -92,7 +92,7 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
 > vez de replicarlo, porque ya importa `settings`; (2) el contrato necesita dos ejes
 > (`required_in` + `feature`) para reproducir los veredictos reales, y el descriptor
 > gana `expect` y `required_when_empty`. El detalle está en la
-> [enmienda de la spec](../iniciativas/020-secretos-declarados/spec.md).
+> [enmienda de la spec](../iniciativas/archivo/020-secretos-declarados/spec.md).
 - Las tres excepciones que no caben en el descriptor (el registro declarativo de
   modelos, `teams_enabled`, `sandbox_enabled`) quedan como guardas explícitas y
   documentadas en `secrets_for`, no repartidas por el módulo.

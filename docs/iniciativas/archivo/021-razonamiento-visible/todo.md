@@ -183,13 +183,16 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
       amplió el `match` de A, integracion-1 y no-detectado-1 (nota fechada en
       `labels.yaml`).
 
-- [ ] **RZ13** ADR y documentos vivos
+- [x] **RZ13** ADR y documentos vivos
   - ADR nuevo: razonamiento por *streaming* con un único punto de captura y un
     *stream* de Redis por review (alternativas: guardarlo en el estado del grafo, en
     Postgres o en Langfuse).
   - `docs/arquitectura.md` §5 (claves `reviews:reasoning:*`, `reviews:history`) y §3
     (lo que emite la persona); `operacion.md` §2 y §7; `desarrollo.md` §2 y §3 (una
     fuente de razonamiento nueva); `CONTEXT.md` («razonamiento», «histórico»).
+  - *Hecho 2026-10-17:* [ADR-0023](../../../adr/0023-razonamiento-por-streaming-y-stream-de-redis.md)
+    aceptado; los vivos ya describían el sistema; se corrigieron los enlaces a
+    `archivo/021-…` y se añadió «histórico» en el glosario.
 
-- [ ] **RZ14** Cierre
+- [x] **RZ14** Cierre
   - Spec en `implementada`; índice; `make ci` y `make docs-check` en verde.

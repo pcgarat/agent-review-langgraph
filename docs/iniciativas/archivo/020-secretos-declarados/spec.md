@@ -10,7 +10,7 @@
 > se juzgaba distinto en el worker y en el fix-worker. Corregido en `9fe30b0`, pero el
 > patrón que lo causó sigue ahí.
 >
-> **Decisión:** [ADR-0022](../../adr/0022-contrato-de-secretos-declarado.md).
+> **Decisión:** [ADR-0022](../../../adr/0022-contrato-de-secretos-declarado.md).
 
 ---
 
@@ -73,7 +73,7 @@ se sostienen; las tres preguntas abiertas quedan resueltas. El diseño vigente e
   `required_in`** (ver el segundo punto): el contrato tiene dos ejes y el compose no
   conoce `VCS_PROVIDER`, `SANDBOX_ENABLED` ni el registro de modelos, que son
   condiciones de ejecución. El compose solo asigna variables por proceso, que es medio
-  eje. Queda como comprobación de *[010](../../iniciativas/010-personas-de-wiring/spec.md)*
+  eje. Queda como comprobación de *[010](../../010-personas-de-wiring/spec.md)*
   (su comprobación (a)/(b) cruza `environment:` de compose con `Settings`), que es el
   sitio donde un par «servicio ↔ variable» se contrasta sin acoplar el modelo.
 
@@ -112,7 +112,7 @@ se derive de ahí:
   la firma en cada petición (`_verify_signature`) y el runner su bearer
   (`_verify_console_token`): son guardas de *petición*, no de *arranque*, y se
   quedan donde están. Solo comparten la noción de placeholder (§3.4).
-- **Rotación automática de secretos.** Es de [015](../015-puesta-en-marcha-real/spec.md).
+- **Rotación automática de secretos.** Es de [015](../../015-puesta-en-marcha-real/spec.md).
 
 ## 3. Contexto y evidencia
 
@@ -315,5 +315,5 @@ Sin cambios: es un refactor interno. `.env.example` y las variables no se tocan.
 
 Todas resueltas el 2026-10-17 (ver la enmienda al principio del documento): Q1,
 placeholder global; Q2, los secretos de petición se quedan fuera del inventario; Q3,
-el contraste con el compose es de [010](../../iniciativas/010-personas-de-wiring/spec.md),
+el contraste con el compose es de [010](../../010-personas-de-wiring/spec.md),
 no del modelo.
