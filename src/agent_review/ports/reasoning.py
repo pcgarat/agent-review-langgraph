@@ -46,14 +46,40 @@ class ReasoningSink(Protocol):
     def emit(self, review_key: str, event: ReasoningEvent) -> None: ...
 
 
+@runtime_checkable
+class ReasoningReader(Protocol):
+    """Lectura del razonamiento de una review (la usa el panel, 021 R5).
+
+    `read` devuelve `(id, evento)` posteriores a `after` (`"0-0"` = desde el
+    principio); con `block_ms` espera a que llegue alguno.
+    """
+
+    def exists(self, review_key: str) -> bool: ...
+
+    def read(
+        self, review_key: str, *, after: str = "0-0", block_ms: int | None = None, count: int = 500
+    ) -> list[tuple[str, ReasoningEvent]]: ...
+
+
 class InMemoryReasoningSink:
-    """Sink en memoria para tests y para leer el razonamiento sin Redis."""
+    """Sink y lector en memoria, para tests y para leer el razonamiento sin Redis."""
 
     def __init__(self) -> None:
         self.events: dict[str, list[ReasoningEvent]] = {}
 
     def emit(self, review_key: str, event: ReasoningEvent) -> None:
         self.events.setdefault(review_key, []).append(event)
+
+    def exists(self, review_key: str) -> bool:
+        return bool(self.events.get(review_key))
+
+    def read(
+        self, review_key: str, *, after: str = "0-0", block_ms: int | None = None, count: int = 500
+    ) -> list[tuple[str, ReasoningEvent]]:
+        del block_ms  # en memoria no hay nada que esperar
+        start = int(after.split("-")[0]) if after != "0-0" else 0
+        events = self.events.get(review_key, [])
+        return [(f"{i}-0", events[i - 1]) for i in range(start + 1, len(events) + 1)][:count]
 
     def text(self, review_key: str, *, batch: int | None = None) -> str:
         """El razonamiento acumulado de una review (o de un lote)."""

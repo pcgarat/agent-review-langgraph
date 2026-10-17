@@ -116,6 +116,7 @@ def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session
             _trace_section(trace),
             _detail_commands(trace, session),
             _console_section(trace, paused),
+            _reasoning_section(trace),
         )
     )
     return _page(
@@ -123,7 +124,7 @@ def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session
         meta=f"Estado {trace.state} · actualizado el {_fmt_dt(trace.updated_at)}",
         body=body,
         session=session,
-        script=_COMMAND_SCRIPT + _CONSOLE_SCRIPT,
+        script=_COMMAND_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT,
     )
 
 
@@ -257,6 +258,17 @@ def _console_section(trace: ReviewTrace, paused: PausedItem | None) -> str:
         "<section><h2>Consola en vivo</h2>"
         f'<p class="meta">Run keys: {_esc(run_keys or "—")}</p>'
         f'<pre id="console" data-endpoint="{_esc(endpoint)}"></pre>'
+        "</section>"
+    )
+
+
+def _reasoning_section(trace: ReviewTrace) -> str:
+    """Razonamiento de los revisores, lote a lote y en vivo (021 §5.3)."""
+    endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/reasoning"
+    return (
+        "<section><h2>Razonamiento</h2>"
+        '<p class="meta" id="reasoning-status">Conectando…</p>'
+        f'<div id="reasoning" data-endpoint="{_esc(endpoint)}"></div>'
         "</section>"
     )
 
@@ -407,6 +419,12 @@ button.cmd { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line)
   border-radius: .35rem; cursor: pointer; }
 button.cmd:disabled { opacity: .5; cursor: default; }
 .error { color: var(--bad); }
+#reasoning details { margin: .5rem 0; border: 1px solid var(--line); border-radius: .35rem;
+  padding: .25rem .6rem; }
+#reasoning summary { cursor: pointer; }
+#reasoning details.live summary::after { content: " · en curso"; color: var(--accent); }
+#reasoning details.failed summary { color: var(--bad); }
+#reasoning pre { margin: .4rem 0; }
 """
 
 _COMMAND_SCRIPT = """<script>
@@ -435,6 +453,78 @@ _COMMAND_SCRIPT = """<script>
   document.querySelectorAll("button.cmd").forEach((button) => {
     button.addEventListener("click", () => send(button));
   });
+})();
+</script>"""
+
+_REASONING_SCRIPT = """<script>
+(() => {
+  const root = document.getElementById("reasoning");
+  const status = document.getElementById("reasoning-status");
+  if (!root) {
+    return;
+  }
+  const blocks = new Map();
+  let seen = 0;
+  const block = (ev) => {
+    const key = `${ev.role}/${ev.batch}`;
+    if (!blocks.has(key)) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      const text = document.createElement("pre");
+      details.append(summary, text);
+      root.append(details);
+      const label = `${ev.role} · lote ${ev.batch}/${ev.total}`;
+      blocks.set(key, { details, summary, text, label });
+      blocks.get(key).summary.textContent = blocks.get(key).label;
+    }
+    return blocks.get(key);
+  };
+  const source = new EventSource(root.dataset.endpoint);
+  source.addEventListener("start", (event) => {
+    const ev = JSON.parse(event.data);
+    seen += 1;
+    const b = block(ev);
+    const files = (ev.meta.files || []).join(", ");
+    b.summary.textContent = `${b.label} · ${files}`;
+    b.text.textContent = "";
+    b.details.className = "live";
+    b.details.open = true;
+    status.textContent = "En vivo";
+  });
+  source.addEventListener("reasoning", (event) => {
+    const ev = JSON.parse(event.data);
+    seen += 1;
+    const b = block(ev);
+    b.text.textContent += ev.text;
+    b.text.scrollTop = b.text.scrollHeight;
+  });
+  source.addEventListener("end", (event) => {
+    const ev = JSON.parse(event.data);
+    seen += 1;
+    const b = block(ev);
+    const m = ev.meta || {};
+    b.details.className = "";
+    b.details.open = false;
+    const tokens = m.reasoning_tokens || 0;
+    b.summary.textContent += ` · ${m.findings} hallazgos · ${tokens} tokens de razonamiento`;
+  });
+  source.addEventListener("fallo", (event) => {
+    const ev = JSON.parse(event.data);
+    seen += 1;
+    const b = block(ev);
+    b.details.className = "failed";
+    b.summary.textContent += ` · ${ev.text}`;
+  });
+  source.addEventListener("fin", () => {
+    source.close();
+    status.textContent = "Terminado";
+  });
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED || seen === 0) {
+      source.close();
+      status.textContent = seen === 0 ? "No hay razonamiento guardado." : "Conexión cerrada.";
+    }
+  };
 })();
 </script>"""
 

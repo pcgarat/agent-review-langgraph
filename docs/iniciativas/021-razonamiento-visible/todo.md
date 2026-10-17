@@ -70,7 +70,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 3 — Sink y panel (checkpoint C3)
 
-- [ ] **RZ7** `ReasoningSink` con adaptador Redis (R4)
+- [x] **RZ7** `ReasoningSink` con adaptador Redis (R4)
   - `src/agent_review/ports/reasoning.py` y `adapters/reasoning_redis.py`: `XADD` a
     `reviews:reasoning:<review_key>` agrupando trozos (~250 ms o ~4 KB), `MAXLEN ~`
     por `REASONING_MAX_BYTES` y `EXPIRE` por `REASONING_TTL_S`. Doble en memoria.
@@ -80,16 +80,27 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Aceptación: un fallo de Redis no cambia la review; el *stream* respeta el TTL.
   - Verifica: `tests/test_reasoning.py` (sobre `fakeredis`).
 
-- [ ] **RZ8** SSE en el panel (R5)
+- [x] **RZ8** SSE en el panel (R5)
   - `src/agent_review/web/main.py`: `GET /api/reviews/{key}/reasoning` (sesión
     `lector`): `XRANGE` + `XREAD BLOCK` hasta el `end` de todas las llamadas abiertas o
     un tope de inactividad; `404` si no hay *stream*.
   - Verifica: `tests/test_web.py`.
 
-- [ ] **RZ9** Pestaña «Razonamiento» en el detalle (§5.3)
+- [x] **RZ9** Pestaña «Razonamiento» en el detalle (§5.3)
   - `src/agent_review/web/ui.py`: secciones por persona y lote, en vivo con
     `EventSource`, plegables, el lote en curso marcado; texto escapado.
   - Verifica: `tests/test_web_ui.py`.
+
+*Notas de implementación 2026-10-17 (bloque 3):*
+
+- El lector (`RedisReasoningReader`) vive junto al sink para compartir el formato; el
+  panel lo usa tras el protocolo `ReasoningReader`, y los tests con el doble en
+  memoria.
+- En el SSE, el fallo de un lote viaja como evento `fallo`: `error` es el evento
+  nativo de `EventSource` para los fallos de conexión.
+- El SSE se cierra cuando todas las personas cierran todos sus lotes (o se quedan sin
+  presupuesto, que corta los siguientes sin emitir) o tras 5 minutos sin novedades.
+- Sin probar aún en un navegador real: se verá en la corrida de RZ12.
 
 ## Bloque 4 — Histórico (checkpoint C4)
 

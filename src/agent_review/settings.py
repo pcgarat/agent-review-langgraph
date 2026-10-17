@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     # TTL de la marca de progreso: por encima del peor caso de un nodo con
     # reintentos. Una marca caducada no se confunde con un trabajo vivo.
     progress_ttl_s: float = 3600.0
+    # Razonamiento de los revisores en vivo (021): con `reasoning_stream_enabled` el
+    # worker escribe en `reviews:reasoning:<review_key>` lo que el modelo razona en
+    # cada lote, y el panel lo muestra. Se conserva `reasoning_ttl_s` (10 dias) con
+    # un tope aproximado de `reasoning_max_bytes` (10 MB) por review.
+    reasoning_stream_enabled: bool = False
+    reasoning_ttl_s: float = 10 * 24 * 3600.0
+    reasoning_max_bytes: int = 10 * 1024 * 1024
     # TTL de la marca de cancelacion `reviews:cancel:<review_key>` (019 §5.4). La
     # marca sobrevive al aborto como *tombstone*: cualquier job rezagado de la misma
     # review (la reanudacion del fix-worker, una decision encolada) se aborta al

@@ -64,6 +64,7 @@ from agent_review.ports.chat import ChatPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.progress import clear as clear_progress
+from agent_review.ports.reasoning import ReasoningSink
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.tooling import ToolingOutputSource
 from agent_review.ports.vcs import VcsPort
@@ -246,6 +247,7 @@ def build_reviewers(
     # persona de `2 * total / N`. Sin él, una persona con un prompt grande se lleva
     # todo el presupuesto y las demas no revisan.
     limit = 2 * settings.llm_budget_tokens_per_pr // len(roles) if roles else None
+    reasoning_sink = build_reasoning_sink(settings) if roles else None
     for role in roles:
         llm = registry.port_for(role)
         if llm is None:
@@ -258,6 +260,7 @@ def build_reviewers(
                 budget=budget,
                 budget_limit=limit,
                 batch_max_chars=settings.llm_batch_max_chars,
+                reasoning_sink=reasoning_sink,
             )
         )
 
@@ -300,6 +303,23 @@ def build_progress(settings: Settings) -> ProgressPort:
         url=settings.redis_url,
         ttl_s=settings.progress_ttl_s,
         key_prefix=settings.progress_key,
+    )
+
+
+def build_reasoning_sink(settings: Settings) -> ReasoningSink | None:
+    """Destino del razonamiento de los revisores (021 R4), o `None` si no se pide.
+
+    Sin `reasoning_stream_enabled` (o sin Redis) no hay sink: el revisor no escucha
+    al modelo y la review es la de siempre (R7).
+    """
+    if not settings.reasoning_stream_enabled or not settings.redis_url.strip():
+        return None
+    from agent_review.adapters.reasoning_redis import RedisReasoningSink
+
+    return RedisReasoningSink(
+        url=settings.redis_url,
+        ttl_s=settings.reasoning_ttl_s,
+        max_bytes=settings.reasoning_max_bytes,
     )
 
 

@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from agent_review.paused_store import RedisPausedStore
+from agent_review.ports.reasoning import ReasoningReader
 from agent_review.queue import RedisReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
 from agent_review.web.auth import Session, require_command_session, require_session
@@ -29,6 +30,7 @@ from agent_review.web.commands import (
     build_command_service,
 )
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
+from agent_review.web.reasoning import reasoning_stream
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
 from agent_review.web.ui import router as ui_router
 from agent_review.worker.cancel import build_cancellation
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             cancellation=cancellation,
         )
     app.state.console = build_runner_client(settings)
+    app.state.reasoning = build_reasoning_reader(settings)
     try:
         yield
     finally:
@@ -93,6 +96,23 @@ def get_console(request: Request) -> RunnerConsoleClient:
         console = build_runner_client(_settings())
         request.app.state.console = console
     return console
+
+
+def build_reasoning_reader(settings: Settings) -> ReasoningReader | None:
+    """Lector del razonamiento (021 R5), o `None` sin Redis."""
+    if not settings.redis_url.strip():
+        return None
+    from agent_review.adapters.reasoning_redis import RedisReasoningReader
+
+    return RedisReasoningReader(url=settings.redis_url)
+
+
+def get_reasoning(request: Request) -> ReasoningReader | None:
+    """Lector del razonamiento del proceso. Los tests inyectan uno en memoria."""
+    if not hasattr(request.app.state, "reasoning"):
+        request.app.state.reasoning = build_reasoning_reader(_settings())
+    reader: ReasoningReader | None = request.app.state.reasoning
+    return reader
 
 
 @app.get("/healthz")
@@ -211,6 +231,30 @@ def review_console(
             yield f"{line}\n"
 
     return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+@app.get("/api/reviews/{review_key:path}/reasoning")
+def review_reasoning(
+    review_key: str,
+    session: Annotated[Session, Depends(require_session)],
+    reader: Annotated[ReasoningReader | None, Depends(get_reasoning)],
+) -> StreamingResponse:
+    """Razonamiento de los revisores de una review, en vivo (021 R5).
+
+    Cualquier sesion del panel puede leerlo (Q3): no ejecuta nada. Repite lo
+    guardado y sigue mientras la review razona; `404` si no hay razonamiento (TTL
+    vencido, sink desactivado o una review sin persona LLM).
+    """
+    del session
+    if reader is None or not reader.exists(review_key):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"No hay razonamiento guardado de {review_key}"
+        )
+    return StreamingResponse(
+        reasoning_stream(reader, review_key),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:

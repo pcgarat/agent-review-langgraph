@@ -247,3 +247,25 @@ def test_el_html_escapa_un_script_inyectado_en_un_campo_del_pr(panel: Panel) -> 
     body = panel.client.get("/").text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
     assert _XSS not in body
+
+
+# --- Razonamiento (021 RZ9) ---
+
+
+def test_el_detalle_lleva_la_pestana_de_razonamiento(panel: Panel) -> None:
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert "<h2>Razonamiento</h2>" in body
+    assert f'data-endpoint="/api/reviews/{_REVIEW_KEY}/reasoning"' in body
+    assert "new EventSource(root.dataset.endpoint)" in body
+    # Los eventos de lote fallido viajan como `fallo`, no como el `error` nativo.
+    assert 'addEventListener("fallo"' in body
+
+
+def test_el_texto_del_modelo_nunca_se_inserta_como_html(panel: Panel) -> None:
+    # El razonamiento repite codigo del PR: se pinta con `textContent`, jamas con
+    # `innerHTML`, para que un `<script>` en un diff no se ejecute en el panel.
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    script = body[body.index('const root = document.getElementById("reasoning")') :]
+    script = script[: script.index("</script>")]
+    assert "innerHTML" not in script
+    assert "textContent += ev.text" in script

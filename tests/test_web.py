@@ -500,3 +500,99 @@ def test_la_consola_da_404_sin_verificacion_en_curso(monkeypatch: pytest.MonkeyP
 def test_la_consola_da_404_sin_runner_configurado(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app.state, "console", RunnerConsoleClient(base_url=""), raising=False)
     assert client.get(f"/api/reviews/{_FIX_KEY}/console").status_code == 404
+
+
+# --- Razonamiento en vivo (021 RZ8) ---
+
+
+def _reasoning_sink():
+    from agent_review.ports.reasoning import InMemoryReasoningSink, ReasoningEvent
+
+    sink = InMemoryReasoningSink()
+
+    def ev(kind, batch, text="", **meta):
+        sink.emit(_REVIEW_KEY, ReasoningEvent(kind, "correctness", batch, 2, text, meta))
+
+    ev("start", 1, files=["a.py"])
+    ev("reasoning", 1, "miro a.py")
+    ev("end", 1, findings=0)
+    ev("start", 2, files=["b.py"])
+    ev("error", 2, "sin presupuesto")
+    return sink
+
+
+def _sse_events(body: str) -> list[tuple[str, dict]]:
+    out = []
+    for block in body.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+        if "event" in lines:
+            out.append((lines["event"], json.loads(lines["data"])))
+    return out
+
+
+def test_el_razonamiento_se_sirve_como_sse_y_se_cierra_al_terminar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app.state, "reasoning", _reasoning_sink(), raising=False)
+    response = client.get(f"/api/reviews/{_REVIEW_KEY}/reasoning")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(response.text)
+    assert [kind for kind, _ in events] == ["start", "reasoning", "end", "start", "fallo", "fin"]
+    assert events[4][1]["kind"] == "error"
+    assert events[1][1]["text"] == "miro a.py"
+    assert events[0][1]["meta"] == {"files": ["a.py"]}
+
+
+def test_sin_razonamiento_es_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_review.ports.reasoning import InMemoryReasoningSink
+
+    monkeypatch.setattr(app.state, "reasoning", InMemoryReasoningSink(), raising=False)
+    assert client.get(f"/api/reviews/{_REVIEW_KEY}/reasoning").status_code == 404
+    monkeypatch.setattr(app.state, "reasoning", None, raising=False)
+    assert client.get(f"/api/reviews/{_REVIEW_KEY}/reasoning").status_code == 404
+
+
+def test_un_lector_tambien_puede_ver_el_razonamiento(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
+    monkeypatch.setattr(app.state, "reasoning", _reasoning_sink(), raising=False)
+    response = client.get(
+        f"/api/reviews/{_REVIEW_KEY}/reasoning", headers={"X-Panel-Session": "ana:lector"}
+    )
+    assert response.status_code == 200
+
+
+def test_el_stream_sigue_en_vivo_hasta_cerrar_todos_los_lotes() -> None:
+    from agent_review.ports.reasoning import InMemoryReasoningSink, ReasoningEvent
+    from agent_review.web.reasoning import reasoning_stream
+
+    sink = InMemoryReasoningSink()
+    sink.emit("rk", ReasoningEvent("start", "correctness", 1, 1))
+
+    class _Live:
+        """Lector que entrega el cierre del lote en la primera espera."""
+
+        def exists(self, review_key):
+            return True
+
+        def read(self, review_key, *, after="0-0", block_ms=None, count=500):
+            if block_ms is not None and len(sink.events["rk"]) == 1:
+                sink.emit("rk", ReasoningEvent("end", "correctness", 1, 1))
+            return sink.read(review_key, after=after)
+
+    chunks = list(reasoning_stream(_Live(), "rk", block_ms=1, idle_s=60))
+    kinds = [c.split("\n")[1].removeprefix("event: ") for c in chunks if c.startswith("id:")]
+    assert kinds == ["start", "end"]
+    assert chunks[-1].startswith("event: fin")
+
+
+def test_el_stream_se_cierra_por_inactividad() -> None:
+    from agent_review.ports.reasoning import InMemoryReasoningSink, ReasoningEvent
+    from agent_review.web.reasoning import reasoning_stream
+
+    sink = InMemoryReasoningSink()
+    sink.emit("rk", ReasoningEvent("start", "correctness", 1, 3))  # nunca se cierra
+    ticks = iter([0.0, 1.0, 999.0])
+    chunks = list(reasoning_stream(sink, "rk", block_ms=1, idle_s=10, clock=lambda: next(ticks)))
+    assert chunks[-1].startswith("event: fin")

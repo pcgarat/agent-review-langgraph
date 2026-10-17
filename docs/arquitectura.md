@@ -332,6 +332,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
 | Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí «qué corre ahora y desde cuándo» (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |
+| Redis | `reviews:reasoning:<review_key>` | *Stream* del **razonamiento de los revisores** (021): un evento por inicio, trozo de texto (agrupado), fin o fallo de cada lote, con persona, lote *i/N*, ficheros y `usage`. Lo escribe el worker con `REASONING_STREAM_ENABLED` y lo lee el panel por SSE. `MAXLEN ~` por `REASONING_MAX_BYTES` | `REASONING_TTL_S` (10 días) |
 | Redis | `reviews:cancel:<review_key>` | Marca de **cancelación** (019 §5.4): la escribe el panel y la leen la frontera de nodo y `_consume` al desencolar, que abortan la review. Tras abortar queda como *tombstone* para abortar los jobs rezagados (sin hilo arrancarían desde `START`); solo «Reintentar» la retira. Una pausa de fix no se marca | `CANCEL_TTL_S` (7 días) |
 | Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
