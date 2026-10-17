@@ -95,6 +95,15 @@ Medición de `tests/eval/pr_3/recorded_tools.json` (regrabación del 2026-10-17,
   del orden. Instrumentar el orden es E0e y **bloquea M1**.
 - **Los 19 lotes** no salen de la grabación: se calculan con `_batches` sobre el
   diff. Son correctos.
+- **La grabación **no lleva L1**. El harness invoca el grafo sin `review_context`,
+  así que `pack_l1_context` devuelve vacío: el *prompt* base del lote es el
+  **diff** (2,4k–18,5k tokens), no el índice L1. Consecuencia: la afirmación de que
+  «L1 reenviado en los 72 turnos son ~720k de los 744k» es **falsa en esta
+  grabación** (los 19 *prompts* más pequeños suman 104 587 tokens, ~14 %). Ese
+  reparto solo puede darse **en producción**, donde sí hay contexto. Y el corolario
+  incómodo: **M1 no puede medir `PRECACHE_CONTEXT` con este *gold set***, porque el
+  caso no tiene L1 que quitar; haría falta un caso con contexto o medirlo en
+  producción (Q4).
 - **`grep` con metacaracteres**: en la extracción que hice para auditar el
   dialecto (46 patrones, contando alguna repetición) todos usan solo construcciones
   portables —`.` `*` `+` `?` `|` `()` `[]` y `\d`/`\w`—; **0** usan clases POSIX
@@ -395,8 +404,11 @@ comparación se hace contra **dos** baselines congelados (E12b): sin herramienta
   evidencia previa?** Recomendación: medir las dos; es la palanca que más fácil se
   supone y la que más fácil engorda el *prompt*.
 - **Q4 — ¿`REVIEW_TOOLS_PRECACHE_CONTEXT=off` (E8) sube o baja el recall?** Es la
-  pregunta de 014 Q3, ahora con número. Si baja el recall más de lo que baja el
-  coste, se queda en `on` y el ahorro hay que buscarlo en el fan-out.
+  pregunta de 014 Q3, ahora con número. **Aviso (2026-10-17):** con el *gold set*
+  actual **no se puede responder**: el harness corre el grafo sin `review_context`,
+  así que no hay L1 que quitar y el flag no cambia el *prompt*. Para medirlo hace
+  falta un caso con contexto (o medir en producción). Si baja el recall más de lo
+  que baja el coste, se queda en `on` y el ahorro hay que buscarlo en el fan-out.
 - **Q5 — ¿Cuánto del coste de medir 023 se lleva 024?**
   *Resuelta (2026-10-17):* **la instrumentación del caché de 024 (su bloque S) va
   antes que las corridas *live* de M1.** S no cambia el *prompt* ni el *fingerprint*

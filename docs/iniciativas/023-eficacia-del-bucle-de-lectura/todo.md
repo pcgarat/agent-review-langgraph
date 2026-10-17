@@ -382,6 +382,9 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     regrabación *live* si cambia lo que recibe el modelo (M0), y los números
     anotados aquí o en la spec. La **regrabación de referencia** del *prompt* de
     capacidades (F1) se hace una vez y se usa como punto de partida.
+  - **Aviso de alcance**: el *gold set* **no** tiene `review_context`, así que
+    `PRECACHE_CONTEXT` no se puede medir con él (Q4). O se añade un caso con
+    contexto, o ese flag se mide en producción y el informe lo declara `no medido`.
   - El informe desglosa ***prompt***, ***completion*** y **razonamiento**, no solo
     `usage`; y cuenta **lecturas por modo** (cuántas veces el modelo pide `outline`
     o `regex`), para saber si la palanca se usa.
