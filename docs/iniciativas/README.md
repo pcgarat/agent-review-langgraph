@@ -12,7 +12,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 hechas · 6 preguntas abiertas |
-| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | Dependencias hechas (007, 016, 017) · falta plan y todo |
+| 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🟢 Lista para implementar · [plan](009-verificador-adversarial/plan.md) · [todo](009-verificador-adversarial/todo.md) (VF1–VF13) | Dependencias hechas (007, 016 y 017) · el umbral de candidatos lo lee del gate de 011 |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008 (012, 016 y 017 hechas) · falta plan y todo |
@@ -48,7 +48,10 @@ flowchart LR
 La **016** (lector de contexto) y la **017** (presupuesto por PR) ya están
 entregadas: 009 y 014 las consumen, no las esperan.
 
-- **Implementadas el 2026-10-17:** 007 y 012. Desbloquean 008 y 009.
+- **Implementadas el 2026-10-17:** 007 y 012. Desbloquean 008 y 009. La **009 ya
+  tiene [plan](009-verificador-adversarial/plan.md) y
+  [todo](009-verificador-adversarial/todo.md)**: comparte con 012 el `LlmReviewer` y
+  el *gold set*, así que conviene **regrabar una sola vez** cuando ambas estén listas.
 - **Aprobar después:** 008, que depende de las dos.
 - **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,

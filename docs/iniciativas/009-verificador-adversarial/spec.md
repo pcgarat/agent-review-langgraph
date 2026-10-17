@@ -342,6 +342,12 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
   conservador.
 - **Q7 — ¿Valor de `VERIFIER_MAX_FINDINGS`?** Se propone 5 por review y se ajusta
   con el coste medido en [006](../archivo/006-eval-de-la-review/spec.md).
+- **Q10 — ¿De dónde sale el umbral mientras 011 no existe?** *Resuelta (2026-10-17,
+  al escribir el [plan](plan.md)).* El nodo lee
+  `severity_gate.require_verified_for` de la política cargada **si la clave existe**
+  y, si no, cae a `VERIFIER_REQUIRE_VERIFIED_FOR` (por defecto `[P0, P1]`). Cuando
+  [011](../011-gate-de-severidad/spec.md) aterrice, el umbral pasa a ser el suyo sin
+  tocar el nodo; el ajuste de `Settings` es el respaldo, no una segunda fuente (V10).
 - **Q8 y Q9** (ADR del workspace y sus límites) se resolvieron el 2026-10-16 y se
   trasladaron con la pieza a [016](../archivo/016-lector-de-contexto/spec.md) (W5, W6) y
   [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md).
