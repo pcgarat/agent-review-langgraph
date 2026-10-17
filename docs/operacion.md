@@ -146,6 +146,14 @@ si falta un secreto obligatorio ([ADR-0013](adr/0013-secretos-por-entorno-fail-c
 Vacío y `change-me` (el placeholder de `.env.example`) son igual de «falta»
 (`settings.is_missing`).
 
+**El contrato se declara en el modelo, no en una lista**
+([ADR-0022](adr/0022-contrato-de-secretos-declarado.md), iniciativa 020): cada campo
+secreto de `Settings` lleva un descriptor `Secret` en su `metadata` que dice en qué
+procesos aplica, qué condición lo activa y qué se espera del valor; el contrato se
+deriva con `settings.secrets_for(settings, proceso)`. Añadir un campo secreto y
+olvidar su comprobación deja de ser posible, y el valor de ejemplo se declara una sola
+vez (`settings.PLACEHOLDER_VALUES`, que API, web y el `sandbox-runner` importan).
+
 | Variable | Qué es | Obligatoria | Dueño |
 |---|---|---|---|
 | `TWG_BBC_TOKEN` (+ `TWG_SITE`, `TWG_USER`) | API token *scoped* del **actor de servicio** de Bitbucket (lectura y escritura de PRs) | Con `twg` | Agente |

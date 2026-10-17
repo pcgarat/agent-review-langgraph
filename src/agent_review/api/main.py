@@ -24,11 +24,9 @@ from agent_review.paused_store import InMemoryPausedStore, RedisPausedStore
 from agent_review.pending_store import RedisPendingStore
 from agent_review.profile import expected_tools
 from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
-from agent_review.settings import Settings, get_settings, require_production_secrets
+from agent_review.settings import Settings, get_settings, is_missing, require_production_secrets
 
 logger = logging.getLogger(__name__)
-
-_INSECURE_DECISION_TOKENS = {"change-me", "changeme"}
 
 
 @asynccontextmanager
@@ -117,7 +115,7 @@ def healthz() -> dict[str, str]:
 
 
 def _verify_signature(secret: str, raw_body: bytes, signature: str | None) -> None:
-    if not secret or secret == "change-me":
+    if is_missing(secret):
         return
     if not signature:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Falta la firma del webhook")
@@ -129,7 +127,7 @@ def _verify_signature(secret: str, raw_body: bytes, signature: str | None) -> No
 def _verify_decision_token(settings: Settings, authorization: str | None) -> None:
     """Bearer del canal de decision; relajado con el valor de ejemplo en dev."""
     token = settings.reviews_decision_token.strip()
-    if not token or token in _INSECURE_DECISION_TOKENS:
+    if is_missing(token):
         return
     expected = f"Bearer {token}"
     if not authorization or not hmac.compare_digest(expected, authorization):

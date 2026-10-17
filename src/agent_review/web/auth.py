@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
-from agent_review.settings import Settings, get_settings
+from agent_review.settings import Settings, get_settings, is_missing
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,6 @@ SESSION_COOKIE = "panel_session"
 # Cookie de rol legible por el servidor para pintar los botones sin repetir el
 # secreto en el HTML. No autoriza nada por si sola: la sesion se valida aparte.
 ROLE_COOKIE = "panel_role"
-# Valores de ejemplo que relajan la sesion, igual que `_verify_decision_token`.
-_INSECURE_SECRETS = {"change-me", "changeme"}
 # Usuario que se asume cuando no hay secreto ni cabecera (dev/test).
 _DEV_USER = "dev"
 # Valores de `Sec-Fetch-Site` que no delatan una peticion cruzada: el propio origen,
@@ -83,7 +81,7 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     `lector` no pueda reclamar ser `operador`.
     """
     secret = settings.panel_session_secret.strip()
-    relaxed = not secret or secret in _INSECURE_SECRETS
+    relaxed = is_missing(secret)
     if header is None:
         if relaxed:
             return Session(user=_DEV_USER, role=Role.OPERADOR)

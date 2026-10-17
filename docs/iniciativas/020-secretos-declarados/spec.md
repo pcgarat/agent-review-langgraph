@@ -2,7 +2,7 @@
 
 # Contrato de secretos declarado en el modelo
 
-> **Estado:** borrador
+> **Estado:** implementada *(2026-10-17, con la enmienda de abajo)*
 >
 > **Motivo inmediato:** el refactor `is_missing` (commit `92dea1e`) se dejó cuatro
 > comprobaciones con el predicado viejo: `TOOLING_WEBHOOK_SECRET` y
@@ -11,6 +11,71 @@
 > patrón que lo causó sigue ahí.
 >
 > **Decisión:** [ADR-0022](../../adr/0022-contrato-de-secretos-declarado.md).
+
+---
+
+## Enmienda (2026-10-17): lo que el código contradice de este diseño
+
+Al aprobar la spec se contrastaron sus decisiones con el código de hoy y con la
+matriz real del contrato (los cuatro procesos × sus condiciones). Dos decisiones no
+se sostienen; las tres preguntas abiertas quedan resueltas. El diseño vigente es
+**este apartado más §5**, no lo que digan §4 y §8 donde divergan.
+
+- **El runner ya importa `settings`.** `sandbox_runner/main.py:29` hace
+  `from agent_review.settings import Settings, get_settings, is_missing` para
+  `_configured` (línea 311), y su `Dockerfile` es el mismo (`COPY src ./src`). Es
+  decir: **no hay caja que aísle del paquete** y D7/§5.2/R3 (replicar la constante con
+  un test de coincidencia) resuelven un problema inexistente. El runner **importa**
+  `PLACEHOLDER_VALUES`. Esto hace la entrega más barata: un solo sitio, sin duplicado
+  que pueda divergir, que es justo lo que persigue el criterio 1.
+
+- **`required_in` no basta: el contrato tiene dos ejes.** Declarar solo *en qué
+  procesos* se exige un secreto pierde casos reales medidos hoy:
+
+  | Secreto | Regla real | Lo que `required_in` solo no dice |
+  |---|---|---|
+  | `SANDBOX_RUNNER_TOKEN` | `worker`/`api`: si `sandbox_enabled`. `fix-worker`: **siempre** | El proceso no basta: falta la condición, y la condición **difiere por proceso** |
+  | `PANEL_SESSION_SECRET` | `web`: **siempre**. `api`/`worker`: si `panel_enabled` | Ídem |
+  | `SANDBOX_GIT_TOKEN` | `api`/`worker`: si `sandbox_enabled` | Ídem |
+  | `GITHUB_TOKEN` / `TWG_BBC_TOKEN` | uno de los dos, según `VCS_PROVIDER` | Es una elección entre secretos, no una lista |
+  | `TEAMS_*` | si `teams_enabled` | Encaja: es el mismo conjunto en los dos procesos |
+
+  El descriptor gana un segundo eje **declarativo** (`feature`): la condición de
+  activación, nombrada una vez, y una tabla en `secrets_for` que dice qué proceso la
+  evalúa. Sin esto el refactor no puede reproducir el contrato actual, y el criterio 3
+  (paridad exacta) es inalcanzable. **`required_in` pasa a ser «procesos donde el
+  proceso puede preguntar»**, y quien lleva la decisión es `feature`.
+
+- **Dos «secretos» no son secretos: son valores y guardas de tipo.** `TEAMS_NOTICES_KEY`
+  se exige cuando está **vacía** (no cuando tiene placeholder: `reviews:notices` es un
+  valor legítimo), y `SANDBOX_RUNNER_URL` directamente **no es un secreto**: es una
+  URL que el `fix-worker` necesita para arrancar. Meterlos en el descriptor como
+  ``Secret(placeholder="")`` produce falsos positivos (una `TEAMS_NOTICES_KEY` en
+  `change-me` pasaría la comprobación). El descriptor admite dos campos más —
+  `required_when_empty` y `expect: "value" | "url"`— y no es «un mini-framework»: son
+  las dos formas que el inventario real ya tenía escondidas en `if`.
+
+**Preguntas abiertas, resueltas:**
+
+- **Q1 — placeholder.** Global: `PLACEHOLDER_VALUES = frozenset({"change-me", "changeme"})`
+  en `settings.py`, y el runner lo importa (arriba). Los tres campos que hoy escriben
+  `= "change-me"` duplican ese literal **a propósito**: su default documenta la forma
+  y `.env.example` debe traer un valor (el test de `.env.example` prohíbe vacíos en
+  secretos); van marcados con un comentario y sin duplicar la *lista*.
+- **Q2 — secretos de petición.** Fuera del inventario de I1, como quería la
+  alternativa conservadora: `_verify_signature` (API), `verify_session` (web),
+  `_verify_token`/`_verify_console_token` (runner) y `teams_bot` son **guardas de
+  petición**, deciden en cada petición y se quedan donde están. Lo que sí se unifica
+  es el *predicado* (`is_missing` vía `PLACEHOLDER_VALUES`), que es lo que estaba
+  cuadruplicado. Se descarta declararlos con un `request_side=True` extra: añadiría un
+  quinto caso al descriptor justo cuando el criterio es que no crezca.
+- **Q3 — `required_in` derivado del compose.** **No se deriva, y no basta con
+  `required_in`** (ver el segundo punto): el contrato tiene dos ejes y el compose no
+  conoce `VCS_PROVIDER`, `SANDBOX_ENABLED` ni el registro de modelos, que son
+  condiciones de ejecución. El compose solo asigna variables por proceso, que es medio
+  eje. Queda como comprobación de *[010](../../iniciativas/010-personas-de-wiring/spec.md)*
+  (su comprobación (a)/(b) cruza `environment:` de compose con `Settings`), que es el
+  sitio donde un par «servicio ↔ variable» se contrasta sin acoplar el modelo.
 
 ---
 
@@ -99,11 +164,11 @@ que `settings.py` no la repita.
 |---|---|---|
 | D1 | Un **descriptor** `Secret` (dataclass congelada) declara valor de ejemplo, obligatoriedad y procesos donde se exige | Es la declaración que hoy no existe; reemplaza los cinco bloques a mano |
 | D2 | Los campos de `Settings` guardan el descriptor como **`metadata` del `Field`**, no en una tabla aparte | `model_fields` ya es el inventario del modelo: la declaración y el campo no pueden desincronizarse |
-| D3 | **`required_in`** declara los procesos (`api`, `worker`, `fix-worker`, `web`, `teams-bot`) que exigen el secreto | `SANDBOX_RUNNER_TOKEN` deja de tener dos criterios según quién pregunte |
+| D3 | **`required_in`** declara los procesos (`api`, `worker`, `fix-worker`, `web`, `teams-bot`) que exigen el secreto; **`feature`** declara la condición (ver la enmienda: `SANDBOX_RUNNER_TOKEN` deja de tener dos criterios según quién pregunte) | Una lista mantenida a mano es la causa raíz del fallo; el recorrido la elimina |
 | D4 | El contrato se deriva con **`secrets_for(settings, process)`**, un único recorrido de `model_fields` | Una lista mantenida a mano es la causa raíz del fallo; el recorrido la elimina |
 | D5 | El valor de ejemplo se declara en **un** sitio (`PLACEHOLDER_VALUES`) y los sets de API, web y runner delegan en él | Cuatro copias idénticas hoy; una sola si el placeholder cambia |
 | D6 | **`require_*_secrets(settings)`** conserva su nombre y su firma, y pasa a delegar en `secrets_for` | Los puntos de arranque no cambian; el refactor no toca los procesos |
-| D7 | `PLACEHOLDER_VALUES` sigue viviendo en `settings.py`; quien no puede importarlo (el runner aislado) lo replica con un test que lo delata si diverge | El runner no debe depender del paquete para una constante de tres valores |
+| D7 | `PLACEHOLDER_VALUES` vive en `settings.py`; el runner **ya importa** `settings` (`is_missing`, §Enmienda), así que la importa como API y web: no hay réplica que mantener | El aislamiento del runner es de red y de credenciales (ADR-0011), no de módulos |
 | D8 | El test recorre **`Settings.model_fields`**, no una lista escrita a mano | Cierra I1 (§5.4): un campo secreto nuevo sin declarar se delata solo |
 
 ## 5. Diseño o contrato
@@ -113,20 +178,22 @@ que `settings.py` no la repita.
 ```python
 @dataclass(frozen=True)
 class Secret:
-    """Declaración de un secreto: valor de ejemplo y procesos que lo exigen."""
+    """Declaración de un secreto: dónde se pregunta, cuándo se exige y qué se espera."""
 
-    placeholder: str | None = None   # valor de ejemplo (None = admite vacío a propósito)
-    required_in: frozenset[str] = frozenset()   # procesos que lo exigen en production
+    # Procesos que pueden preguntar por este secreto. Vacío = todos.
+    required_in: frozenset[str] = frozenset()
+    # Condición de activación (nombre de `features`, §5.3). Vacío = siempre.
+    feature: str | None = None
+    # Se exige por estar VACÍO (no por placeholder): un valor no vacío es legítimo.
+    required_when_empty: bool = False
+    # Qué se espera del valor: un secreto (vacío o placeholder = ausente) o un valor
+    # cualquiera (`url`, `value`): una URL no es un secreto.
+    expect: str = "secret"
 ```
 
-Cuatro formas de declararlo, y una sola de leerlo:
-
-| Caso | Declaración | Quién lo exige |
-|---|---|---|
-| Secreto de todos los procesos | `Secret()` | cualquiera |
-| Solo del worker | `Secret(required_in=frozenset({"worker"}))` | el worker |
-| Del runner y del fix-worker | `Secret(required_in=frozenset({"fix-worker", "sandbox-runner"}))` | los dos |
-| Variable sensible sin valor de ejemplo | `Secret(placeholder="")` | según `required_in` |
+`expect` y `required_when_empty` existen porque el contrato real de hoy incluye
+`SANDBOX_RUNNER_URL` (una URL que el `fix-worker` necesita para arrancar) y
+`TEAMS_NOTICES_KEY` (se exige vacía, y `reviews:notices` es un valor legítimo).
 
 ### 5.2 Una sola lista de placeholders
 
@@ -136,47 +203,77 @@ PLACEHOLDER_VALUES = frozenset({"change-me", "changeme"})
 ```
 
 - `api/main.py`, `web/auth.py` y `sandbox_runner/main.py` importan de aquí y borran
-  sus cuatro sets.
-- El runner, que no debe importar del paquete, replica la constante con un comentario
-  que apunta a `settings.PLACEHOLDER_VALUES` y **un test comprueba que coinciden**:
-  si divergen, el test falla en vez de dejar un agujero silencioso.
+  los cuatro sets literales (`_INSECURE_DECISION_TOKENS`, `_INSECURE_SECRETS`,
+  `_INSECURE_TOKENS`) y las dos comparaciones a pelo (`secret == "change-me"`).
+- El runner **ya importa** `settings` (§Enmienda), así que no hay réplica que
+  mantener. Esto sustituye a D7/§5.2 originales.
 
 ### 5.3 El contrato derivado
 
 ```python
-def secrets_for(settings: Settings, process: str) -> list[str]:
-    """Nombres de los secretos sin configurar que este proceso exige arrancar."""
+def secrets_for(
+    settings: Settings,
+    process: str,
+    feature_enabled: Mapping[str, bool] | None = None,
+) -> list[str]:
+    """Nombres de los secretos sin configurar que este proceso exige al arrancar."""
 ```
 
 Reglas:
 
 1. Recorre `Settings.model_fields` y toma los que llevan un `Secret` en `metadata`.
-2. Incluye el campo si `process in secret.required_in` **o** si `required_in` está
-   vacío (secreto de todos).
-3. Un secreto está «sin configurar» si su valor es `is_missing` (vacío o placeholder).
-4. Excepciones declaradas, no dibujadas con `if/else` sueltos donde se pueda evitar:
-   - `MODELS_CONFIG` con registro declarativo: los secretos son los que referencia el
-     YAML (`models_config.unresolved_secrets`); `LLM_API_KEY` deja de exigirse por la
-     vía de compatibilidad.
-   - `TEAMS_*`: solo si `teams_enabled`.
-   - `sandbox_*`: solo si `sandbox_enabled`.
+2. Aplica el filtro de proceso: `not secret.required_in or process in secret.required_in`.
+3. Evalúa la condición `feature` contra una tabla declarativa, no con `if` repartidos:
 
-Las tres condiciones de (4) son las únicas que no caben en el descriptor y quedan
-como guardas explícitas en `secrets_for`, documentadas una a una.
+   | `feature` | Condición | Nota |
+   |---|---|---|
+   | `None` | siempre | — |
+   | `sandbox` | `sandbox_enabled`, y **siempre** en el `fix-worker` | Su contrato entero es hablar con el runner: no tiene otro trabajo que justifique la condición |
+   | `panel` | `panel_enabled`, y **siempre** en el `web` | El proceso `web` **es** el panel; la ausencia del flag no puede dejar un panel sin autenticación |
+   | `teams` | `teams_enabled` | — |
+   | `vcs_twg` / `vcs_github` | `vcs_provider == …` | Una elección: se exige uno de los dos, no los dos |
+   | `llm_legacy` | `llm_reviewer_enabled and not models_config` | Vía de compatibilidad |
+   | `llm_registry` | `llm_reviewer_enabled and models_config` | Los secretos los nombra el YAML |
+
+   Las funciones reciben `(settings, process)`: solo `sandbox` y `panel` miran el
+   proceso, y por eso está escrito aquí y no escondido en una lista. `feature_enabled`
+   permite inyectar la tabla en los tests; por defecto se calcula de `settings`. Si la
+   tabla no cubre una `feature` declarada, es un error al construir (no un secreto que
+   deja de exigirse).
+4. `expect` decide la comprobación:
+   - `"secret"` → `is_missing(valor)` (vacío o placeholder).
+   - `required_when_empty=True` → `not valor.strip()` (vacío, no placeholder).
+   - `"value"` / `"url"` → `not valor.strip()`.
+5. **El caso del registro de modelos** (`llm_registry`) no es un nombre de campo: los
+   campos de `Settings` son `llm_api_key`, pero el nombre que se exige lo produce
+   `models_config.unresolved_secrets` (p. ej. `MODELS_API_KEY de nan (LLM_API_KEY)`).
+   Se resuelve en `secrets_for` delegando en `unresolved_secrets` cuando el registro
+   está activo, con su test propio (R2).
+
+Esta tabla es la única parte del contrato que no cabe en el descriptor; el resto son
+datos. Cuatro de las cinco funciones actuales pasan a ser una llamada a `secrets_for`
+con su proceso, y sus nombres y firmas se conservan (D6).
 
 ### 5.4 Invariantes
 
 - **I1 — Ningún secreto sin declarar.** Para todo campo de `Settings` cuyo nombre
   termine en `_TOKEN`, `_SECRET` o `_PASSWORD`, o cuyo valor por defecto sea un
-  placeholder, existe un `Secret` en su `metadata`. Un test lo comprueba sobre
-  `model_fields`: un campo nuevo sin declarar pone el test en rojo.
-- **I2 — Un secreto, un criterio.** El mismo nombre de campo da el mismo veredicto
-  en todos los procesos que lo exigen. Un test comprueba que
-  `secrets_for(s, "worker")` y `secrets_for(s, "fix-worker")` coinciden en
-  `SANDBOX_RUNNER_TOKEN`.
-- **I3 — Nombres de proceso cerrados.** `required_in` solo admite los cinco procesos
-  reales; un nombre desconocido es un error al construir (no un secreto que nadie
-  exige nunca).
+  placeholder, o que aparezca en `.env.example` con `change-me`, existe un `Secret`
+  en su `metadata`. Un test lo comprueba sobre `model_fields`: un campo nuevo sin
+  declarar pone el test en rojo. Los campos que hoy no son secretos pero el contrato
+  exige (`sandbox_runner_url`) se declaran igual y quedan exentos de I1 por su
+  `expect`, con la excepción nombrada.
+- **I2 — Un secreto, un criterio (corregido).** El mismo secreto se juzga con la
+  misma **condición** en todos los procesos. Hoy no es así: `SANDBOX_RUNNER_TOKEN`
+  está en `sandbox` para `api`/`worker` y en `sandbox_always` para `fix-worker`, y eso
+  es deliberado (el `fix-worker` no tiene otro trabajo que hablar con el runner).
+  El invariante real, y el que se testea, es: **una sola declaración por campo, y
+  el veredicto se deriva de ella**, de modo que no puede haber dos listas a mano que
+  discrepen. La igualdad literal entre procesos no se exige; la unicidad de la
+  fuente, sí.
+- **I3 — Nombres cerrados.** `required_in` solo admite los procesos reales
+  (`api`, `worker`, `fix-worker`, `web`, `teams-bot`); `feature` solo los nombres de
+  la tabla de §5.3. Un nombre desconocido es un error al construir el descriptor.
 
 ### 5.5 Configuración
 
@@ -188,33 +285,35 @@ Sin cambios: es un refactor interno. `.env.example` y las variables no se tocan.
 |---|---|---|
 | R1 | **El refactor cambia el comportamiento sin querer** | No-objetivo §2: el test de paridad compara, secreto a secreto, el resultado nuevo con el actual **antes** de borrar lo viejo; cualquier diferencia es un fallo del refactor, no una mejora |
 | R2 | **La excepción del registro de modelos se complica** | Es la única condición que no cabe en el descriptor; se aísla en una función propia con su test (vía por registro y vía por `LLM_API_KEY`) |
-| R3 | **El runner deja de ver el placeholder de `settings`** | §5.2: replica la constante con un test de coincidencia, en vez de importar el paquete desde la caja aislada |
-| R4 | **El descriptor se convierte en un mini-framework** | Solo cuatro formas (§5.1). Si pide una quinta, la decisión vuelve a revisión en vez de crecer sola |
+| R3 | **El contrato real no cabe en `required_in`** y el refactor «simplifica» cambiando el veredicto (`SANDBOX_RUNNER_TOKEN` en el fix-worker, `PANEL_SESSION_SECRET` en el web) | La enmienda y el segundo eje (`feature`) lo cubren; el test de paridad (R1) sobre los 48 escenarios del espacio es la red: una condición que diferencie da rojo |
+| R4 | **El descriptor se convierte en un mini-framework** | Cinco campos, cada uno con un caso real medido (`expect` y `required_when_empty` los exige `SANDBOX_RUNNER_URL`/`TEAMS_NOTICES_KEY`). Si pide un sexto, la decisión vuelve a revisión en vez de crecer sola |
 | R5 | **`metadata` es opaco para el lector** | `model_fields[name].metadata` no se ve al leer el campo; un test y un comentario en el módulo apuntan a `secrets_for` como la única vía de lectura |
+| R6 | **El caso del registro de modelos** (`unresolved_secrets`, que devuelve un nombre que no es un campo) convive mal con el recorrido por `model_fields` | Se aísla en `secrets_for` con una rama propia y test doble (vía registro y vía `LLM_API_KEY`), como pedía R2 original |
 
 ## 7. Criterios de hecho
 
-1. `PLACEHOLDER_VALUES` es la única definición del placeholder: `grep` de
-   `{"change-me", "changeme"}` deja solo esa; API, web y runner delegan o replican
-   con su test de coincidencia.
+1. `PLACEHOLDER_VALUES` es la única definición de la *lista* de placeholders: `grep` de
+   `{"change-me", "changeme"}` deja solo esa (más los `= "change-me"` de campo, que
+   son valores por defecto, no listas). API, web y runner la importan; se borran
+   `_INSECURE_DECISION_TOKENS`, `_INSECURE_SECRETS`, `_INSECURE_TOKENS` y las dos
+   comparaciones a pelo.
 2. Todo campo secreto de `Settings` declara su `Secret` (I1), y un campo nuevo sin
    declarar pone el test en rojo.
-3. `secrets_for` reproduce **exactamente** el contrato actual, con un test de paridad
-   que compara contra las cinco funciones de hoy antes de retirarlas.
-4. `SANDBOX_RUNNER_TOKEN` da el mismo veredicto en worker y fix-worker (I2).
+3. `secrets_for` reproduce **exactamente** el contrato actual: un test de paridad
+   compara, sobre los 48 escenarios del espacio (proveedor de VCS × sandbox × panel ×
+   teams × LLM), su resultado con el de las cuatro funciones de hoy antes de que estas
+   deleguen en él.
+4. El veredicto de `SANDBOX_RUNNER_TOKEN` (siempre en el `fix-worker`, con sandbox en
+   `api`/`worker`) y el de `PANEL_SESSION_SECRET` (siempre en `web`) salen de la
+   declaración, no de una lista: quitar la condición de la declaración pone el test de
+   paridad en rojo.
 5. Los puntos de arranque (`api`, `worker`, `fix-worker`, `web`, `teams-bot`) no
    cambian su comportamiento; sus tests de `production` siguen pasando sin tocarlos.
 6. `make ci` y `make docs-check` en verde.
 
 ## 8. Preguntas abiertas
 
-- **Q1 — ¿El placeholder se declara por campo o global?** `Secret(placeholder=…)`
-  permite un caso por campo; un solo global es más simple. `TEAMS_BOT_SHARED_SECRET`
-  y `TOOLING_WEBHOOK_SECRET` ya llevan `= "change-me"` como valor por defecto del
-  campo, así que puede bastar con el global.
-- **Q2 — ¿Se declaran también los secretos de la API y del runner** (marcados «de
-  petición») para que I1 los vea, o se quedan fuera del descriptor? Declararlos los
-  documenta en un sitio; no declararlos deja tres secretos fuera del inventario.
-- **Q3 — ¿`required_in` se deriva del `docker-compose.yml`?** El compose ya dice qué
-  variable recibe cada servicio. Derivarlo acopla el modelo al compose; declararlo a
-  mano puede divergir de él. ¿Un test que compare ambos?
+Todas resueltas el 2026-10-17 (ver la enmienda al principio del documento): Q1,
+placeholder global; Q2, los secretos de petición se quedan fuera del inventario; Q3,
+el contraste con el compose es de [010](../../iniciativas/010-personas-de-wiring/spec.md),
+no del modelo.

@@ -1,6 +1,6 @@
 # ADR-0022 — El contrato de secretos se declara en el modelo
 
-- **Estado:** Propuesto
+- **Estado:** Aceptado
 - **Fecha:** 2026-10-17
 
 ## Contexto
@@ -30,15 +30,27 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
   de `Settings`. El inventario del modelo (`model_fields`) y la declaración de
   seguridad son el mismo sitio, así que no pueden desincronizarse.
 - **`required_in` declara los procesos** (`api`, `worker`, `fix-worker`, `web`,
-  `teams-bot`) que exigen el secreto. Vacío significa «todos». Un mismo secreto deja
-  de tener un veredicto por proceso.
+  `teams-bot`) **donde el contrato aplica**, y **`feature` declara la condición** de
+  activación. Son dos ejes porque el mismo secreto se exige con condiciones distintas
+  según el proceso: `SANDBOX_RUNNER_TOKEN` es «si `SANDBOX_ENABLED`» en el worker y
+  «siempre» en el fix-worker (cuyo único trabajo es hablar con el runner), y
+  `PANEL_SESSION_SECRET` es «si el panel está desplegado» en API/worker y «siempre» en
+  el `web`, que **es** el panel. Declarar solo los procesos perdía esa distinción:
+  `feature` la nombra una vez y `secrets_for` la evalúa.
 - **El contrato se deriva con `secrets_for(settings, process)`**, un único recorrido
   de `model_fields`. Las cinco funciones actuales se conservan con su nombre y firma
   y pasan a delegar: los puntos de arranque no cambian.
 - **`PLACEHOLDER_VALUES` es la única definición** del valor de ejemplo. La API, la web
-  y el runner la importan; el runner, que mantiene su aislamiento
-  ([ADR-0011](0011-sandbox-runner-aislado.md)) y no debe depender del paquete, la
-  replica con un test que falla si diverge.
+  y el runner la importan. El runner **ya importa** `settings` (`is_missing`, para
+  normalizar su credencial de registro), así que no se replica nada: el aislamiento
+  del runner ([ADR-0011](0011-sandbox-runner-aislado.md)) es de red y de credenciales,
+  no de módulos.
+- **Los secretos «de petición» no entran en el inventario de arranque.** La firma del
+  webhook, el bearer del runner, la sesión del panel y el bearer de la consola deciden
+  en cada petición, no al arrancar; se quedan donde están y solo comparten el
+  predicado (`is_missing`). Los campos que sí se declaran para que el inventario
+  (`I1`) sea completo pero que el contrato de hoy no exige (`TWG_TOKEN` de Fase 4,
+  `SANDBOX_REGISTRY_TOKEN`, `SANDBOX_CONSOLE_TOKEN`) usan `feature="solo_inventario"`.
 - **Vacío y placeholder cuentan igual** («sin configurar»): vacío es el caso más
   probable (variable sin asignar, `VAR=`), y un contrato fail-closed que no lo cubre
   falla justo cuando más importa.
@@ -57,8 +69,20 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
   declaración es accesible solo por `model_fields[...].metadata`. Es el precio de no
   tener una tabla paralela que pueda quedar desactualizada; se compensa con
   `secrets_for` como única vía de lectura y un comentario en el módulo.
-- El descriptor admite cuatro formas y no debe crecer: si un quinto caso aparece, la
-  decisión vuelve a revisión en vez de que el descriptor se vuelva un mini-framework.
+- El descriptor admite cinco campos (`required_in`, `feature`, `required_when_empty`,
+  `expect`) y no debe crecer más: `expect` y `required_when_empty` los exige el
+  contrato real (`SANDBOX_RUNNER_URL` no es un secreto; `TEAMS_NOTICES_KEY` se exige
+  por estar vacía y `reviews:notices` es un valor legítimo). Si aparece un sexto caso,
+  la decisión vuelve a revisión en vez de que el descriptor se vuelva un mini-framework.
+
+---
+
+> **Enmienda (2026-10-17).** Este ADR se aceptó junto con la implementación, con dos
+> correcciones sobre el texto de arriba: (1) el runner importa `PLACEHOLDER_VALUES` en
+> vez de replicarlo, porque ya importa `settings`; (2) el contrato necesita dos ejes
+> (`required_in` + `feature`) para reproducir los veredictos reales, y el descriptor
+> gana `expect` y `required_when_empty`. El detalle está en la
+> [enmienda de la spec](../iniciativas/020-secretos-declarados/spec.md).
 - Las tres excepciones que no caben en el descriptor (el registro declarativo de
   modelos, `teams_enabled`, `sandbox_enabled`) quedan como guardas explícitas y
   documentadas en `secrets_for`, no repartidas por el módulo.
@@ -81,6 +105,7 @@ el contrato, ni a que el mismo secreto se juzgue igual en todos los procesos.
 - **Compartir los secretos de petición con el arranque.** Meter la firma del webhook
   en el contrato del worker lo obligaría a tener un secreto que no usa; y en
   `production` el worker no debe fallar por algo que solo necesita la API.
-- **Importar `PLACEHOLDER_VALUES` desde el runner.** El runner es la caja aislada del
-  sistema ([ADR-0011](0011-sandbox-runner-aislado.md)); acoplarlo al paquete para una
-  constante de tres valores cuesta más que un test de coincidencia.
+- **Importar `PLACEHOLDER_VALUES` desde el runner.** *Descartada en la enmienda del
+  2026-10-17:* se descartó por aislamiento, pero el runner **ya** importa `settings`
+  (`is_missing`), así que el aislamiento no aplica a los módulos. Importar evita un
+  duplicado que puede divergir, que es justo el fallo que este ADR corrige.
