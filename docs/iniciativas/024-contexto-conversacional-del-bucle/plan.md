@@ -30,11 +30,11 @@ primero: se puede hacer en paralelo con 023 y evita pagar dos regrabaciones.
   `system`, `prompt`, `max_tokens` y contrato de salida, y esto no toca ninguno.
   En cambio, cambiar el puerto sí lo invalida todo. Instrumentar primero hace que
   cada regrabación *live* que 023 ya tiene que hacer **traiga el caché gratis**.
-- **Una sola corrida de pago para dos cosas.** Con 023 en K3 y todos sus flags en
-  su default, el *prompt* es byte a byte el de hoy (criterio 9 de 023), así que la
-  corrida *live* que 024 necesita para medir el caché **es también** una grabación
-  válida de la configuración base de 023. Se hace una vez y se anota en los dos
-  `todo.md`.
+- **Una sola corrida de pago para dos cosas.** 023 F1 anuncia las capacidades del
+  puerto y produce **una única** grabación de referencia (su criterio 9 ya no exige
+  el *prompt* de hoy: exige comportamiento por defecto idéntico). Esa misma corrida
+  es la base de 023 y la medida de caché de 024: se hace una vez y se anota en los
+  dos `todo.md`.
 - **La normalización del proveedor es una tabla, no un `if`.** OpenAI-compatible
   usa `prompt_tokens_details.cached_tokens`; DeepSeek, `prompt_cache_hit_tokens`;
   Anthropic, `cache_read_input_tokens`. El adaptador los lee en ese orden y
@@ -124,7 +124,7 @@ de conversación y deja de ser comparable (E14).
 |---|---|
 | El proveedor no reporta caché y se confunde con «no cachea» (R3 de la spec) | S2 devuelve `None`; el informe pinta `no medido`; test de los tres campos |
 | Instrumentar invalida la grabación sin querer | S no toca `prompt`, `system`, `max_tokens` ni contrato: test que compara el *fingerprint* antes y después de S |
-| La corrida *live* base no sirve para 023 porque un flag no está en su default | 023 criterio 9 exige *prompt* byte a byte idéntico con todo en default; es la precondición de LB |
+| La corrida *live* base no sirve para 023 | 023 F1 fija una **única** grabación de referencia con el *prompt* de capacidades; LB1 **es** esa misma corrida, no una adicional |
 | El eco del *assistant* engorda el *prompt* (R11 de la spec) | Se mide en R; si el delta es grande, se declara en contra de A |
 | `fingerprint` v3 por concatenación colisiona | Se hashea la estructura (rol + contenido por mensaje, en orden), no la suma de textos |
 | A se cuela antes de K3 y rompe la matriz de 023 | E14: A depende de K3; el grafo del plan lo hace explícito |

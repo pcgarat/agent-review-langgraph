@@ -63,9 +63,10 @@ en paralelo con 023; **A no se empieza sin K3 de 023**.
 ## Bloque LB — Corrida *live* base, compartida con 023 (checkpoint LB-K)
 
 - [ ] **LB1** Una sola corrida de pago para las dos iniciativas
-  - Requisito: 023 F1 hecho y **todos sus flags en su default** (su criterio 9:
-    el *prompt* es byte a byte el de hoy). Entonces la corrida sirve a la vez como
-    *baseline* de 023 y como medida de caché de 024.
+  - Requisito: 023 F1 hecho (el *prompt* de capacidades y **una única** grabación
+    de referencia). Esa corrida sirve a la vez como base de 023 y como medida de
+    caché de 024; no se apoya en que el *prompt* sea el de hoy, porque 023 E11 lo
+    descartó.
   - `LLM_REVIEWER_ENABLED=true REVIEW_TOOLS_ROLES=correctness make eval-record-tools`
     (o el objetivo que fije 023) con la instrumentación de S en su sitio.
   - Anotar en **este** `todo.md` y en el `todo.md` de 023: *prompt*, *completion*,
