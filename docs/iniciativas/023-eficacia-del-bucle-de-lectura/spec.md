@@ -287,7 +287,8 @@ comparación se hace contra **dos** baselines congelados (E12b): sin herramienta
 | R1 | **La medida no mide lo que cree.** El *baseline* sin herramientas da `recall 0.375` (3 TP de 8, `expected_report.json`, 19 llamadas); la variante **con herramientas** da `0.125` (1 TP, `recorded_tools.json`, 72 llamadas, reproducible con `make eval-tools`). Ese descenso es el problema de la iniciativa, pero su valor exacto no es fiable mientras el matcher esté anclado a redacción | **Antes de medir** (bloque 0): T1 cambia el ancla del matcher a ubicación/identidad con su ADR y enmienda la spec de 006, y T2 reancla las etiquetas **contra el código del caso (`008da57`, `fixtures/head`)** y refija los **dos** *baselines*. La grabación solo descubre redacciones, no decide qué es un defecto. **No se sustituye 0.125 por 0.375**: son configuraciones distintas |
 | R1b | **El ancla estructural sube el recall por la puerta de atrás**: un defecto distinto del mismo fichero casa por fragmentos, o `expected` gana a `must_not` por orden de atribución | **Tests negativos** en T1 con los dos defectos **en la misma línea**; toda etiqueta con `file` exige fragmento discriminante; solapamiento `expected`/`must_not` es **error al cargar** (E0h) |
 | R2 | **D23**: una grabación caducada se lee como recall 0 en verde | E0; `make eval-tools` debe fallar ruidosamente si el *fingerprint* no casa, **también** con `batch_retries > 0` |
-| R2b | Otro error permanente se lee como «0 hallazgos» por el mismo `except Exception` | E0c: solo se reintenta lo transitorio; el resto sube |
+| R2b | Otro error permanente se confunde con una medida mala: en *replay* acaba en `FAILED`, baja la cobertura y `make eval` sale en verde; en producción se publica «0 hallazgos» sin decir que el lote no se revisó | E0c + **R2c**: en producción el lote sale `FAILED` y la review **parcial** (021 R14, 012 C7), con el log corregido a «lote no revisado»; en *replay* el eval **aborta** si algo queda `FAILED` |
+| R2c | **Un `FAILED` en *replay* es indistinguible de una caída real de recall** | T0c: el invariante se declara en el borde de la evaluación (`Run.skipped`), no con un flag de producción; `FAILED` aborta y `BUDGET` no (es legítimo y se cuenta) |
 | R3 | **Regex caro** (R4 de 016): un patrón que explota en el `git grep` del runner | Default `literal`; `mode: "regex"` explícito, acotado por `path`/`glob` y con tope de coincidencias y de tiempo |
 | R3b | **Dialecto divergente**: el *replay* casa y producción no (o al revés) | E2: **subconjunto portable único** (misma cadena para `re` y `git grep -E`), rechazo explícito de POSIX y extensiones GNU, y tabla de equivalencia probada en las **cuatro** superficies |
 | R3c | **El runner viejo ignora los campos nuevos** y el modelo cree que buscó en regex | E0g: negociación de capacidad worker ↔ runner; si el runner no soporta un campo, **error explícito**, no degradación silenciosa |
@@ -341,6 +342,12 @@ comparación se hace contra **dos** baselines congelados (E12b): sin herramienta
 13. **D23 resuelto y verificado**: con una grabación caducada, `make eval-tools`
     termina en error —también con `batch_retries=2`— y no en un informe con recall
     0 (test).
+13b. **Un error permanente no se publica como review limpia**, en ninguno de los
+    dos contextos: en *replay* el eval **aborta** si algún fichero queda en
+    `SkipReason.FAILED` (un `BUDGET` no aborta: se cuenta, criterio 12); en
+    producción el lote queda `FAILED`, la review es **parcial** y los demás lotes
+    siguen publicando (tests de T0c y T0d). `_call_with_retries` solo relanza
+    `FingerprintMismatch`; el resto va a `_last_error` + lote fallido.
 14. **El matcher mide defecto**: dos redacciones distintas del mismo defecto casan
     la **misma** etiqueta y dos defectos distintos **en la misma línea** del mismo
     fichero **no** casan la misma; una etiqueta que casa a la vez `expected` y

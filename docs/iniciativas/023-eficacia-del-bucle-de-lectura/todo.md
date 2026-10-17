@@ -11,15 +11,22 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
 
 ## Bloque 0 — Base de medida (checkpoint K0)
 
-- [ ] **T0** D23: el *replay* con *fingerprint* caducado **aborta** (E0, E0b, E0c)
+- [x] **T0** D23: el *replay* con *fingerprint* caducado **aborta** (E0, E0b, E0c)
   - `ports/llm.py`: mover `FingerprintMismatch` desde `tests/eval/harness.py:479`
     (tests → src). El harness la importa de ahí; no se duplica.
   - `adapters/llm_reviewer.py`: `except FingerprintMismatch: raise` **antes** del
     genérico en los **tres** sitios: `_call_once` (~:607), `_call_with_tools`
     (~:536) y **`_call_with_retries` (`:402`)**. El tercero es el que corre en
     producción con `llm_batch_retries=2`.
-  - `_call_with_retries`: sustituir `except Exception` por `is_transient(exc)`; lo
-    permanente sube (E0c: D23 es un caso de una clase más ancha).
+  - `_call_with_retries`: sustituir `except Exception` por la política correcta:
+    `FingerprintMismatch` **relanza**; un error permanente **no se reintenta** y
+    deja `_last_error` + `None` (el lote sale `FAILED`, la review queda parcial: 021
+    R14 y 012 C7). **No** relanzar todo lo permanente: el nodo `persona` lo
+    re-relanza (`graph/build.py:787`) y tumba la review entera, perdiendo los demás
+    lotes. Lo transitorio se reintenta como hoy.
+  - Los dos `logger.warning(... "0 hallazgos")` de `_call_once`/`_call_with_tools`
+    dicen «0 hallazgos» cuando el lote **no se revisó**: corregir el mensaje a
+    «lote no revisado (FAILED)».
   - Aceptación: con una grabación caducada, `make eval-tools` termina en **error
     ruidoso**, no en un informe con recall 0; la marca de D23 en
     `arquitectura.md` §7 pasa a resuelta.
@@ -27,6 +34,31 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     pasa aunque el bug siga vivo) y `tests/eval/test_eval_harness.py`.
   - Ficheros: `ports/llm.py`, `adapters/llm_reviewer.py`,
     `docs/arquitectura.md` §7.
+
+- [ ] **T0c** En *replay*, un `FAILED` **aborta** la medida (R2c, criterio 13)
+  - El invariante va en el **borde de la evaluación**, no en un flag de producción:
+    `Run` (harness) pasa a llevar `skipped`; `evaluate`/`scripts/eval.py` **abortan
+    con mensaje** si algún fichero queda en `SkipReason.FAILED` en modo `replay`.
+  - `SkipReason.BUDGET` **no** aborta: es legítimo y ya se cuenta (criterio 12).
+  - Motivo: hoy un error permanente distinto de `FingerprintMismatch` (grabación
+    corrupta, `KeyError`, `ValueError` de parseo) acaba en `FAILED`, baja
+    `coverage` y `make eval-tools` sale con código 0. Es la misma clase que D23 y
+    T0 no la cubre.
+  - Aceptación: un *replay* con un lote forzado a `FAILED` termina en error; un
+    *replay* con `BUDGET` no.
+  - Verifica: `tests/eval/test_eval_harness.py`, `tests/eval/test_eval_pr_3.py`.
+  - Ficheros: `tests/eval/harness.py`, `scripts/eval.py`.
+
+- [ ] **T0d** Invariante de producción: un error permanente **no** tumba la review
+  - Test que fija el comportamiento deliberado: un fallo permanente en **un** lote
+    de varios lo deja `FAILED` y parcial, y **los demás lotes siguen** publicando
+    sus hallazgos; la review **no** se cae.
+  - Test complementario: `FingerprintMismatch` **sí** aborta (es fallo de medida).
+  - Aceptación: los dos comportamientos quedan clavados por test, para que nadie
+    «arregle» el primero convirtiéndolo en aborto.
+  - Verifica: `tests/test_llm_reviewer.py`, `tests/test_graph_*.py` (cobertura
+    parcial).
+  - Ficheros: `tests/test_llm_reviewer.py`, `tests/test_graph_*.py`.
 
 - [ ] **T3** La grabación guarda **orden y unicidad** (E0e, R10)
   - `tests/eval/harness.py`: además de `calls` (índice por *fingerprint*), guardar
@@ -119,7 +151,10 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
 ### Checkpoint K0
 
 - [ ] Grabación caducada ⇒ error, no recall 0, **con `batch_retries=2`**.
-- [ ] Un error permanente no se publica como «0 hallazgos».
+- [ ] Un error permanente **nunca** se publica como review limpia: en *replay*
+  aborta la medida (T0c) y en producción el lote queda `FAILED` y la review
+  **parcial** (T0d), sin tumbar los demás lotes.
+- [ ] `_call_with_retries` **no** relanza lo permanente: solo `FingerprintMismatch`.
 - [ ] La grabación conserva el **orden** (19 lotes) y la **unicidad** (dos llamadas
   con el mismo *prompt* no se colapsan).
 - [ ] El informe no depende de la redacción del mismo defecto y **no** sube el
