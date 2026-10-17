@@ -163,7 +163,14 @@ def test_recorrido_de_un_hilo_a_medias() -> None:
 
 
 def test_recorrido_de_un_nodo_corriendo_ahora_es_en_curso() -> None:
-    """Un nodo vivo (o uno cuyo worker murio a mitad) no deja `__error__`: no es completado."""
+    """Un nodo vivo (o uno cuyo worker murio a mitad) no deja `__error__`: no es completado.
+
+    Lo estable es que el hilo **no** se lea como `completed` mientras un nodo corre
+    y que quede algo pendiente. Cual es el nodo en curso no se fija: el checkpointer
+    es historia y el volcado del checkpoint de la tarea viva es una carrera del
+    saver (lo dice `TraceNode`: el nodo en curso lo sabe la marca de progreso del
+    worker, no esta lectura). Fijar el nombre mediria el azar del instante.
+    """
     from langgraph.graph import END, START, StateGraph
 
     saver = _memory_saver()
@@ -183,14 +190,15 @@ def test_recorrido_de_un_nodo_corriendo_ahora_es_en_curso() -> None:
     builder.add_edge(START, "scope")
     builder.add_edge("scope", "persona")
     builder.add_edge("persona", END)
-    builder.compile(checkpointer=saver).invoke(
-        {"x": 0}, config={"configurable": {"thread_id": thread_id}}
-    )
+    config = {"configurable": {"thread_id": thread_id}}
+    builder.compile(checkpointer=saver).invoke({"x": 0}, config=config)
 
     trace = seen[0]
     assert trace is not None
+    # Un nodo corriendo ahora no es un hilo completado.
     assert trace.state == "in_progress"
-    assert trace.next == ["persona"]
+    assert trace.next, "el nodo vivo queda pendiente"
+    assert set(trace.next) <= {"scope", "persona"}
     after = read_trace(saver, thread_id)
     assert after is not None and after.state == "completed" and after.next == []
 
