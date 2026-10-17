@@ -138,8 +138,15 @@ flowchart LR
     S1 --> C1["C1 cache de E/S por review + precache L1"]
     L1 --> C1
     C1 --> M1["M1 una corrida por configuracion (replay o live)"]
+    S024["024 S cached_tokens (no cambia el prompt)"] --> M1
     M1 --> D1["D1 docs vivos + cierre"]
 ```
+
+**`024 S` no es una tarea de este plan, pero sí una entrada suya:** las corridas
+*live* de M1 son el único momento en que se paga el modelo, y sin el contador de
+caché instrumentado antes hay que repetirlas o el número se queda en `no medido`
+(Q5 de la spec). Es la única dependencia externa que **precede** a una tarea de
+aquí; el resto llega después (su bloque A espera a K3).
 
 ## Checkpoints
 
