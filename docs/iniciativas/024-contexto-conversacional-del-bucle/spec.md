@@ -2,7 +2,7 @@
 
 # Contexto conversacional del bucle de herramientas
 
-> **Estado:** borrador
+> **Estado:** aprobada
 >
 > **Entrega objetivo:** que el bucle de herramientas deje de reconstruir la
 > conversación como un único `prompt` y pase a mantener una **lista de mensajes**,
@@ -340,19 +340,23 @@ no el escenario.
 
 ```mermaid
 flowchart LR
-    K0["023 K0 · D23 + matcher"] --> M["024 · medir cached_tokens"]
+    K0["023 K0 · D23 + matcher + flags"] --> S["024 S · cached_tokens (no toca el prompt)"]
     K0 --> E["023 bloques 1–2 · eficacia"]
     E --> K3["023 K3 · informe por flag"]
-    K3 --> A["024 A · puerto con mensajes"]
-    M --> A
+    S --> LB["Corrida live base compartida"]
+    LB --> K3
+    LB --> A["024 A · puerto con mensajes"]
     A --> R["Regrabar + informe antes/después"]
     R --> D{"¿Queda gasto de juicio?"}
     D -->|"no"| X["Cerrar 024 sin B"]
     D -->|"sí"| B["Iniciativa nueva · plan/read/review"]
 ```
 
-La medida M no toca las herramientas y puede hacerse en paralelo con 023. El cambio
-de puerto A espera a K3 para no mover el *baseline* de la matriz de flags de 023.
+La instrumentación del caché (S) **no cambia el *prompt***, así que puede hacerse
+en paralelo con 023 y no invalida ninguna grabación; por eso va antes que las
+corridas *live* de 023 M1: una sola pasada de pago da el número de caché y el
+*baseline* de su matriz de flags. El cambio de puerto A espera a K3 para no mover
+ese *baseline*.
 
 ## 6. Riesgos
 
@@ -424,11 +428,11 @@ de puerto A espera a K3 para no mover el *baseline* de la matriz de flags de 023
   propósito. Fijar un porcentaje antes de tener el informe sería inventar el
   resultado; se concreta al aprobar esta spec, con la estructura de la medida ya
   decidida.
-- **Q6 — ¿`plan.md` y `todo.md`?** No existen todavía: la spec está en **borrador** y
-  el repositorio exige aprobarla antes de planificar
-  (regla [`documentacion`](../../../.agents/rules/documentacion.md), §4). Se
-  escribirán al aprobar, con el orden K0 → medida del caché (en paralelo con
-  023) → K3 → A → informe antes/después → decisión sobre B.
+- **Q6 — ¿`plan.md` y `todo.md`?** *Resuelta (2026-10-17):* existen, aprobada la
+  spec. El orden está en el [`plan.md`](plan.md) y las tareas en el
+  [`todo.md`](todo.md): medida del caché (S, en paralelo con 023) → corrida *live*
+  base compartida con 023 → K3 de 023 → puerto con mensajes (A) → informe
+  antes/después → decisión sobre B.
 - **Q7 — ¿ADR?** El cambio de puerto y el fingerprint v3 son una decisión de diseño
   con alternativas (mensajes frente a string, una API frente a dos): nace un
   **ADR nuevo al implementar**, que sustituya o enmiende lo que

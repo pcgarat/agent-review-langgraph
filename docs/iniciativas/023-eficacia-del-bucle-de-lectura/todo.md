@@ -193,6 +193,11 @@ mejora hace salir el eval en verde con recall 0 (§3 de la spec).
 
 - [ ] **M1** Una corrida por configuración, con *replay*/*live* declarado
   (criterio 11, R7 de la spec)
+  - **Prerrequisito:** el bloque S de [024](../024-contexto-conversacional-del-bucle/todo.md)
+    (instrumentar `cached_tokens`). No cambia el *prompt*, pero sin él estas
+    corridas *live* hay que repetirlas para medir el caché, o el número se queda en
+    `no medido` (Q5 resuelta). La corrida con todos los flags en default es **la
+    misma** que la de 024 LB1: una sola pasada, anotada en los dos sitios.
   - Por cada flag de §5.4: `make eval-tools` si es *replay* (caché de E/S) o
     regrabación *live* si cambia lo que recibe el modelo (M0), y los números
     anotados aquí o en la spec.

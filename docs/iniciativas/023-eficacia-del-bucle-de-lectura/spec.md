@@ -284,11 +284,15 @@ El informe de M1 declara, por configuración, si es *replay* o *live*; presentar
 - **Q4 — ¿`REVIEW_TOOLS_PRECACHE_CONTEXT=off` (E8) sube o baja el recall?** Es la
   pregunta de 014 Q3, ahora con número. Si baja el recall más de lo que baja el
   coste, se queda en `on` y el ahorro hay que buscarlo en el fan-out.
-- **Q5 — ¿Cuánto del coste de medir 023 se lleva 024?** Si 024 cambia el puerto a
-  mensajes, las regrabaciones *live* de §5.5 se tiran. Recomendación: ejecutar el
-  bloque 0 y los flags que **no** cambian el *prompt* (caché de E/S) antes de
-  decidir si las regrabaciones *live* se hacen contra el puerto viejo o el nuevo.
-  No bloquea esta iniciativa, pero ordena el dinero.
+- **Q5 — ¿Cuánto del coste de medir 023 se lleva 024?**
+  *Resuelta (2026-10-17):* **la instrumentación del caché de 024 (su bloque S) va
+  antes que las corridas *live* de M1.** S no cambia el *prompt* ni el *fingerprint*
+  (solo añade un contador al `usage` y una columna al informe), así que no invalida
+  ninguna grabación; hacerla primero convierte las corridas de pago de M1 en la
+  medida de caché de 024 **y** en el *baseline* de esta iniciativa, con una sola
+  pasada. Si se hicieran al revés, habría que repetirlas o el número de caché se
+  quedaría en `no medido`. El cambio de puerto de 024 (bloque A) sigue esperando a
+  K3, porque ese sí mueve el *baseline*.
 - **Q6 — ¿El aviso de corte debe incluir también el rango ya servido** (`[1-400]`)
   para que el modelo no vuelva a pedir lo mismo? Es barato y evita una llamada.
   Se decide con el informe de M1.

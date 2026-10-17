@@ -190,6 +190,10 @@ flowchart LR
   citas que consume el registro de lecturas de E9.
 - [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md): el *replay* por
   *fingerprint* que D23 debe hacer abortar de verdad; el límite que E12 respeta.
+- Iniciativa [024](../024-contexto-conversacional-del-bucle/spec.md): estructura del
+  contexto. **Su bloque S** (instrumentar `cached_tokens`) va antes que las corridas
+  *live* de M1: no cambia el *prompt* ni el *fingerprint*, y sin él esas corridas
+  habría que repetirlas para medir el caché (Q5 resuelta).
 - [ADR-0019](../../adr/0019-presupuesto-de-tokens-por-review.md): el presupuesto por
   review que el reenvío consume.
 - Iniciativa 024 (pendiente de especificar): estructura del contexto; si cambia el
