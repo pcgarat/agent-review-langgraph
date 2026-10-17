@@ -152,6 +152,8 @@ dejaría el *replay* de 008 en riesgo.
     los casos B/E/I; el caso hostil no suprime hallazgos por inyección.
   - Verifica: `make eval` / informe de la corrida anotado en la spec o en el todo.
   - *Humano / medida:* elegir modelo si el candidato no sigue el protocolo (R3).
+  - **Pendiente de 023 M1**: la corrida con herramientas es la misma que la de 023
+    (config por defecto) y se anota en los dos sitios; RH11 no se cierra antes.
 
 - [ ] **RH12** Documentos vivos y cierre (criterio 9)
   - `arquitectura.md` §3–4 (persona con bucle).

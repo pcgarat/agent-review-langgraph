@@ -9,7 +9,14 @@ from agent_review.adapters.context_workspace import (
     ContextUnavailable,
     WorkspaceContextReader,
 )
-from agent_review.ports.context import ContextReaderPort, Ref
+from agent_review.ports.context import (
+    ContextReaderPort,
+    GrepMode,
+    ReadMode,
+    ReadResult,
+    Ref,
+    ToolResult,
+)
 from agent_review.ports.vcs import VcsPort
 from agent_review.settings import Settings
 
@@ -50,32 +57,52 @@ class _DegradingReader:
         ref: Ref = "head",
         start: int | None = None,
         end: int | None = None,
-    ) -> str | None:
+        mode: ReadMode = "full",
+    ) -> ReadResult | None:
         try:
-            return self._active.read_file(path, ref=ref, start=start, end=end)
+            return self._active.read_file(path, ref=ref, start=start, end=end, mode=mode)
         except (ContextUnavailable, ContextError) as exc:
             if self._active is self._fallback:
                 raise
             self._degrade(exc)
-            return self._active.read_file(path, ref=ref, start=start, end=end)
+            return self._active.read_file(path, ref=ref, start=start, end=end, mode=mode)
 
-    def grep(self, pattern: str, *, glob: str | None = None) -> list[str]:
+    def grep(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        path: str | None = None,
+        ref: Ref = "head",
+        mode: GrepMode = "literal",
+        files_only: bool = False,
+    ) -> ToolResult:
         try:
-            return self._active.grep(pattern, glob=glob)
+            return self._active.grep(
+                pattern, glob=glob, path=path, ref=ref, mode=mode, files_only=files_only
+            )
         except (ContextUnavailable, ContextError) as exc:
             if self._active is self._fallback:
                 raise
             self._degrade(exc)
-            return self._active.grep(pattern, glob=glob)
+            return self._active.grep(
+                pattern, glob=glob, path=path, ref=ref, mode=mode, files_only=files_only
+            )
 
-    def list_dir(self, path: str) -> list[str]:
+    def list_dir(
+        self,
+        path: str,
+        *,
+        glob: str | None = None,
+        depth: int = 1,
+    ) -> ToolResult:
         try:
-            return self._active.list_dir(path)
+            return self._active.list_dir(path, glob=glob, depth=depth)
         except (ContextUnavailable, ContextError) as exc:
             if self._active is self._fallback:
                 raise
             self._degrade(exc)
-            return self._active.list_dir(path)
+            return self._active.list_dir(path, glob=glob, depth=depth)
 
 
 def build_reader_factory(

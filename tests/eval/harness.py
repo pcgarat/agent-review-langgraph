@@ -111,7 +111,13 @@ class Report:
     """Informe de una corrida. Estable y serializable (claves ordenadas, 4 decimales).
 
     Los `id` de `matched`/`unmatched`/`missing` existen para que el fallo de CI
-    diga **que** hallazgo se movio, no solo que un numero cambio.
+    diga **que** hallazgo se movio, no solo que un numero cambio. `usage` desglosa
+    el gasto (023 M1): sin separar *prompt*, *completion* y razonamiento no se
+    puede decidir que palanca del bucle se paga. `operations` cuenta las
+    peticiones servidas por herramienta y modo, para saber si el modelo usa
+    `outline` o `regex` en vez de suponerlo. `skipped` cuenta los ficheros que la
+    review dejo fuera, por motivo: una omision por presupuesto tambien cuesta
+    recall (criterio 12).
     """
 
     case: str
@@ -119,6 +125,9 @@ class Report:
     fingerprints: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     metrics: dict[str, float | None] = field(default_factory=dict)
+    usage: dict[str, int] = field(default_factory=dict)
+    operations: dict[str, int] = field(default_factory=dict)
+    skipped: dict[str, int] = field(default_factory=dict)
     matched: tuple[str, ...] = ()
     unmatched: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
@@ -352,13 +361,18 @@ def measure(
     tokens: int | None = None,
     coverage: float | None = None,
     fingerprints: Mapping[str, str] | None = None,
+    usage: Mapping[str, int] | None = None,
+    operations: Mapping[str, int] | None = None,
+    skipped: Mapping[str, SkipReason] | None = None,
 ) -> Report:
     """Traduce una corrida en el informe de seis metricas (E3, spec §5.4).
 
     `tokens` es el gasto del run (del `usage` del proveedor, E13) y `coverage` la
     fraccion de ficheros vistos por el `LlmReviewer` (E11); ambos llegan de fuera
     porque el harness puro no corre el grafo. Hasta que exista la instrumentacion,
-    `coverage=None` (nunca 0: «no medido» no es «no visto»).
+    `coverage=None` (nunca 0: «no medido» no es «no visto»). `usage`, `operations`
+    y `skipped` son la medida de coste de 023 M1: no entran en precision ni en
+    recall, solo explican de donde sale el numero.
     """
     result = match(case, published)
     inverted = _inverted(case.expected, result.expected)
@@ -394,12 +408,27 @@ def measure(
         fingerprints=dict(sorted((fingerprints or {}).items())),
         counts=counts,
         metrics=metrics,
+        usage=dict(sorted((usage or {}).items())),
+        operations=dict(sorted((operations or {}).items())),
+        skipped=dict(sorted(_skipped_by_reason(skipped).items())),
         matched=tuple(sorted(all_tp)),
         unmatched=tuple(sorted(finding.id for finding in result.unmatched)),
         missing=tuple(sorted(result.missing)),
         acceptable=tuple(sorted(result.acceptable)),
         inverted=tuple(sorted(inverted)),
     )
+
+
+def _skipped_by_reason(skipped: Mapping[str, SkipReason] | None) -> dict[str, int]:
+    """Ficheros omitidos por motivo (023 M1): `budget`, `too_large`, `ignored`, `failed`.
+
+    Se cuentan los ficheros, no los lotes: el presupuesto corta antes de agrupar,
+    asi que una omision de `budget` es exactamente lo que el recall pierde.
+    """
+    counts: dict[str, int] = {}
+    for reason in (skipped or {}).values():
+        counts[str(reason)] = counts.get(str(reason), 0) + 1
+    return counts
 
 
 def to_json(report: Report) -> str:
@@ -761,6 +790,38 @@ def _recorded_call(raw: Mapping[str, Any]) -> RecordedCall:
     )
 
 
+@dataclass
+class Usage:
+    """Gasto real de una corrida, desglosado por concepto (023 M1).
+
+    El proveedor reporta el `usage` por llamada y nadie lo suma: el informe solo
+    tenia el total. `reasoning` va **dentro** de `completion` en el proveedor y se
+    cuenta aparte porque es lo que se paga dos veces al reenviar contexto
+    (espec 023 §1). Se acumula en los puertos de *replay* y de grabacion para que
+    la misma tabla sirva en *replay* y en *live*.
+    """
+
+    prompt: int = 0
+    completion: int = 0
+    reasoning: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.prompt + self.completion
+
+    def add(self, reply: LlmReply) -> None:
+        self.prompt += reply.prompt_tokens
+        self.completion += reply.completion_tokens
+        self.reasoning += reply.reasoning_tokens
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "prompt": self.prompt,
+            "completion": self.completion,
+            "reasoning": self.reasoning,
+        }
+
+
 class ReplayLlm:
     """`LlmPort` de *replay*: devuelve las respuestas grabadas y aborta si no casan.
 
@@ -786,6 +847,7 @@ class ReplayLlm:
         # Tokens de las respuestas servidas: es el gasto del run (E13). El `usage`
         # real lo reporta el proveedor y viaja en la grabacion; en replay se suma.
         self.total_tokens = 0
+        self.usage = Usage()
         current = case_fingerprint(case)
         if recording.case_fingerprint != current:
             raise FingerprintMismatch(
@@ -822,6 +884,7 @@ class ReplayLlm:
             finish_reason=str(entry.get("finish_reason", "")),
         )
         self.total_tokens += reply.total_tokens
+        self.usage.add(reply)
         return reply
 
     def _next_entry(self, fingerprint: str) -> Mapping[str, Any]:
@@ -983,6 +1046,7 @@ class RecordingLlm:
         # (E0e); se expone para que `run_case` no tenga que recibirlo aparte.
         self.tracker = tracker
         self.total_tokens = 0
+        self.usage = Usage()
 
     def complete(
         self,
@@ -1019,6 +1083,30 @@ class RecordingLlm:
             turn=turn,
         )
         self.total_tokens += reply.total_tokens
+        self.usage.add(reply)
+        return reply
+
+
+class UsageMeter:
+    """Envuelve un `LlmPort` y acumula el gasto real de cada respuesta (023 M1).
+
+    Lo usa `make eval-live`, que no graba nada y aun asi necesita el desglose de
+    *prompt*/*completion*/razonamiento: el puerto del proveedor devuelve el `usage`
+    por llamada y no acumula. Delega todo lo demas en el puerto envuelto.
+    """
+
+    def __init__(self, inner: LlmPort) -> None:
+        self._inner = inner
+        self.total_tokens = 0
+        self.usage = Usage()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def complete(self, **kwargs: Any) -> LlmReply:
+        reply = self._inner.complete(**kwargs)
+        self.total_tokens += reply.total_tokens
+        self.usage.add(reply)
         return reply
 
 
@@ -1127,6 +1215,8 @@ class Run:
     inlined: int
     reviewed: tuple[str, ...] = ()
     skipped: dict[str, SkipReason] = field(default_factory=dict)
+    usage: dict[str, int] = field(default_factory=dict)
+    operations: dict[str, int] = field(default_factory=dict)
 
     @property
     def failed(self) -> dict[str, SkipReason]:
@@ -1196,13 +1286,18 @@ def run_case(
     )
     merged = tuple(state.get("merged", []))
     coverage = state.get("coverage")
-    tokens = getattr(llm, "total_tokens", 0)
+    usage = getattr(llm, "usage", None)
+    tokens = usage.total if isinstance(usage, Usage) else int(getattr(llm, "total_tokens", 0))
     return Run(
         published=merged,
         tokens=int(tokens),
         inlined=len(vcs.inlines),
         reviewed=tuple(coverage.reviewed) if coverage is not None else (),
         skipped=dict(coverage.skipped) if coverage is not None else {},
+        usage=usage.as_dict() if isinstance(usage, Usage) else {},
+        # Peticiones servidas por herramienta y modo: el revisor las acumula por
+        # review (023 M1); sin bucle de herramientas el mapa viene vacio.
+        operations=reviewer.operation_counts,
     )
 
 
@@ -1250,6 +1345,9 @@ def evaluate(
         tokens=run.tokens,
         coverage=coverage if coverage is not None else coverage_of(case, run.reviewed),
         fingerprints=fingerprints,
+        usage=run.usage,
+        operations=run.operations,
+        skipped=run.skipped,
     )
 
 

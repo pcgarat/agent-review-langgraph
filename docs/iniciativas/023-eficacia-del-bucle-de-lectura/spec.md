@@ -144,7 +144,7 @@ De ahí salen cuatro lecturas que ordenan el diseño:
 | E0g | **Hay cuatro superficies, no tres adaptadores**: *fixture*, VCS, workspace **y la API HTTP del runner**. Los argumentos nuevos (`path`, `ref`, `mode`, `files_only`, `glob`, `depth`) viajan de punta a punta, con **negociación de capacidad** entre worker y runner | Un worker nuevo contra un runner viejo **ignoraría `mode` en silencio**: el modelo creería que buscó en regex y recibiría literal. Eso es peor que no tener el modo. Además `_serve_*` hoy **descarta** los argumentos nuevos (`_serve_grep` solo lee `pattern`/`glob`, `_serve_read_file` no lee `mode`, `_serve_list_dir` no lee `glob`/`depth`): cambiar los adaptadores sin *forwarding* no cambia nada |
 | E0h | **El matcher no resuelve solapamientos por prioridad**: una etiqueta que casa a la vez `expected` y `must_not_report` (o dos `expected`) es **error al cargar el caso**, y toda etiqueta con `file` exige al menos un **fragmento discriminante** | `_attribute` consume `expected` antes que `must_not` y `LINE_TOLERANCE=5`: un hallazgo que casa ambos **nunca** cuenta como FP. Y un test negativo con dos defectos a más de 5 líneas pasa trivialmente. El test negativo tiene que poner los dos defectos **en la misma línea** (o exigir el fragmento) |
 | E1 | El alcance es la **eficacia de las tres herramientas**, no el catálogo | La medición dice que el fallo es la interfaz (regex, rangos, avisos), no la falta de operaciones |
-| E2 | `grep` gana `mode: "literal" \| "regex"`, con **default `literal`**, un **subconjunto portable único** (la **misma** cadena para `git grep -E` y para `re`: literales, `.` `*` `+` `?` `\|` `()` `[]` `^` `$`, con `\d`→`[0-9]`, `\w`→`[A-Za-z0-9_]`, `\s`→`[ \t\n\r\f\v]`), **rechazo explícito** de `[[:…]]`, `\b`, `<`/`>`, *lookaround* y retro-referencias, y **error explícito** para patrón inválido | Enmienda [016 Q1](../archivo/016-lector-de-contexto/spec.md). POSIX ERE puro **no** es un dialecto único: `[[:space:]]` en `re` es una clase con los caracteres `[ : s p a c e`, no un espacio, y `\b`/`\<` son extensiones GNU que `re` interpreta distinto. Traducir a dos emisores duplica la superficie de test; un subconjunto portable es **una** cadena, **una** tabla y **dos** pruebas. Un patrón inválido hoy devuelve «sin coincidencias», que el modelo lee como «aquí no hay nada» |
+| E2 | `grep` gana `mode: "literal" \| "regex"`, con **default `literal`**, un **subconjunto portable único** (la **misma** cadena para `git grep -E` y para `re`: literales, `.` `*` `+` `?` `\|` `()` `[]` `^` `$`, con `\d`→`[0-9]`, `\w`→`[A-Za-z0-9_]`, `\s`→ una clase con los caracteres de espacio literales), **rechazo explícito** de `[[:…]]`, `\b`, `<`/`>`, *lookaround* y retro-referencias, y **error explícito** para patrón inválido | Enmienda [016 Q1](../archivo/016-lector-de-contexto/spec.md). POSIX ERE puro **no** es un dialecto único: `[[:space:]]` en `re` es una clase con los caracteres `[ : s p a c e`, no un espacio, y `\b`/`\<` son extensiones GNU que `re` interpreta distinto. Traducir a dos emisores duplica la superficie de test; un subconjunto portable es **una** cadena, **una** tabla y **dos** pruebas. Un patrón inválido hoy devuelve «sin coincidencias», que el modelo lee como «aquí no hay nada». Enmienda 2026-10-17: `\s` no se emite como `[ \t\n\r\f\v]` —dentro de una clase, GNU grep lee `\t` como `t`, y una línea de `grep` nunca contiene `\n`— sino con esos caracteres **literales**; ver [ADR-0027](../../adr/0027-dialecto-portable-de-grep.md) |
 | E3 | `grep` se acota con `path` y `glob`, gana `files_only` y declara el **`ref`** (hoy `context_vcs` mezcla `head` y `base` en el mismo resultado) | El modelo ya manda `glob` (44 casos) pero no puede acotar a un subárbol; `files_only` evita traer 200 líneas para descubrir dos rutas. Un `grep` que mezcla refs puede servir una cita de `base` como si fuera `head` |
 | E4 | `read_file` **declara el corte** con el tamaño **real** que devuelve el lector (`ReadResult`), el rango servido y el consejo **propio de la operación**; `grep` y `list_dir` también declaran `mostrando N de M` y cómo acotar | Hoy `_budget_bytes` corta en silencio; `grep` corta a 200 coincidencias (`_DEFAULT_MAX_MATCHES`) y `list_dir` también se recorta, y ninguno lo dice. `M = len(content)` **mentiría**: el adaptador ya recortó antes. La media verdad es peor que un error: el modelo razona sobre lo que cree que vio |
 | E5 | `read_file` gana `mode: "full" \| "outline"`: índice de símbolos con su rango | Evita leer 1.179 líneas para localizar una función; es el ahorro con mejor relación valor/coste de la lista |
@@ -184,13 +184,16 @@ resuelve en `_serve_one` (E15), no en el puerto.
 **Dialecto único y portable.** El patrón que acepta el puerto es un subconjunto
 cuya semántica es **la misma** en `git grep -E` y en `re`: literales, `.`, `*`, `+`,
 `?`, `|`, `()`, `[]`, `^`, `$`, y los escapes `\d` → `[0-9]`, `\w` →
-`[A-Za-z0-9_]`, `\s` → `[ \t\n\r\f\v]`. Un solo normalizador emite **una** cadena
-canónica que ambos motores interpretan igual. Se **rechazan** con error visible:
-`[[:alpha:]]` y demás clases POSIX, `\b`, `\<`, `\>`, *lookaround* y
+`[A-Za-z0-9_]`, `\s` → una clase con los caracteres de espacio **literales**
+(espacio, tabulador, CR, FF y VT). Un solo normalizador (`portable_pattern`) emite
+**una** cadena canónica que ambos motores interpretan igual. Se **rechazan** con
+error visible: `[[:alpha:]]` y demás clases POSIX, `\b`, `\<`, `\>`, *lookaround* y
 retro-referencias. La tabla de equivalencia se prueba con el **mismo** patrón
 canónico en las cuatro superficies (fixture, VCS, workspace y API del runner);
 `VcsContextReader` se declara **lector parcial** y la equivalencia se predica sobre
-la intersección de ficheros visibles (E0g, R3b).
+la intersección de ficheros visibles (E0g, R3b). El contrato completo, incluida la
+decisión de no emitir `[ \t\n\r\f\v]` (GNU grep lee `\t` como `t` dentro de una
+clase), está en [ADR-0027](../../adr/0027-dialecto-portable-de-grep.md).
 
 ### 5.2 Aviso de corte
 
@@ -199,10 +202,15 @@ El lector devuelve un **`ReadResult`** (E0f), no un `str`:
 ```python
 class ReadResult:
     content: str
-    total_bytes: int          # tamaño REAL del fichero, antes de cualquier recorte
+    total_bytes: int | None   # tamaño REAL en bytes UTF-8, antes de rango y recorte
     truncated: bool           # el adaptador ya recortó
-    served: tuple[int, int] | None  # rango 1-based servido, si lo hay
+    served_range: tuple[int, int] | None  # rango 1-based servido, si lo hay
 ```
+
+`grep` y `list_dir` devuelven un **`ToolResult(items, total, truncated)`**: `items`
+lleva las coincidencias `path:line: texto` o los nombres, `total` cuenta lo que había
+antes del tope y `None` significa «no medido». Se declara en
+[ADR-0026](../../adr/0026-contrato-de-lectura-con-tamano-real.md).
 
 El bucle renderiza el aviso con ese dato; si `total_bytes` no está disponible
 (runner viejo, operación que no lo devuelve), lo **dice** en vez de inventarlo:

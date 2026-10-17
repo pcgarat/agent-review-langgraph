@@ -6,10 +6,21 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
-from agent_review.ports.context import ContextLimits, ContextReaderPort, Ref
+from agent_review.ports.context import (
+    ContextLimits,
+    ContextReaderPort,
+    GrepMode,
+    Reading,
+    ReadingKind,
+    ReadingRegistry,
+    ReadMode,
+    ReadResult,
+    Ref,
+    ToolError,
+)
 from agent_review.ports.llm import LlmPort, LlmTruncatedError
 
 logger = logging.getLogger(__name__)
@@ -45,6 +56,15 @@ _CORRECTIVE = (
     '{"tools": [ ... ]} o tu objeto final. Intentalo de nuevo.'
 )
 
+# Lo que el modelo ve cuando `READ_STATE` esta encendido (S1 de 023): el bloque va
+# tras los `<tool_result>`, al final del ultimo mensaje de usuario.
+_STATE_HINT = (
+    "\n\nDespues de cada turno de herramientas veras un bloque LECTURAS (esta "
+    "review) con lo que ya se te ha servido. Usalo para no releer y para citar "
+    "solo ficheros y lineas que aparezcan ahi."
+)
+_STATE_MAX = 20
+
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _CHARS_PER_TOKEN = 4
 
@@ -72,31 +92,48 @@ class LoopResult(BaseModel):
     """Resultado de un bucle de herramientas (016 §5.2).
 
     `data` es el objeto final ya parseado (el que reconoce `is_final`), o `None` si
-    el bucle cerro sin el. `served` es el registro de lo leido —la base de la
+    el bucle cerro sin el. `readings` es el registro de lo leido —la base de la
     comprobacion de citas— y `usage`, el gasto real acumulado de los turnos.
+    `operations` cuenta las peticiones **servidas** por herramienta y modo
+    (`read_file:outline`, `grep:regex`…): mide si la palanca se usa, no solo si
+    existe (023 M1).
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     text: str = ""
     data: dict[str, Any] | None = None
-    served: dict[str, str] = Field(default_factory=dict)
+    readings: ReadingRegistry = Field(default_factory=ReadingRegistry)
     turns: int = 0
     tool_calls: int = 0
     bytes_served: int = 0
     usage: int = 0
+    operations: dict[str, int] = Field(default_factory=dict)
     final_forced: bool = False
     forced_by_truncation: bool = False
     notes: list[str] = Field(default_factory=list)
 
-    def cite_served(self, citation: str) -> bool:
+    @property
+    def served(self) -> dict[str, str]:
+        """Vista compatible: rutas con cuerpo servido y su `ref`."""
+        return {r.path: r.ref for r in self.readings if r.kind in ("full", "range")}
+
+    def count_operation(self, operation: str) -> None:
+        """Suma una peticion servida a `operations` (023 M1)."""
+        self.operations[operation] = self.operations.get(operation, 0) + 1
+
+    def cite_served(self, citation: str, *, ref: Ref = "head") -> bool:
         """¿La cita `path:line …` referencia un fichero que el bucle sirvio? (W3).
 
         Es la comprobacion de
         [009 V4](../../../docs/iniciativas/archivo/009-verificador-adversarial/spec.md) y
         [014 H7](../../../docs/iniciativas/014-revisor-con-herramientas/spec.md),
         escrita una sola vez: una cita a un fichero no servido no vale como prueba.
+        Desde 023 S1 solo la prueba una lectura de **cuerpo** de esa `ref` que
+        cubra la linea: `outline` y `grep` no son el fichero.
         """
         path = citation_path(citation)
-        return bool(path) and path in self.served
+        return bool(path) and self.readings.serves(path, ref=ref, line=citation_line(citation))
 
 
 _CITATION = re.compile(r"^(?P<path>[^:\s]+):(?P<line>\d+)")
@@ -113,6 +150,12 @@ def citation_path(citation: str) -> str:
     return match.group("path") if match else ""
 
 
+def citation_line(citation: str) -> int | None:
+    """Linea de una cita `path:line…`; `None` si no la declara (023 S1)."""
+    match = _CITATION.match(citation.strip())
+    return int(match.group("line")) if match else None
+
+
 def run_tool_loop(
     llm: LlmPort,
     *,
@@ -126,6 +169,7 @@ def run_tool_loop(
     review_key: str = "",
     max_tokens: int = 4096,
     on_reasoning: Callable[[str], None] | None = None,
+    readings: ReadingRegistry | None = None,
 ) -> LoopResult:
     """Bucle *ReAct* en JSON sobre `LlmPort` (016 W2, §5.2).
 
@@ -142,10 +186,15 @@ def run_tool_loop(
 
     `on_reasoning` (014 RH7 / 021): se reenvia a cada `complete` para que el panel
     siga viendo el razonamiento turno a turno cuando el revisor usa herramientas.
+
+    `readings` (023 S1): registro compartido con el revisor. Con uno, lo leido en
+    lotes anteriores sigue probando citas; sin el, el bucle usa el suyo.
     """
     full_system = system + _BASE_SYSTEM
     options = options or ReviewToolsOptions()
-    result = LoopResult()
+    if options.read_state:
+        full_system += _STATE_HINT
+    result = LoopResult(readings=readings if readings is not None else ReadingRegistry())
     conversation = prompt
     corrective_used = False
     force_final = False
@@ -286,8 +335,36 @@ def _serve_tools(
                 f"por turno; {skipped} se descartaron.</tool_result>"
             )
     for entry in tools[:per_turn]:
-        chunks.append(_serve_one(entry, reader, limits, result))
+        chunks.append(_serve_one(entry, reader, limits, result, options))
+    if options.read_state:
+        state = _render_readings(result.readings)
+        if state:
+            chunks.append(state)
     return "\n" + "\n".join(chunks)
+
+
+def _render_readings(readings: ReadingRegistry, limit: int = _STATE_MAX) -> str:
+    """Bloque `LECTURAS (esta review)`; acotado y sin crecer con los turnos (S1)."""
+    entries = list(readings)
+    if not entries:
+        return ""
+    skipped = max(0, len(entries) - limit)
+    lines = ["LECTURAS (esta review):"]
+    for reading in entries[-limit:]:
+        lines.append(f"- {reading.path} ({reading.ref}): {_reading_label(reading)}")
+    if skipped:
+        lines.append(f"…[{skipped} lecturas anteriores omitidas]")
+    return "\n".join(lines)
+
+
+def _reading_label(reading: Reading) -> str:
+    if reading.kind == "full":
+        return "completo"
+    if reading.kind == "outline":
+        return "indice"
+    if reading.kind == "grep":
+        return "coincidencias"
+    return "lineas " + ", ".join(f"{low}-{high}" for low, high in reading.ranges)
 
 
 def _serve_one(
@@ -295,6 +372,7 @@ def _serve_one(
     reader: ContextReaderPort,
     limits: ContextLimits,
     result: LoopResult,
+    options: ReviewToolsOptions,
 ) -> str:
     if not isinstance(entry, dict):
         return _tool_error("peticion con formato invalido")
@@ -318,16 +396,22 @@ def _serve_one(
         args = {**args, "end": args["end_line"]}
     try:
         if tool == "read_file":
-            served, output = _serve_read_file(args, reader, limits, result)
+            served, output = _serve_read_file(args, reader, limits, result, options)
         elif tool == "grep":
-            served, output = _serve_grep(args, reader, limits, result)
+            served, output = _serve_grep(args, reader, limits, result, options)
         elif tool == "list_dir":
             served, output = _serve_list_dir(args, reader, limits, result)
         else:
             return _tool_error(f"herramienta desconocida: {tool or '?'}")
-    except Exception as exc:  # noqa: BLE001 - una herramienta no tumba la review (W8)
-        logger.warning("lector de contexto: fallo de %s (%s)", tool or "?", exc)
-        return _tool_error(f"la herramienta {tool or '?'} fallo")
+    except ToolError as exc:
+        # Peticion no servible (modo no soportado, parametro imposible): el mensaje
+        # es para el modelo, que puede corregirla en el siguiente turno.
+        return _tool_error(str(exc))
+    except ValueError as exc:
+        return _tool_error(f"peticion invalida para {tool or '?'}: {exc}")
+    except Exception:  # noqa: BLE001 - una herramienta no tumba la review (W8)
+        logger.exception("lector de contexto: fallo inesperado de %s", tool or "?")
+        return _tool_error(f"la herramienta {tool or '?'} fallo por un error inesperado")
     if served:
         result.tool_calls += 1
     return output
@@ -338,21 +422,102 @@ def _serve_read_file(
     reader: ContextReaderPort,
     limits: ContextLimits,
     result: LoopResult,
+    options: ReviewToolsOptions,
 ) -> tuple[bool, str]:
     path = str(entry.get("path", "")).strip()
     if not path:
         return False, _tool_error("read_file sin `path`")
     ref: Ref = "base" if str(entry.get("ref", "head")) == "base" else "head"
-    content = reader.read_file(
+    requested = str(entry.get("mode", "")).strip() or "full"
+    if requested not in ("full", "outline"):
+        return False, _tool_error(f"`mode={requested}` no existe; usa `full` u `outline`")
+    notes: list[str] = []
+    mode: ReadMode = requested  # type: ignore[assignment]
+    if mode == "outline" and not options.read_outline:
+        # Apagado, `outline` no se sirve como si fuera lo pedido, pero tampoco se
+        # convierte en un `full` mudo: el modelo ve por que y puede pedir el rango.
+        mode = "full"
+        notes.append(
+            _notice("mode=outline esta desactivado en esta review; se sirve el fichero completo")
+        )
+    reading = reader.read_file(
         path,
         ref=ref,
         start=_as_int(entry.get("start")),
         end=_as_int(entry.get("end")),
+        mode=mode,
     )
-    if content is None:
+    if reading is None:
         return False, _tool_error(f"no se pudo leer {path} ({ref})")
-    result.served[path] = ref
-    return True, _budget_bytes(path, content, limits, result)
+    advice = (
+        "usa start/end con el rango del indice"
+        if mode == "outline"
+        else "vuelve a pedirlo con start/end"
+    )
+    if options.truncation_notice and reading.truncated:
+        notes.append(_notice(_truncation_note(reading)))
+    before = result.bytes_served
+    output = _budget_bytes(path, reading.content, limits, result, notes=notes, advice=advice)
+    kind = _record_read(
+        result,
+        path=path,
+        ref=ref,
+        mode=mode,
+        reading=reading,
+        served_chars=result.bytes_served - before,
+    )
+    if kind is not None:
+        result.count_operation(f"read_file:{kind}")
+    return True, output
+
+
+def _truncation_note(reading: ReadResult) -> str:
+    """Aviso de corte de una lectura, con el tamaño **real** que dio el lector.
+
+    `total_bytes` puede no conocerse (runner viejo): se dice, no se inventa. Con
+    rango servido, el total es el del fichero y decirlo seria confundir el rango
+    con el fichero.
+    """
+    served = len(reading.content.encode("utf-8"))
+    if reading.served_range is not None:
+        low, high = reading.served_range
+        return f"cortado a {served} bytes del rango {low}-{high}; pide un rango mas pequeno"
+    if reading.total_bytes is None:
+        return f"cortado a {served} bytes de un fichero de tamano desconocido; usa start/end"
+    return f"cortado a {served} de {reading.total_bytes} bytes; vuelve a pedirlo con start/end"
+
+
+def _record_read(
+    result: LoopResult,
+    *,
+    path: str,
+    ref: Ref,
+    mode: ReadMode,
+    reading: ReadResult,
+    served_chars: int,
+) -> ReadingKind | None:
+    """Anota la lectura y **que parte** se sirvio: un corte no prueba el fichero (S1).
+
+    Devuelve el tipo servido (`full`, `range` u `outline`) para que el bucle cuente
+    la operacion con el mismo criterio (023 M1); `None` si no se sirvio nada.
+    """
+    if served_chars <= 0:
+        return None
+    kind: ReadingKind = "full"
+    ranges: tuple[tuple[int, int], ...] = ()
+    clipped = reading.truncated or served_chars < len(reading.content)
+    served_lines = len(reading.content[:served_chars].splitlines())
+    if mode == "outline":
+        kind = "outline"
+    elif reading.served_range is not None:
+        low, high = reading.served_range
+        kind = "range"
+        ranges = ((low, min(high, low + max(0, served_lines) - 1) if clipped else high),)
+    elif clipped:
+        kind = "range"
+        ranges = ((1, max(1, served_lines)),)
+    result.readings.record(Reading(path=path, ref=ref, kind=kind, ranges=ranges))
+    return kind
 
 
 def _serve_grep(
@@ -360,21 +525,60 @@ def _serve_grep(
     reader: ContextReaderPort,
     limits: ContextLimits,
     result: LoopResult,
+    options: ReviewToolsOptions,
 ) -> tuple[bool, str]:
     pattern = str(entry.get("pattern", "")).strip()
     if not pattern:
         return False, _tool_error("grep sin `pattern`")
     glob = str(entry.get("glob", "")).strip() or None
-    matches = reader.grep(pattern, glob=glob)
-    # Un `grep` sirve (parcialmente) cada fichero que devuelve: citarlo es legitimo.
+    path = str(entry.get("path", "")).strip() or None
+    ref: Ref = "base" if str(entry.get("ref", "head")) == "base" else "head"
+    # El flag `GREP_MODE` fija el **default**; si el modelo pide un modo, manda el
+    # suyo: el flag no oculta la capacidad (E11b).
+    requested = str(entry.get("mode", "")).strip()
+    if requested and requested not in ("literal", "regex"):
+        return False, _tool_error(f"`mode={requested}` no existe; usa `literal` o `regex`")
+    mode: GrepMode = requested or options.grep_mode  # type: ignore[assignment]
+    files_only = entry.get("files_only") is True
+    found = reader.grep(
+        pattern,
+        glob=glob,
+        path=path,
+        ref=ref,
+        mode=mode,
+        files_only=files_only,
+    )
+    matches = found.items
+    # Un `grep` sirve coincidencias, no el cuerpo: se anota para el bloque de
+    # lecturas, pero no prueba una cita (S1). Cuenta como uso del modo aunque no
+    # encuentre nada: el modelo gastó la peticion igual (M1).
+    result.count_operation(f"grep:{mode}")
     for match in matches:
-        path = citation_path(match)
-        if path:
-            result.served.setdefault(path, "head")
+        cited = citation_path(match) if not files_only else match
+        if cited:
+            result.readings.record(Reading(path=cited, ref=ref, kind="grep"))
     if not matches:
         return True, "<tool_result>sin coincidencias</tool_result>"
     body = "\n".join(matches)
-    return True, _budget_bytes(f"grep {pattern}", body, limits, result)
+    notes = (
+        [
+            _notice(
+                _tool_result_note(
+                    "grep", len(matches), found.total, "acota con path/glob/files_only"
+                )
+            )
+        ]
+        if found.truncated
+        else []
+    )
+    return True, _budget_bytes(
+        f"grep {pattern}",
+        body,
+        limits,
+        result,
+        notes=notes,
+        advice="acota con path/glob/files_only",
+    )
 
 
 def _serve_list_dir(
@@ -384,23 +588,87 @@ def _serve_list_dir(
     result: LoopResult,
 ) -> tuple[bool, str]:
     path = str(entry.get("path", "")).strip()
-    names = reader.list_dir(path)
+    glob = str(entry.get("glob", "")).strip() or None
+    depth = _as_int(entry.get("depth"))
+    listing = reader.list_dir(path, glob=glob, depth=depth if depth is not None else 1)
+    names = listing.items
     if not names:
-        return False, _tool_error(f"directorio vacio o inexistente: {path or '.'}")
+        return False, _tool_error(
+            f"directorio vacio: {path or '.'}; si esperabas contenido, usa `grep` con `path`"
+        )
+    result.count_operation("list_dir")
     body = "\n".join(names)
-    return True, _budget_bytes(f"list_dir {path or '.'}", body, limits, result)
+    notes = (
+        [_notice(_tool_result_note("list_dir", len(names), listing.total, "usa glob/depth"))]
+        if listing.truncated
+        else []
+    )
+    return True, _budget_bytes(
+        f"list_dir {path or '.'}", body, limits, result, notes=notes, advice="acota con glob/depth"
+    )
+
+
+def _tool_result_note(kind: str, served: int, total: int | None, advice: str) -> str:
+    """`mostrando N de M` con el total que dio el lector, o declarándolo desconocido.
+
+    El consejo de recuperación es **propio de cada operación**: el de `grep` no
+    sirve para `list_dir` y viceversa (E4).
+    """
+    if total is None:
+        return f"{kind}: mostrando {served}; el total no se pudo medir; {advice}"
+    return f"{kind}: mostrando {served} de {total}; {advice}"
+
+
+def _notice(text: str) -> str:
+    return f"…[{text}]"
+
+
+def _clip(content: str, limits: ContextLimits | None, result: LoopResult) -> tuple[str, bool]:
+    """Recorta por el tope de bytes del lote; devuelve el texto y si se cortó.
+
+    Se cuenta en caracteres, como el tope de 016: cambiar la unidad movería el
+    punto de corte de todas las reviews ya medidas, y el aviso declara bytes del
+    tramo servido, que es otra cosa y sí se cuenta en bytes.
+    """
+    if limits is None:
+        result.bytes_served += len(content)
+        return content, False
+    remaining = limits.max_bytes - result.bytes_served
+    if remaining <= 0:
+        return "", True
+    if len(content) <= remaining:
+        result.bytes_served += len(content)
+        return content, False
+    text = content[:remaining]
+    result.bytes_served += len(text)
+    return text, True
 
 
 def _budget_bytes(
-    label: str, content: str, limits: ContextLimits | None, result: LoopResult
+    label: str,
+    content: str,
+    limits: ContextLimits | None,
+    result: LoopResult,
+    *,
+    notes: Sequence[str] = (),
+    advice: str = "",
 ) -> str:
-    """Delimita el resultado y cuenta bytes; avisa si el tramo supera el tope."""
-    text = content
-    if limits is not None and result.bytes_served + len(text) > limits.max_bytes:
-        remaining = max(0, limits.max_bytes - result.bytes_served)
-        text = text[:remaining]
-    result.bytes_served += len(text)
-    return f"<tool_result>{label}\n{text}</tool_result>"
+    """Delimita el resultado, cuenta bytes y declara **cada** corte con su salida.
+
+    El modelo no puede distinguir quien recortó (adaptador o tope del lote) y no
+    debe intentarlo: un corte mudo se lee como «esto es todo» (E4).
+    """
+    text, clipped = _clip(content, limits, result)
+    lines = [f"<tool_result>{label}\n{text}", *notes]
+    if clipped:
+        served = len(text.encode("utf-8"))
+        lines.append(
+            _notice(
+                f"cortado por el tope del lote a {served} bytes; {advice or 'acota la peticion'}"
+            )
+        )
+    lines.append("</tool_result>")
+    return "\n".join(lines)
 
 
 def _tool_error(message: str) -> str:

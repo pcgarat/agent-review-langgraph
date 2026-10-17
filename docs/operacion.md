@@ -156,9 +156,12 @@ hoy.
 | `REVIEW_TOOLS_PRECACHE_CONTEXT` | `on` | L1 precargado en el bucle | baja el *prompt* base del lote; el modelo debe leer lo que necesite (cuesta turnos) |
 | `REVIEW_TOOLS_IO_CACHE` | `off` | caché de E/S por review (ahorra E/S, no *prompt*) | cada lote vuelve a leer del repositorio |
 
-Mientras 023 no cierre G1/R1/S1/C1, `GREP_MODE`, `READ_OUTLINE`, `READ_STATE`,
-`TRUNCATION_NOTICE`, `PRECACHE_CONTEXT` e `IO_CACHE` están declarados y cableados
-pero **todavía no cambian lo servido**; `CALLS_PER_TURN` y `STRICT_CALLS` ya actúan.
+Desde 023, todas estas banderas **actúan**: `GREP_MODE` y `CALLS_PER_TURN` fijan
+defaults, `STRICT_CALLS` cambia el descarte por un error explícito, `READ_OUTLINE`,
+`READ_STATE`, `TRUNCATION_NOTICE`, `PRECACHE_CONTEXT` e `IO_CACHE` cambian lo
+servido o el *prompt* con el sentido de la tabla. Con `GREP_MODE=literal` (el
+default) un `mode="regex"` explícito del modelo se atiende igual; el flag solo fija
+el default. Ninguna cambia lo que el *prompt* anuncia que existe.
 
 **Para activar la Fase 3** hacen falta las cinco cosas:
 

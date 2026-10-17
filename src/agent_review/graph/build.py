@@ -49,6 +49,7 @@ from agent_review.fix.node import apply_resolutions, build_wave, dispatch_fixes
 from agent_review.graph.wrapper import CancelCheck, node_wrapper
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.chat import ChatPort
+from agent_review.ports.context import Reading, ReadingRegistry
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.reviewer import ReviewerPort
@@ -497,7 +498,8 @@ def _citations_served(evidence: list[str], files_read: list[str]) -> bool:
     """¿Toda la evidencia cita un fichero que el verificador sirvio? (009 V4)."""
     if not evidence:
         return False
-    served = LoopResult(served={path: "head" for path in files_read})
+    # El verificador solo publica rutas: se dan por leidas enteras, como antes.
+    served = LoopResult(readings=ReadingRegistry([Reading(path=p) for p in files_read]))
     return all(served.cite_served(item) for item in evidence)
 
 

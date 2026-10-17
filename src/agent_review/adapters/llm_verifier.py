@@ -150,7 +150,7 @@ def _finding_id(finding: Finding) -> str:
 
 def _to_result(finding: Finding, loop: LoopResult) -> VerificationResult:
     finding_id = _finding_id(finding)
-    files_read = sorted(loop.served)
+    files_read = loop.readings.files_read()
     if loop.data is None:
         reason = (
             "sin veredicto antes del tope"

@@ -13,7 +13,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent_review.ports.context import Ref
+from agent_review.ports.context import (
+    READER_CAPABILITIES,
+    GrepMode,
+    ReadMode,
+    Ref,
+    ToolError,
+)
 from agent_review.ports.sandbox import VerifyReport, VerifyRequest
 from agent_review.profile import context_denylist, load_profile
 from agent_review.sandbox_runner.console import ConsoleBuffer
@@ -128,26 +134,45 @@ class OpenWorkspaceRequest(BaseModel):
 class WorkspaceResponse(BaseModel):
     workspace_id: str
     expires_at: float
+    # Lo que el runner sabe atender de los campos nuevos (023 E0g). Un runner viejo
+    # no lo manda: el worker lo lee como conjunto vacio y rechaza los campos que no
+    # anuncie en vez de suponer que se aplicaron.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class GrepRequest(BaseModel):
     pattern: str
     glob: str | None = None
+    path: str | None = None
+    ref: Ref = "head"
+    mode: GrepMode = "literal"
+    files_only: bool = False
     max_matches: int | None = Field(default=None, ge=1)
 
 
 class GrepResponse(BaseModel):
     matches: list[str] = Field(default_factory=list)
+    # `total` es lo que `git grep` encontro antes del tope; `None` si el runner no
+    # pudo contarlo. `truncated` dice si `matches` es solo una parte (023 E4).
+    total: int | None = None
+    truncated: bool = False
 
 
 class TreeResponse(BaseModel):
     entries: list[str] = Field(default_factory=list)
+    total: int | None = None
+    truncated: bool = False
 
 
 class FileResponse(BaseModel):
     path: str
     ref: Ref
     content: str
+    # Tamaño REAL del blob, antes del recorte y del rango: es lo que permite decir
+    # «cortado a 12 000 de 45 701 bytes» sin mentir (023 E4, R8).
+    total_bytes: int | None = None
+    truncated: bool = False
+    served_range: tuple[int, int] | None = None
 
 
 _workspaces: ReadWorkspaceManager | None = None
@@ -194,7 +219,11 @@ def open_workspace(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except ReadWorkspaceError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    return WorkspaceResponse(workspace_id=info.workspace_id, expires_at=info.expires_at)
+    return WorkspaceResponse(
+        workspace_id=info.workspace_id,
+        expires_at=info.expires_at,
+        capabilities=list(READER_CAPABILITIES),
+    )
 
 
 @app.get("/workspaces/{workspace_id}/file")
@@ -204,6 +233,7 @@ def read_workspace_file(
     ref: Ref = "head",
     start: int | None = None,
     end: int | None = None,
+    mode: ReadMode = "full",
     authorization: str | None = Header(default=None),
 ) -> FileResponse:
     """`git show <sha>:<path>`. `404` si no existe, `403` si la ruta esta vetada."""
@@ -211,12 +241,21 @@ def read_workspace_file(
     _verify_token(settings, authorization)
     workspace = _get_workspace(settings, workspace_id)
     try:
-        content = workspace.show_file(path, ref=ref, start=start, end=end)
+        result = workspace.show_file(path, ref=ref, start=start, end=end, mode=mode)
     except PathDenied as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
-    if content is None:
+    except (ToolError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no existe {path} en {ref}")
-    return FileResponse(path=path, ref=ref, content=content)
+    return FileResponse(
+        path=path,
+        ref=ref,
+        content=result.content,
+        total_bytes=result.total_bytes,
+        truncated=result.truncated,
+        served_range=result.served_range,
+    )
 
 
 @app.post("/workspaces/{workspace_id}/grep")
@@ -229,23 +268,52 @@ def grep_workspace(
     settings = get_settings()
     _verify_token(settings, authorization)
     workspace = _get_workspace(settings, workspace_id)
-    matches = workspace.grep(request.pattern, glob=request.glob)
+    try:
+        result = workspace.grep(
+            request.pattern,
+            glob=request.glob,
+            path=request.path,
+            ref=request.ref,
+            mode=request.mode,
+            files_only=request.files_only,
+        )
+    except ToolError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    matches = list(result.items)
     if request.max_matches is not None:
         matches = matches[: request.max_matches]
-    return GrepResponse(matches=matches)
+    return GrepResponse(
+        matches=matches,
+        total=result.total,
+        truncated=result.truncated or len(matches) < len(result.items),
+    )
 
 
 @app.get("/workspaces/{workspace_id}/tree")
 def tree_workspace(
     workspace_id: str,
     path: str = Query(default=""),
+    glob: str | None = Query(default=None),
+    depth: int = Query(default=1, ge=1),
     authorization: str | None = Header(default=None),
 ) -> TreeResponse:
-    """`git ls-tree` del directorio a `head_sha`."""
+    """`git ls-tree` del directorio a `head_sha`; `depth` y `glob` acotan."""
     settings = get_settings()
     _verify_token(settings, authorization)
     workspace = _get_workspace(settings, workspace_id)
-    return TreeResponse(entries=workspace.tree(path))
+    try:
+        result = workspace.tree(path, glob=glob, depth=depth)
+    except ToolError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return TreeResponse(
+        entries=list(result.items),
+        total=result.total,
+        truncated=result.truncated,
+    )
 
 
 @app.delete("/workspaces/{workspace_id}")

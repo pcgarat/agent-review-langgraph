@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_review.adapters.context_cache import CacheKey, CacheStats, CachingReader
 from agent_review.adapters.diff_parser import (
     FileDiff,
     file_key,
@@ -20,6 +21,7 @@ from agent_review.adapters.text_utils import guess_protected_subject, shorten_ti
 from agent_review.adapters.tool_loop import (
     LoopResult,
     ReviewToolsOptions,
+    citation_line,
     citation_path,
     run_tool_loop,
 )
@@ -37,7 +39,12 @@ from agent_review.domain.models import (
 )
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
-from agent_review.ports.context import ContextLimits, ContextReaderPort
+from agent_review.ports.context import (
+    ContextLimits,
+    ContextReaderPort,
+    ReadingRegistry,
+    ReadResult,
+)
 from agent_review.ports.llm import FingerprintMismatch, LlmError, LlmPort, LlmReply
 from agent_review.ports.reasoning import (
     ReasoningEvent,
@@ -290,12 +297,37 @@ class LlmReviewer:
         self._diff = ""
         # Ultimo bucle del lote (014): `served` y metricas para el ReviewerResult.
         self._last_loop: LoopResult | None = None
+        # Registro de lecturas de **la review** (023 S1): sobrevive a los lotes y
+        # se vacia al empezar cada una, porque el worker reutiliza la instancia.
+        self._readings = ReadingRegistry()
+        # Cache de E/S por review (023 C1): solo `read_file`, y solo si el flag
+        # esta encendido. Las estadisticas existen para poder medir el ahorro.
+        self._io_cache: dict[CacheKey, ReadResult | None] | None = None
+        self._io_stats = CacheStats()
+        # Peticiones servidas por herramienta y modo en esta review (023 M1):
+        # mide si el modelo usa la palanca (`outline`, `regex`), no si existe.
+        self._operations: dict[str, int] = {}
         # Rutas de L1 omitidas por tope en esta review (cobertura / diagnostico).
         self.context_omitted: list[str] = []
 
     # Revisa por lotes y declara lo que no lee (012): si la persona cae entera, el
     # nodo marca sus ficheros como `failed` en vez de callar.
     declares_coverage = True
+
+    @property
+    def io_cache_hits(self) -> int:
+        """Aciertos de la cache de E/S de esta review (023 C1)."""
+        return self._io_stats.hits
+
+    @property
+    def io_cache_misses(self) -> int:
+        """Lecturas que fueron al lector: E/S real de esta review (023 C1)."""
+        return self._io_stats.misses
+
+    @property
+    def operation_counts(self) -> dict[str, int]:
+        """Peticiones servidas por herramienta y modo en esta review (023 M1)."""
+        return dict(self._operations)
 
     def review(
         self,
@@ -322,6 +354,12 @@ class LlmReviewer:
         self.tokens_used = 0
         self.context_omitted = []
         self._last_loop = None
+        # Una review no valida citas de la anterior (S1): el registro es por review.
+        self._readings.clear()
+        # La cache de E/S tambien es por review (C1): el contador se reinicia.
+        self._io_cache = {} if self._tool_options.io_cache else None
+        self._io_stats = CacheStats()
+        self._operations = {}
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
@@ -360,9 +398,11 @@ class LlmReviewer:
                     missing.setdefault(path, SkipReason.FAILED)
                 continue
             files = parse_unified_diff(text)
-            served = self._last_loop.served if self._last_loop is not None else None
+            served = self._last_loop.readings if self._last_loop is not None else None
             findings.extend(
-                f for f in (_to_finding(e, files, served=served) for e in entries) if f is not None
+                f
+                for f in (_to_finding(e, files, readings=served) for e in entries)
+                if f is not None
             )
             if tool_usage is not None and self._last_loop is not None:
                 tool_usage = _accumulate_usage(tool_usage, self._last_loop)
@@ -491,11 +531,18 @@ class LlmReviewer:
         self._last_loop = None
         # El modelo ve el diff numerado (021 R13); el anclaje usa el original.
         # L1 (008 CX8): ficheros + docs bajo tope propio; el diff no se recorta.
+        # Con herramientas, `PRECACHE_CONTEXT=off` deja el CONTEXT fuera del prompt:
+        # el modelo lee lo que necesita (cuesta turnos) y el prompt base baja (C1).
         numbered = number_diff(diff)
-        l1, omitted = pack_l1_context(
-            paths=list(paths or ()),
-            context=self._context,
-            max_chars=self._context_max_chars,
+        precache = self._reader_factory is None or self._tool_options.precache_context
+        l1, omitted = (
+            pack_l1_context(
+                paths=list(paths or ()),
+                context=self._context,
+                max_chars=self._context_max_chars,
+            )
+            if precache
+            else ("", [])
         )
         if omitted:
             for path in omitted:
@@ -541,6 +588,8 @@ class LlmReviewer:
         # El presupuesto compartido lo reserva el bucle turno a turno (sin doble
         # reserva). Un `False` de `reserve` fuerza el turno final (016/017 B7).
         reader = factory(self._repo, self._head_sha, self._base_sha, self._diff)
+        if self._io_cache is not None:
+            reader = CachingReader(reader, cache=self._io_cache, stats=self._io_stats)
         try:
             loop = run_tool_loop(
                 self._llm,
@@ -554,6 +603,7 @@ class LlmReviewer:
                 review_key=review_key,
                 max_tokens=self._max_tokens,
                 on_reasoning=on_reasoning,
+                readings=self._readings,
             )
         except FingerprintMismatch:
             # El replay no casa: es un fallo de medida, no una review limpia (D23).
@@ -569,6 +619,8 @@ class LlmReviewer:
             return None
         self._last_loop = loop
         self.tokens_used += loop.usage
+        for operation, count in loop.operations.items():
+            self._operations[operation] = self._operations.get(operation, 0) + count
         # Preferir el objeto final parseado: el texto crudo puede traer prosa alrededor.
         text = (
             json.dumps(loop.data, ensure_ascii=False)
@@ -694,21 +746,29 @@ def _is_findings(data: dict[str, Any]) -> bool:
 
 
 def _accumulate_usage(acc: ToolUsage, loop: LoopResult) -> ToolUsage:
-    """Suma metricas del bucle entre lotes (014 H8)."""
+    """Suma metricas del bucle entre lotes (014 H8).
+
+    `files_read` cuenta solo cuerpos (`full`/`range`): un `outline` o un `grep` no
+    es haber leido el fichero (023 S1).
+    """
     return ToolUsage(
         turns=acc.turns + loop.turns,
         tool_calls=acc.tool_calls + loop.tool_calls,
         bytes_served=acc.bytes_served + loop.bytes_served,
-        files_read=list(dict.fromkeys([*acc.files_read, *sorted(loop.served)])),
+        files_read=list(dict.fromkeys([*acc.files_read, *loop.readings.files_read()])),
     )
 
 
-def _filter_served_evidence(evidence: list[str], served: dict[str, str]) -> list[str]:
-    """Quita citas `path:line` a ficheros que el bucle no sirvio (014 H7)."""
+def _filter_served_evidence(evidence: list[str], readings: ReadingRegistry) -> list[str]:
+    """Quita citas `path:line` que el bucle no sirvio (014 H7, 023 S1).
+
+    Una lectura de cuerpo de la misma `ref` que cubre la linea; `outline`, `grep`
+    y las lecturas de `base` no prueban un hallazgo sobre `head`.
+    """
     kept: list[str] = []
     for item in evidence:
         path = citation_path(item)
-        if path and path not in served:
+        if path and not readings.serves(path, line=citation_line(item)):
             continue
         kept.append(item)
     return kept
@@ -718,7 +778,7 @@ def _to_finding(
     entry: dict[str, Any],
     files: dict[str, FileDiff],
     *,
-    served: dict[str, str] | None = None,
+    readings: ReadingRegistry | None = None,
 ) -> Finding | None:
     title = str(entry.get("title", "")).strip()
     why = str(entry.get("why_it_matters", "")).strip()
@@ -733,8 +793,8 @@ def _to_finding(
     evidence_in = [
         str(item).strip() for item in _as_list(entry.get("evidence")) if str(item).strip()
     ]
-    if served is not None:
-        evidence_in = _filter_served_evidence(evidence_in, served)
+    if readings is not None:
+        evidence_in = _filter_served_evidence(evidence_in, readings)
     cite = _cite_text(evidence_in)
     # 008 CX5 / D2 / D13: L0 manda; el `pre_existing` del modelo se ignora.
     l0 = evaluate_l0(file_diff, hint=hint, cite=cite)

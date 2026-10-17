@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_review.ports.context import ToolError
 from agent_review.sandbox_runner.read_workspace import (
     PathDenied,
     ReadWorkspace,
@@ -84,12 +85,31 @@ def workspace(manager: ReadWorkspaceManager, remote: dict[str, str]) -> ReadWork
 # --- `ReadWorkspace`: operaciones de git sobre el clon *bare* ---------------------
 
 
+def _text(workspace: ReadWorkspace, path: str, **kwargs) -> str:
+    reading = workspace.show_file(path, **kwargs)
+    assert reading is not None
+    return reading.content
+
+
 def test_show_file_devuelve_el_contenido(workspace: ReadWorkspace) -> None:
-    assert workspace.show_file(APP) == "import os\n\nneedle = 1\nprint(needle)\n"
+    assert _text(workspace, APP) == "import os\n\nneedle = 1\nprint(needle)\n"
+
+
+def test_show_file_declara_el_tamano_real_antes_de_recortar(workspace: ReadWorkspace) -> None:
+    expected = "import os\n\nneedle = 1\nprint(needle)\n"
+    reading = workspace.show_file(APP)
+    assert reading is not None
+    assert reading.total_bytes == len(expected.encode("utf-8"))
+    assert reading.truncated is False
+    assert reading.served_range is None
 
 
 def test_show_file_con_rango(workspace: ReadWorkspace) -> None:
-    assert workspace.show_file(APP, start=3, end=3) == "needle = 1"
+    reading = workspace.show_file(APP, start=3, end=3)
+    assert reading is not None
+    assert reading.content == "needle = 1"
+    assert reading.served_range == (3, 3)
+    assert reading.total_bytes == len(b"import os\n\nneedle = 1\nprint(needle)\n")
 
 
 def test_show_file_inexistente_devuelve_none(workspace: ReadWorkspace) -> None:
@@ -97,7 +117,30 @@ def test_show_file_inexistente_devuelve_none(workspace: ReadWorkspace) -> None:
 
 
 def test_show_file_lee_el_lado_base(workspace: ReadWorkspace) -> None:
-    assert workspace.show_file(APP, ref="base") == "import os\n\nneedle = 1\n"
+    assert _text(workspace, APP, ref="base") == "import os\n\nneedle = 1\n"
+
+
+def test_show_file_rechaza_un_rango_imposible(workspace: ReadWorkspace) -> None:
+    with pytest.raises(ValueError):
+        workspace.show_file(APP, start=0)
+
+
+def test_show_file_en_outline_da_rangos_y_el_rango_se_lee(workspace: ReadWorkspace) -> None:
+    index = workspace.show_file("src/util.py", mode="outline")
+    assert index is not None
+    assert "1-2  def helper()" in index.content
+    assert index.total_bytes == len(b"def helper():\n    return 1\n")
+    assert index.truncated is False
+    assert _text(workspace, "src/util.py", start=1, end=2) == "def helper():\n    return 1"
+
+
+def test_show_file_outline_de_un_fichero_sin_indexador_es_error(
+    workspace: ReadWorkspace,
+) -> None:
+    with pytest.raises(ToolError, match="indexar"):
+        workspace.show_file(README, mode="outline")
+    with pytest.raises(ValueError):
+        workspace.show_file(APP, start=5, end=2)
 
 
 def test_show_file_de_una_ruta_vetada_lanza_path_denied(workspace: ReadWorkspace) -> None:
@@ -106,30 +149,72 @@ def test_show_file_de_una_ruta_vetada_lanza_path_denied(workspace: ReadWorkspace
 
 
 def test_grep_devuelve_path_linea_texto_sin_el_sha(workspace: ReadWorkspace) -> None:
-    assert workspace.grep("needle") == [
+    found = workspace.grep("needle")
+    assert found.items == (
         f"{APP}:3: needle = 1",
         f"{APP}:4: print(needle)",
-    ]
+    )
+    assert found.total == 2
+    assert found.truncated is False
 
 
 def test_grep_no_sale_del_arbol_ni_devuelve_vetadas(workspace: ReadWorkspace) -> None:
-    assert workspace.grep("SECRET") == []
+    assert workspace.grep("SECRET").items == ()
 
 
 def test_grep_acota_por_glob(workspace: ReadWorkspace) -> None:
-    assert workspace.grep("needle", glob="*.py") == [
+    assert workspace.grep("needle", glob="**/*.py").items == (
         f"{APP}:3: needle = 1",
         f"{APP}:4: print(needle)",
-    ]
-    assert workspace.grep("needle", glob="*.md") == []
+    )
+    # `*` no cruza `/`: el glob se mide desde la raiz y no como un pathspec de git.
+    assert workspace.grep("needle", glob="*.py").items == ()
+    assert workspace.grep("needle", glob="*.md").items == ()
+
+
+def test_grep_glob_se_mide_desde_path(workspace: ReadWorkspace) -> None:
+    assert workspace.grep("needle", path="src", glob="*.py").items == (
+        f"{APP}:3: needle = 1",
+        f"{APP}:4: print(needle)",
+    )
+    assert workspace.grep("needle", path="src", glob="**/*.py").items == ()
+    assert workspace.grep("needle", path="src", glob="*.md").items == ()
+
+
+def test_grep_en_regex_usa_el_dialecto_portable(workspace: ReadWorkspace) -> None:
+    assert workspace.grep(r"needle = \d", mode="regex").items == (f"{APP}:3: needle = 1",)
+    # `\s` no acaba en `[ \t…]`: GNU grep leeria `\t` como la letra `t`.
+    assert workspace.grep(r"print\(needle\)", mode="regex").items == (f"{APP}:4: print(needle)",)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"[[:alpha:]]+", r"\bneedle\b", r"(?=needle)", r"(needle)\1", "needle("],
+)
+def test_grep_rechaza_un_patron_no_portable(workspace: ReadWorkspace, pattern: str) -> None:
+    with pytest.raises(ToolError):
+        workspace.grep(pattern, mode="regex")
+
+
+def test_grep_avisa_si_git_no_responde(workspace: ReadWorkspace, monkeypatch) -> None:
+    monkeypatch.setattr(workspace, "_run", lambda args: None)
+    with pytest.raises(ToolError, match="tiempo"):
+        workspace.grep("needle")
+
+
+def test_grep_avisa_si_git_falla(workspace: ReadWorkspace, monkeypatch) -> None:
+    failed = subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="boom")
+    monkeypatch.setattr(workspace, "_run", lambda args: failed)
+    with pytest.raises(ToolError, match="boom"):
+        workspace.grep("needle")
 
 
 def test_grep_con_patron_vacio_no_devuelve_nada(workspace: ReadWorkspace) -> None:
-    assert workspace.grep("") == []
+    assert workspace.grep("").items == ()
 
 
 def test_grep_sin_coincidencias_devuelve_lista_vacia(workspace: ReadWorkspace) -> None:
-    assert workspace.grep("no-aparece") == []
+    assert workspace.grep("no-aparece").items == ()
 
 
 def test_grep_respeta_el_tope_de_coincidencias(remote: dict[str, str], tmp_path: Path) -> None:
@@ -138,25 +223,54 @@ def test_grep_respeta_el_tope_de_coincidencias(remote: dict[str, str], tmp_path:
         opened = info.open(repo=remote["repo"], head_sha=remote["head"])
         small = info.get(opened.workspace_id)
         small._max_matches = 1
-        assert len(small.grep("needle")) == 1
+        found = small.grep("needle")
+        assert len(found.items) == 1
+        assert found.total == 2, "el total cuenta antes del tope"
+        assert found.truncated is True
     finally:
         info.close()
 
 
 def test_tree_lista_nombres_directos(workspace: ReadWorkspace) -> None:
-    assert workspace.tree("") == ["README.md", "config", "src"]
-    assert workspace.tree("src") == ["app.py", "util.py"]
+    assert workspace.tree("").items == ("README.md", "config", "src")
+    listing = workspace.tree("src")
+    assert listing.items == ("app.py", "util.py")
+    assert listing.total == 2
 
 
-def test_tree_de_un_directorio_inexistente_devuelve_vacio(workspace: ReadWorkspace) -> None:
-    assert workspace.tree("no/existe") == []
+def test_tree_de_un_directorio_inexistente_es_un_error(workspace: ReadWorkspace) -> None:
+    # Vacio e inexistente no son lo mismo: el bucle tiene que poder decir cual (L1).
+    with pytest.raises(ToolError, match="no se pudo listar"):
+        workspace.tree("no/existe")
+
+
+def test_tree_de_un_fichero_sugiere_read_file(workspace: ReadWorkspace) -> None:
+    with pytest.raises(ToolError, match="es un fichero"):
+        workspace.tree(APP)
+
+
+def test_tree_acota_con_depth_y_glob(workspace: ReadWorkspace) -> None:
+    assert workspace.tree("", glob="*.md").items == ("README.md",)
+    assert workspace.tree("src", glob="*.py").items == ("app.py", "util.py")
+    assert workspace.tree("", depth=2).items == (
+        "README.md",
+        "config",
+        "src",
+        "src/app.py",
+        "src/util.py",
+    )
+
+
+def test_tree_no_ofrece_rutas_vetadas_en_ningun_nivel(workspace: ReadWorkspace) -> None:
+    assert "config/.env" not in workspace.tree("", depth=2).items
+    assert workspace.tree("config").items == ()
 
 
 def test_la_base_ausente_deja_el_lado_base_sin_servir(manager, remote) -> None:
     info = manager.open(repo=remote["repo"], head_sha=remote["head"], base_sha="f" * 40)
     workspace = manager.get(info.workspace_id)
     assert workspace.show_file(APP, ref="base") is None
-    assert workspace.show_file(APP) == "import os\n\nneedle = 1\nprint(needle)\n"
+    assert _text(workspace, APP) == "import os\n\nneedle = 1\nprint(needle)\n"
 
 
 def test_el_commit_obligatorio_ausente_es_un_fallo_recuperable(manager, remote) -> None:
@@ -361,7 +475,59 @@ def test_endpoint_abre_y_sirve_fichero(runner_client, remote) -> None:
 
     response = client.get(f"/workspaces/{workspace_id}/file", params={"path": APP, "ref": "head"})
     assert response.status_code == 200
-    assert "needle = 1" in response.json()["content"]
+    body = response.json()
+    assert "needle = 1" in body["content"]
+    assert body["total_bytes"] == len(body["content"].encode("utf-8"))
+    assert body["truncated"] is False
+    assert body["served_range"] is None
+
+
+def test_endpoint_de_fichero_transporta_el_rango_y_el_tamano(runner_client, remote) -> None:
+    client, _ = runner_client
+    workspace_id = client.post(
+        "/workspaces", json={"repo": remote["repo"], "head_sha": remote["head"]}
+    ).json()["workspace_id"]
+    response = client.get(
+        f"/workspaces/{workspace_id}/file", params={"path": APP, "start": 3, "end": 3}
+    )
+    body = response.json()
+    assert response.status_code == 200
+    assert body["content"] == "needle = 1"
+    assert body["served_range"] == [3, 3]
+    assert body["total_bytes"] == len(b"import os\n\nneedle = 1\nprint(needle)\n")
+
+
+def test_endpoint_de_fichero_con_rango_imposible_da_400(runner_client, remote) -> None:
+    client, _ = runner_client
+    workspace_id = client.post(
+        "/workspaces", json={"repo": remote["repo"], "head_sha": remote["head"]}
+    ).json()["workspace_id"]
+    response = client.get(f"/workspaces/{workspace_id}/file", params={"path": APP, "start": 0})
+    assert response.status_code == 400
+
+
+def test_endpoint_de_fichero_en_outline(runner_client, remote) -> None:
+    client, _ = runner_client
+    workspace_id = client.post(
+        "/workspaces", json={"repo": remote["repo"], "head_sha": remote["head"]}
+    ).json()["workspace_id"]
+    index = client.get(
+        f"/workspaces/{workspace_id}/file",
+        params={"path": "src/util.py", "mode": "outline"},
+    )
+    assert index.status_code == 200
+    body = index.json()
+    assert "1-2  def helper()" in body["content"]
+    assert body["total_bytes"] == len(b"def helper():\n    return 1\n")
+    assert body["truncated"] is False
+
+    # Sin indexador: error con salida, nunca el fichero entero.
+    bad = client.get(
+        f"/workspaces/{workspace_id}/file",
+        params={"path": README, "mode": "outline"},
+    )
+    assert bad.status_code == 400
+    assert "indexar" in bad.json()["detail"]
 
 
 def test_endpoint_abrir_dos_veces_es_idempotente(runner_client, remote) -> None:
@@ -408,8 +574,12 @@ def test_endpoint_grep_y_tree(runner_client, remote) -> None:
     assert grep.status_code == 200
     assert f"{APP}:4: print(needle)" in grep.json()["matches"]
 
+    assert grep.json()["total"] == 2
+    assert grep.json()["truncated"] is False
+
     tree = client.get(f"/workspaces/{workspace_id}/tree", params={"path": "src"})
     assert tree.json()["entries"] == ["app.py", "util.py"]
+    assert tree.json()["total"] == 2
 
 
 def test_endpoint_grep_acota_por_max_matches(runner_client, remote) -> None:
@@ -421,7 +591,35 @@ def test_endpoint_grep_acota_por_max_matches(runner_client, remote) -> None:
         f"/workspaces/{workspace_id}/grep",
         json={"pattern": "needle", "max_matches": 1},
     )
-    assert len(response.json()["matches"]) == 1
+    body = response.json()
+    assert len(body["matches"]) == 1
+    assert body["total"] == 2, "el tope recorta lo servido, no lo contado"
+    assert body["truncated"] is True
+
+
+def test_endpoint_grep_en_regex_y_patron_no_portable(runner_client, remote) -> None:
+    client, _ = runner_client
+    opened = client.post(
+        "/workspaces",
+        json={"repo": remote["repo"], "head_sha": remote["head"]},
+    ).json()
+    assert "grep.mode" in opened["capabilities"]
+    assert "read.mode" in opened["capabilities"]
+    workspace_id = opened["workspace_id"]
+
+    regex = client.post(
+        f"/workspaces/{workspace_id}/grep",
+        json={"pattern": r"needle = \d", "mode": "regex"},
+    )
+    assert regex.status_code == 200
+    assert regex.json()["matches"] == [f"{APP}:3: needle = 1"]
+
+    bad = client.post(
+        f"/workspaces/{workspace_id}/grep",
+        json={"pattern": r"\bneedle\b", "mode": "regex"},
+    )
+    assert bad.status_code == 400
+    assert "frontera" in bad.json()["detail"]
 
 
 def test_endpoint_delete_borra_el_workspace(runner_client, remote) -> None:

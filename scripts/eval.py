@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "live":
         return _report(
             case,
-            llm=_live_llm(recording=None),
+            llm=harness.UsageMeter(_live_llm(recording=None)),
             mode="live",
             compare=args.compare,
             reader_factory=reader_factory,
@@ -280,6 +280,9 @@ def _load_report(path: Path) -> harness.Report:
         fingerprints=data.get("fingerprints", {}),
         counts=data.get("counts", {}),
         metrics=data.get("metrics", {}),
+        usage=data.get("usage", {}),
+        operations=data.get("operations", {}),
+        skipped=data.get("skipped", {}),
         matched=tuple(data.get("matched", [])),
         unmatched=tuple(data.get("unmatched", [])),
         missing=tuple(data.get("missing", [])),

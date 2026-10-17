@@ -1328,8 +1328,10 @@ def test_el_fixture_sirve_la_base_por_ref(tmp_path: Path) -> None:
     (base / "src/app.py").write_text("viejo = 1\n", encoding="utf-8")
     reader = FixtureContextReader(head, base_root=base)
 
-    assert reader.read_file("src/app.py") == "nuevo = 2\n"
-    assert reader.read_file("src/app.py", ref="base") == "viejo = 1\n"
+    head_read = reader.read_file("src/app.py")
+    base_read = reader.read_file("src/app.py", ref="base")
+    assert head_read is not None and head_read.content == "nuevo = 2\n"
+    assert base_read is not None and base_read.content == "viejo = 1\n"
     assert reader.read_file("src/falta.py", ref="base") is None
 
     def factory(repo: str, head_sha: str, base_sha: str, diff: str = ""):
@@ -1347,3 +1349,122 @@ def test_el_fixture_sirve_la_base_por_ref(tmp_path: Path) -> None:
     ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
 
     assert "viejo = 1\\n" in llm.calls[1]["prompt"] or "viejo = 1" in llm.calls[1]["prompt"]
+
+
+def test_el_registro_de_lecturas_cruza_lotes_y_se_reinicia_por_review(tmp_path: Path) -> None:
+    # 023 S1: una cita a un fichero leido en el lote 1 vale en el 2; una review no
+    # hereda las lecturas de la anterior.
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path, path="a.py", body="x = 1\ny = 2\n")
+    _write_helper(tmp_path, path="b.py", body="p = 1\nq = 2\n")
+    diff = _file_block("a.py", 5) + _file_block("b.py", 5)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+        _tools({"tool": "read_file", "path": "b.py"}),
+        _response(),
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_max_chars=len(_file_block("a.py", 5)) + 10,
+    )
+
+    result = reviewer.review(repo="r", pr_id=1, diff=diff, head_sha="h")
+    assert result.tool_usage is not None
+    assert {"a.py", "b.py"} <= set(result.tool_usage.files_read)
+    assert reviewer._readings.serves("a.py", line=2), "lo leido en el lote 1 sigue sirviendo"
+
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("c.py", 2), head_sha="h")
+    assert reviewer._readings.files_read() == [], "el registro es por review"
+
+
+def test_la_cache_de_es_relee_el_mismo_fichero_una_vez_entre_lotes(tmp_path: Path) -> None:
+    # 023 C1: la cache es por review; el mismo fichero en dos lotes es una lectura.
+    from agent_review.adapters.tool_loop import ReviewToolsOptions
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path, path="a.py", body="x = 1\n")
+    diff = _file_block("a.py", 5) + _file_block("b.py", 5)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        tool_options=ReviewToolsOptions(io_cache=True),
+        batch_max_chars=len(_file_block("a.py", 5)) + 10,
+    )
+    reviewer.review(repo="r", pr_id=1, diff=diff, head_sha="h")
+
+    assert reviewer.io_cache_misses == 1
+    assert reviewer.io_cache_hits == 1
+
+
+def test_las_operaciones_se_acumulan_entre_lotes_y_se_reinician_por_review(
+    tmp_path: Path,
+) -> None:
+    # 023 M1: el informe cuenta peticiones por herramienta y modo por review; una
+    # review no hereda las de la anterior, igual que las lecturas y la cache.
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path, path="a.py", body="x = 1\n")
+    _write_helper(tmp_path, path="b.py", body="p = 1\n")
+    diff = _file_block("a.py", 5) + _file_block("b.py", 5)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": "a.py"}),
+        _response(),
+        _tools({"tool": "grep", "pattern": "p"}),
+        _response(),
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_max_chars=len(_file_block("a.py", 5)) + 10,
+    )
+
+    reviewer.review(repo="r", pr_id=1, diff=diff, head_sha="h")
+    assert reviewer.operation_counts == {"read_file:full": 1, "grep:literal": 1}
+
+    reviewer.review(repo="r", pr_id=1, diff=_file_block("c.py", 2), head_sha="h")
+    assert reviewer.operation_counts == {}, "las operaciones son por review"
+
+
+def test_sin_herramientas_no_hay_operaciones(tmp_path: Path) -> None:
+    # El camino de 008 no abre lector: el informe debe declararlo vacio, no cero
+    # implícito (023 M1).
+    llm = _ScriptedToolsLlm(_response())
+    reviewer = LlmReviewer(llm=llm)
+
+    reviewer.review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+
+    assert reviewer.operation_counts == {}
+
+
+def test_precache_off_deja_el_contexto_l1_fuera_del_prompt(tmp_path: Path) -> None:
+    # 023 C1: con herramientas, el CONTEXT precargado se puede apagar y el prompt baja.
+    from agent_review.adapters.tool_loop import ReviewToolsOptions
+    from agent_review.domain.models import ReviewContext
+
+    ctx = ReviewContext(head_sha="h", contents={TRANSFER: "<?php\nclass Transfer {}\n"})
+    prompts: dict[bool, str] = {}
+    for flag in (True, False):
+        llm = _ScriptedToolsLlm(_response())
+        LlmReviewer(
+            llm=llm,
+            reader_factory=_fixture_factory(tmp_path),
+            context_max_chars=10_000,
+            tool_options=ReviewToolsOptions(precache_context=flag),
+        ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h", context=ctx)
+        prompts[flag] = llm.calls[0]["prompt"]
+
+    assert f"FILE {TRANSFER}:" in prompts[True]
+    assert f"FILE {TRANSFER}:" not in prompts[False]
+    assert len(prompts[False]) < len(prompts[True])

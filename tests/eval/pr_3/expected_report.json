@@ -41,5 +41,12 @@
     "no-detectado-3"
   ],
   "mode": "replay",
-  "unmatched": []
+  "operations": {},
+  "skipped": {},
+  "unmatched": [],
+  "usage": {
+    "completion": 328318,
+    "prompt": 145442,
+    "reasoning": 295600
+  }
 }

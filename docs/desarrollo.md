@@ -84,6 +84,18 @@ fragmento, un `id` repetido o un `expected`/`must_not_report` indistinguible fal
 con el `id` en el mensaje. Las etiquetas se reanclan contra el código del `head_sha`
 (`fixtures/head`), nunca contra la grabación.
 
+El informe (`harness.Report`, serializado por `to_json`) no es solo recall: lleva
+`usage` (`prompt`, `completion` y el `reasoning` que va dentro de *completion*),
+`operations` (peticiones servidas por herramienta y modo: `read_file:outline`,
+`grep:regex`…) y `skipped` (ficheros omitidos por motivo, incluido `budget`). Los
+tres se congelan con el baseline, porque una palanca que se paga y no se usa no se
+ve en un total de tokens. Hay un baseline por configuración —sin herramientas
+(`expected_report.json`) y con herramientas (`expected_report_tools.json`)— y **no
+se comparan entre sí**: miden escenarios distintos. Hoy solo el primero está
+congelado: `recorded_tools.json` caducó con el *prompt* de capacidades de 023 F1 y
+`make eval-tools` pide regrabar; el test de la variante con herramientas se declara
+omitido hasta que exista su baseline.
+
 ## 2. Mapa de tests
 
 | Zona | Tests |
@@ -99,7 +111,7 @@ con el `id` en el mensaje. Las etiquetas se reanclan contra el código del `head
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
-| Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores y `FixtureContextReader`), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_tool_loop` (bucle, topes, citas y presupuesto) |
+| Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores, `FixtureContextReader` y el dialecto portable de 023), `test_outline` (índice de símbolos: AST, heurística declarada y fichero no indexable), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_context_cache` (la caché de E/S solo cubre `read_file`), `test_tool_loop` (bucle, topes, citas, registro de lecturas y presupuesto) |
 | Presupuesto (017) | `test_budget` (contrato paramétrico de `InMemoryBudget` y `RedisBudget` sobre `fakeredis`, reserva/confirmación y el consumo desde el bucle), `test_llm_reviewer` y `test_llm_fixer` (reserva, tope blando, corte y devolución en el error), `test_worker` (reparto `2×total/N` en `build_reviewers`), `test_graph` (el hecho del corte en el `ReviewOutcome`) |
 | Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `test_web_ui` (pestaña, sin `innerHTML`) |
 | Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web_ui` y `test_web` (página `/history` y `/api/history`) |
@@ -108,7 +120,7 @@ con el `id` en el mensaje. Las etiquetas se reanclan contra el código del `head
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker` |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
-| Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay*), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
+| Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
 
 Regla de estilo: ningún test depende de red, de `twg` real ni de Docker. Los puertos
 se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
@@ -292,9 +304,20 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
-operaciones de **solo lectura** —`read_file`, `grep` (literal) y `list_dir`— que el
-bucle `run_tool_loop` (`adapters/tool_loop.py`) sirve turno a turno. Hay tres
-adaptadores y todos pasan el mismo test de contrato:
+operaciones de **solo lectura** —`read_file`, `grep` y `list_dir`— que el
+bucle `run_tool_loop` (`adapters/tool_loop.py`) sirve turno a turno. Los **modos**
+(`mode` de lectura y de patrón, `path`/`ref`, `files_only`, `glob`, `depth`) son
+parámetros del puerto, no operaciones nuevas; un adaptador que no puede servirlos
+lanza `ToolError` en vez de ignorarlos. Desde 023 el
+puerto no devuelve `str`/`list`: devuelve **value objects** ([ADR-0026](adr/0026-contrato-de-lectura-con-tamano-real.md)):
+
+- `ReadResult(content, total_bytes, truncated, served_range)`, o `None` si la ruta no
+  existe o está vetada. `total_bytes` es el tamaño **real** del fichero en bytes UTF-8
+  antes del rango y del recorte; `None` si la superficie no lo conoce.
+- `ToolResult(items, total, truncated)` para `grep` y `list_dir`; `total` cuenta lo que
+  había antes del tope y `None` significa «no medido», nunca cero.
+
+Hay tres adaptadores y todos pasan el mismo test de contrato:
 
 1. **`FixtureContextReader`** (`adapters/context_fixture.py`): sirve un directorio
    local (y, con `base_root`, el arbol de `base` para `ref="base"`). Es el lector
@@ -306,9 +329,24 @@ adaptadores y todos pasan el mismo test de contrato:
 3. **`WorkspaceContextReader`** (`adapters/context_workspace.py`): HTTP contra los
    `/workspaces` del `sandbox-runner`; es el único que hace `grep` del árbol completo.
 
-Para añadir uno: implementa los tres métodos, respeta `is_denied` (rutas vetadas),
-devuelve `None` (no excepción) cuando una lectura no es posible y añade el adaptador a
-`build_reader_factory` (`adapters/context_factory.py`) con su degradación. La fábrica
+Encima de cualquiera de ellos puede ir un **`CachingReader`**
+(`adapters/context_cache.py`, 023 C1): un decorador que comparte un caché **por
+review** y cachea solo `read_file` (inmutable para una `ref` fija). `grep` y
+`list_dir` no se cachean porque en el lector VCS dependen del *seed* del lote.
+Aparte, el `ReadingRegistry` (`ports/context.py`) es el registro de lecturas de la
+review: prueba las citas `path:line` (solo `full`/`range` de la misma `ref`) y
+alimenta el bloque `LECTURAS` cuando `REVIEW_TOOLS_READ_STATE` está encendido.
+
+Para añadir uno: implementa los tres métodos, respeta `is_denied` (rutas vetadas) en
+**todos** los niveles de `list_dir`, usa `slice_lines` y `truncate_bytes` de
+`ports/context.py` (no reimplementes el corte) y añade el adaptador
+a `build_reader_factory` (`adapters/context_factory.py`) con su degradación. Distingue
+los dos fracasos: una **lectura** imposible (`read_file` de algo ausente o vetado)
+devuelve `None`; una **petición** imposible (rango invertido, `depth < 1`, patrón no
+portable, `list_dir` de una ruta que no existe o que es un fichero) lanza `ToolError`
+con un mensaje accionable, para que el modelo corrija en el turno siguiente. Un
+directorio **vacío** sí es un `ToolResult` vacío: vacío e inexistente no se confunden
+(L1 de 023). La fábrica
 es lo que ve el consumidor: recibe `(repo, head_sha, base_sha)` y devuelve el puerto,
 de modo que el bucle no sepa si detrás está el runner o el VCS. Un fallo del lector
 dentro del bucle se sirve al modelo como error y la review sigue. Cubre el contrato en
@@ -415,6 +453,11 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   `Secret` y el valor de ejemplo vive en `PLACEHOLDER_VALUES`
   ([ADR-0022](adr/0022-contrato-de-secretos-declarado.md)). Un campo secreto nuevo sin
   declarar rompe `tests/test_secrets.py`.
+- **Un patrón de `grep` se lee igual en las cuatro superficies.** El puerto emite
+  una sola cadena canónica (`portable_pattern`) válida en `re` y en `git grep -E`;
+  lo que cada motor interpreta distinto se rechaza con `ToolError`, nunca se degrada
+  a «sin coincidencias» ([ADR-0027](adr/0027-dialecto-portable-de-grep.md)).
+  `glob` se mide contra la ruta relativa a `path`, con `*` que no cruza `/`.
 
 ## 5. Convenciones
 

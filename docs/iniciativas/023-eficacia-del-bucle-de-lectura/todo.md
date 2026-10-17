@@ -175,12 +175,18 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `integracion-1` e `integracion-2` **no** son el mismo defecto: uno es fuga de
     secretos y el otro un fallo de arranque; comparten línea de síntoma, no causa, y
     por eso van anclados en líneas distintas. `expected_report.json` no cambió
-    **ni un byte**: el informe etiqueta por etiqueta es idéntico al anterior
-    (`matched`, `missing`, `counts` y `metrics`), así que el refijado no baja el
-    listón. `expected_report_tools.json` **sigue bloqueado**: `recorded_tools.json`
+    **ni un byte** en el refijado de T2: el informe etiqueta por etiqueta es idéntico
+    al anterior (`matched`, `missing`, `counts` y `metrics`), así que el refijado no
+    baja el listón. `expected_report_tools.json` **sigue bloqueado**: `recorded_tools.json`
     quedó caducada a propósito con el *prompt* de capacidades (F1) y la única
     regrabación *live* es la corrida compartida de 024 LB1 tras su bloque S; C0c
     hereda la tarea cuando exista esa grabación.
+  - Enmienda (2026-10-17): `expected_report.json` **sí** cambió después, y por una
+    razón que no toca la calidad: el informe de M1 añade `usage` (prompt,
+    completion, reasoning), `operations` y `skipped`. El diff del fichero son solo
+    claves nuevas (`prompt` 145442, `completion` 328318, `reasoning` 295600; sin
+    herramientas no hay operaciones ni omisiones); `counts`, `metrics`, `matched`,
+    `missing` y los fingerprints siguen idénticos, y el test lo fija.
 
 - [x] **M0** Clasificación *replay*/*live* por flag (E12, §5.5)
   - Anotar en la spec o aquí, por cada flag de §5.4, si cambia lo que recibe el
@@ -214,10 +220,11 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
 
 ## Bloque 0.5 — Contrato de lectura (checkpoint K0.5)
 
-- [ ] **C0** `ReadResult`/`ToolResult` + ADR de contrato (E0f, R8)
+- [x] **C0** `ReadResult`/`ToolResult` + ADR de contrato (E0f, R8)
   - `ports/context.py`: `ReadResult(content, total_bytes, truncated,
-    served_range)`; `grep`/`list_dir` devuelven `ToolResult(matches|entries,
-    total, truncated)` con el mismo patrón.
+    served_range)`; `grep`/`list_dir` devuelven `ToolResult(items, total,
+    truncated)` con el mismo patrón (`items` es genérico: el método fija el
+    significado, ADR-0026).
   - ADR nuevo (siguiente número libre): por qué un value object y no un `str`; qué
     pasa cuando `total_bytes` no está disponible (se declara `None`, **no** se
     inventa).
@@ -235,8 +242,13 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `tests/test_tool_loop.py`.
   - Ficheros: `ports/context.py`, `adapters/context_*.py`,
     `adapters/tool_loop.py`, dobles de test.
+  - Hecho (2026-10-17): ADR-0026. `slice_lines` y `truncate_bytes` viven en el
+    puerto y las tres superficies las comparten; `validate_range` rechaza `start
+    < 1`, `end < start` y `end < 1` con `ToolError`. `total_bytes` cuenta bytes
+    UTF-8 y `None` declara «no medido» (el recorte por línea no lo sabe). En el
+    fixture y en el VCS el total es el texto completo; en el runner, el blob real.
 
-- [ ] **C0b** *Forwarding* y las **cuatro** superficies (E0g, R3c, R11)
+- [x] **C0b** *Forwarding* y las **cuatro** superficies (E0g, R3c, R11)
   - `adapters/tool_loop.py`: `_serve_grep` lee `mode`, `path`, `ref`, `glob`,
     `files_only`; `_serve_read_file` lee `mode`; `_serve_list_dir` lee `glob`,
     `depth`. Hoy los **descarta**: cambiar el adaptador no basta.
@@ -255,6 +267,11 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `tests/test_sandbox_runner.py` (o equivalente).
   - Ficheros: `adapters/tool_loop.py`, `sandbox_runner/main.py`,
     `adapters/context_workspace.py`, `ports/context.py`.
+  - Hecho (2026-10-17): `_serve_grep` (`mode`, `path`, `ref`, `files_only`),
+    `_serve_read_file` (`mode`, `ref`) y `_serve_list_dir` (`glob`, `depth`)
+    reenvían sin recortar. El runner negocia por `capabilities` en `/workspaces`
+    y devuelve `400` con `ToolError`; el cliente lo traduce a un aviso accionable
+    que el modelo lee dentro de `<tool_result>`. `search` es alias de `grep`.
 
 - [ ] **C0c** *Baseline* congelado con herramientas (E12b)
   - `tests/eval/pr_3/expected_report_tools.json` generado con `make eval-tools`
@@ -266,18 +283,24 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/eval/test_eval_pr_3.py`, `make eval-tools`.
   - Ficheros: `tests/eval/pr_3/expected_report_tools.json`,
     `tests/eval/test_eval_pr_3.py`.
+  - Hecho (2026-10-17), a medias: el test de regresión **ya está cableado** en
+    `tests/eval/test_eval_pr_3.py` (byte a byte contra `expected_report_tools.json`,
+    más un test de que el baseline con herramientas declara gasto y lecturas y no
+    se compara con el de 008). Se declara omitido mientras falte el fichero, para
+    que el verde de CI no finja una medida que no existe. Falta la regrabación
+    *live*, que es la corrida compartida de 024 LB1.
 
 ### Checkpoint K0.5
 
-- [ ] `read_file` devuelve el **tamaño real** desde el runner (test de ida y vuelta).
-- [ ] Cada argumento documentado llega al adaptador (test de contrato por argumento).
-- [ ] `search` resuelve a `grep` o no se anuncia en el *prompt*.
+- [x] `read_file` devuelve el **tamaño real** desde el runner (test de ida y vuelta).
+- [x] Cada argumento documentado llega al adaptador (test de contrato por argumento).
+- [x] `search` resuelve a `grep` o no se anuncia en el *prompt*.
 - [ ] Hay **dos** *baselines* congelados y `make eval-tools` falla si se desvía.
-- [ ] `make ci` en verde.
+- [x] `make ci` en verde.
 
 ## Bloque 1 — Modos de las tres herramientas (checkpoint K1)
 
-- [ ] **G1** `grep` con `mode`, `path`/`ref`, `files_only` y dialecto portable
+- [x] **G1** `grep` con `mode`, `path`/`ref`, `files_only` y dialecto portable
   (E2, E3, E15)
   - `ports/context.py`: `grep(pattern, *, glob=None, path=None, ref="head",
     mode="literal", files_only=False)`. **Subconjunto portable único**: el
@@ -307,8 +330,21 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `sandbox_runner/main.py`, `adapters/context_workspace.py`.
   - ADR nuevo (número siguiente libre): dialecto portable y política de
     rechazo.
+  - Hecho (2026-10-17): ADR-0027. `portable_pattern` (`ports/context.py`) emite la
+    cadena canónica y `line_matcher` la comparte entre fixture y VCS; el runner
+    usa `git grep -E` con la **misma** cadena. `\s` se emite con los caracteres de
+    espacio **literales** y no como `[ \t\n\r\f\v]`: dentro de una clase, GNU grep
+    lee `\t` como `t` (enmienda con fecha en la spec §5.1). Un patrón no portable o
+    inválido es `ToolError` (400 en el runner, que ya no se traga el código 2 de
+    `git grep`). El normalizador expande `\d`/`\w`/`\s` y sus negaciones y conserva
+    los escapes de puntuación. `glob` se mide **contra la ruta relativa a `path`**
+    en las cuatro superficies: el runner ya no delega en el *pathspec* de `git`
+    (donde `*` cruza `/`). `GREP_MODE` fija el default del bucle; un `mode`
+    explícito del modelo manda. Sin timeout en memoria (Q8): se acota con
+    `path`/`glob`, el tope de coincidencias y el `timeout_s` del subproceso del
+    runner, que sí corta. `VcsContextReader` se declara **parcial**.
 
-- [ ] **R1** `read_file` con aviso de corte real y `mode="outline"` (E4, E5, R8)
+- [x] **R1** `read_file` con aviso de corte real y `mode="outline"` (E4, E5, R8)
   - El **origen de `total_bytes`** es C0: el lector devuelve `ReadResult` con el
     tamaño real, no `len(content)`. El runner (`FileResponse`) lo transporta desde
     `ReadWorkspace` **antes** de recortar.
@@ -330,8 +366,16 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Ficheros: `ports/context.py`, adaptadores,
     `sandbox_runner/read_workspace.py`, `sandbox_runner/main.py`,
     `adapters/context_workspace.py`, `adapters/tool_loop.py`.
+  - Hecho (2026-10-17): el aviso sale dentro del `<tool_result>` y dice la
+    operación, el tamaño servido y el total real, y cómo acotar (`start`/`end`,
+    `path`/`glob`/`files_only`, `glob`/`depth`). `ReadWorkspace` declara
+    `total_bytes` **antes** de recortar y el runner lo transporta. `outline` usa
+    `outline_text` (AST en Python; heurística de declaraciones con llaves en el
+    resto): si no puede indexar, `ToolError` que sugiere `start`/`end`, nunca el
+    fichero entero. Con `REVIEW_TOOLS_READ_OUTLINE=off`, `mode="outline"` sirve
+    `full` **con aviso** (spec §REVIEW_TOOLS_READ_OUTLINE), no en silencio.
 
-- [ ] **L1** `list_dir` con `glob` y `depth` (E6, M4)
+- [x] **L1** `list_dir` con `glob` y `depth` (E6, M4)
   - `ports/context.py`: `list_dir(path, *, glob=None, depth=1)`; recursión acotada.
   - Filtrar `is_denied` en **todos** los niveles (hoy no se aplica en `list_dir` ni
     en `tree`) y distinguir **directorio vacío** de **inexistente** (hoy ambos
@@ -340,20 +384,28 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     idéntico a hoy; una ruta vetada no aparece; vacío ≠ inexistente.
   - Verifica: `tests/test_context_*.py`, `tests/test_tool_loop.py`.
   - Ficheros: `ports/context.py`, adaptadores, `sandbox_runner/main.py`.
+  - Hecho (2026-10-17): `list_dir(path, *, glob, depth)` en las cuatro superficies.
+    `depth=1` es lo de hoy (hijos directos); `depth>1` en el runner usa
+    `git ls-tree -r -t`, que incluye los subárboles para que el listado sea el
+    mismo árbol lógico que el fixture. El veto se aplica **en cada nivel**. Un
+    directorio vacío devuelve `ToolResult` vacío; una ruta inexistente (o que es
+    un fichero, se comprueba con `cat-file -t`) es `ToolError`. El VCS, que no ve
+    el árbol, no afirma «vacío»: dice que la ruta no aparece en los ficheros del
+    cambio.
 
 ### Checkpoint K1
 
-- [ ] `mode`/`depth` ausentes ⇒ comportamiento idéntico a hoy (criterio 1).
-- [ ] Mismo patrón canónico ⇒ mismo resultado en las **cuatro** superficies (VCS
+- [x] `mode`/`depth` ausentes ⇒ comportamiento idéntico a hoy (criterio 1).
+- [x] Mismo patrón canónico ⇒ mismo resultado en las **cuatro** superficies (VCS
   sobre la intersección); patrón inválido o no portable ⇒ error.
-- [ ] El aviso de corte lleva el tamaño real y el consejo de su operación; `grep` y
+- [x] El aviso de corte lleva el tamaño real y el consejo de su operación; `grep` y
   `list_dir` declaran `mostrando N de M`.
-- [ ] `outline` no cae a `full` en silencio cuando no puede indexar.
-- [ ] `make ci` en verde.
+- [x] `outline` no cae a `full` en silencio cuando no puede indexar.
+- [x] `make ci` en verde.
 
 ## Bloque 2 — Palancas transversales (checkpoint K2)
 
-- [ ] **P1** Tope de peticiones por turno como palanca medida (E7, E14)
+- [x] **P1** Tope de peticiones por turno como palanca medida (E7, E14)
   - `_MAX_CALLS_PER_TURN` deja de ser constante: `ContextLimits.calls_per_turn` +
     ajuste `REVIEW_TOOLS_CALLS_PER_TURN` (default 3).
   - **`REVIEW_TOOLS_MAX_CALLS` (total por lote, hoy 8) se sube junto con el tope por
@@ -365,8 +417,12 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/test_tool_loop.py`; informe anotado (M1).
   - Ficheros: `adapters/tool_loop.py`, `ports/context.py`, `settings.py`,
     `.env.example`.
+  - Hecho (2026-10-17): `ContextLimits.calls_per_turn` (default 3) y
+    `REVIEW_TOOLS_CALLS_PER_TURN`; `REVIEW_TOOLS_MAX_CALLS` sigue en 8 y se sube a
+    la vez que el tope por turno (documentado en `operacion.md` §2). Un turno con
+    4–5 peticiones ya no descarta. El número definitivo lo fija M1.
 
-- [ ] **S1** No descartar en silencio + estado + `Reading` por review (E9, E9b, E9c)
+- [x] **S1** No descartar en silencio + estado + `Reading` por review (E9, E9b, E9c)
   - `REVIEW_TOOLS_STRICT_CALLS`: cada petición no atendida recibe un
     `<tool_result>ERROR: no atendida…</tool_result>` explícito.
   - **Un registro de lecturas por review** (`Reading(path, ref, kind, ranges)`,
@@ -389,8 +445,15 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/test_tool_loop.py`, `tests/test_llm_reviewer.py`.
   - Ficheros: `adapters/tool_loop.py`, `adapters/llm_reviewer.py`,
     `ports/context.py` (si el registro entra ahí).
+  - Hecho (2026-10-17): `Reading`/`ReadingRegistry` en `ports/context.py`. El
+    `LlmReviewer` lo comparte entre lotes (`readings=` en `run_tool_loop`) y lo
+    vacía al empezar cada review. `full`/`range` de la misma `ref` prueban la cita;
+    `outline`, `grep` y `base` no. `files_read` solo cuenta cuerpos. Con
+    `REVIEW_TOOLS_READ_STATE`, tras los `<tool_result>` se añade `LECTURAS (esta
+    review)` (últimas 20, con las omitidas declaradas) al final del mensaje, nunca
+    en el prompt inicial. `STRICT_CALLS` ya daba el error explícito por petición.
 
-- [ ] **C1** Caché de E/S por review y precarga de L1 conmutable (E8, E13)
+- [x] **C1** Caché de E/S por review y precarga de L1 conmutable (E8, E13)
   - `CachingReader` (decorador de `ContextReaderPort`) instanciado en el
     `LlmReviewer` (el lector se construye por lote), `REVIEW_TOOLS_IO_CACHE`.
     **Ahorra E/S, no *prompt*** (la spec lo dice).
@@ -403,16 +466,20 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     `precache=off` el *prompt* base del lote baja.
   - Verifica: `tests/test_llm_reviewer.py`.
   - Ficheros: `adapters/llm_reviewer.py`, adaptadores de contexto.
+  - Hecho (2026-10-17): `adapters/context_cache.py` (`CachingReader` + `CacheStats`).
+    El `LlmReviewer` crea un diccionario por review y envuelve el lector de cada
+    lote; expone `io_cache_hits`/`io_cache_misses` para medir. `PRECACHE_CONTEXT=off`
+    deja el `CONTEXT` L1 fuera del prompt solo en el camino con herramientas.
 
 ### Checkpoint K2
 
-- [ ] Cada palanca con su flag; con todos en default, comportamiento de hoy.
-- [ ] `calls_per_turn` y `max_calls` se mueven juntos; subir uno solo no agota el
+- [x] Cada palanca con su flag; con todos en default, comportamiento de hoy.
+- [x] `calls_per_turn` y `max_calls` se mueven juntos; subir uno solo no agota el
   total.
-- [ ] `Reading` distingue `full`/`range`/`outline`/`grep` y `ref`; cobertura solo
+- [x] `Reading` distingue `full`/`range`/`outline`/`grep` y `ref`; cobertura solo
   `full`/`range`.
-- [ ] El caché de E/S no comparte `grep` entre lotes con semillas distintas.
-- [ ] `make ci` en verde.
+- [x] El caché de E/S no comparte `grep` entre lotes con semillas distintas.
+- [x] `make ci` en verde.
 
 ## Bloque 3 — Medida, docs y cierre (checkpoint K3)
 
@@ -443,6 +510,21 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
     reasoning | recall | lotes omitidos`.
   - *Humano / medida:* fijar los defaults de §5.4 tras leer el informe.
   - Verifica: `make eval-tools` / `make eval-live`, informe anotado.
+  - Hecho (2026-10-17), a medias: la **instrumentación de la medida** ya está, que
+    es lo que el informe necesitaba para tener columnas. `LoopResult.operations`
+    cuenta peticiones **servidas** por herramienta y modo (`read_file:range`,
+    `read_file:outline`, `grep:regex`, `list_dir`) con el mismo criterio que el
+    registro de lecturas; `LlmReviewer.operation_counts` las acumula por review y
+    las reinicia al empezar, y `harness.Run` las lleva al informe. `Usage` acumula
+    prompt/completion/reasoning en `ReplayLlm`, en `RecordingLlm` y en un
+    `UsageMeter` nuevo que envuelve el puerto de `make eval-live` (antes el informe
+    solo tenía el total y en vivo ni eso). El `Report` congela `usage`, `operations`
+    y `skipped` por motivo (incluido `budget`), de modo que la tabla por
+    configuración sale del informe y no de leer la consola. Con todo en default el
+    caso sin herramientas da `prompt` 145442, `completion` 328318, `reasoning`
+    295600 y ninguna operación: el total de antes no decía dónde se pagaba. Queda la
+    parte de **medida**: las corridas por flag (nueve *live* y `IO_CACHE` en
+    *replay*), que dependen de la regrabación de C0c.
 
 - [ ] **D1** Documentos vivos y cierre (criterio 20)
   - `operacion.md` §2: las variables de §5.4 con la columna «apagado ⇒ qué pasa».

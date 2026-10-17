@@ -5,7 +5,23 @@ import logging
 import httpx
 
 from agent_review.errors import PermanentError, TransientError
-from agent_review.ports.context import Ref, is_denied
+from agent_review.ports.context import (
+    CAP_DIR_DEPTH,
+    CAP_DIR_GLOB,
+    CAP_GREP_FILES_ONLY,
+    CAP_GREP_MODE,
+    CAP_GREP_PATH,
+    CAP_GREP_REF,
+    CAP_READ_MODE,
+    GrepMode,
+    ReadMode,
+    ReadResult,
+    Ref,
+    ToolError,
+    ToolResult,
+    is_denied,
+    validate_range,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +77,7 @@ class WorkspaceContextReader:
         self._timeout = timeout_s
         self._client = client
         self._workspace_id: str | None = None
+        self._caps: frozenset[str] = frozenset()
         self._reopened = False
 
     def read_file(
@@ -70,10 +87,18 @@ class WorkspaceContextReader:
         ref: Ref = "head",
         start: int | None = None,
         end: int | None = None,
-    ) -> str | None:
+        mode: ReadMode = "full",
+    ) -> ReadResult | None:
         if is_denied(path, self._denylist):
             return None
+        # Un rango imposible se rechaza antes de gastar una peticion HTTP (y no es
+        # un fallo del runner: no debe degradar el lector al VCS).
+        validate_range(start, end)
+        if mode != "full":
+            self._require(CAP_READ_MODE, "mode")
         params: dict[str, str | int] = {"path": path, "ref": ref}
+        if mode != "full":
+            params["mode"] = mode
         if start is not None:
             params["start"] = start
         if end is not None:
@@ -86,24 +111,104 @@ class WorkspaceContextReader:
         if response.status_code == 404:
             return None
         self._raise_for_status(response)
-        return str(response.json().get("content", ""))
+        payload = response.json()
+        content = str(payload.get("content", ""))
+        return ReadResult(
+            content=content,
+            total_bytes=_as_optional_int(payload.get("total_bytes")),
+            truncated=payload.get("truncated") is True,
+            served_range=_as_range(payload.get("served_range")),
+        )
 
-    def grep(self, pattern: str, *, glob: str | None = None) -> list[str]:
+    def grep(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        path: str | None = None,
+        ref: Ref = "head",
+        mode: GrepMode = "literal",
+        files_only: bool = False,
+    ) -> ToolResult:
         if not pattern:
-            return []
-        payload: dict[str, object] = {"pattern": pattern}
+            return ToolResult()
+        payload: dict[str, object] = {"pattern": pattern, "ref": ref}
         if glob:
             payload["glob"] = glob
+        if path:
+            self._require(CAP_GREP_PATH, "path")
+            payload["path"] = path
+        if ref != "head":
+            self._require(CAP_GREP_REF, "ref")
+        if mode != "literal":
+            self._require(CAP_GREP_MODE, "mode")
+            payload["mode"] = mode
+        if files_only:
+            self._require(CAP_GREP_FILES_ONLY, "files_only")
+            payload["files_only"] = True
         response = self._request("POST", "grep", json=payload)
         self._raise_for_status(response)
-        matches = response.json().get("matches", [])
-        return [str(match) for match in matches if isinstance(match, str)]
+        body = response.json()
+        matches = body.get("matches", [])
+        items = tuple(str(match) for match in matches if isinstance(match, str))
+        return ToolResult(
+            items=items,
+            total=_as_optional_int(body.get("total")),
+            truncated=body.get("truncated") is True,
+        )
 
-    def list_dir(self, path: str) -> list[str]:
-        response = self._request("GET", "tree", params={"path": path})
+    def list_dir(
+        self,
+        path: str,
+        *,
+        glob: str | None = None,
+        depth: int = 1,
+    ) -> ToolResult:
+        if depth < 1:
+            raise ToolError(f"`depth` debe ser >= 1 (recibido {depth})")
+        params: dict[str, str | int] = {"path": path}
+        if glob:
+            self._require(CAP_DIR_GLOB, "glob")
+            params["glob"] = glob
+        if depth != 1:
+            self._require(CAP_DIR_DEPTH, "depth")
+            params["depth"] = depth
+        response = self._request("GET", "tree", params=params)
         self._raise_for_status(response)
-        entries = response.json().get("entries", [])
-        return [str(entry) for entry in entries if isinstance(entry, str)]
+        body = response.json()
+        entries = body.get("entries", [])
+        items = tuple(str(entry) for entry in entries if isinstance(entry, str))
+        return ToolResult(
+            items=items,
+            total=_as_optional_int(body.get("total")),
+            truncated=body.get("truncated") is True,
+        )
+
+    def _require(self, capability: str, field: str) -> None:
+        """Falla si el runner no anuncia la capacidad; nunca la ignora en silencio.
+
+        Un runner viejo no manda `capabilities`: su conjunto es vacio y cualquier
+        campo nuevo se rechaza con un error que el modelo puede corregir (R3c).
+        """
+        if capability in self._capabilities():
+            return
+        raise ToolError(
+            f"el runner de lectura no soporta `{field}`; "
+            "actualizalo o repite la peticion sin ese parametro"
+        )
+
+    def _capabilities(self) -> frozenset[str]:
+        self._ensure_workspace()
+        return self._caps
+
+    def _lock_capabilities(self, payload: dict[str, object]) -> None:
+        raw = payload.get("capabilities")
+        if isinstance(raw, list):
+            self._caps = frozenset(str(item) for item in raw if isinstance(item, str))
+        else:
+            # Runner anterior a 023: no declara nada, asi que no se le atribuye
+            # ninguna capacidad nueva.
+            self._caps = frozenset()
 
     def _request(
         self,
@@ -163,9 +268,11 @@ class WorkspaceContextReader:
             raise ContextUnavailable(f"no se pudo abrir el workspace: {exc}") from exc
         if response.status_code >= 400:
             self._raise_for_status(response)
-        workspace_id = str(response.json().get("workspace_id", ""))
+        body = response.json()
+        workspace_id = str(body.get("workspace_id", ""))
         if not workspace_id:
             raise ContextError("el runner no devolvio workspace_id")
+        self._lock_capabilities(body)
         self._workspace_id = workspace_id
         return workspace_id
 
@@ -183,6 +290,10 @@ class WorkspaceContextReader:
             raise ContextUnavailable(
                 f"el runner de lectura devolvio {response.status_code}: {detail}"
             )
+        if response.status_code == 400:
+            # Peticion mal formada (patron no portable, rango imposible): el modelo
+            # puede corregirla y no es motivo para degradar el lector al VCS (C0b).
+            raise ToolError(detail)
         if response.status_code == 410:
             raise _WorkspaceGone(f"workspace no disponible: {detail}")
         raise ContextError(f"el runner rechazo la lectura ({response.status_code}): {detail}")
@@ -196,3 +307,21 @@ def _error_detail(response: httpx.Response) -> str:
     if isinstance(body, dict) and "detail" in body:
         return str(body["detail"])[:500]
     return str(body)[:500]
+
+
+def _as_optional_int(value: object) -> int | None:
+    """`int` del JSON, o `None` si falta o no es un entero (nunca un `bool`)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _as_range(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    low, high = value
+    if isinstance(low, bool) or isinstance(high, bool):
+        return None
+    if not isinstance(low, int) or not isinstance(high, int):
+        return None
+    return (low, high)

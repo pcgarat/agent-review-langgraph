@@ -38,7 +38,7 @@ from harness import (
     to_json,
 )
 
-from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
+from agent_review.domain.models import AutofixClass, Finding, Owner, Severity, SkipReason
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.llm import LlmError, LlmReply
 
@@ -600,6 +600,57 @@ def test_json_estable_entre_serializaciones() -> None:
     assert first.index('"case"') < first.index('"counts"') < first.index('"metrics"')
 
 
+def test_el_informe_desglosa_el_gasto_y_las_operaciones() -> None:
+    # 023 M1: el total de tokens no dice donde se paga ni si el modelo usa las
+    # palancas; el informe lleva los tres conceptos y el conteo por herramienta.
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+    published = [_finding(fid="a", title="mark_done", line=1)]
+
+    report = measure(
+        case,
+        published,
+        tokens=1000,
+        usage={"prompt": 700, "completion": 300, "reasoning": 120},
+        operations={"read_file:outline": 2, "grep:regex": 1},
+    )
+
+    assert report.usage == {"prompt": 700, "completion": 300, "reasoning": 120}
+    assert report.operations == {"grep:regex": 1, "read_file:outline": 2}
+    # El desglose explica el total, no lo sustituye: `cost_per_tp` sigue saliendo
+    # de `tokens`, que es la suma que ya usaba el presupuesto.
+    assert report.metrics["cost_per_tp_tokens"] == 1000.0
+
+
+def test_las_omisiones_se_cuentan_por_motivo() -> None:
+    # Criterio 12: una omision por presupuesto cuesta recall y no puede quedar
+    # escondida en un numero global de cobertura.
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+
+    report = measure(
+        case,
+        [],
+        skipped={
+            "a.py": SkipReason.BUDGET,
+            "b.py": SkipReason.BUDGET,
+            "c.py": SkipReason.TOO_LARGE,
+            "d.py": SkipReason.IGNORED,
+        },
+    )
+
+    assert report.skipped == {"budget": 2, "ignored": 1, "too_large": 1}
+
+
+def test_sin_instrumentacion_la_medida_es_vacia_no_cero() -> None:
+    # Un informe sin `usage` no declara coste 0: no declara nada.
+    case = _case(expected=[Label(id="A", match=("mark_done",))])
+
+    report = measure(case, [])
+
+    assert report.usage == {}
+    assert report.operations == {}
+    assert report.skipped == {}
+
+
 # --- E4: harness.compare (dominancia, tres veredictos) ---
 
 
@@ -1150,8 +1201,10 @@ def test_la_fabrica_de_fixtures_sirve_el_arbol(tmp_path: Path) -> None:
     assert factory is not None
     reader = factory(case.repo, case.head_sha, case.base_sha, case.diff)
 
-    assert reader.read_file("src/x.py") == "amor = 2\n"
-    assert reader.read_file("src/x.py", ref="base") == "amor = 1\n"
+    head_read = reader.read_file("src/x.py")
+    base_read = reader.read_file("src/x.py", ref="base")
+    assert head_read is not None and head_read.content == "amor = 2\n"
+    assert base_read is not None and base_read.content == "amor = 1\n"
 
 
 def test_sin_fixtures_no_hay_fabrica() -> None:
