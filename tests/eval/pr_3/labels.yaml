@@ -32,8 +32,12 @@ expected:
     severity: P2
     subset: correctness
     file: src/agent_review/fixworker/main.py
-    match: ["_consume", "mark_done"]
-    must_mention: ["encolar la reanudacion antes de marcar"]
+    # 2026-10-17: `match` ampliado (la redaccion con razonamiento no nombra
+    # `_consume`). `must_mention` casa la direccion correcta («se marca ... antes de
+    # encolar la reanudacion») y no la invertida de la auditoria («reanuda la wave
+    # antes de `mark_done`»).
+    match: ["mark_done"]
+    must_mention: ["antes de encolar la reanudacion"]
 
   # I: real en parte (el healthcheck queda ciego si /tmp no es escribible). La
   # severidad publicada (P3) no se discute.
@@ -50,7 +54,8 @@ expected:
     severity: P1
     subset: integracion
     why: "El fix-worker recibe todos los secretos via env_file: .env"
-    match: ["secretos", "fixworker"]
+    # 2026-10-17: ampliado; «secreto» casa tambien «secretos».
+    match: ["secreto", "fix-worker"]
 
   - id: integracion-2
     severity: P1
@@ -71,7 +76,9 @@ expected:
     severity: P2
     subset: no_detectado
     why: "El arranque fatal-vs-warning se decide casando el texto del mensaje de probe"
-    match: ["probe", "fatal"]
+    # 2026-10-17: ampliado; «probe» solo salia en el escenario, no en titulo ni motivo.
+    file: src/agent_review/worker/main.py
+    match: ["arranque fatal"]
 
   - id: no-detectado-2
     severity: P2
@@ -185,6 +192,32 @@ must_not_report:
     match: ["api key de nan.builders expuesta"]
     why: "es la tarea humana P7 ya registrada en el todo; el diff no contiene ninguna clave"
 
+  # P10-P14: FP de la regrabacion con razonamiento alto, lotes de 20k y troceo por
+  # hunks (021, 2026-10-17). Verificados contra 008da57.
+  - id: P10
+    file: src/agent_review/worker/main.py
+    match: ["sweep_fix_expired lee review.fix_request"]
+    why: "fix_request es una propiedad sobre approval: el mismo campo, y el barrido filtra por kind FIX (familia de P2)"
+
+  - id: P11
+    match: ["security/arch desaparecen sin error"]
+    why: "que un rol sin binding no construya su persona es decision documentada de 005 (D7, M6)"
+
+  - id: P12
+    file: config/models.yaml
+    match: ["exige 'json' en su propio prompt"]
+    why: "el system prompt del fixer ya dice JSON y el adaptador lo anade si falta"
+
+  - id: P13
+    file: src/agent_review/worker/main.py
+    match: ["puede marcar not_verifiable un fix ya verificado"]
+    why: "el barrido solo corre con la cola vacia y apply_resolutions solo toca PENDING (familia de P3 y K)"
+
+  - id: P14
+    file: src/agent_review/worker/main.py
+    match: ["_ensure_registered re-encola la wave"]
+    why: "el set done vive en Redis (24 h) y sobrevive al reinicio; la reposicion es idempotente y documentada"
+
 acceptable:
   - id: H
     match: ["env_for", "Settings"]
@@ -200,3 +233,14 @@ acceptable:
     file: src/agent_review/worker/main.py
     match: ["cae a inmemoryfixqueue en produccion"]
     why: "es la deuda D6 documentada (fallback a memoria sin Redis); la cubre S4 de 015"
+
+  # Q3-Q4: ciertos pero documentados o de impacto menor (regrabacion de 021).
+  - id: Q3
+    file: src/agent_review/worker/main.py
+    match: ["tres personas llm consumen el presupuesto"]
+    why: "es la deuda D17 que el propio PR documentaba en arquitectura.md §7 (la cerro 017)"
+
+  - id: Q4
+    file: src/agent_review/worker/main.py
+    match: ["no re-registra la pausa de fix"]
+    why: "el hueco existe, pero reconcile_paused repone la pausa y su wave en cada poda: solo tarda mas (P3)"

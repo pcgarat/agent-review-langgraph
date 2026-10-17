@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 
 import harness
-import pytest
 from harness import ReplayLlm, case_fingerprint, compare, to_json
 
 from agent_review.policy.engine import PolicyEngine
@@ -66,10 +65,6 @@ def test_la_grabacion_casa_el_caso() -> None:
     assert recording.case_fingerprint == case_fingerprint(case)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
-)
 def test_replay_reproduce_el_baseline_byte_a_byte() -> None:
     case = harness.load_case(CASE_DIR)
 
@@ -88,36 +83,28 @@ def test_replay_es_determinista() -> None:
     assert to_json(_replay_report(case)) == to_json(_replay_report(case))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
-)
 def test_el_baseline_recoge_los_numeros_de_la_regrabacion() -> None:
-    # Regrabacion del 2026-10-17 (deepseek-v4-flash, contrato de 007, lotes de 012).
-    # La auditoria original (9 publicados, 2 TP, precision 0.25, cobertura 0.2) vive
-    # en la spec de 006 §3.1.
+    # Regrabacion del 2026-10-17 (021): deepseek-v4-flash con razonamiento alto,
+    # lotes de 20 000, diff numerado y troceo por hunks, grabada en una review real en
+    # el stack. La auditoria original (9 publicados, 2 TP, precision 0.25, cobertura
+    # 0.2) vive en la spec de 006 §3.1; sin razonamiento (012) eran 0 TP.
     case = harness.load_case(CASE_DIR)
     report = _replay_report(case)
 
     assert report.counts["fp_unknown"] == 0, "todo hallazgo publicado debe estar etiquetado"
-    # 012: el revisor lee todo el codigo y la configuracion del PR.
     assert report.metrics["coverage"] == 1.0
-    # Pero ver mas no basta: los 10 publicados son 8 FP (P2-P9) y 2 aceptables
-    # (Q1-Q2); ningun real. Falta contexto entre ficheros (008) y verificar (009).
+    # Tres reales: A (en la direccion correcta), integracion-1 y no-detectado-1.
     assert report.counts["published"] == 10
-    assert report.counts["fp_labeled"] == 8
+    assert report.counts["tp"] == 3
+    assert report.counts["tp_inverted"] == 0
+    assert report.counts["fp_labeled"] == 5
     assert report.counts["acceptable"] == 2
-    assert report.counts["tp"] == 0
-    assert report.counts["fn"] == 8
-    assert report.metrics["precision"] == 0.0
-    assert report.metrics["recall"] == 0.0
+    assert report.counts["fn"] == 5
+    assert report.metrics["precision"] == 0.375
+    assert report.metrics["recall"] == 0.375
     assert report.inverted == ()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="021: el prompt (diff numerado) y los lotes (30k) cambiaron; se regraba en RZ12",
-)
 def test_el_pr_3_entero_llega_al_revisor() -> None:
     # 012 criterio 1: sin `max_files_per_pr` ni el corte a 60000 chars, la
     # configuracion que dejo fuera la review auditada entra en la review.

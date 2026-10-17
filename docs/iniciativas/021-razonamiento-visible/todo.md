@@ -162,12 +162,26 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque 5 — Medida y cierre (checkpoint C5)
 
-- [ ] **RZ12** *(Red)* Review real del PR #3 con razonamiento y *gold set*
+- [x] **RZ12** *(Red)* Review real del PR #3 con razonamiento y *gold set*
   - Corrida real: sin 408 ni lotes vacíos por `length` (criterio 4). Anotar coste,
     latencia y tokens de razonamiento por lote.
   - `make eval-record`; etiquetar los hallazgos nuevos contra `008da57` (revisión
     humana de las etiquetas) y congelar el baseline (criterio 6).
   - Quitar el `xfail(strict=True)` de los 3 tests de `tests/eval/test_eval_pr_3.py`.
+  - *Resultado 2026-10-17.* Dos corridas reales del PR #3 en el stack (Redis,
+    Postgres y panel; VCS falso, sin publicar ni pasar por la cola):
+    - **Primera** (lotes de 30k): un corte del *stream* a los ~3 min hizo que la
+      `RetryPolicy` repitiera la persona entera (25,6 min, 284 066 tokens) y
+      `worker/main.py` salió `too_large`. De ahí el bloque 4b (RZ15–RZ17).
+    - **Segunda** (lotes de 20k, reintento por lote, troceo por hunks): 19 lotes sin
+      cortes, review completa (51/51), 21 min, 336 246 tokens (189 031 de
+      razonamiento, máx. 20 832 por lote). La pestaña del panel y el histórico,
+      probados en un navegador.
+    - **Gold set** (esta grabación): cobertura 1.0, **precisión 0.375 y recall 0.375**
+      (3 TP: A en la dirección correcta, integracion-1 y no-detectado-1; 5 FP, P10–P14;
+      2 aceptables, Q3–Q4). Sin razonamiento eran 0 TP con la misma cobertura. Se
+      amplió el `match` de A, integracion-1 y no-detectado-1 (nota fechada en
+      `labels.yaml`).
 
 - [ ] **RZ13** ADR y documentos vivos
   - ADR nuevo: razonamiento por *streaming* con un único punto de captura y un
