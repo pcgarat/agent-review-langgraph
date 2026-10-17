@@ -67,6 +67,21 @@ aunque el cliente esperaba 900 s: el *gateway* corta la petición. El *streaming
 podría evitarlo (la conexión deja de estar muda), pero **no está probado**: la llamada
 de §3.1 terminó a los 109 s, justo por debajo del corte. Ver Q1.
 
+**Prueba del 2026-10-17 (Q1), con *streaming* y un lote de 60 000 caracteres:** la
+conexión aguantó **234 s** sin 408 (primer token a los 2,3 s): el *streaming* evita el
+corte. Pero el modelo razonó 43 194 tokens y terminó con `finish_reason: length`
+**sin respuesta**, con 65 536 de margen y el `usage` marcado `estimated`, `billed:
+false`: el proveedor corta antes, por tiempo o por tokens de salida. Con lotes de
+30 000 caracteres (§3.1) la llamada termina bien. De ahí R12.
+
+### 3.5 En qué gasta el razonamiento
+
+En el razonamiento de esa prueba (173 KB, sin bucles: 1 171 líneas distintas de 1 687)
+una parte grande se va en **contar a mano números de línea del diff** («*Let me recount
+the added docstring lines… That's 10 added lines (625-634 with my numbering)*»),
+porque el *prompt* exige la `line` del lado nuevo y el diff unificado no la trae. De
+ahí R13.
+
 ### 3.3 Para qué sirve, con un ejemplo real
 
 El razonamiento de ese lote dice, sobre `build_fix_wait`: *«`build_wave` is not in the
@@ -99,6 +114,8 @@ costó verificar a mano diez hallazgos.
 | R8 | **Siempre *streaming*** en `OpenAiLlm`, haya o no quien escuche | Un solo camino que probar; y, si evita el 408 de §3.2, es lo que permite razonar más de 2 minutos. *Decidido 2026-10-17 (Q1).* |
 | R9 | **Histórico de reviews**: al terminar, el worker deja un resumen en `reviews:history` (*sorted set* por fecha: `review_key`, repo, PR, `head_sha`, completa/parcial/incompleta, hallazgos, tokens, si hubo razonamiento). El panel lo lista y enlaza al detalle; la retención es la de los checkpoints (`CHECKPOINT_RETENTION_DAYS`, 30 días) | Leer el histórico de Postgres obligaría a recorrer todos los hilos; el resumen ya existe en el `ReviewOutcome` al cerrar. *Decidido 2026-10-17 (Q3).* |
 | R10 | **Parámetros por modelo**: `ModelSpec` gana `params` (p. ej. `reasoning_effort`, `temperature`) que **sustituyen** a los `defaults` del proveedor; el registro declara una entrada de revisor con razonamiento y los roles revisores (`correctness`, `security`, `arch`) se enlazan a ella. El fixer sigue con `reasoning_effort: none` | Hoy el razonamiento solo se enciende por proveedor, para todos los roles a la vez. *Decidido 2026-10-17 (Q6).* |
+| R12 | Con razonamiento, el lote por defecto baja a **30 000 caracteres** (`LLM_BATCH_MAX_CHARS`) | Con 60 000 el proveedor corta antes de que el modelo responda (§3.2); con 30 000 termina en ~110 s |
+| R13 | El `LlmReviewer` entrega el diff con el **número de línea del lado nuevo** en cada línea añadida o de contexto | El modelo deja de gastar razonamiento en aritmética (§3.5) y el anclaje mejora. Cambia el *prompt*: se regraba el *gold set* (criterio 6) |
 | R11 | **Los revisores razonan siempre**, con nivel `high` (el del experimento de §3.1) y `reasoning_min_max_tokens` de 65 536 | Pensar es lo que el usuario espera de una review «como con un agente de chat». El coste y la latencia se miden en el *gold set* (criterio 6) |
 
 ## 5. Diseño o contrato
@@ -193,7 +210,8 @@ La forma exacta (alias con `model:` o parámetros por *binding*) se fija en el p
    que emite trozos y el SSE del panel).
 2. Lo publicado en el PR y el *replay* del *gold set* no cambian (mismo baseline).
 3. Un fallo del sink no cambia la review (test).
-4. El 408 de §3.2 queda resuelto o explicado (Q1), con una corrida real.
+4. Una review real del PR #3 con razonamiento alto termina sin 408 ni lotes vacíos
+   por `length` (Q1, R12).
 5. El panel lista el histórico de reviews terminadas y enlaza a su detalle y
    razonamiento (R9); el histórico se poda con los checkpoints.
 6. Los revisores razonan con `high` y el fixer no (R10, R11); el *gold set* se regraba
@@ -206,8 +224,10 @@ La forma exacta (alias con `model:` o parámetros por *binding*) se fija en el p
 
 Todas resueltas el 2026-10-17.
 
-- **Q1 — ¿Streaming siempre o solo cuando hay sink?** *Resuelta:* siempre (R8). Hay
-  que probar si evita el 408 con un lote que piense más de 2 minutos (criterio 4).
+- **Q1 — ¿Streaming siempre o solo cuando hay sink?** *Resuelta:* siempre (R8).
+  Probado el 2026-10-17: evita el 408 (234 s sin corte); el límite que queda es el de
+  salida del proveedor, que se resuelve con lotes de 30 000 (R12) y numerando las
+  líneas (R13).
 - **Q2 — Retención y tamaño.** *Resuelta:* 10 días y 10 MB por review (§5.4).
 - **Q3 — ¿Quién puede verlo?** *Resuelta:* cualquier sesión del panel (`lector`). Y
   además, un **histórico** de reviews hechas (R9, §5.5).
