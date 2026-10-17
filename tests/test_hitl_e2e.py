@@ -114,7 +114,9 @@ class _Vcs:
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
-        return "+x\n"
+        from diff_helpers import added_lines_diff
+
+        return added_lines_diff(("a.php", 1))
 
     def resolve_inline_anchor(self, repo: str, pr_id: int, *, path: str, text: str):
         del repo, pr_id, text

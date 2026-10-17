@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from agent_review.adapters.diff_parser import (
     FileDiff,
-    best_line,
     file_key,
     number_diff,
     parse_unified_diff,
@@ -38,6 +37,7 @@ from agent_review.ports.reasoning import (
     emit_safely,
 )
 from agent_review.scope import split_diff
+from agent_review.verification.l0 import L0Disposition, evaluate_l0
 
 logger = logging.getLogger(__name__)
 
@@ -473,16 +473,25 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
     key = file_key(files, path)
     if key is None:
         return None  # el modelo invento la ruta: fuera del diff, no se publica
-    added = files[key].added
+    file_diff = files[key]
     hint = _as_int(entry.get("line"))
     evidence_in = [
         str(item).strip() for item in _as_list(entry.get("evidence")) if str(item).strip()
     ]
-    anchor = _anchor_text(evidence_in, title)
-    line = best_line(added, hint, anchor)
-    if line is None:
+    cite = _cite_text(evidence_in)
+    # 008 CX5 / D2 / D13: L0 manda; el `pre_existing` del modelo se ignora.
+    l0 = evaluate_l0(file_diff, hint=hint, cite=cite)
+    if l0.disposition is L0Disposition.DROP or l0.line is None:
+        logger.info("correctness: hallazgo descartado por L0 (%s)", l0.reason)
         return None
-    evidence = evidence_in or [f"{key}:{line} {added.get(line, '').strip()}".strip()]
+    line = l0.line
+    line_text = (
+        file_diff.added.get(line)
+        or file_diff.context.get(line)
+        or file_diff.removed.get(line)
+        or ""
+    )
+    evidence = evidence_in or [f"{key}:{line} {line_text.strip()}".strip()]
     subject = entry.get("protected_subject") or guess_protected_subject(f"{title} {why}")
     payload = {
         "id": str(entry.get("id") or f"correctness-{slug(key)}-{line}-{slug(title)[:24]}"),
@@ -495,7 +504,7 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
         "owner": str(entry.get("owner") or "downstream-resolver"),
         "confidence": _confidence(entry.get("confidence")),
         "evidence": evidence,
-        "pre_existing": bool(entry.get("pre_existing", False)),
+        "pre_existing": l0.pre_existing,
         "suggested_fix": _as_text(entry.get("suggested_fix")),
         "protected_subject": subject,
         "failure_scenario": _as_text(entry.get("failure_scenario")),
@@ -511,15 +520,17 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
         return None
 
 
-def _anchor_text(evidence: list[str], title: str) -> str | None:
-    """Texto para `best_line`: la parte citada, sin el prefijo `file:line`."""
+def _cite_text(evidence: list[str]) -> str | None:
+    """Texto de evidencia para L0, sin el prefijo `file:line`."""
     for item in evidence:
         head, _, rest = item.partition(" ")
         if rest and ":" in head:
-            return rest.strip()[:40]
+            return rest.strip()
         if rest:
-            return rest.strip()[:40]
-    return title[:40] or None
+            return rest.strip()
+        if item.strip():
+            return item.strip()
+    return None
 
 
 def _severity(value: object) -> str:

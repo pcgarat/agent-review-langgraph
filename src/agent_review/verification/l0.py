@@ -1,7 +1,8 @@
 """L0: anclaje estricto, cita contrastada y `pre_existing` calculado (008).
 
 Puro y sin I/O: quien llama lee el fichero a `base_sha` si quiere el paso (b) de
-`pre_existing` y pasa el contenido. Sin cablear aun al `LlmReviewer` (CX5).
+`pre_existing` y pasa el contenido. Lo invoca el `LlmReviewer` (CX5); el valor de
+`pre_existing` del modelo se ignora.
 """
 
 from __future__ import annotations

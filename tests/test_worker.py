@@ -45,6 +45,7 @@ from agent_review.worker.main import (
     validate_models,
     verification_enabled,
 )
+from diff_helpers import added_lines_diff
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DIFF = (FIXTURES / "diff_emotivoo.diff").read_text(encoding="utf-8")
@@ -70,7 +71,8 @@ class FakeVcs:
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
-        return "+x\n"
+        # Cubrir a.php:1 (OneShot / HITL) y a.php:40 (B5 mismo titulo).
+        return added_lines_diff(("a.php", 1), ("a.php", 40))
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo, path, ref

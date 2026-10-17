@@ -22,10 +22,16 @@ from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
 class FakeVcs:
-    def __init__(self, *, anchors: dict[str, InlineAnchor] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        anchors: dict[str, InlineAnchor] | None = None,
+        diff: str | None = None,
+    ) -> None:
         self.comments: list[tuple[str, int, str]] = []
         self.inlines: list[tuple[str, int, str, int, str]] = []
         self._anchors = anchors or {}
+        self._diff = diff
         # El PR recuerda lo publicado, como haria Bitbucket: el publish lo lee
         # para no duplicar el resultado de una review ya hecha.
         self.markers: list[ReviewMarker] = []
@@ -48,6 +54,22 @@ class FakeVcs:
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
+        if self._diff is not None:
+            return self._diff
+        # 008 CX5: publish exige que `finding.line` este en las anadidas del diff.
+        # Se sintetiza un hunk por ancla para que los hallazgos de test sigan
+        # pudiendo anclarse inline.
+        if self._anchors:
+            parts: list[str] = []
+            for path, anchor in self._anchors.items():
+                parts.append(
+                    f"diff --git a/{path} b/{path}\n"
+                    f"--- a/{path}\n"
+                    f"+++ b/{path}\n"
+                    f"@@ -0,0 +{anchor.line},1 @@\n"
+                    f"+falta assert\n"
+                )
+            return "".join(parts)
         return "diff --git a/src/foo.py b/src/foo.py\n+amor\n"
 
     def resolve_inline_anchor(
@@ -668,6 +690,49 @@ def test_publish_sin_ancla_cae_al_resumen() -> None:
             "findings": [],
         }
     )
+    assert vcs.inlines == []
+    assert vcs.comments
+    assert "solo en resumen" in vcs.comments[0][2]
+
+
+def test_publish_linea_fuera_de_anadidas_va_al_resumen_sin_resolver_ancla() -> None:
+    # 008 CX5: L0 SUMMARY (contexto) no pide ancla al VCS aunque hubiera una.
+    finding = make_finding(file="src/foo.py").model_copy(
+        update={"line": 12, "evidence": ["src/foo.py:12 keep();"]}
+    )
+
+    class CountingVcs(FakeVcs):
+        def __init__(self) -> None:
+            super().__init__(
+                anchors={"src/foo.py": InlineAnchor(path="src/foo.py", line=12)},
+                diff=(
+                    "diff --git a/src/foo.py b/src/foo.py\n"
+                    "--- a/src/foo.py\n+++ b/src/foo.py\n"
+                    "@@ -10,3 +10,4 @@\n"
+                    " keep();\n"
+                    "+new_call();\n"
+                    " other();\n"
+                ),
+            )
+            self.resolve_calls = 0
+
+        def resolve_inline_anchor(
+            self, repo: str, pr_id: int, *, path: str, text: str
+        ) -> InlineAnchor | None:
+            self.resolve_calls += 1
+            return super().resolve_inline_anchor(repo, pr_id, path=path, text=text)
+
+    vcs = CountingVcs()
+    reviewers: list[ReviewerPort] = [StaticReviewer("correctness", [finding])]
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    graph = build_graph(vcs=vcs, reviewers=reviewers, policy=policy).compile()
+    graph.invoke(
+        {
+            "request": {"repo": "cqm/emotivoo-v2", "pr_id": 7, "head_sha": "abc"},
+            "findings": [],
+        }
+    )
+    assert vcs.resolve_calls == 0
     assert vcs.inlines == []
     assert vcs.comments
     assert "solo en resumen" in vcs.comments[0][2]

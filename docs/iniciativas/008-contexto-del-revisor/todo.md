@@ -49,7 +49,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - *Hecho 2026-10-17 (CX2–CX4):* módulo puro sin cablear al `LlmReviewer` (CX5)
     para no chocar con 009 en `graph/build.py`.
 
-- [ ] **CX5** Cablear L0 en `LlmReviewer`; dejar de copiar `pre_existing` (D2, D13)
+- [x] **CX5** Cablear L0 en `LlmReviewer`; dejar de copiar `pre_existing` (D2, D13)
   - `adapters/llm_reviewer.py`: tras anclar, invoca L0; el valor del modelo en
     `pre_existing` se ignora; un descarte de L0 no entra en `findings`.
   - `publish` (`graph/build.py`): si `finding.line` no está en las líneas añadidas
@@ -57,6 +57,8 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Aceptación: test con doble de modelo que miente en `pre_existing` → gana L0;
     cita inventada no sale; cita de contexto no se ancla inline.
   - Verifica: `tests/test_llm_reviewer.py`, `tests/test_graph.py`.
+  - *Hecho 2026-10-17:* L0 en `_to_finding`; publish endurecido; `FakeVcs` sintetiza
+    hunks por ancla para que los tests de inline sigan anclando líneas añadidas.
 
 ## Bloque 2 — ReviewContext y L1 (checkpoint C2)
 

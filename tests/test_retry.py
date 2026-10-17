@@ -158,7 +158,9 @@ class FlakyVcs:
         self.diff_calls += 1
         if self.diff_calls <= self._fail_diff:
             raise self._error
-        return "diff --git a/src/foo.py b/src/foo.py\n+amor\n"
+        from diff_helpers import added_lines_diff
+
+        return added_lines_diff(("src/foo.py", 3), text="amor")
 
     def resolve_inline_anchor(
         self, repo: str, pr_id: int, *, path: str, text: str

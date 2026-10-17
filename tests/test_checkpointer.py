@@ -43,7 +43,9 @@ class _MemoryVcs:
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         del repo, pr_id
-        return "diff --git a/a.php b/a.php\n+x\n"
+        from diff_helpers import added_lines_diff
+
+        return added_lines_diff(("a.php", 1))
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo, path, ref

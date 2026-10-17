@@ -392,6 +392,36 @@ def test_context_scope_del_modelo_se_lee_y_lo_desconocido_cae_a_none() -> None:
     assert [f.context_scope for f in findings] == [ContextScope.OUTSIDE_DIFF, None]
 
 
+def test_l0_ignora_pre_existing_del_modelo() -> None:
+    # 008 CX5 / D2: el modelo miente; L0 calcula False (cita solo en anadidas).
+    entry = _finding_json(pre_existing=True)
+    [finding] = (
+        LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings
+    )
+    assert finding.pre_existing is False
+    assert finding.line == 14
+
+
+def test_l0_descarta_cita_inventada() -> None:
+    entry = _finding_json(evidence=[f"{TRANSFER}:14 invented_function_xyz();"])
+    assert LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings == []
+
+
+def test_l0_cita_de_contexto_no_se_recoloca_a_anadida() -> None:
+    # El modelo apunta a la anadida; la evidencia cita contexto → SUMMARY (linea 12).
+    entry = _finding_json(
+        line=14,
+        evidence=[
+            f"{TRANSFER}:12 $balance = $this->repository->find($command->walletId);"
+        ],
+    )
+    [finding] = (
+        LlmReviewer(llm=FakeLlm(_response(entry))).review(repo="r", pr_id=1, diff=DIFF).findings
+    )
+    assert finding.line == 12
+    assert finding.pre_existing is True
+
+
 def test_el_prompt_pide_escenario_y_alcance_y_no_requires_verification() -> None:
     llm = FakeLlm(_response())
     LlmReviewer(llm=llm).review(repo="r", pr_id=1, diff=DIFF)

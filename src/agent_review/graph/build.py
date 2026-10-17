@@ -14,6 +14,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import RetryPolicy, Send, interrupt
 from pydantic import ValidationError
 
+from agent_review.adapters.diff_parser import parse_unified_diff
 from agent_review.adapters.tool_loop import LoopResult
 from agent_review.domain.models import (
     PENDING_ACTIONS,
@@ -1026,6 +1027,9 @@ def build_graph(
         by_id = {d.finding_id: d for d in decisions}
         max_inline = int(policy.guards.get("max_inline_comments", 20))
         ordered = sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity])
+        # 008 CX5: lineas anadidas del diff; una cita de contexto/borrada (L0
+        # SUMMARY) va al resumen sin pedir ancla al VCS.
+        diff_files = parse_unified_diff(state.get("diff") or "")
 
         inlined: list[Finding] = []
         summary_only: list[Finding] = []
@@ -1044,6 +1048,10 @@ def build_graph(
                 summary_only.append(finding)
                 continue
             if len(inlined) >= max_inline:
+                summary_only.append(finding)
+                continue
+            file_diff = diff_files.get(finding.file)
+            if file_diff is None or finding.line not in file_diff.added:
                 summary_only.append(finding)
                 continue
             quote = _quote_for_anchor(finding)

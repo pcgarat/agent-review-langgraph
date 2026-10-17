@@ -220,7 +220,9 @@ def test_caso_c_bucle_fix_wait_queda_refutado(tmp_path: Path) -> None:
 
         def get_diff(self, repo: str, pr_id: int) -> str:
             del repo, pr_id
-            return f"diff --git a/{path} b/{path}\n+x\n"
+            from diff_helpers import added_lines_diff
+
+            return added_lines_diff((path, 1))
 
         def resolve_inline_anchor(self, repo, pr_id, *, path, text):  # noqa: ANN001
             del repo, pr_id, text
