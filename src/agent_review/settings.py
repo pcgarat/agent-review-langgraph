@@ -245,7 +245,8 @@ def get_settings() -> Settings:
 _INSECURE_DEFAULTS = {"change-me", "changeme"}
 
 
-def _is_unset(value: str) -> bool:
+def _is_placeholder(value: str) -> bool:
+    """¿Sigue en uno de los valores de ejemplo de `.env.example`?"""
     return value.strip() in _INSECURE_DEFAULTS
 
 
@@ -254,9 +255,12 @@ def is_missing(value: str) -> bool:
 
     `.env.example` rellena cada secreto e identidad con `change-me`: copiarlo tal
     cual no puede contar como «configurado», ni en el contrato de producción ni en
-    los puntos donde el vacío desactiva algo (p. ej. el login del registro).
+    los puntos donde el vacío desactiva algo (p. ej. el login del registro). Vacío
+    es el caso más probable (una variable sin asignar, `VAR=`), así que también
+    cuenta. Usar siempre este predicado, nunca `_is_placeholder` a secas: si no,
+    el mismo secreto se juzga distinto según el proceso.
     """
-    return not value.strip() or _is_unset(value)
+    return not value.strip() or _is_placeholder(value)
 
 
 def insecure_secrets(settings: Settings) -> list[str]:
@@ -267,11 +271,11 @@ def insecure_secrets(settings: Settings) -> list[str]:
     review, que es exactamente el fallo silencioso que se quiere evitar.
     """
     insecure: list[str] = []
-    if _is_unset(settings.tooling_webhook_secret):
+    if is_missing(settings.tooling_webhook_secret):
         insecure.append("TOOLING_WEBHOOK_SECRET")
     # El token de decision autoriza a un humano a mandar sobre el clamp; en Fase 3
     # sera la llave del repo (spec §2.1). No puede quedarse en el valor de ejemplo.
-    if _is_unset(settings.reviews_decision_token):
+    if is_missing(settings.reviews_decision_token):
         insecure.append("REVIEWS_DECISION_TOKEN")
     # La credencial del proveedor de VCS es obligatoria: sin ella no hay diff ni
     # comentarios. Se exige la del proveedor activo, no siempre la de Bitbucket.
@@ -306,7 +310,7 @@ def insecure_secrets(settings: Settings) -> list[str]:
     # worker<->runner y el token de clonado de solo lectura del runner. Sin ellos
     # el worker no puede pedir la verificacion o el runner no puede clonar.
     if settings.sandbox_enabled:
-        if _is_unset(settings.sandbox_runner_token):
+        if is_missing(settings.sandbox_runner_token):
             insecure.append("SANDBOX_RUNNER_TOKEN")
         if is_missing(settings.sandbox_git_token):
             insecure.append("SANDBOX_GIT_TOKEN")
@@ -365,7 +369,7 @@ def teams_bot_insecure_secrets(settings: Settings) -> list[str]:
     # JWT del Bot Framework: en produccion no puede quedarse vacio ni de ejemplo.
     if is_missing(settings.teams_bot_token):
         insecure.append("TEAMS_BOT_TOKEN")
-    if _is_unset(settings.teams_bot_shared_secret):
+    if is_missing(settings.teams_bot_shared_secret):
         insecure.append("TEAMS_BOT_SHARED_SECRET")
     return insecure
 

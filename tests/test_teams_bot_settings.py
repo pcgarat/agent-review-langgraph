@@ -70,6 +70,12 @@ def test_el_bearer_del_ingress_no_puede_quedarse_en_el_valor_de_ejemplo() -> Non
         require_teams_bot_secrets(_prod(teams_bot_shared_secret="change-me"))
 
 
+def test_el_bearer_del_ingress_vacio_tambien_es_inseguro() -> None:
+    """Vacio (variable sin asignar) no puede dejar el ingress sin autenticacion."""
+    with pytest.raises(RuntimeError, match="TEAMS_BOT_SHARED_SECRET"):
+        require_teams_bot_secrets(_prod(teams_bot_shared_secret=""))
+
+
 def test_el_token_del_bot_en_su_valor_de_ejemplo_es_inseguro() -> None:
     with pytest.raises(RuntimeError, match="TEAMS_BOT_TOKEN"):
         require_teams_bot_secrets(_prod(teams_bot_token="change-me"))

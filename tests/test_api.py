@@ -220,13 +220,46 @@ def test_env_example_declara_todas_las_variables_y_ningun_secreto_vacio() -> Non
     from agent_review.settings import Settings
 
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
-    declared = dict(re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", text, flags=re.M))
-    missing = [name.upper() for name in Settings.model_fields if name.upper() not in declared]
+    declared = re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", text, flags=re.M)
+    missing = [name.upper() for name in Settings.model_fields if name.upper() not in dict(declared)]
     assert missing == [], f"faltan en .env.example: {missing}"
-    # Vacio a proposito solo donde el vacio significa algo (desactivado/por defecto).
+    # Vacio a proposito solo donde el vacio significa algo (desactivado/por defecto);
+    # vacio en un secreto se colaria como «sin rellenar» solo por la via `is_missing`.
     intentionally_empty = {"SCOPE_IGNORE", "MAX_AUTONOMY_OVERRIDE", "LLM_MODEL", "LLM_BASE_URL"}
-    empty = sorted(k for k, v in declared.items() if not v.strip())
+    empty = sorted(name for name, value in declared if not value.strip())
+    assert empty, "el filtro de vacios no deberia ser vacuo: `.env.example` deja variables vacias"
     assert set(empty) <= intentionally_empty, f"sin placeholder: {empty}"
+
+
+@pytest.mark.parametrize(
+    ("settings_field", "overrides", "expected"),
+    [
+        ("twg_bbc_token", {}, "TWG_BBC_TOKEN"),
+        ("github_token", {"vcs_provider": "github"}, "GITHUB_TOKEN"),
+        ("tooling_webhook_secret", {}, "TOOLING_WEBHOOK_SECRET"),
+        ("reviews_decision_token", {}, "REVIEWS_DECISION_TOKEN"),
+        ("sandbox_git_token", {"sandbox_enabled": True}, "SANDBOX_GIT_TOKEN"),
+        ("sandbox_runner_token", {"sandbox_enabled": True}, "SANDBOX_RUNNER_TOKEN"),
+    ],
+)
+def test_una_variable_vacia_es_igual_de_insegura_que_el_placeholder(
+    monkeypatch, settings_field: str, overrides: dict[str, object], expected: str
+) -> None:
+    """Vacio es el fallo mas probable (variable sin asignar); debe cerrar igual."""
+    from agent_review.settings import require_production_secrets
+
+    settings = main._settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "vcs_provider", "twg")
+    monkeypatch.setattr(settings, "tooling_webhook_secret", "secreto-real")
+    monkeypatch.setattr(settings, "reviews_decision_token", "token-decision-real")
+    monkeypatch.setattr(settings, "twg_bbc_token", "token-real")
+    monkeypatch.setattr(settings, "sandbox_runner_token", "token-runner-real")
+    for name, value in overrides.items():
+        monkeypatch.setattr(settings, name, value)
+    monkeypatch.setattr(settings, settings_field, "")
+    with pytest.raises(RuntimeError, match=expected):
+        require_production_secrets(settings)
 
 
 def test_arranque_en_produccion_con_teams_habilitado_sin_cola_falla(monkeypatch) -> None:
