@@ -33,7 +33,7 @@ from agent_review.domain.models import (
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
 from agent_review.ports.context import ContextLimits, ContextReaderPort
-from agent_review.ports.llm import LlmError, LlmPort, LlmReply
+from agent_review.ports.llm import FingerprintMismatch, LlmError, LlmPort, LlmReply
 from agent_review.ports.reasoning import (
     ReasoningEvent,
     ReasoningKind,
@@ -399,7 +399,20 @@ class LlmReviewer:
                     paths=paths,
                     on_reasoning=self._listener(event),
                 )
+            except FingerprintMismatch:
+                # Una grabacion caducada no es un corte: reintentarla solo repite el
+                # aborto y acaba en «0 hallazgos» (D23).
+                raise
             except Exception as exc:
+                if not is_transient(exc):
+                    # Un error permanente no cambia por repetirlo (E0c), pero tampoco
+                    # tumba la review: el lote sale `failed` y la review queda parcial
+                    # (021 R14, 012 C7). Relanzarlo sube hasta el nodo `persona`, que
+                    # tambien lo relanza (`graph/build.py:787`), y se pierden los
+                    # hallazgos de los demas lotes.
+                    self._last_error = self._last_error or f"fallo permanente del lote: {exc}"
+                    logger.warning("correctness: %s; el lote sale failed", self._last_error)
+                    return None
                 if attempt < self._batch_retries:
                     retry = f"{attempt + 1}/{self._batch_retries}"
                     event(
@@ -532,14 +545,17 @@ class LlmReviewer:
                 max_tokens=self._max_tokens,
                 on_reasoning=on_reasoning,
             )
+        except FingerprintMismatch:
+            # El replay no casa: es un fallo de medida, no una review limpia (D23).
+            raise
         except Exception as exc:
             if is_transient(exc):
                 raise
             self._last_error = f"el modelo fallo: {exc}"
             if isinstance(exc, LlmError):
-                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+                logger.warning("correctness: el modelo fallo (%s); lote no revisado", exc)
             else:
-                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+                logger.exception("correctness: error inesperado del modelo; lote no revisado")
             return None
         self._last_loop = loop
         self.tokens_used += loop.usage
@@ -603,21 +619,26 @@ class LlmReviewer:
                     json_mode="json_object",
                     on_reasoning=on_reasoning,
                 )
+        except FingerprintMismatch:
+            # El replay no casa: es un fallo de medida, no una review limpia (D23).
+            # La reserva no llego a gastarse.
+            release_tokens(self._budget, review_key, estimated)
+            raise
         except Exception as exc:
             # La reserva no llego a gastarse: se devuelve antes de subir o degradar,
             # para que el reintento del nodo no reserve dos veces (B8).
             release_tokens(self._budget, review_key, estimated)
             # Un fallo transitorio (red, timeout, 5xx, 429) sube para que la
             # `RetryPolicy` del nodo `persona` lo reintente; si se agotan los
-            # intentos, el nodo degrada a 0 hallazgos. Tragarlo aqui dejaba al
+            # intentos, el nodo cierra con `FAILED`. Tragarlo aqui dejaba al
             # nodo sin nada que reintentar.
             if is_transient(exc):
                 raise
             self._last_error = f"el modelo fallo: {exc}"
             if isinstance(exc, LlmError):
-                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+                logger.warning("correctness: el modelo fallo (%s); lote no revisado", exc)
             else:
-                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+                logger.exception("correctness: error inesperado del modelo; lote no revisado")
             return None
         # Ajuste con el gasto real: lo reservado de mas vuelve al contador comun.
         if self._budget is not None and review_key:

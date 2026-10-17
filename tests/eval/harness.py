@@ -23,11 +23,11 @@ from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
 from agent_review.adapters.llm_reviewer import LlmReviewer, ReviewerReaderFactory
 from agent_review.adapters.llm_verifier import LlmVerifier
-from agent_review.domain.models import PARTIAL_CLASSES, Finding
+from agent_review.domain.models import PARTIAL_CLASSES, Finding, SkipReason
 from agent_review.graph.build import build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, ContextLimits, is_denied
-from agent_review.ports.llm import JsonMode, LlmPort, LlmReply
+from agent_review.ports.llm import FingerprintMismatch, JsonMode, LlmPort, LlmReply
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 from agent_review.ports.verifier import VerifierPort
 from agent_review.scope import changed_files, classify
@@ -476,10 +476,6 @@ def _trend(baseline: float | None, current: float | None, *, higher_better: bool
 _FINGERPRINT_VERSION = 2
 
 
-class FingerprintMismatch(RuntimeError):
-    """La grabacion no corresponde al prompt o al caso: hay que regrabar."""
-
-
 def prompt_fingerprint(
     *,
     role: str,
@@ -850,6 +846,16 @@ class CaseVcs:
         del repo, pr_id, body
 
 
+class IncompleteMeasurement(RuntimeError):
+    """Una corrida en *replay* dejo lotes sin revisar: la medida no vale (R2c).
+
+    Un `FAILED` significa que el lote no se reviso (grabacion corrupta, error de
+    parseo, bug), no que la review encontrase menos. Confundirlos convierte un
+    fallo en un numero de recall, que es el agujero que 023 T0c cierra. `BUDGET`
+    no entra: es una omision legitima y se cuenta aparte (criterio 12).
+    """
+
+
 @dataclass(frozen=True)
 class Run:
     """Resultado de una corrida del grafo: lo publicado y el gasto del run."""
@@ -858,6 +864,14 @@ class Run:
     tokens: int
     inlined: int
     reviewed: tuple[str, ...] = ()
+    skipped: dict[str, SkipReason] = field(default_factory=dict)
+
+    @property
+    def failed(self) -> dict[str, SkipReason]:
+        """Ficheros cuyo lote no se reviso (no confundir con presupuesto agotado)."""
+        return {
+            path: reason for path, reason in self.skipped.items() if reason is SkipReason.FAILED
+        }
 
 
 def run_case(
@@ -920,6 +934,7 @@ def run_case(
         tokens=int(tokens),
         inlined=len(vcs.inlines),
         reviewed=tuple(coverage.reviewed) if coverage is not None else (),
+        skipped=dict(coverage.skipped) if coverage is not None else {},
     )
 
 
@@ -951,6 +966,14 @@ def evaluate(
         verifier=verifier,
         verifier_max_findings=verifier_max_findings,
     )
+    # En *replay* un lote fallido no es una medida: es un fallo del harness o de la
+    # grabacion. Publicarlo como recall seria medir el pasado con un numero (R2c).
+    if mode == "replay" and run.failed:
+        paths = ", ".join(sorted(run.failed))
+        raise IncompleteMeasurement(
+            f"la corrida dejo lotes sin revisar ({paths}): no es una medida; "
+            "revisa la grabacion o el harness, o corre en vivo"
+        )
     fingerprints = fingerprints_by_role(recording) if recording is not None else {}
     return measure(
         case,

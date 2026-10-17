@@ -260,6 +260,42 @@ def test_un_fallo_transitorio_del_modelo_devuelve_la_reserva() -> None:
     assert budget.spent("r:1") == 0
 
 
+def test_una_grabacion_caducada_aborta_sin_reintentar_el_lote() -> None:
+    # D23 (023 T0): con los reintentos por defecto, un FingerprintMismatch no se
+    # traga ni se repite; sale del review para que el eval falle con ruido.
+    from agent_review.ports.llm import FingerprintMismatch
+
+    llm = FakeLlm(raises=FingerprintMismatch("fingerprint caducado"))
+    budget = InMemoryBudget(total=500_000)
+    reviewer = LlmReviewer(llm=llm, budget=budget, batch_retries=2)
+
+    with pytest.raises(FingerprintMismatch, match="fingerprint"):
+        reviewer.review(repo="r", pr_id=1, diff=DIFF, review_key="r:1")
+
+    assert len(llm.calls) == 1, "el aborto no se reintenta"
+    assert budget.reserved("r:1") == 0, "la reserva se devuelve al abortar"
+
+
+def test_una_grabacion_caducada_aborta_tambien_en_el_bucle(tmp_path: Path) -> None:
+    # El camino de `make eval-tools` es `_call_with_tools`; sin el `except`
+    # explicito, el FingerprintMismatch se degradaba a «0 hallazgos» (D23).
+    from agent_review.ports.context import ContextLimits
+    from agent_review.ports.llm import FingerprintMismatch
+
+    llm = FakeLlm(raises=FingerprintMismatch("fingerprint caducado"))
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        batch_retries=2,
+    )
+
+    with pytest.raises(FingerprintMismatch, match="fingerprint"):
+        reviewer.review(repo="r", pr_id=1, diff=DIFF, head_sha="h", review_key="r:1")
+
+    assert len(llm.calls) == 1, "el aborto no se reintenta"
+
+
 # --- Integracion con el grafo: merge deduplica por (fichero, titulo) ---
 
 
@@ -612,6 +648,32 @@ def test_un_lote_con_fallo_permanente_sale_failed_y_sigue_el_resto() -> None:
     result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks))
 
     assert len(llm.calls) == 2
+    assert result.coverage.reviewed == ["src/f1.py"]
+    assert result.coverage.skipped == {"src/f0.py": SkipReason.FAILED}
+
+
+def test_un_error_permanente_que_escapa_del_lote_tampoco_tumba_la_review(monkeypatch) -> None:
+    # T0d (023): un error permanente que sale de `_call` no se relanza. Si se
+    # relanzara, subiria hasta `persona` (que tambien lo relanza) y la review
+    # entera perderia los lotes que aun no se habian revisado.
+    from agent_review.domain.models import SkipReason
+    from agent_review.ports.llm import LlmError
+
+    blocks = [_file_block(f"src/f{i}.py", 20) for i in range(2)]
+    llm = _ScriptedLlm([_response()])
+    reviewer = LlmReviewer(llm=llm, batch_max_chars=len(blocks[0]), batch_retries=2)
+    original = reviewer._call
+
+    def _call(diff, review_key="", *, paths=None, on_reasoning=None):
+        if paths and paths[0] == "src/f0.py":
+            raise LlmError("respuesta irreparable")
+        return original(diff, review_key, paths=paths, on_reasoning=on_reasoning)
+
+    monkeypatch.setattr(reviewer, "_call", _call)
+
+    result = reviewer.review(repo="r", pr_id=1, diff="".join(blocks))
+
+    assert len(llm.calls) == 1, "un permanente no se reintenta"
     assert result.coverage.reviewed == ["src/f1.py"]
     assert result.coverage.skipped == {"src/f0.py": SkipReason.FAILED}
 

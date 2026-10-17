@@ -17,6 +17,7 @@ from harness import (
     Case,
     CaseVcs,
     FingerprintMismatch,
+    IncompleteMeasurement,
     Label,
     Recording,
     RecordingLlm,
@@ -26,6 +27,7 @@ from harness import (
     case_fingerprint,
     compare,
     coverage_of,
+    evaluate,
     load_case,
     match,
     measure,
@@ -37,7 +39,7 @@ from harness import (
 
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
 from agent_review.policy.engine import PolicyEngine
-from agent_review.ports.llm import LlmReply
+from agent_review.ports.llm import LlmError, LlmReply
 
 
 def _write_case(root: Path, labels: dict) -> Path:
@@ -514,6 +516,13 @@ def test_replay_aborta_si_cambia_el_prompt() -> None:
         llm.complete(system="S", prompt="DIFF:\nOTRO", max_tokens=4096)
 
 
+def test_fingerprint_mismatch_es_la_excepcion_de_produccion() -> None:
+    # 023 T0: el harness la importa de `ports.llm`; no queda una copia en tests.
+    from agent_review.ports.llm import FingerprintMismatch as ProductionFingerprintMismatch
+
+    assert FingerprintMismatch is ProductionFingerprintMismatch
+
+
 def test_replay_aborta_si_cambia_el_max_findings() -> None:
     case = _case()
     llm = ReplayLlm(_recording(case, role="correctness", max_tokens=4096), case, role="correctness")
@@ -751,6 +760,38 @@ def test_el_runner_expoe_los_ficheros_revisados(tmp_path: Path) -> None:
 
     # El diff de juguete solo trae x.py; sale de la `ReviewCoverage` del grafo (012).
     assert run.reviewed == ("x.py",)
+
+
+class _RotoPort:
+    """Modelo que falla siempre con un error permanente (no se reintenta)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, system, prompt, max_tokens, json_mode=None, response_schema=None):
+        del system, prompt, max_tokens, json_mode, response_schema
+        self.calls += 1
+        raise LlmError("respuesta irreparable")
+
+
+def test_replay_con_un_lote_fallido_aborta_en_vez_de_medir(tmp_path: Path) -> None:
+    # R2c (023 T0c): «no se reviso» no es «no hay hallazgos». En replay, publicar
+    # el informe convertiria un fallo de la grabacion en un recall bajo y verde.
+    case = _toy_case(tmp_path)
+
+    with pytest.raises(IncompleteMeasurement, match="x.py"):
+        evaluate(case, llm=_RotoPort(), policy=_pipeline_policy(), mode="replay")
+
+
+def test_en_vivo_un_lote_fallido_sigue_dando_informe(tmp_path: Path) -> None:
+    # La misma corrida en vivo es exploratoria: un lote caido no invalida el
+    # experimento, solo lo deja parcial (y la cobertura lo declara).
+    case = _toy_case(tmp_path)
+
+    report = evaluate(case, llm=_RotoPort(), policy=_pipeline_policy(), mode="live")
+
+    assert report.mode == "live"
+    assert report.counts["tp"] == 0
 
 
 # --- 014 RH10: fixtures del caso y camino con herramientas ------------------------

@@ -286,4 +286,9 @@ def _load_report(path: Path) -> harness.Report:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except harness.IncompleteMeasurement as exc:
+        # Un lote sin revisar en replay no es 0 recall: es una medida invalida (R2c).
+        print(f"medida invalida: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None

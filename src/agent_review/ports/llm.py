@@ -36,6 +36,16 @@ class LlmTruncatedError(LlmError):
     """
 
 
+class FingerprintMismatch(LlmError):
+    """La grabacion no corresponde al prompt o al caso: hay que regrabar.
+
+    Vive aqui, y no en el harness de evaluacion, porque `LlmReviewer` necesita
+    distinguirla y **no** tragarsela: un *replay* que no casa es un fallo de
+    medida, no una review vacia (ADR-0017). Hereda de `LlmError` para que
+    `is_transient` la clasifique como permanente y ningun reintento la repita.
+    """
+
+
 @dataclass(frozen=True)
 class LlmReply:
     """Respuesta del modelo, con el gasto real que reporta el proveedor.

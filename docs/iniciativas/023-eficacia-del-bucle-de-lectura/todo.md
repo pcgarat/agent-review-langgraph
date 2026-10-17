@@ -35,7 +35,7 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Ficheros: `ports/llm.py`, `adapters/llm_reviewer.py`,
     `docs/arquitectura.md` §7.
 
-- [ ] **T0c** En *replay*, un `FAILED` **aborta** la medida (R2c, criterio 13)
+- [x] **T0c** En *replay*, un `FAILED` **aborta** la medida (R2c, criterio 13)
   - El invariante va en el **borde de la evaluación**, no en un flag de producción:
     `Run` (harness) pasa a llevar `skipped`; `evaluate`/`scripts/eval.py` **abortan
     con mensaje** si algún fichero queda en `SkipReason.FAILED` en modo `replay`.
@@ -49,7 +49,7 @@ al adaptador y el aviso de corte no tiene tamaño real que anunciar).
   - Verifica: `tests/eval/test_eval_harness.py`, `tests/eval/test_eval_pr_3.py`.
   - Ficheros: `tests/eval/harness.py`, `scripts/eval.py`.
 
-- [ ] **T0d** Invariante de producción: un error permanente **no** tumba la review
+- [x] **T0d** Invariante de producción: un error permanente **no** tumba la review
   - Test que fija el comportamiento deliberado: un fallo permanente en **un** lote
     de varios lo deja `FAILED` y parcial, y **los demás lotes siguen** publicando
     sus hallazgos; la review **no** se cae.
