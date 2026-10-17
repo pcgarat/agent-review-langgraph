@@ -71,7 +71,7 @@ flowchart LR
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
-| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
+| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. |
 
 ---
 
@@ -264,12 +264,12 @@ sequenceDiagram
     participant R as Redis
     participant T as Teams
     participant H as Persona
-    participant API as API/CLI
+    participant API as API/CLI/panel
     W->>PG: invoke → hitl → interrupt(ApprovalRequest)
     W->>R: inbox reviews:paused:<review_key>
     W->>T: aviso de pausa (sin marca)
-    H->>API: agent_review decide <key> --actor … --approve/--reject/--noted …
-    API->>R: valida contra el inbox (todos los pendientes) → RPUSH job con decision
+    H->>API: agent_review decide … / POST decision / decidir en el panel
+    API->>R: build_decision (todos los pendientes) → RPUSH job con decision
     R->>W: BLPOP
     W->>PG: Command(resume=HitlDecision) sobre el mismo thread_id
     W->>W: fix → publish → notify

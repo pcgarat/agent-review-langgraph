@@ -292,7 +292,8 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `GET` | `/api/reviews/{review_key}/reasoning` | Sesión | Razonamiento de los revisores por SSE (021): repite lo guardado y sigue en vivo; `404` si no hay |
 | `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
 | `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
-| `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana; `409` si no está pausada |
+| `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
+| `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` con `approved`/`rejected`/`noted`; la construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana o no cubre **todos** los pendientes; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
 
@@ -303,6 +304,12 @@ no verificable y el hilo completa. La marca sobrevive al aborto hasta `CANCEL_TT
 para abortar también los jobs rezagados de la review; reintentar la retira. La UI solo
 ofrece cada botón en el estado en que aplica y nunca ofrece «cancelar la review» si ya
 publicó (solo «cancelar lo pendiente»).
+
+Una pausa humana se **decide** desde el detalle de la review (022): el formulario muestra
+cada hallazgo pendiente y envía la `HitlDecision` al endpoint de decisión, que la
+construye con `build_decision` y la encola; el worker reanuda el mismo hilo (ADR-0008).
+La UI ya no ofrece «Reanudar» en pausas humanas: decidir es la acción y `expired` es del
+sistema (TTL).
 
 Con la sesión en la cookie, un comando solo se acepta como `fetch` JSON del mismo
 origen (`Content-Type: application/json`, y `Origin`/`Sec-Fetch-Site` del propio panel

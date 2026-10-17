@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agent_review.domain.models import FindingAction, PendingDecision, Severity
 from agent_review.domain.trace import ReviewTrace, TraceNode
 from agent_review.settings import get_settings
 from agent_review.web.read_model import (
@@ -36,6 +37,22 @@ _FIX_KEY = "cqm/emotivoo-v2:39:bbb:4"
 _DEAD_KEY = "cqm/emotivoo-v2:38:ccc:3"
 # Carga maliciosa en un campo del PR (terceros): el HTML debe servirla escapada.
 _XSS = "<script>alert(1)</script>"
+
+
+def _pending(finding_id: str = "f1", **overrides: object) -> PendingDecision:
+    base = PendingDecision(
+        finding_id=finding_id,
+        proposed_action=FindingAction.ESCALATE,
+        reason="r",
+        matched_rule="rule",
+        policy_version="1",
+        title="Falta validar el DNI",
+        file="src/App.php",
+        line=10,
+        severity=Severity.P1,
+        why_it_matters="un DNI mal formado llega a la base de datos",
+    )
+    return base.model_copy(update=overrides)
 
 
 class FakeReadModel:
@@ -95,7 +112,7 @@ def _state() -> PanelState:
                     kind="human",
                     created_at=_MOMENT,
                     state="PAUSED",
-                    pending=[{"finding_id": "f1"}],
+                    pending=[_pending("f1")],
                     command_hint="agent_review decide …",
                 )
             ],
@@ -196,11 +213,12 @@ def test_el_detalle_sin_recorrido_es_404(panel: Panel) -> None:
 # --- Botones segun estado y rol (OP33) -------------------------------------------
 
 
-def test_el_operador_ve_los_tres_comandos(panel: Panel) -> None:
+def test_el_operador_ve_los_comandos_de_la_vista_global(panel: Panel) -> None:
     body = panel.client.get("/").text
     assert 'data-command="cancel"' in body
     assert 'data-command="retry"' in body
-    assert 'data-command="resume"' in body
+    # 022 Q1: la vista global no ofrece «Reanudar» (decidir es la accion).
+    assert 'data-command="resume"' not in body
 
 
 def test_la_review_completada_no_ofrece_comandos(panel: Panel) -> None:
@@ -208,14 +226,55 @@ def test_la_review_completada_no_ofrece_comandos(panel: Panel) -> None:
     assert "data-command" not in body
 
 
-def test_la_pausa_humana_ofrece_cancelar_la_review_y_reanudar(panel: Panel) -> None:
+def test_la_pausa_humana_ofrece_decidir_y_cancelar_sin_reanudar(panel: Panel) -> None:
     panel.model.traces[_HUMAN_KEY] = _trace(
         state="paused", pause_kind="human", review_key=_HUMAN_KEY
     )
     body = panel.client.get(f"/review/{_HUMAN_KEY}").text
     assert "Cancelar la review" in body
-    assert "Reanudar" in body
     assert "Cancelar lo pendiente" not in body
+    # 022 Q1: decidir es la accion; `expired` es del sistema.
+    assert 'id="decide"' in body
+    assert "Reanudar" not in body
+    assert 'data-command="resume"' not in body
+
+
+def test_el_formulario_de_decision_pinta_cada_pendiente(panel: Panel) -> None:
+    panel.model.traces[_HUMAN_KEY] = _trace(
+        state="paused", pause_kind="human", review_key=_HUMAN_KEY
+    )
+    body = panel.client.get(f"/review/{_HUMAN_KEY}").text
+    assert "Falta validar el DNI" in body
+    assert "un DNI mal formado llega a la base de datos" in body
+    assert 'data-finding="f1"' in body
+    for outcome in ("approved", "rejected", "noted"):
+        assert f'value="{outcome}"' in body
+    assert f'data-endpoint="/api/reviews/{_HUMAN_KEY}/decision"' in body
+    assert "ADR-0009" in body, "el aviso de que aprobar solo autoriza a intentarlo"
+
+
+def test_el_formulario_de_decision_escapa_el_texto_del_pr(panel: Panel) -> None:
+    panel.model.state().paused.human[0].pending = [_pending("f1", title=_XSS, why_it_matters=_XSS)]
+    panel.model.traces[_HUMAN_KEY] = _trace(
+        state="paused", pause_kind="human", review_key=_HUMAN_KEY
+    )
+    body = panel.client.get(f"/review/{_HUMAN_KEY}").text
+    assert _XSS not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+def test_el_lector_no_ve_el_formulario_de_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    panel_state = _state()
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
+    app = FastAPI()
+    app.include_router(router)
+    traces = {_HUMAN_KEY: _trace(state="paused", pause_kind="human", review_key=_HUMAN_KEY)}
+    monkeypatch.setattr(app.state, "read_model", FakeReadModel(panel_state, traces), raising=False)
+    client = TestClient(app)
+
+    body = client.get(f"/review/{_HUMAN_KEY}", headers={"X-Panel-Session": "ana:lector"}).text
+    assert 'id="decide"' not in body
+    assert "Solo el rol operador decide" in body
 
 
 def test_la_pausa_de_fix_ofrece_cancelar_lo_pendiente_y_su_consola(panel: Panel) -> None:

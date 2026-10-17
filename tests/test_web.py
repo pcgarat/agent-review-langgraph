@@ -23,8 +23,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agent_review.checkpointer import build_serde
 from agent_review.domain.models import (
     ApprovalRequest,
+    FindingAction,
     FixWaitRequest,
+    PendingDecision,
     ReviewRequest,
+    Severity,
     VerifyJob,
 )
 from agent_review.domain.paused import PausedReview, PauseKind
@@ -59,6 +62,21 @@ client = TestClient(app)
 
 _MOMENT = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
 _REVIEW_KEY = "cqm/emotivoo-v2:42:abc:7"
+
+
+def _pending(finding_id: str) -> PendingDecision:
+    return PendingDecision(
+        finding_id=finding_id,
+        proposed_action=FindingAction.ESCALATE,
+        reason="r",
+        matched_rule="rule",
+        policy_version="1",
+        title=f"Hallazgo {finding_id}",
+        file="src/App.php",
+        line=10,
+        severity=Severity.P1,
+        why_it_matters="porque importa",
+    )
 
 
 class FakeReadModel:
@@ -101,7 +119,7 @@ def _fake_state() -> PanelState:
                     kind="human",
                     created_at=_MOMENT,
                     state="PAUSED",
-                    pending=[{"finding_id": "f1"}],
+                    pending=[_pending("f1")],
                     command_hint="agent_review decide …",
                 )
             ],

@@ -2,7 +2,7 @@
 
 # Decisión humana desde el panel
 
-> **Estado:** aprobada
+> **Estado:** implementada
 >
 > **Entrega objetivo:** que el panel de operación muestre cada hallazgo de una pausa
 > humana con su contexto y permita **decidirlo** (`approved` / `rejected` / `noted`)
@@ -197,10 +197,12 @@ El **actor** no viaja en el cuerpo: se toma de la sesión (H2).
 6. Sólo el rol `operador` decide: `lector` da `403`; por cookie, sólo JSON del mismo
    origen (CSRF).
 7. Una pausa que ya no existe (TTL u otra decisión) da `409` sin encolar.
-8. Documentos vivos al día: [`operacion.md`](../../operacion.md) §5 (endpoint del panel),
-   [`arquitectura.md`](../../arquitectura.md) §7 si nace una deuda, y
-   [`CONTEXT.md`](../../../CONTEXT.md) si aparece un término.
-9. `make ci` y `make docs-check` en verde.
+8. *(Resuelto, §8 Q1.)* La UI de una pausa humana ofrece **decidir** y **cancelar**,
+   no «Reanudar».
+9. Documentos vivos al día: [`operacion.md`](../../../operacion.md) §5 (endpoint del panel),
+   [`arquitectura.md`](../../../arquitectura.md) §7 si nace una deuda, y
+   [`CONTEXT.md`](../../../../CONTEXT.md) si aparece un término.
+10. `make ci` y `make docs-check` en verde.
 
 ## 8. Preguntas abiertas
 

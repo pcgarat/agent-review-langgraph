@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from agent_review.domain.history import ReviewSummary
+from agent_review.domain.models import FindingDecision
 from agent_review.history_store import ReviewHistory
 from agent_review.paused_store import RedisPausedStore
 from agent_review.ports.reasoning import ReasoningReader
@@ -180,6 +181,45 @@ def resume_review(
 ) -> dict[str, object]:
     """Reencola la reanudacion de una pausa humana (OP32)."""
     return _run_command(commands.resume, review_key, session)
+
+
+@app.post("/api/reviews/{review_key:path}/decision")
+async def decide_review(
+    review_key: str,
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    commands: Annotated[CommandService, Depends(get_commands)],
+) -> dict[str, object]:
+    """Encola una decision humana explicita sobre una pausa (022, H1/H2).
+
+    A diferencia del resto de comandos, lleva cuerpo (`items`): la decision se
+    construye con `build_decision`, la misma que el CLI, la API y Teams. El `actor`
+    no viaja: es el de la sesion (OP51). Un cuerpo mal formado es `400`; una decision
+    que no cubre los pendientes es `409`.
+    """
+    items = await _decision_items(request)
+    return _run_command(
+        lambda key, *, actor: commands.decide(key, actor=actor, items=items), review_key, session
+    )
+
+
+async def _decision_items(request: Request) -> list[FindingDecision]:
+    """Parsea `{"items": [...]}`; un cuerpo que no encaja con el contrato es `400`."""
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta `items`")
+    try:
+        return [
+            FindingDecision.model_validate(item) if isinstance(item, dict) else item
+            for item in body["items"]
+        ]
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Item de decision invalido: {exc}"
+        ) from exc
 
 
 def _run_command(

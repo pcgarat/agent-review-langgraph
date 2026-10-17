@@ -77,6 +77,7 @@ conservando sus IDs.
 | 019 | [Panel de operación](archivo/019-panel-de-operacion/spec.md) | implementada | OP1–OP51 · servicio `web` con sesión y rol, recorrido y progreso, consola del sandbox por SSE y comandos de cancelar/reintentar/reanudar · cierra D16 · [ADR-0020](../adr/0020-panel-como-servicio-aparte.md) · [todo](archivo/019-panel-de-operacion/todo.md) |
 | 020 | [Contrato de secretos declarado en el modelo](archivo/020-secretos-declarados/spec.md) | implementada | S1–S7 · contrato derivado de `Settings` (`secrets_for`) · cierra D22 · [ADR-0022](../adr/0022-contrato-de-secretos-declarado.md) · [todo](archivo/020-secretos-declarados/todo.md) |
 | 021 | [Razonamiento del revisor visible en el panel](archivo/021-razonamiento-visible/spec.md) | implementada | RZ1–RZ14 · *streaming*, sink Redis, panel en vivo e histórico · *gold set* 0.375/0.375 (superado por la regrabación con herramientas: 0.30/0.375, ver 014 RH10) · [ADR-0023](../adr/0023-razonamiento-por-streaming-y-stream-de-redis.md) · [todo](archivo/021-razonamiento-visible/todo.md) |
+| 022 | [Decisión humana desde el panel](archivo/022-decision-humana-en-el-panel/spec.md) | implementada | DH1–DH14 · el detalle muestra cada pendiente y el formulario decide (`approved`/`rejected`/`noted`) con `build_decision`; la UI deja de ofrecer «Reanudar» en pausas humanas · [todo](archivo/022-decision-humana-en-el-panel/todo.md) |
 
 ## Pendientes humanos o externos
 
