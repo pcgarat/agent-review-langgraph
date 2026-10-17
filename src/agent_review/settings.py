@@ -214,7 +214,7 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_max_findings: int = 10
-    llm_budget_tokens_per_pr: int = 500000
+    llm_budget_tokens_per_pr: int = 2000000
     # Tamano maximo de un lote del `LlmReviewer`, en caracteres de diff (012 C2): se
     # revisan ficheros enteros por lotes; uno que solo no cabe se declara `too_large`.
     llm_batch_max_chars: int = 60000

@@ -57,5 +57,4 @@ guards:
   max_fix_attempts: 2
   max_fixes_per_pr: 3
   max_fix_lines: 30
-  budget_tokens_per_pr: 500000
   dedupe_by: [file, title]
