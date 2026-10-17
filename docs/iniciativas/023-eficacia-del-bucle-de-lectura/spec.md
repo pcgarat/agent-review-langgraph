@@ -86,12 +86,13 @@ De ahí salen cuatro lecturas que ordenan el diseño:
 - **El razonamiento se paga dos veces.** 384k de los 417k de *completion* son
   razonamiento: volver a mandar el contexto obliga a volver a razonarlo. Es la
   palanca de coste más grande y no es de este bloque, es de 024.
-- **El caché no ahorra *tokens*.** Las repeticiones son **entre lotes** (el lector
-  se construye por lote en `_call_with_tools`), así que un caché de turno no
+- **El caché de E/S no ahorra *tokens*.** Las repeticiones son **entre lotes** (el
+  lector se construye por lote en `_call_with_tools`), así que un caché de turno no
   ahorraría nada. Pero uno de *review* tampoco: cada lote es una conversación nueva
   y el modelo necesita ver los bytes igual. Ahorra E/S, no *prompt*. Lo que sí
   ahorra *prompt* es **no precargar** lo que el bucle puede leer (Q3 de 014) y
-  **reducir el número de lotes**.
+  **reducir el número de lotes**. El **caché de prefijo del proveedor** es otro
+  caché, no se mide hoy y no es de esta iniciativa: es 024.
 - **El modelo pide bien; el puerto responde mal.** No es que le falten
   herramientas: usa `grep` 64 veces con sintaxis regex que el puerto no entiende y
   `read_file` sin rango 43 veces. El fallo está en la interfaz, no en el catálogo.

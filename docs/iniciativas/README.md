@@ -17,6 +17,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 023 | [Eficacia del bucle de lectura](023-eficacia-del-bucle-de-lectura/spec.md) | aprobada | 🟠 Que `grep`, `read_file` y `list_dir` de 014 sirvan de verdad: dialecto ERE único, `grep` acotado, corte con tamaño real, `outline`, estado y `served` por review · [plan](023-eficacia-del-bucle-de-lectura/plan.md) · [todo](023-eficacia-del-bucle-de-lectura/todo.md) | 014 (medida) · K0 (D23 en 3 niveles + matcher + flags + clasificación replay/live) bloquea el resto · T0–D1 pendientes |
+| 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | borrador | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) | 023 (K0 y K3) · sin plan hasta aprobación · B solo con número en la mano |
 
 ### Orden
 
@@ -84,6 +85,6 @@ conservando sus IDs.
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **024**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **025**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.
