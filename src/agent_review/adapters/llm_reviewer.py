@@ -18,6 +18,7 @@ from agent_review.adapters.diff_parser import (
     parse_unified_diff,
 )
 from agent_review.adapters.text_utils import guess_protected_subject, shorten_title, slug
+from agent_review.adapters.tool_loop import LoopResult, citation_path, run_tool_loop
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
     ContextScope,
@@ -27,6 +28,7 @@ from agent_review.domain.models import (
     ReviewerResult,
     Severity,
     SkipReason,
+    ToolUsage,
     Verification,
 )
 from agent_review.errors import is_transient
@@ -273,6 +275,8 @@ class LlmReviewer:
         self._repo = ""
         self._head_sha = ""
         self._base_sha = ""
+        # Ultimo bucle del lote (014): `served` y metricas para el ReviewerResult.
+        self._last_loop: LoopResult | None = None
         # Rutas de L1 omitidas por tope en esta review (cobertura / diagnostico).
         self.context_omitted: list[str] = []
 
@@ -303,6 +307,7 @@ class LlmReviewer:
         self.budget_exhausted = False
         self.tokens_used = 0
         self.context_omitted = []
+        self._last_loop = None
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
@@ -314,6 +319,7 @@ class LlmReviewer:
         # no, sale con el motivo del primero que falto (021 R16).
         missing: dict[str, SkipReason] = dict.fromkeys(too_large, SkipReason.TOO_LARGE)
         findings: list[Finding] = []
+        tool_usage = ToolUsage() if self._reader_factory is not None else None
         total = len(batches)
         for index, batch in enumerate(batches):
             paths = list(dict.fromkeys(path for path, _ in batch))
@@ -340,7 +346,12 @@ class LlmReviewer:
                     missing.setdefault(path, SkipReason.FAILED)
                 continue
             files = parse_unified_diff(text)
-            findings.extend(f for f in (_to_finding(e, files) for e in entries) if f is not None)
+            served = self._last_loop.served if self._last_loop is not None else None
+            findings.extend(
+                f for f in (_to_finding(e, files, served=served) for e in entries) if f is not None
+            )
+            if tool_usage is not None and self._last_loop is not None:
+                tool_usage = _accumulate_usage(tool_usage, self._last_loop)
             logger.info(
                 "correctness: lote %d/%d revisado (%d ficheros)",
                 index + 1,
@@ -358,6 +369,7 @@ class LlmReviewer:
                 skipped=skipped,
                 context_omitted=list(self.context_omitted),
             ),
+            tool_usage=tool_usage,
         )
 
     def _call_with_retries(
@@ -443,8 +455,13 @@ class LlmReviewer:
         on_reasoning: Callable[[str], None] | None = None,
     ) -> LlmReply | None:
         """Una llamada por lote. `None` y `budget_exhausted` = sin presupuesto; `None`
-        sin el = fallo permanente del modelo (el motivo queda en `_last_error`)."""
+        sin el = fallo permanente del modelo (el motivo queda en `_last_error`).
+
+        Con `reader_factory` (014) delega en el bucle de herramientas: el presupuesto
+        lo reserva el bucle turno a turno (sin doble reserva).
+        """
         self._last_error = ""
+        self._last_loop = None
         # El modelo ve el diff numerado (021 R13); el anclaje usa el original.
         # L1 (008 CX8): ficheros + docs bajo tope propio; el diff no se recorta.
         numbered = number_diff(diff)
@@ -465,6 +482,80 @@ class LlmReviewer:
         prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{numbered}"
         if l1:
             prompt = f"{prompt}\n\nCONTEXT:{l1}"
+        if self._reader_factory is not None:
+            return self._call_with_tools(prompt, review_key, on_reasoning=on_reasoning)
+        return self._call_once(prompt, review_key, on_reasoning=on_reasoning)
+
+    def _call_with_tools(
+        self,
+        prompt: str,
+        review_key: str,
+        *,
+        on_reasoning: Callable[[str], None] | None,
+    ) -> LlmReply | None:
+        """Bucle *ReAct* por lote (014 RH4): el presupuesto lo consume el bucle."""
+        factory = self._reader_factory
+        if factory is None:
+            raise RuntimeError("LlmReviewer._call_with_tools sin reader_factory")
+        limits = self._tool_limits or ContextLimits()
+        # Estimacion de un turno: el tope blando (B10) corta antes de abrir el bucle.
+        estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
+        self.last_estimated_tokens = estimated
+        if self._budget_limit is not None and self.tokens_used + estimated > self._budget_limit:
+            logger.warning(
+                "correctness: %d tokens gastados + %d estimados superan el tope de la "
+                "persona %d; se omite el resto",
+                self.tokens_used,
+                estimated,
+                self._budget_limit,
+            )
+            self.budget_exhausted = True
+            return None
+        # El presupuesto compartido lo reserva el bucle turno a turno (sin doble
+        # reserva). Un `False` de `reserve` fuerza el turno final (016/017 B7).
+        reader = factory(self._repo, self._head_sha, self._base_sha)
+        try:
+            loop = run_tool_loop(
+                self._llm,
+                system=_SYSTEM,
+                prompt=prompt,
+                reader=reader,
+                limits=limits,
+                is_final=_is_findings,
+                budget=self._budget,
+                review_key=review_key,
+                max_tokens=self._max_tokens,
+                on_reasoning=on_reasoning,
+            )
+        except Exception as exc:
+            if is_transient(exc):
+                raise
+            self._last_error = f"el modelo fallo: {exc}"
+            if isinstance(exc, LlmError):
+                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+            else:
+                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+            return None
+        self._last_loop = loop
+        self.tokens_used += loop.usage
+        # Preferir el objeto final parseado: el texto crudo puede traer prosa alrededor.
+        text = (
+            json.dumps(loop.data, ensure_ascii=False)
+            if loop.data is not None
+            else (loop.text or "")
+        )
+        reply = LlmReply(text=text, prompt_tokens=0, completion_tokens=loop.usage)
+        self.last_usage = reply
+        return reply
+
+    def _call_once(
+        self,
+        prompt: str,
+        review_key: str,
+        *,
+        on_reasoning: Callable[[str], None] | None,
+    ) -> LlmReply | None:
+        """Una `complete` por lote (camino 008, sin herramientas)."""
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
         # Tope blando por persona (B10), sobre lo **acumulado** entre lotes: acota lo
@@ -559,7 +650,40 @@ def _parse_json(raw: str) -> Any:
         return None
 
 
-def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | None:
+def _is_findings(data: dict[str, Any]) -> bool:
+    """¿Es el objeto final del revisor (`findings`) y no una peticion de herramientas?"""
+    if "tools" in data and "findings" not in data:
+        return False
+    return isinstance(data.get("findings"), list)
+
+
+def _accumulate_usage(acc: ToolUsage, loop: LoopResult) -> ToolUsage:
+    """Suma metricas del bucle entre lotes (014 H8)."""
+    return ToolUsage(
+        turns=acc.turns + loop.turns,
+        tool_calls=acc.tool_calls + loop.tool_calls,
+        bytes_served=acc.bytes_served + loop.bytes_served,
+        files_read=list(dict.fromkeys([*acc.files_read, *sorted(loop.served)])),
+    )
+
+
+def _filter_served_evidence(evidence: list[str], served: dict[str, str]) -> list[str]:
+    """Quita citas `path:line` a ficheros que el bucle no sirvio (014 H7)."""
+    kept: list[str] = []
+    for item in evidence:
+        path = citation_path(item)
+        if path and path not in served:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _to_finding(
+    entry: dict[str, Any],
+    files: dict[str, FileDiff],
+    *,
+    served: dict[str, str] | None = None,
+) -> Finding | None:
     title = str(entry.get("title", "")).strip()
     why = str(entry.get("why_it_matters", "")).strip()
     path = str(entry.get("file", "")).strip()
@@ -573,6 +697,8 @@ def _to_finding(entry: dict[str, Any], files: dict[str, FileDiff]) -> Finding | 
     evidence_in = [
         str(item).strip() for item in _as_list(entry.get("evidence")) if str(item).strip()
     ]
+    if served is not None:
+        evidence_in = _filter_served_evidence(evidence_in, served)
     cite = _cite_text(evidence_in)
     # 008 CX5 / D2 / D13: L0 manda; el `pre_existing` del modelo se ignora.
     l0 = evaluate_l0(file_diff, hint=hint, cite=cite)

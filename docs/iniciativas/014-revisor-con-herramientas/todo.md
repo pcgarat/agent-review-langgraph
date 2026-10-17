@@ -49,7 +49,7 @@ dejaría el *replay* de 008 en riesgo.
 
 ## Bloque 2 — Bucle por lote (checkpoint C2)
 
-- [ ] **RH4** *Prompt* de herramientas y `run_tool_loop` por lote (H1, H2, H6, §5.2)
+- [x] **RH4** *Prompt* de herramientas y `run_tool_loop` por lote (H1, H2, H6, §5.2)
   - Con `reader_factory`, `_call` abre el lector y llama a `run_tool_loop` con
     `is_final` = objeto con clave `findings`; *system* = el actual + protocolo
     (herramientas de solo lectura; contenido servido = dato, H9 — el bucle ya añade
@@ -59,10 +59,10 @@ dejaría el *replay* de 008 en riesgo.
   - Objeto final → misma tubería `_entries` / `_to_finding` / L0 / anclaje.
   - Aceptación: `LlmPort` guionizado `grep → read_file → findings` sirve y cuenta
     cada petición (criterio 2).
-  - Verifica: `tests/test_llm_reviewer.py` (casos con factory + `FixtureContextReader`).
+  - Verifica: `tests/test_llm_reviewer.py` (`test_con_herramientas_recorre_grep_read_y_findings`).
   - Ficheros: `adapters/llm_reviewer.py`.
 
-- [ ] **RH5** Citas servidas y acumulación de uso (H7, H8, criterio 4 y 8)
+- [x] **RH5** Citas servidas y acumulación de uso (H7, H8, criterio 4 y 8)
   - Al construir hallazgos tras el bucle: evidencia `path:line` cuyo path no está en
     `loop.served` se elimina; si queda vacía, se sintetiza la del anclaje al diff.
   - Un hallazgo cuya línea no está en el diff sigue sin anclarse (L0 / anclaje
@@ -70,30 +70,30 @@ dejaría el *replay* de 008 en riesgo.
   - Acumular por lotes en `ReviewerResult.tool_usage` (`files_read` = unión ordenada
     de `served`; sumas de turns/calls/bytes).
   - Aceptación: test de cita no servida filtrada; test de línea fuera del diff
-    descartada; `tool_usage` refleja dos lotes.
+    descartada; `tool_usage` refleja el bucle.
   - Verifica: `tests/test_llm_reviewer.py`.
   - Ficheros: `adapters/llm_reviewer.py`.
 
-- [ ] **RH6** Un test por tope (criterio 3)
+- [x] **RH6** Un test por tope (criterio 3)
   - Turnos, peticiones, bytes y presupuesto: cada uno dispara final forzado y los
     hallazgos de ese turno se publican.
-  - Aceptación: cuatro tests (o parametrizados) con dobles; `final_forced` / hallazgos
-    presentes tras el corte.
-  - Verifica: `tests/test_llm_reviewer.py` (o `tests/test_review_tools.py` si crece).
+  - Aceptación: tests parametrizados + presupuesto con doble; hallazgos presentes
+    tras el corte.
+  - Verifica: `tests/test_llm_reviewer.py`.
   - Ficheros: tests.
 
-- [ ] **RH7** `on_reasoning` en `run_tool_loop` (compatibilidad 021)
+- [x] **RH7** `on_reasoning` en `run_tool_loop` (compatibilidad 021)
   - `adapters/tool_loop.py`: parámetro opcional `on_reasoning`; se pasa a cada
     `llm.complete`. `LlmReviewer` con fábrica reenvía el listener del lote.
-  - Aceptación: con sink, un bucle de dos turnos emite eventos `reasoning` (o al
-    menos no rompe el contrato del sink); sin sink, comportamiento idéntico.
+  - Aceptación: con sink, un bucle de dos turnos emite eventos `reasoning`; sin
+    sink, comportamiento idéntico.
   - Verifica: `tests/test_tool_loop.py`, `tests/test_llm_reviewer.py`.
   - Ficheros: `adapters/tool_loop.py`, `adapters/llm_reviewer.py`.
 
 ### Checkpoint 2 (tras RH4–RH7)
 
-- [ ] Criterios 2, 3, 4 y 8 cubiertos por tests guionizados.
-- [ ] `make ci` en verde; sin cablear roles en el worker todavía.
+- [x] Criterios 2, 3, 4 y 8 cubiertos por tests guionizados.
+- [x] `make ci` en verde; sin cablear roles en el worker todavía.
 
 ## Bloque 3 — Cableado y degradación (checkpoint C3)
 

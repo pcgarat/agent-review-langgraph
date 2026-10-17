@@ -143,6 +143,33 @@ def test_pide_json_mode_al_modelo(tmp_path: Path) -> None:
     assert llm.calls[0]["json_mode"] == "json_object"
 
 
+def test_on_reasoning_se_reenvia_a_cada_complete(tmp_path: Path) -> None:
+    # 014 RH7: el panel sigue viendo el razonamiento turno a turno.
+    seen: list[str] = []
+
+    class Listening(ScriptedLlm):
+        def complete(self, *, on_reasoning=None, **kwargs: Any) -> LlmReply:  # type: ignore[override]
+            if on_reasoning is not None:
+                on_reasoning("trozo")
+                seen.append("ok")
+            return super().complete(**kwargs)
+
+    llm = Listening(
+        _tools(_read(APP)),
+        json.dumps({"findings": []}),
+    )
+    run_tool_loop(
+        llm,
+        system="Eres un revisor.",
+        prompt="Revisa.",
+        reader=build_fixture_reader(tmp_path),
+        limits=ContextLimits(),
+        is_final=_is_final,
+        on_reasoning=lambda piece: None,
+    )
+    assert len(seen) == 2, "turno con herramientas + final"
+
+
 def test_cuatro_peticiones_en_un_turno_atiende_tres_y_avisa(tmp_path: Path) -> None:
     reader = build_fixture_reader(tmp_path)
     entries = [_read(APP), _read(README), _read(APP), _read(README)]

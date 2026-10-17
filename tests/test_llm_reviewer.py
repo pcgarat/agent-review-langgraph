@@ -4,6 +4,8 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from agent_review.adapters.budget_memory import InMemoryBudget
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.domain.models import (
@@ -903,3 +905,216 @@ def test_reader_factory_none_no_cambia_el_camino() -> None:
     assert reviewer._head_sha == "deadbeef"
     assert reviewer._base_sha == "b"
     assert len(llm.calls) == 1
+
+
+# --- 014 RH4–RH7: bucle de herramientas en el revisor ---------------------------------
+
+
+class _ScriptedToolsLlm:
+    """Respuestas en orden; acepta `on_reasoning` opcional (RH7)."""
+
+    def __init__(self, *responses: str) -> None:
+        self._responses = list(responses) or ["{}"]
+        self.calls: list[dict] = []
+        self.reasoning_pieces: list[str] = []
+
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode=None,
+        response_schema=None,
+        on_reasoning=None,
+    ) -> LlmReply:
+        del response_schema
+        index = min(len(self.calls), len(self._responses) - 1)
+        self.calls.append(
+            {"system": system, "prompt": prompt, "max_tokens": max_tokens, "json_mode": json_mode}
+        )
+        if on_reasoning is not None:
+            on_reasoning("pienso")
+            self.reasoning_pieces.append("pienso")
+        return LlmReply(text=self._responses[index], prompt_tokens=10, completion_tokens=5)
+
+
+def _tools(*entries: dict) -> str:
+    return json.dumps({"tools": list(entries)})
+
+
+def _fixture_factory(root: Path):
+    from agent_review.adapters.context_fixture import FixtureContextReader
+
+    def factory(repo: str, head_sha: str, base_sha: str):
+        del repo, head_sha, base_sha
+        return FixtureContextReader(root)
+
+    return factory
+
+
+def _write_helper(root: Path, *, path: str = "src/helper.py", body: str = "needle = 1\n") -> str:
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_con_herramientas_recorre_grep_read_y_findings(tmp_path: Path) -> None:
+    # 014 RH4/RH5: grep → read_file → findings; ToolUsage acumula lo servido.
+    from agent_review.ports.context import ContextLimits
+
+    helper = _write_helper(tmp_path)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "grep", "pattern": "needle"}),
+        _tools({"tool": "read_file", "path": helper}),
+        _response(_finding_json()),
+    )
+    reviewer = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+    )
+    result = reviewer.review(repo="r", pr_id=1, diff=DIFF, head_sha="h", review_key="rk")
+
+    assert len(result.findings) == 1
+    assert result.tool_usage is not None
+    assert result.tool_usage.turns == 3
+    assert result.tool_usage.tool_calls == 2
+    assert helper in result.tool_usage.files_read
+    assert result.tokens_used > 0
+    assert "SOLO LECTURA" in llm.calls[0]["system"]
+
+
+def test_cita_no_servida_se_quita_de_la_evidencia(tmp_path: Path) -> None:
+    # 014 RH5 / H7: path:line de un fichero no leido no entra en evidence.
+    from agent_review.ports.context import ContextLimits
+
+    helper = _write_helper(tmp_path)
+    entry = _finding_json(
+        evidence=[
+            "ghost.py:1 codigo inventado",
+            f"{TRANSFER}:14 throw new InsufficientBalance('no funds');",
+        ]
+    )
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": helper}),
+        _response(entry),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+
+    assert len(result.findings) == 1
+    evidence = result.findings[0].evidence
+    assert all("ghost.py" not in item for item in evidence)
+    assert any(TRANSFER in item for item in evidence)
+
+
+def test_linea_fuera_del_diff_no_se_ancla_con_herramientas(tmp_path: Path) -> None:
+    # 014 criterio 4: leer mas no da permiso para comentar fuera del PR.
+    from agent_review.ports.context import ContextLimits
+
+    _write_helper(tmp_path)
+    llm = _ScriptedToolsLlm(
+        _response(_finding_json(file="src/NoExiste.php", line=1)),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+    assert result.findings == []
+
+
+@pytest.mark.parametrize(
+    "limits_kw",
+    [
+        {"max_turns": 1},
+        {"max_calls": 1, "max_turns": 10},
+        {"max_bytes": 1},
+    ],
+    ids=["turns", "calls", "bytes"],
+)
+def test_cada_tope_fuerza_final_y_publica_hallazgos(tmp_path: Path, limits_kw: dict) -> None:
+    # 014 RH6 / criterio 3: agotado el tope, el turno final publica findings.
+    # Un solo turno de herramientas agota el tope; la siguiente respuesta es el final.
+    from agent_review.ports.context import ContextLimits
+
+    helper = _write_helper(tmp_path, body="x" * 200)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": helper}),
+        _response(_finding_json()),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(**limits_kw),
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h")
+
+    assert len(result.findings) == 1
+    assert result.tool_usage is not None
+    assert any("Ya no puedes pedir mas herramientas" in c["prompt"] for c in llm.calls)
+
+
+def test_tope_de_presupuesto_fuerza_final_en_el_revisor(tmp_path: Path) -> None:
+    # 014 RH6: tras el primer turno el presupuesto corta; el salvamento publica.
+    from agent_review.ports.context import ContextLimits
+
+    class _AllowOne(InMemoryBudget):
+        """La primera reserva pasa; las siguientes fallan (simula corte a mitad)."""
+
+        def __init__(self) -> None:
+            super().__init__(total=10_000_000)
+            self._n = 0
+
+        def reserve(self, review_key: str, tokens: int) -> bool:
+            self._n += 1
+            if self._n > 1:
+                return False
+            return super().reserve(review_key, tokens)
+
+    helper = _write_helper(tmp_path)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": helper}),
+        _response(_finding_json()),
+    )
+    result = LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(max_turns=10),
+        budget=_AllowOne(),
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h", review_key="rk")
+
+    assert len(result.findings) == 1
+    assert any("Ya no puedes pedir mas herramientas" in c["prompt"] for c in llm.calls)
+
+
+def test_on_reasoning_llega_en_cada_turno_del_bucle(tmp_path: Path) -> None:
+    # 014 RH7: con sink, el bucle reenvia on_reasoning a cada complete.
+    from agent_review.ports.context import ContextLimits
+
+    class _Sink:
+        def __init__(self) -> None:
+            self.events: list = []
+
+        def emit(self, review_key, event) -> None:
+            self.events.append((review_key, event))
+
+    helper = _write_helper(tmp_path)
+    llm = _ScriptedToolsLlm(
+        _tools({"tool": "read_file", "path": helper}),
+        _response(_finding_json()),
+    )
+    sink = _Sink()
+    LlmReviewer(
+        llm=llm,
+        reader_factory=_fixture_factory(tmp_path),
+        tool_limits=ContextLimits(),
+        reasoning_sink=sink,
+    ).review(repo="r", pr_id=1, diff=DIFF, head_sha="h", review_key="rk")
+
+    assert len(llm.reasoning_pieces) >= 2
+    assert any(e.kind == "reasoning" for _, e in sink.events)

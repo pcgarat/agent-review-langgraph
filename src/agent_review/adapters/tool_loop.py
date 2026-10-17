@@ -96,6 +96,7 @@ def run_tool_loop(
     budget: BudgetPort | None = None,
     review_key: str = "",
     max_tokens: int = 4096,
+    on_reasoning: Callable[[str], None] | None = None,
 ) -> LoopResult:
     """Bucle *ReAct* en JSON sobre `LlmPort` (016 W2, §5.2).
 
@@ -109,6 +110,9 @@ def run_tool_loop(
     Con presupuesto (017): reserva la estimacion antes de cada llamada y la confirma
     con el `usage` real. Un `reserve` que devuelva `False` corta igual que un tope
     (B7) y un fallo de la llamada **devuelve** la reserva (B8).
+
+    `on_reasoning` (014 RH7 / 021): se reenvia a cada `complete` para que el panel
+    siga viendo el razonamiento turno a turno cuando el revisor usa herramientas.
     """
     full_system = system + _BASE_SYSTEM
     result = LoopResult()
@@ -144,12 +148,23 @@ def run_tool_loop(
         held_tokens = reserved if held else 0
 
         try:
-            reply = llm.complete(
-                system=full_system,
-                prompt=turn_prompt,
-                max_tokens=max_tokens,
-                json_mode="json_object",
-            )
+            # Solo se pasa `on_reasoning` si alguien escucha: un doble de test que
+            # no lo declara no tiene por que aceptarlo (mismo criterio que 021).
+            if on_reasoning is None:
+                reply = llm.complete(
+                    system=full_system,
+                    prompt=turn_prompt,
+                    max_tokens=max_tokens,
+                    json_mode="json_object",
+                )
+            else:
+                reply = llm.complete(
+                    system=full_system,
+                    prompt=turn_prompt,
+                    max_tokens=max_tokens,
+                    json_mode="json_object",
+                    on_reasoning=on_reasoning,
+                )
         except BaseException:
             release_tokens(budget, review_key, held_tokens)
             raise
