@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-17 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -57,9 +57,12 @@ Teams. **Nunca escribe en el repositorio revisado.**
 
 | Término | Definición |
 |---|---|
-| **Hallazgo** (`Finding`) | Un problema concreto en una línea de un fichero, con el contrato de `ce-code-review`: `severity`, `autofix_class`, `owner`, `confidence`, `evidence`, `why_it_matters`, `suggested_fix`, `protected_subject`… |
+| **Hallazgo** (`Finding`) | Un problema concreto en una línea de un fichero, con el contrato de `ce-code-review`: `severity`, `autofix_class`, `owner`, `confidence`, `evidence`, `why_it_matters`, `suggested_fix`, `protected_subject`… Más los campos de verificación de [ADR-0021](docs/adr/0021-cascada-de-verificacion-del-hallazgo.md). |
 | **Severidad** | `P0` (corrupción, caída, brecha) … `P3` (estilo). Rúbrica en [`contracts/action-class-rubric.md`](contracts/action-class-rubric.md). |
-| **Confianza** | Anclada a `0/25/50/75/100`. Cualquier otro valor es inválido. |
+| **Confianza** | Anclada a `0/25/50/75/100`. Cualquier otro valor es inválido. Es el juicio del propio modelo, no una comprobación: lo que se ha comprobado lo dice la verificación. |
+| **Verificación del hallazgo** (`verification`) | Cuánto se ha comprobado una afirmación: `unverified` (hipótesis), `verified_static` (sale de una herramienta), `verified_grounded` (la cascada cita el código que lo prueba), `verified_executed` (un test lo reproduce) o `refuted` (desmentido; se conserva). Solo la cascada la promueve; un veredicto exige `verification_evidence` ([ADR-0021](docs/adr/0021-cascada-de-verificacion-del-hallazgo.md)). |
+| **Escenario de fallo** (`failure_scenario`) | El camino concreto que produce el fallo: `input/estado → file:line → resultado incorrecto`. Obligatorio en un `P0`–`P2` sin verificar. No es `why_it_matters`, que dice el impacto. |
+| **Alcance de contexto** (`context_scope`) | Si la afirmación se apoya solo en el diff (`in_diff`) o en código que el revisor no ve (`outside_diff`). «No probado» es `unverified` con `outside_diff`. |
 | **`autofix_class`** | `gated_auto` (arreglable con control), `manual` (decisión de diseño), `advisory` (solo informar). |
 | **Tema protegido** (`protected_subject`) | Auth, cripto, concurrencia, pérdida de datos, inyección, secretos, memoria, contrato público. Nunca se arregla solo. |
 | **Persona** | Un revisor que produce hallazgos sobre el diff. Corren en paralelo (fan-out). |

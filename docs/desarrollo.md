@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-17 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -51,6 +51,13 @@ make eval-record           # regraba recorded.json contra el modelo real
 altera lo que recibe el modelo invalida el fingerprint y CI **falla** pidiendo
 regrabar (ver [ADR-0017](adr/0017-replay-determinista-con-fingerprint.md)). El
 harness vive en `tests/eval/harness.py` (sin paquete); la CLI, en `scripts/eval.py`.
+
+Grabar necesita el rol `correctness` activo y una credencial real:
+`LLM_REVIEWER_ENABLED=true make eval-record`, con `LLM_API_KEY` (o la clave que pida
+`config/models.yaml`) en el `.env`. Una grabación nueva produce otros hallazgos: antes
+de congelar `expected_report.json`, cada hallazgo publicado sin etiqueta se juzga
+contra el `head_sha` del caso y se etiqueta en `labels.yaml` (el test exige
+`fp_unknown == 0`).
 
 ## 2. Mapa de tests
 
@@ -294,6 +301,12 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como
   limpia.
+- **Un hallazgo no se autopromueve.** Un `P0`–`P2` `unverified` lleva
+  `failure_scenario`; un `verification` distinto de `unverified` lleva
+  `verification_evidence`; ningún emisor declara más que su nivel (`LlmReviewer` →
+  `unverified`, `ToolingReviewer` → `verified_static`) y ninguna capa cambia
+  `severity` ([ADR-0021](adr/0021-cascada-de-verificacion-del-hallazgo.md)). Lo
+  comprueba `Finding` al validarse.
 - **Ninguna persona compara su propia llamada contra un entero de presupuesto.** El
   gasto se reserva y se confirma contra el `BudgetPort` compartido; el hecho del
   corte (`budget_exhausted`) viaja, no se silencia.

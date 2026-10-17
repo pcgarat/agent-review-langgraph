@@ -2,7 +2,7 @@
 
 # Contrato de verificación del hallazgo
 
-> **Estado:** aprobada *(2026-10-17)*
+> **Estado:** implementada *(2026-10-17)*
 > **Entrega objetivo:** que un hallazgo `P0`–`P2` no pueda emitirse sin escenario
 > de fallo o sin verificación que lo sostenga, y que cada revisor declare qué ha
 > visto y qué ha verificado.

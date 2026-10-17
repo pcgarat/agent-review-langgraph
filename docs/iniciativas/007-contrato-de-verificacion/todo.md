@@ -81,11 +81,11 @@ campos. El `if/then` del JSON no lleva `required: [verification]` en el `if`
 
 ## Bloque 3 — Cierre (checkpoint C3)
 
-- [ ] **V7** ADR-0021 — Cascada de verificación del hallazgo
+- [x] **V7** ADR-0021 — Cascada de verificación del hallazgo
   - `docs/adr/0021-cascada-de-verificacion-del-hallazgo.md` con el contenido de spec
     §5.6, y su fila en `docs/adr/README.md`.
 
-- [ ] **V8** Documentos vivos y CI
+- [x] **V8** Documentos vivos y CI
   - `CONTEXT.md`: «verificación del hallazgo», «escenario de fallo», «alcance de
     contexto».
   - `docs/desarrollo.md` §4: I1–I3 como invariantes del contrato.
