@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Puesta en marcha real: smokes, pendientes humanos y endurecimiento
 
@@ -63,6 +63,7 @@ documentos. Lo que no tenía ID recibe uno `S`.
 | **S3** | [004 Q1](../archivo/004-fase3-e7-desacople/todo.md) | Decidir la forma de la wave (una por wave o una por hallazgo) con la primera medición real | Decisión | F12 |
 | **P5** | [001](../archivo/001-diseno-base/todo.md) | Medir la latencia con carga real (LLM + PR grande) | Medición | S2 |
 | **P3** | [001](../archivo/001-diseno-base/todo.md) | Revisión humana del formato inline y del resumen ([ADR-0006](../../adr/0006-publicacion-inline-primero-resumen-al-final.md)) | Humano | S2 |
+| **OP35** | [019 Q4](../archivo/019-panel-de-operacion/spec.md) | Decidir y asignar quién tiene el rol `operador` del panel, que es el que puede cancelar, reintentar y reanudar (el actor ya se audita) | Humano · seguridad | — |
 | **P1** | [001](../archivo/001-diseno-base/todo.md) | *(Opcional.)* El CI de `emotivoo-v2` hace `POST /webhook/tooling` firmado ([ADR-0004](../../adr/0004-ingesta-diferida-por-artefacto-del-ci.md)) | Externo | — |
 
 ### 3.2 Por qué D6 entra aquí
@@ -118,7 +119,7 @@ Un único entorno de pruebas real, con:
 
 ## 7. Criterios de hecho
 
-1. P7, S6 y P6 cerrados por las personas responsables, con fecha.
+1. P7, S6, P6 y OP35 cerrados por las personas responsables, con fecha.
 2. S1, S5, F12 y S2 ejecutados en el entorno real, con evidencia en
    [`operacion.md`](../../operacion.md) (X5).
 3. S4: con `ENVIRONMENT=production` y Redis caído, la API responde `503` y el CLI

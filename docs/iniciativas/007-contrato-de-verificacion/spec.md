@@ -1,8 +1,8 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Contrato de verificación del hallazgo
 
-> **Estado:** borrador
+> **Estado:** aprobada *(2026-10-17)*
 > **Entrega objetivo:** que un hallazgo `P0`–`P2` no pueda emitirse sin escenario
 > de fallo o sin verificación que lo sostenga, y que cada revisor declare qué ha
 > visto y qué ha verificado.
@@ -49,7 +49,7 @@ Se quiere:
   iniciativa añade los campos que leerá el gate de
   [011](../011-gate-de-severidad/spec.md), único dueño de la severidad publicada.
 - **Rediseñar `confidence`.** Se mantiene tal cual (es el síntoma que motiva el
-  contrato). Su retirada o sentido nuevo se decide en §8.
+  contrato) como juicio del modelo (Q4).
 - **Ejecutar código del PR.** `verified_executed` se declara pero no se produce aún:
   depende del `sandbox-runner`
   ([ADR-0011](../../adr/0011-sandbox-runner-aislado.md)).
@@ -118,11 +118,12 @@ por la que pasan los emisores.
 | D3 | Un hallazgo **`refuted` se conserva** en el estado, no se borra | Alimenta la métrica de falsos positivos y evita re-proponerlo. El contrato debe poder expresarlo. |
 | D4 | `verification_evidence` es **obligatoria** (≥1) en cuanto `verification != unverified` | Un veredicto sin cita es otra opinión. La evidencia es la prueba. |
 | D5 | `context_scope` es **opcional** y lo declara el revisor (`in_diff` \| `outside_diff`) | Permite a la cascada acotar un claim que se apoya en lo que no ve, sin exigir el dato a quien sí ve todo el fichero. |
-| D6 | Los emisores declaran su nivel: `ToolingReviewer` → `verified_static`, `LlmReviewer` → `unverified` | El `ToolingReviewer` ya está *grounded* (su hallazgo nace de una herramienta que corre); el LLM, por definición, emite hipótesis. |
+| D6 | Los emisores declaran su nivel: `ToolingReviewer` → `verified_static`, `LlmReviewer` → `unverified`. Los dos declaran `context_scope` (§5.4) | El `ToolingReviewer` ya está *grounded* (su hallazgo nace de una herramienta que corre); el LLM, por definición, emite hipótesis. |
 | D7 | El contrato es la **fuente única**; modelo y JSON cambian en el mismo commit | Lo impone `schema_matches_domain`; es la garantía de que el contrato publicado no miente. |
-| D8 | Los campos nuevos entran **opcionales** en el JSON (con *default*), salvo el endurecimiento condicional de `failure_scenario` | El contrato lo reutiliza `ce-code-review`; romper la compatibilidad obligaría a tocar un consumidor ajeno. |
-| D9 | Se crea un ADR nuevo, **ADR-0016 — Cascada de verificación del hallazgo** | La cascada es una decisión de arquitectura con alternativas; se describe en §5.6 y el ADR ya no se reescribe. |
+| D8 | Los campos nuevos entran **opcionales** en el JSON (con *default*), salvo el endurecimiento condicional de `failure_scenario`, que **solo se exige en este repo** | El contrato es una copia versionada del de `ce-code-review` ([ADR-0002](../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)); endurecerlo allí se decide tras medir cuántos hallazgos descartaría. *Decidido 2026-10-17 (Q1).* |
+| D9 | Se crea un ADR nuevo, **ADR-0021 — Cascada de verificación del hallazgo** (enmienda 2026-10-17: la spec decía ADR-0016, número que ya ocupa el bot de Teams) | La cascada es una decisión de arquitectura con alternativas; se describe en §5.6 y el ADR ya no se reescribe. |
 | D10 | «No probado» **no** es un estado propio: es `verification: unverified` con `context_scope: outside_diff` | Un estado más en el enum solo duplicaría lo que ya dicen dos campos; cierra la Q7 de [008](../008-contexto-del-revisor/spec.md) |
+| D12 | **`requires_verification` se retira en esta iniciativa**: sale del modelo, del JSON (propiedad y `required`), del *prompt* y de los emisores | Lo sustituye `verification`; dejarlo como campo muerto solapado es una fuente de confusión y de deuda. Un checkpoint antiguo que lo lleve sigue cargando: `Finding` ignora campos extra. *Decidido 2026-10-17 (Q2).* |
 | D11 | Los campos son **hechos**, no decisiones: ningún emisor ni capa de la cascada cambia `severity`; la severidad publicada la calcula solo el gate de [011](../011-gate-de-severidad/spec.md) | Si L0, L2 y el gate degradan cada uno por su cuenta, nadie puede explicar por qué un hallazgo salió como `P3` |
 
 ## 5. Diseño o contrato
@@ -200,8 +201,12 @@ Promover de `unverified` a cualquier `verified_*` o a `refuted` exige
 
 - **`ToolingReviewer`**
   ([`tooling_reviewer.py`](../../../src/agent_review/adapters/tooling_reviewer.py)):
-  añade `"verification": "verified_static"`, `"verification_evidence": ["<file>:<line> <texto>"]`
-  y `"context_scope": "in_diff"`. Sus severidades son `P2` (error) y `P3` (warning);
+  añade `"verification": "verified_static"` y `"verification_evidence": ["<file>:<line> <texto>"]`.
+  `context_scope` sale de dónde reporta la herramienta: `in_diff` si la línea que da
+  es una línea añadida del diff; `outside_diff` si la herramienta señala código del
+  fichero que el PR no tocó y `best_line` reancla el hallazgo a la línea añadida más
+  cercana. Un hallazgo sobre un fichero que no está en el diff se sigue descartando,
+  como hoy. *Decidido 2026-10-17 (Q3).* Sus severidades son `P2` (error) y `P3` (warning);
   al ser `verified_static`, no necesita `failure_scenario` (I1 no dispara).
 - **`LlmReviewer`**
   ([`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py)): añade los
@@ -241,7 +246,7 @@ regenera desde el modelo y se afina a mano (igual que hoy `confidence.enum`), po
 solo compara `required` de nivel superior y `type` de propiedad: como los campos
 nuevos van con `anyOf`/`$ref`, no altera el test —y detecta cualquier drift real.
 
-### 5.6 ADR-0016 — Cascada de verificación del hallazgo (a crear)
+### 5.6 ADR-0021 — Cascada de verificación del hallazgo (a crear)
 
 El ADR nuevo documenta la decisión de fondo que este contrato habilita:
 
@@ -263,10 +268,10 @@ El ADR nuevo documenta la decisión de fondo que este contrato habilita:
 | # | Riesgo | Mitigación |
 |---|---|---|
 | R1 | El `failure_scenario` se rellena con relleno («podría fallar si…») sin trazar | I1 exige no vacío; el formato `input/estado → file:line → resultado` se refuerza en el *prompt* y se comprueba en el *gold set*. |
-| R2 | Romper la compatibilidad con `ce-code-review` (consumidor ajeno) | Campos nuevos opcionales con *default* (D8); `required` de nivel superior intacto; el endurecimiento en la otra ruta queda en §8. |
+| R2 | Romper la compatibilidad con `ce-code-review` (consumidor ajeno) | Campos nuevos opcionales con *default* (D8); el `required` de nivel superior solo pierde `requires_verification` (D12), lo que relaja el contrato en vez de endurecerlo; el endurecimiento de `failure_scenario` no se lleva a la otra ruta (Q1). |
 | R3 | El modelo ignora los campos o los inventa en su respuesta | `LlmReviewer` normaliza `verification` a `unverified`; el resto cae a *default*; un `P0–P2` sin escenario se descarta por I1. |
 | R4 | Drift entre modelo y contrato publicado | `schema_matches_domain` en CI obliga al cambio en el mismo commit (D7). |
-| R5 | `requires_verification` queda como campo muerto junto al nuevo `verification` | Se documenta como deuda en [`arquitectura.md`](../../arquitectura.md) §7 y su retirada se decide en §8. |
+| R5 | Retirar `requires_verification` rompe un checkpoint antiguo o un fixture grabado | `Finding` ignora campos extra; test que carga un `Finding` serializado con el campo (D12). Los fixtures de `tests/eval/` se dejan como están: son respuestas grabadas del modelo |
 | R6 | Duplicación entre `failure_scenario` y `why_it_matters` | `why_it_matters` dice el **impacto**; `failure_scenario`, el **camino que lo produce**. El prompt los separa y el contrato exige ambos en el mismo hallazgo. |
 
 ## 7. Criterios de hecho
@@ -276,27 +281,26 @@ El ADR nuevo documenta la decisión de fondo que este contrato habilita:
 | C1 | `contracts/findings-schema.json` declara `failure_scenario`, `verification`, `verification_evidence` y `context_scope`, con sus `$defs` y el `if/then` condicional | Inspección + `test_contracts.py` |
 | C2 | `Finding` valida I1–I3: `P0`–`P2` `unverified` sin escenario se rechaza; veredicto sin evidencia se rechaza | Tests nuevos en `test_domain.py` / `test_contracts.py` |
 | C3 | `schema_matches_domain()` sigue en verde (modelo y JSON sincronizados en el mismo commit) | `test_contracts.py` |
-| C4 | `ToolingReviewer` emite `verified_static` con evidencia y `context_scope: in_diff`; sus `P2` no necesitan escenario | `test_tooling_reviewer.py` |
+| C4 | `ToolingReviewer` emite `verified_static` con evidencia; `context_scope` es `in_diff` sobre una línea añadida y `outside_diff` cuando reancla; sus `P2` no necesitan escenario | `test_tooling_reviewer.py` |
 | C5 | `LlmReviewer` pide los campos en el *prompt* y normaliza `verification` a `unverified` | `test_llm_reviewer.py` |
-| C6 | Los campos nuevos no rompen el `required` de nivel superior ni el consumo por `ce-code-review` (compatibilidad) | Inspección del contrato + tests existentes |
-| C7 | El ADR-0016 (cascada de verificación) queda escrito y enlazado desde el índice de ADR | `docs/adr/README.md` + `docs-check` |
+| C6 | Los campos nuevos no añaden nada al `required` de nivel superior (solo sale `requires_verification`) | Inspección del contrato + tests existentes |
+| C7 | El ADR-0021 (cascada de verificación) queda escrito y enlazado desde el índice de ADR | `docs/adr/README.md` + `docs-check` |
 | C8 | `make ci` en verde, con `make docs-check` | CI |
-| C9 | Documentos vivos al día: `arquitectura.md` §7 (deuda de `requires_verification`) y `CONTEXT.md` si nace el término «verificación del hallazgo» | Revisión |
+| C9 | Documentos vivos al día: `CONTEXT.md` si nace el término «verificación del hallazgo», y ninguna mención viva a `requires_verification` | Revisión + `grep` |
+| C10 | `requires_verification` no existe en `models.py`, `findings-schema.json`, el *prompt* ni los emisores; un `Finding` serializado con el campo sigue cargando | `grep` + test (D12) |
 
 ## 8. Preguntas abiertas
 
-- **Q1 · `failure_scenario` en `ce-code-review`.** ¿Se exige también allí o solo en
-  esta ruta? *Propuesta:* de momento **solo aquí** (lo impone el modelo de dominio de
-  este repo); el contrato compartido lo recibe como campo opcional y el endurecimiento
-  allí se decide tras medir cuántos hallazgos descartaría.
-- **Q2 · ¿Qué hacer con `requires_verification`?** Queda declarativo y solapado con
-  `verification`. *Propuesta:* depreciarlo y retirarlo en un cambio compatible cuando
-  ningún consumidor lo lea; su retirada va a `arquitectura.md` §7.
-- **Q3 · `context_scope` por defecto.** ¿Un `ToolingReviewer` puede marcar
-  `outside_diff` alguna vez (p. ej. `phpstan` sobre ficheros no del diff)? *Propuesta:*
-  hoy siempre `in_diff`; el enum existe para el `LlmReviewer`.
-- **Q4 · `confidence` tras el contrato.** ¿Se deriva de `verification` (p. ej.
-  `verified_*` ⇒ 100) o se mantiene como juicio del modelo? *Propuesta:* mantenerlo
-  ahora; revisar cuando el gate lea `verification`.
-- **Q5 · ¿Un `P2` ya verificado debería llevar igualmente escenario?** *Propuesta:*
-  no (I1 solo aplica a `unverified`); se revisa con el *gold set*.
+Todas resueltas el 2026-10-17.
+
+- **Q1 · `failure_scenario` en `ce-code-review`.** *Resuelta (2026-10-17):* solo
+  aquí; endurecerlo allí se decide tras medir (D8).
+- **Q2 · ¿Qué hacer con `requires_verification`?** *Resuelta (2026-10-17):* se
+  retira en esta iniciativa, no en un cambio posterior (D12).
+- **Q3 · `context_scope` en el `ToolingReviewer`.** *Resuelta (2026-10-17):* puede
+  marcar `outside_diff` cuando la herramienta señala código no tocado de un fichero
+  del diff (§5.4).
+- **Q4 · `confidence` tras el contrato.** *Resuelta (2026-10-17):* se mantiene como
+  juicio del modelo; se revisa cuando el gate de 011 lea `verification`.
+- **Q5 · ¿Un `P2` ya verificado lleva escenario?** *Resuelta (2026-10-17):* no; I1
+  solo aplica a `unverified`. Se revisa con el *gold set*.

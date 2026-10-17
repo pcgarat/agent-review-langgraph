@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Lector de contexto: puerto, bucle de herramientas y workspace de lectura
 
@@ -40,7 +40,7 @@ Se quiere:
 - ***Function calling* nativo.** El bucle es *ReAct* en JSON sobre `LlmPort`
   ([009 §3.3](../../009-verificador-adversarial/spec.md)).
 - **El presupuesto por PR.** El bucle consulta un presupuesto que le pasa quien lo
-  llama; el presupuesto por PR es [017](../../017-presupuesto-por-pr/spec.md).
+  llama; el presupuesto por PR es [017](../017-presupuesto-por-pr/spec.md).
 
 ## 3. Contexto y evidencia
 

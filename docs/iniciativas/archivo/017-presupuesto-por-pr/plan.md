@@ -1,17 +1,17 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Plan: Presupuesto de tokens por review
 
 El *qué y por qué* vive en [`spec.md`](spec.md); las tareas, en [`todo.md`](todo.md).
 Este plan fija el orden y las dependencias. 017 sustituye el entero
 `budget_tokens_per_pr` por un **puerto con contador compartido** y cierra la deuda
-[D17](../../arquitectura.md) §7 y [D21](../../arquitectura.md) §7.
+[D17](../../../arquitectura.md) §7 y [D21](../../../arquitectura.md) §7.
 
 ## Overview
 
 Cuatro piezas:
 
-1. `BudgetPort` afinado en [`ports/budget.py`](../../../src/agent_review/ports/budget.py)
+1. `BudgetPort` afinado en [`ports/budget.py`](../../../../src/agent_review/ports/budget.py)
    (016 ya dejó el protocolo; 017 fija la semántica de `remaining` y la devolución de
    reservas).
 2. Dos adaptadores: `RedisBudget` (contador atómico con TTL) e `InMemoryBudget`
@@ -91,11 +91,11 @@ después; el hecho y los docs al final, en el mismo commit que el código.
 
 ## Dependencias externas
 
-- [016](../../iniciativas/archivo/016-lector-de-contexto/spec.md) dejó el
+- [016](../016-lector-de-contexto/spec.md) dejó el
   `BudgetPort` y su consumo en `run_tool_loop`; 017 afina la semántica.
-- [012](../012-cobertura-de-la-review/spec.md) consume el hecho del corte para la
+- [012](../../012-cobertura-de-la-review/spec.md) consume el hecho del corte para la
   `ReviewCoverage`, pero 017 **no** la espera: entrega el mecanismo y el dato.
-- [ADR-0007](../../adr/0007-reintento-en-dos-capas.md): el reintento del nodo es lo
+- [ADR-0007](../../../adr/0007-reintento-en-dos-capas.md): el reintento del nodo es lo
   que obliga a devolver la reserva en el error (B8).
-- [ADR-0005](../../adr/0005-identidad-de-la-ejecucion.md): `review_key` es la clave
+- [ADR-0005](../../../adr/0005-identidad-de-la-ejecucion.md): `review_key` es la clave
   del contador.

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Personas deterministas de wiring y configuración
 
@@ -97,7 +97,7 @@ convierte en código, como `check_docs.py` ya hace con la estructura documental.
 | **W2** | El contrato de wiring es **datos**: bloque `wiring:` del perfil del repo | El checker no conoce rutas ni nombres de fichero en código (igual que el código no conoce nombres de modelo, [ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)). Otro repo lo declara y funciona; uno que no lo declare, no tiene la persona. |
 | **W3** | Acceso a ficheros tras un puerto `FileSource` con dos adaptadores | El mismo motor corre en la review (lee a `head_sha` vía `VcsPort`) y en CI (lee el árbol de trabajo). Patrón *adapter*; el checker no sabe de dónde salen los bytes. |
 | **W4** | **Fail-closed**: un fichero declarado e ilegible ⇒ estado de fuente no limpio | Invariante §4: «"sin hallazgos" con una fuente sin cubrir se publica como **incompleta**, nunca como limpia». Se reutiliza el mecanismo de `tooling_status`. |
-| **W5** | `verification: verified_static` y `requires_verification: false` | Nace de un contraste determinista, no de una hipótesis: pasa el gate de `P0`/`P1` sin pagar L2. Igual que el `ToolingReviewer`. |
+| **W5** | `verification: verified_static` | Nace de un contraste determinista, no de una hipótesis: pasa el gate de `P0`/`P1` sin pagar L2. Igual que el `ToolingReviewer`. |
 | **W6** | El mismo motor se expone como `make wiring-check`, dentro de `make ci` | Un hallazgo de wiring del **propio agente** no debe depender de que alguien revise su repo: la deriva se corta en el PR que la introduce. |
 | **W7** | Anclaje: se emite al fichero del par que discrepa; sin línea añadida ⇒ **resumen** | Un par puede vivir fuera del diff (p. ej. `operacion.md`). El `publish` ya manda al resumen lo que no ancla ([ADR-0006](../../adr/0006-publicacion-inline-primero-resumen-al-final.md)); no se inventa una línea. |
 | **W8** | Los servicios requeridos y las variables prohibidas **se declaran**, no se intuyen del grafo | Introspección del grafo = acoplamiento frágil y silencioso. Una declaración versionada y revisada es auditable, como `config/autonomy.yaml` ([ADR-0003](../../adr/0003-autonomia-como-politica-por-hallazgo.md)). |
@@ -177,7 +177,6 @@ enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón 
 | `why_it_matters` | El modo de fallo concreto, no «está mal» |
 | `autofix_class` | `manual`: la decisión de configuración es de una persona |
 | `owner` | `human` |
-| `requires_verification` | `false` |
 | `confidence` | `100` (contraste determinista, sin modelo) |
 | `evidence` | Las citas de los dos lados que deberían concordar |
 | `verification` | `verified_static` (contrato de [007](../007-contrato-de-verificacion/spec.md)) |

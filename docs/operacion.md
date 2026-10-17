@@ -343,7 +343,7 @@ runner: una ruta vetada da `403` y no aparece en `grep`.
 ### Consola en vivo del `sandbox-runner`
 
 El runner expone también `GET /verify/{run_key}/console`, la **consola en vivo** de una
-verificación ([019](iniciativas/019-panel-de-operacion/spec.md) §5.6, W5/W8/W9): un
+verificación ([019](iniciativas/archivo/019-panel-de-operacion/spec.md) §5.6, W5/W8/W9): un
 *stream* SSE (`text/event-stream`) con el `stdout`/`stderr` del contenedor **a medida que
 se ejecuta**, que el `web` proxya y el panel pinta. Acepta el bearer compartido
 `SANDBOX_RUNNER_TOKEN` o el de **solo lectura** `SANDBOX_CONSOLE_TOKEN`, que es el que

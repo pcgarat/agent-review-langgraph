@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Verificador adversarial (L2): otro modelo, con herramientas
 
@@ -335,7 +335,7 @@ marca (V6). El nodo lee `verifications` como `existing` —igual que `fix_dispat
 - **Q4 — ¿El verificador puede pedir ficheros fuera del diff?** Lo propuesto es sí,
   con tope; restringirlo al diff es más barato y también más ciego.
 - **Q5 — ¿D17 entra aquí?** *Resuelta (2026-10-16):* no; es
-  [017](../017-presupuesto-por-pr/spec.md), y 009 recibe su `BudgetPort`.
+  [017](../archivo/017-presupuesto-por-pr/spec.md), y 009 recibe su `BudgetPort`.
 - **Q6 — ¿`unverified` degrada a `P3` o va a una sección «posibles»?** Se decide en
   [011 Q1](../011-gate-de-severidad/spec.md); lo que se elija obliga a revisar el
   *prompt* de L2: si degradar pierde recall, el verificador debe ser menos

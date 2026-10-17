@@ -1,10 +1,10 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Todo: Presupuesto de tokens por review
 
 Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
-[`plan.md`](plan.md). Spec aprobada el 2026-10-16. Cierra [D17](../../arquitectura.md)
-§7 y [D21](../../arquitectura.md) §7.
+[`plan.md`](plan.md). Spec aprobada el 2026-10-16. Cierra [D17](../../../arquitectura.md)
+§7 y [D21](../../../arquitectura.md) §7.
 
 ## Bloque 1 — El puerto y su semántica (cierra D21)
 
@@ -36,7 +36,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - [x] **P3** Devolver la reserva si la llamada falla (B8)
   - `src/agent_review/adapters/tool_loop.py`: si `llm.complete` lanza, se llama a
     `commit(review_key, reserved, 0)` antes de relanzar, para que el reintento del
-    nodo ([ADR-0007](../../adr/0007-reintento-en-dos-capas.md)) no reserve dos veces.
+    nodo ([ADR-0007](../../../adr/0007-reintento-en-dos-capas.md)) no reserve dos veces.
   - Aceptación: con un modelo que falla una vez y un presupuesto que registra los
     `commit`, la reserva del intento fallido queda a cero.
   - Verifica: `tests/test_tool_loop.py`.
@@ -54,7 +54,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
     `INCRBY`/`DECRBY` y TTL; la reserva es una operación que respeta el tope (atómica
     respecto a las ramas en paralelo). `remaining` con la misma definición que P1. Si
     Redis no responde, degrada como el resto de adaptadores (sin Redis no hay review
-    en `production`, [015](../015-puesta-en-marcha-real/spec.md) X4).
+    en `production`, [015](../../015-puesta-en-marcha-real/spec.md) X4).
   - Aceptación: dos reservas concurrentes que juntas superan el tope: solo una pasa;
     el TTL se aplica; `remaining` coincide con el adaptador en memoria.
   - Verifica: `tests/test_budget.py` (fakeredis o doble de cliente).

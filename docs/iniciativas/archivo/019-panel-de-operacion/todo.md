@@ -1,10 +1,10 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Todo: Panel de operación
 
 Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden y los
 checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D16 de
-[`arquitectura.md`](../../arquitectura.md) §7. Una tarea cerrada se marca `[x]` en el
+[`arquitectura.md`](../../../arquitectura.md) §7. Una tarea cerrada se marca `[x]` en el
 **mismo commit** que el código. Los IDs son estables dentro del repo: `OP`.
 
 ---
@@ -34,7 +34,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
   `RedisProgress`; elección por configuración, como `build_chat`.
 - [x] **OP6** Marca `reviews:active:<review_key>` (`node`, `started_at`, TTL holgado).
 - [x] **OP7** *Seam* de envoltura de nodo (`node_wrapper`) compartible con la
-  [018](../018-trazas-de-la-review/spec.md) (D2 de la 018 / T3)
+  [018](../../018-trazas-de-la-review/spec.md) (D2 de la 018 / T3)
   - Debe **preservar** la firma del nodo, su `RetryPolicy` y el `Runtime` que recibe
     `persona`; una envoltura que los pierda rompe el fan-out o el reintento.
 - [x] **OP8** Conectar la marca al worker (`build_runtime`) y limpiarla al cerrar el
@@ -62,7 +62,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP16** Test de compose: sin el perfil `panel` no se levanta ningún servicio
   nuevo.
 - [x] **OP17** Test de auth: `401` sin sesión; el rol `lector` no ejecuta comandos.
-- [x] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../operacion.md) §1–2
+- [x] **OP18** `Settings`, `.env.example` y [`operacion.md`](../../../operacion.md) §1–2
   (servicio y variables) y §5 (endpoints del panel).
   - Enmienda 2026-10-16: el secreto del panel entra en el contrato fail-closed de
     producción con contrato **propio** (`settings.panel_insecure_secrets` /
@@ -80,7 +80,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
   `on_line`
   - Sin `stderr=STDOUT`: el informe mantiene ambos flujos separados (riesgo R5).
 - [x] **OP21** Buffer circular en memoria del runner por `run_key`, con alta de
-  suscriptores (efímero, como los workspaces de [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md)).
+  suscriptores (efímero, como los workspaces de [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md)).
 - [x] **OP22** Endpoint SSE `GET /verify/{run_key}/console` en el runner, con el
   bearer compartido.
 - [x] **OP23** Test: con `on_line` el `VerifyReport` es idéntico; el timeout y la
@@ -113,7 +113,7 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP33** UI de comandos: botones según el estado, con el **actor** auditado.
 - [x] **OP34** Tests por estado: cancelar antes/después de publicar, reintentar un
   descarte, reanudar, y que `Cancelled` **no** se reintenta.
-- [ ] **OP35** *(Humana)* Decidir y asignar **quién** puede cancelar (Q4 de la spec);
+- [x] **OP35** *(Trasladada el 2026-10-17 a [015](../../015-puesta-en-marcha-real/spec.md).)* *(Humana)* Decidir y asignar **quién** puede cancelar (Q4 de la spec);
   sin esto el bloque no se cierra.
 
 ## Bloque 6 — Cierre (checkpoint C6)
@@ -121,14 +121,14 @@ checkpoints, en [`plan.md`](plan.md). Spec aprobada el 2026-10-16. Acota D14 y D
 - [x] **OP36** ADR-0020: «panel como servicio aparte, *read model* + comandos,
   progreso por marca» (Q7 de la spec).
 - [x] **OP37** `CONTEXT.md`: «panel», «progreso», «cancelación».
-- [x] **OP38** [`arquitectura.md`](../../arquitectura.md) §7 (D14 y D16 acotadas) y
+- [x] **OP38** [`arquitectura.md`](../../../arquitectura.md) §7 (D14 y D16 acotadas) y
   §2/§5 si el servicio o las claves lo requieren.
-- [x] **OP39** [`operacion.md`](../../operacion.md) §7 (diagnóstico del panel y de la
+- [x] **OP39** [`operacion.md`](../../../operacion.md) §7 (diagnóstico del panel y de la
   consola del sandbox).
-- [x] **OP40** [`desarrollo.md`](../../desarrollo.md) §2 (zonas de test nuevas) y §3
+- [x] **OP40** [`desarrollo.md`](../../../desarrollo.md) §2 (zonas de test nuevas) y §3
   (extensión: puerto de progreso y envoltura de nodo).
 - [x] **OP41** `make ci` y `make docs-check` en verde.
-- [x] **OP42** Anotar en la [018](../018-trazas-de-la-review/spec.md) la coordinación
+- [x] **OP42** Anotar en la [018](../../018-trazas-de-la-review/spec.md) la coordinación
   del *seam* de nodos (D2 del plan).
 
 ## Bloque 7 — Correcciones de la revisión de código (checkpoint C7)

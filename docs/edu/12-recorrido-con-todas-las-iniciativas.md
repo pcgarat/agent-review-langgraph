@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # 12 — Recorrido de una review con todas las iniciativas entregadas
 
@@ -83,12 +83,12 @@ Y tres piezas transversales que no cambian qué se publica, sino cómo se opera:
 
 | Iniciativa | Qué aporta a la foto |
 |---|---|
-| [017 · presupuesto por PR](../iniciativas/017-presupuesto-por-pr/spec.md) **(entregada)** | Un contador de tokens **por review**, compartido por todas las personas, sus lotes, los bucles de herramientas y el verificador. Agotarlo degrada; no falla ni gasta de más. |
+| [017 · presupuesto por PR](../iniciativas/archivo/017-presupuesto-por-pr/spec.md) **(entregada)** | Un contador de tokens **por review**, compartido por todas las personas, sus lotes, los bucles de herramientas y el verificador. Agotarlo degrada; no falla ni gasta de más. |
 | [018 · trazas](../iniciativas/018-trazas-de-la-review/spec.md) | Un árbol por review en Langfuse self-hosted: cada nodo, cada llamada al modelo (prompt, respuesta, `usage`) y cada llamada al VCS o al runner. |
 | [015 · puesta en marcha real](../iniciativas/015-puesta-en-marcha-real/spec.md) | Smokes reales con evidencia y `production` sin fallbacks a memoria: sin Redis, la API responde `503` y el worker no arranca. |
 
 La [016](../iniciativas/archivo/016-lector-de-contexto/spec.md) (lector de contexto)
-y la [017](../iniciativas/017-presupuesto-por-pr/spec.md) (presupuesto por review) ya
+y la [017](../iniciativas/archivo/017-presupuesto-por-pr/spec.md) (presupuesto por review) ya
 están entregadas: la 016 es la pieza que 009 y 014 usan para leer el repositorio, y
 la 017 reparte el gasto entre todas las piezas de la cascada.
 
@@ -1009,7 +1009,7 @@ specs con el grafo en la cabeza.
    `{"spent": 10}`. Verás que los tres leen `0` y pasan la comprobación: no se ven
    entre sí dentro del superstep (y con `Send` es peor: cada rama solo ve su
    payload). Es la razón de B2 en
-   [017](../iniciativas/017-presupuesto-por-pr/spec.md).
+   [017](../iniciativas/archivo/017-presupuesto-por-pr/spec.md).
 
 3. **Juega con el gate en papel.** Toma la tabla de la [§7.5](#75-la-política-primero-el-gate-luego-las-reglas)
    y cambia los supuestos: `on_refuted: summary`, `require_verified_for: [P0, P1, P2]`,

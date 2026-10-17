@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Panel de operación: ver el sistema en vivo, cancelar y reintentar
 
@@ -15,7 +15,7 @@
 ## 1. Objetivo
 
 Hoy la observabilidad es **logs de texto** y un puñado de endpoints de lectura
-suelta ([`operacion.md`](../../operacion.md) §5). Se puede saber *algo* preguntando a
+suelta ([`operacion.md`](../../../operacion.md) §5). Se puede saber *algo* preguntando a
 Redis (`/reviews/paused`) o mirando el latido del worker, pero no se puede **ver** el
 sistema, ni seguir una ejecución larga, ni intervenir sobre ella. La deuda está
 reconocida: D14 (sin métricas sobre tráfico real) y D16 (el latido mide que el
@@ -40,18 +40,18 @@ Se quiere:
   revisor pide salida estructurada (`json_object`/`json_schema`) en **una sola**
   llamada por persona y la parsea al final, así que un chorro de tokens sería JSON a
   medio formar: cosmético, no informativo. Lo útil del LLM es su **prompt y su
-  respuesta completos**, y eso lo cubre [018](../018-trazas-de-la-review/spec.md).
+  respuesta completos**, y eso lo cubre [018](../../018-trazas-de-la-review/spec.md).
 - **Construir un Langfuse casero.** El árbol de spans, el prompt, la respuesta, el
-  `usage` y la latencia por llamada son de [018](../018-trazas-de-la-review/spec.md).
+  `usage` y la latencia por llamada son de [018](../../018-trazas-de-la-review/spec.md).
   La 019 no duplica esa capa: es el plano **operativo** (qué corre, qué espera, qué
   se puede cancelar), complementario al plano de **análisis** de 018.
 - **Métricas agregadas de negocio** (precisión, recall, tasa de aceptación): son de
-  [006](../archivo/006-eval-de-la-review/spec.md).
+  [006](../006-eval-de-la-review/spec.md).
 - **Editar la política o los modelos desde la web.** `autonomy.yaml` y `models.yaml`
   se editan y se reinicia (ADR-0015): el panel es de lectura y de comandos, no un
   editor de configuración.
 - **Multi-repo o multi-despliegue.** Un despliegue revisa **un** repo
-  ([`arquitectura.md`](../../arquitectura.md) §1). El panel muestra ese despliegue.
+  ([`arquitectura.md`](../../../arquitectura.md) §1). El panel muestra ese despliegue.
 - **Despublicar.** Cancelar no puede borrar comentarios ya escritos en el PR (§4, W6).
 
 ## 3. Contexto y evidencia
@@ -62,7 +62,7 @@ Se quiere:
   (`thread_id` = `review_key`). `graph.get_state_history` ya devuelve, por `step`,
   qué escribió cada nodo y cuál es el `next`. El «recorrido» de una review **ya está
   persistido**; solo falta un endpoint que lo lea. Es exactamente el peldaño barato
-  que [018](../018-trazas-de-la-review/spec.md) planteó como Q7.
+  que [018](../../018-trazas-de-la-review/spec.md) planteó como Q7.
 - **Estado operativo**: en Redis está todo lo que el panel necesita listar: cola
   (`reviews:jobs`), pausas (`reviews:paused:*`, con `kind` `human`/`fix`), descartes
   (`reviews:jobs:dead`), waves de fix (`reviews:fixes`), presupuesto consumido
@@ -70,12 +70,12 @@ Se quiere:
   avisos al canal (`reviews:notices`).
 - **La API ya tiene el patrón**: `/reviews/paused` lista el inbox con una forma por
   `kind`; `/reviews/{key}` responde `PAUSED` o `404`; `POST /reviews/{key}/decision`
-  **encola** en vez de tocar el grafo ([`api/main.py`](../../../src/agent_review/api/main.py)).
+  **encola** en vez de tocar el grafo ([`api/main.py`](../../../../src/agent_review/api/main.py)).
 
 ### 3.2 El worker es secuencial (y eso abarata el panel)
 
 El worker procesa **una review a la vez** (`BLPOP` y `graph.invoke` síncrono,
-[`worker/main.py`](../../../src/agent_review/worker/main.py); D11). El «panel en
+[`worker/main.py`](../../../../src/agent_review/worker/main.py); D11). El «panel en
 tiempo real» es, en la práctica, **una** review activa y una cola. No hay contención
 de escritura ni concurrencia que gobernar: se cancela lo que está en vuelo (a lo
 sumo uno) o lo que está en cola.
@@ -83,7 +83,7 @@ sumo uno) o lo que está en cola.
 ### 3.3 El LLM y el VCS no son interrumpibles a mitad
 
 `LlmReviewer` hace **una** llamada bloqueante por persona
-([`adapters/openai_llm.py`](../../../src/agent_review/adapters/openai_llm.py)); `twg`
+([`adapters/openai_llm.py`](../../../../src/agent_review/adapters/openai_llm.py)); `twg`
 y el HTTP al runner también bloquean. LangGraph no ofrece «cancelar este hilo». Es
 decir: la cancelación **no** puede ser instantánea solo con lo que hay; hay que
 elegir una estrategia (§4, W4).
@@ -92,7 +92,7 @@ elegir una estrategia (§4, W4).
 
 `DockerCliRuntime.start` usa `subprocess.run(capture_output=True)` y devuelve
 `ContainerOutcome` con `stdout`/`stderr` **completos al terminar**
-([`sandbox_runner/runtime.py`](../../../src/agent_review/sandbox_runner/runtime.py)).
+([`sandbox_runner/runtime.py`](../../../../src/agent_review/sandbox_runner/runtime.py)).
 El `VerifyReport` recorta ambas colas a `_TAIL_CHARS` (4000). Hoy, mientras un
 comando corre, **no hay nada que ver** hasta que acaba. Es el punto de trabajo real
 de esta iniciativa.
@@ -100,7 +100,7 @@ de esta iniciativa.
 ### 3.5 El runner es la caja más aislada del sistema
 
 El `sandbox-runner` ejecuta código de PRs de terceros y no publica puertos
-([ADR-0011](../../adr/0011-sandbox-runner-aislado.md)); hoy no habla con Redis ni con
+([ADR-0011](../../../adr/0011-sandbox-runner-aislado.md)); hoy no habla con Redis ni con
 Postgres (solo recibe un bearer). Cualquier diseño de *streaming* tiene que respetar
 ese aislamiento: **no** se le da acceso a la red de datos para emitir progreso.
 
@@ -111,8 +111,8 @@ ese aislamiento: **no** se le da acceso a la red de datos para emitir progreso.
 | W1 | **Servicio `web` propio** (compose, con **perfil** como el `tracing` de 018), no UI dentro del worker ni de la API de ingesta | El worker es un bucle tonto y la API está en el camino crítico del webhook del CI; la web es un tercer consumidor de estado, no un escritor |
 | W2 | **Puerto `ProgressPort` con `NullProgress` por defecto**, igual que `ChatPort`/`TracingPort` | Degradación por capas: sin panel, el sistema no cambia de comportamiento; ya es el patrón del repo |
 | W3 | La web es **CQRS-lite**: lee de Redis y Postgres (read model) y **encola comandos**; nunca escribe estado ni reanuda el grafo | Un solo escritor del estado (el worker), como hoy: la decisión humana también se encola (ADR-0008) |
-| W4 | **Cancelación cooperativa entre nodos**: un *wrapper* de nodo (el mismo *seam* que [018](../018-trazas-de-la-review/spec.md) propone para instrumentar) consulta `reviews:cancel:<review_key>` al **empezar** cada nodo y, si está puesto, aborta la review | LangGraph no cancela un `invoke`; el nodo es la única frontera segura. La latencia de la cancelación es la duración del nodo en curso, y se declara así en la UI |
-| W5 | El **progreso del sandbox** se emite desde el runner por **callbacks de línea** (`on_line` opcional en `ContainerRuntime.start`, con default `None`) y se sirve en un buffer **en memoria del runner** por `run_key`, expuesto como **SSE** con el mismo bearer | Mantiene el aislamiento (el runner no necesita Redis); el buffer es efímero como los workspaces de [ADR-0018](../../adr/0018-workspace-de-lectura-en-el-runner.md), y el `VerifyReport` sigue siendo el canal fiable |
+| W4 | **Cancelación cooperativa entre nodos**: un *wrapper* de nodo (el mismo *seam* que [018](../../018-trazas-de-la-review/spec.md) propone para instrumentar) consulta `reviews:cancel:<review_key>` al **empezar** cada nodo y, si está puesto, aborta la review | LangGraph no cancela un `invoke`; el nodo es la única frontera segura. La latencia de la cancelación es la duración del nodo en curso, y se declara así en la UI |
+| W5 | El **progreso del sandbox** se emite desde el runner por **callbacks de línea** (`on_line` opcional en `ContainerRuntime.start`, con default `None`) y se sirve en un buffer **en memoria del runner** por `run_key`, expuesto como **SSE** con el mismo bearer | Mantiene el aislamiento (el runner no necesita Redis); el buffer es efímero como los workspaces de [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md), y el `VerifyReport` sigue siendo el canal fiable |
 | W6 | Cancelar y reintentar son **comandos encolados** en `reviews:jobs` (un `ReviewRequest` marcado), no mutaciones directas desde la web | Igual que `POST /decision`: sin carreras entre procesos; el worker aplica la semántica con su propio estado del hilo |
 | W7 | **Autenticación de sesión con rol** en el panel, no solo un bearer de servicio | Cancelar es una acción con consecuencias; el bearer actual autoriza a un servicio, no identifica a una persona |
 | W8 | El *streaming* del sandbox es **best-effort y efímero**: no persiste, no entra en el `VerifyReport`, y su caída no afecta a la verificación | La observabilidad no puede convertirse en una causa de fallo de lo que observa (mismo criterio que 018 T6) |
@@ -154,7 +154,7 @@ lectura de su buffer de consola (W5). La web es un consumidor más.
 El **recorrido** (leer el checkpointer) se propone como **primer peldaño**, sin panel:
 un endpoint que hoy mismo da valor y que la 019 reutiliza. Da el orden real de nodos
 y el punto de parada; las **duraciones** por nodo y el prompt/respuesta siguen siendo
-de [018](../018-trazas-de-la-review/spec.md).
+de [018](../../018-trazas-de-la-review/spec.md).
 
 ### 5.3 Progreso del worker (W10) — cierra D16
 
@@ -205,7 +205,7 @@ Reglas de negocio de la cancelación (**críticas**, y hay que decirlas en la UI
   es una pausa huérfana inmortal (familia de D15).
 
 Los descartes (DLQ) son **reintentables**: reencolar su `request` con `attempts=0`
-es la operación manual que hoy se hace con `redis-cli RPUSH` ([`operacion.md`](../../operacion.md) §7).
+es la operación manual que hoy se hace con `redis-cli RPUSH` ([`operacion.md`](../../../operacion.md) §7).
 
 ### 5.5 Reintentar / reiniciar (W6)
 
@@ -261,7 +261,7 @@ SANDBOX_CONSOLE_BUFFER_LINES=2000
 - El panel **no** se publica sin autenticación (W7): sesión con rol. Quien puede
   cancelar es una decisión de operación, no un `curl` anónimo.
 - El panel **muestra diffs y salidas de PRs de terceros**: mismo tratamiento que
-  [018](../018-trazas-de-la-review/spec.md) §3.5 (self-hosted; la redacción de
+  [018](../../018-trazas-de-la-review/spec.md) §3.5 (self-hosted; la redacción de
   secretos es un riesgo abierto, R4 de 018).
 - El panel **no** recibe credenciales de VCS ni de LLM; solo lee estado y encola
   comandos.
@@ -270,7 +270,7 @@ SANDBOX_CONSOLE_BUFFER_LINES=2000
 
 | # | Riesgo | Mitigación |
 |---|---|---|
-| R1 | **Se duplica con [018](../018-trazas-de-la-review/spec.md)** | Frontera explícita: 019 = operación (estado, consola del sandbox, comandos); 018 = análisis (spans, prompt, `usage`). El *recorrido* del checkpointer (Q7 de 018) se implementa **una vez** y lo consumen las dos |
+| R1 | **Se duplica con [018](../../018-trazas-de-la-review/spec.md)** | Frontera explícita: 019 = operación (estado, consola del sandbox, comandos); 018 = análisis (spans, prompt, `usage`). El *recorrido* del checkpointer (Q7 de 018) se implementa **una vez** y lo consumen las dos |
 | R2 | **Cancelar no es reversible** (comentarios ya publicados) | Semántica por estado (§5.4); la UI nunca ofrece «cancelar la review» si ya publicó |
 | R3 | **Matar un contenedor del PR a mitad** | No se mata: se descarta la reanudación (§5.4); el timeout del runner acota el daño |
 | R4 | **La cancelación tarda un nodo entero** | Es la latencia que impone LangGraph; se declara en la UI y no se finge instantánea. El nodo más largo es el LLM (~15 s medidos) o la verificación (que no bloquea al worker, E7) |
@@ -299,8 +299,8 @@ SANDBOX_CONSOLE_BUFFER_LINES=2000
 7. El panel exige autenticación para leer y, sobre todo, para cancelar (test de
    `401`/`403`).
 8. Un fallo del panel o de la emisión de progreso **no** altera ninguna review (test).
-9. Documentos vivos al día: [`operacion.md`](../../operacion.md) §1–2 (servicio y
-   variables), §5 (endpoints del panel), [`arquitectura.md`](../../arquitectura.md)
+9. Documentos vivos al día: [`operacion.md`](../../../operacion.md) §1–2 (servicio y
+   variables), §5 (endpoints del panel), [`arquitectura.md`](../../../arquitectura.md)
    §7 (D14 y D16 acotadas) y `CONTEXT.md` si nace un término («panel»,
    «progreso»); un **ADR nuevo** para «panel como servicio aparte y comandos
    encolados» (W1/W3/W6).
@@ -308,7 +308,7 @@ SANDBOX_CONSOLE_BUFFER_LINES=2000
 
 ## 8. Preguntas abiertas
 
-- **Q1 — ¿Cuándo, respecto a [018](../018-trazas-de-la-review/spec.md)?** El peldaño 1
+- **Q1 — ¿Cuándo, respecto a [018](../../018-trazas-de-la-review/spec.md)?** El peldaño 1
   (recorrido por el checkpointer) es útil hoy y no depende de Langfuse. ¿Se hace
   primero y 018 lo reutiliza, o se espera a 018?
 - **Q2 — ¿Dónde vive el panel: en el `web` nuevo o como una extensión de la API

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Revisor con herramientas de lectura
 
@@ -50,7 +50,7 @@ Se quiere:
 - **Un *prompt* propio por rol.** Hoy `correctness`, `security` y `arch` comparten el
   mismo *system prompt* (deuda D20 de [`arquitectura.md`](../../arquitectura.md) §7).
   Este trabajo añade el protocolo de herramientas a ese *prompt*, no lo especializa.
-- **El presupuesto global por PR (D17).** Es [017](../017-presupuesto-por-pr/spec.md).
+- **El presupuesto global por PR (D17).** Es [017](../archivo/017-presupuesto-por-pr/spec.md).
   Mientras no esté, se consume el presupuesto acumulado entre
   lotes de 012; la acumulación entre personas y fixer sigue fuera.
 - **Sustituir a L1.** El fichero completo y los `context_docs:` de 008 siguen siendo
@@ -232,5 +232,5 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
   competiría con los fixes por el runner y depende de P6.
 - **Q7 — ¿Cuándo entra D17?** *Resuelta (2026-10-16):* con un solo rol activado basta
   el presupuesto acumulado entre lotes de 012. Resolver D17
-  ([017](../017-presupuesto-por-pr/spec.md)) es **precondición para
+  ([017](../archivo/017-presupuesto-por-pr/spec.md)) es **precondición para
   activar un segundo rol** en `REVIEW_TOOLS_ROLES` (H4).

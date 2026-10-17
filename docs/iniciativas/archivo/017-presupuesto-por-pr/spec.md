@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Presupuesto de tokens por PR
 
@@ -8,7 +8,7 @@
 > review**. Lo comparten todas las personas, sus lotes, los bucles de herramientas,
 > el verificador, el fixer (con su propio contador) y los reintentos. Al agotarse, lo
 > que falta se registra como un hecho (`budget_exhausted`) en vez de fallar o de
-> gastar de más; [012](../012-cobertura-de-la-review/spec.md) lo pinta en la cobertura.
+> gastar de más; [012](../../012-cobertura-de-la-review/spec.md) lo pinta en la cobertura.
 
 ---
 
@@ -16,15 +16,15 @@
 
 Hoy cada `LlmReviewer` y el `LlmFixer` comparan **su propia** llamada contra
 `budget_tokens_per_pr`. No se acumula nada entre personas, entre el revisor y el
-fixer, ni entre reintentos (deuda D17 de [`arquitectura.md`](../../arquitectura.md)
+fixer, ni entre reintentos (deuda D17 de [`arquitectura.md`](../../../arquitectura.md)
 §7). El tope real es N veces el declarado. La cascada lo agrava:
 
-- [012](../012-cobertura-de-la-review/spec.md) acumula el gasto entre los lotes de
+- [012](../../012-cobertura-de-la-review/spec.md) acumula el gasto entre los lotes de
   **una** persona (C6), no entre personas; y es quien **pinta** el corte por
   presupuesto en la `ReviewCoverage` (`SkipReason.BUDGET`), que aún no existe.
-- [009](../009-verificador-adversarial/spec.md) añade varias llamadas por hallazgo
+- [009](../../009-verificador-adversarial/spec.md) añade varias llamadas por hallazgo
   (su Q5 pregunta dónde se arregla D17).
-- [014](../014-revisor-con-herramientas/spec.md) añade turnos por lote, y activar un
+- [014](../../014-revisor-con-herramientas/spec.md) añade turnos por lote, y activar un
   segundo rol con herramientas exige antes resolver D17 (014 Q7).
 
 Se quiere:
@@ -49,21 +49,21 @@ Se quiere:
   grafo: un campo de `ReviewState` con reducer no se ve entre ramas hasta que el paso
   termina, así que no sirve como contador compartido.
 - El `LlmFixer` corre en otro proceso (`fix-worker`,
-  [004](../archivo/004-fase3-e7-desacople/spec.md)), que solo tiene Redis.
+  [004](../004-fase3-e7-desacople/spec.md)), que solo tiene Redis.
 - `LlmReply` ya trae el `usage` real del proveedor.
 
 ## 4. Decisiones
 
 | # | Decisión | Motivo |
 |---|---|---|
-| B1 | El presupuesto es **por review** (`review_key`, [ADR-0005](../../adr/0005-identidad-de-la-ejecucion.md)) y lo comparten personas, lotes, bucles de herramientas y verificador | Es lo que el nombre de la variable ya promete |
+| B1 | El presupuesto es **por review** (`review_key`, [ADR-0005](../../../adr/0005-identidad-de-la-ejecucion.md)) y lo comparten personas, lotes, bucles de herramientas y verificador | Es lo que el nombre de la variable ya promete |
 | B2 | El contador vive en **Redis** (`INCRBY` atómico, con TTL) | Es lo único que ven a la vez las ramas paralelas del fan-out y el `fix-worker` |
 | B3 | Antes de cada llamada se **reserva** la estimación; después se **ajusta** con el `usage` real | Sin reserva, varias ramas en paralelo pasan la comprobación a la vez y lo superan entre todas |
-| B4 | Agotado el presupuesto, la llamada **no se hace**: el verificador deja `unverified`, el bucle de herramientas pide el turno final y el `LlmReviewer` corta los lotes que falten **anotando el hecho** (`budget_exhausted` en `ReviewerResult`); [012](../012-cobertura-de-la-review/spec.md) es quien lo pinta como `SkipReason.BUDGET` en la `ReviewCoverage` | Mejor menos hallazgos y avisado que una factura desbocada o una review caída. 017 entrega el **hecho**; el **render** es de 012 (que aún no existe) |
+| B4 | Agotado el presupuesto, la llamada **no se hace**: el verificador deja `unverified`, el bucle de herramientas pide el turno final y el `LlmReviewer` corta los lotes que falten **anotando el hecho** (`budget_exhausted` en `ReviewerResult`); [012](../../012-cobertura-de-la-review/spec.md) es quien lo pinta como `SkipReason.BUDGET` en la `ReviewCoverage` | Mejor menos hallazgos y avisado que una factura desbocada o una review caída. 017 entrega el **hecho**; el **render** es de 012 (que aún no existe) |
 | B5 | Los **reintentos cuentan** | Un reintento gasta tokens de verdad |
 | B6 | Un puerto `BudgetPort` (`reserve`, `commit`, `remaining`) con un adaptador Redis y otro en memoria para tests y *replay* | Los consumidores no conocen Redis; el *replay* sigue siendo determinista |
 | B7 | El **resultado de `reserve` es vinculante**: un `False` corta la llamada igual que un `remaining` corto | Es el único punto que cierra la carrera entre `remaining` y `reserve`; sin él, el adaptador real de Redis puede dejarse gastar (enmienda 2026-10-16, deuda D21) |
-| B8 | La reserva se **libera** si la llamada no llega a gastar: `commit(review_key, reserved, 0)` en el camino de error | Sin la devolución, un `TransientError` reintentado por el nodo ([ADR-0007](../../adr/0007-reintento-en-dos-capas.md)) deja la primera reserva colgada para siempre y el contador se infla solo |
+| B8 | La reserva se **libera** si la llamada no llega a gastar: `commit(review_key, reserved, 0)` en el camino de error | Sin la devolución, un `TransientError` reintentado por el nodo ([ADR-0007](../../../adr/0007-reintento-en-dos-capas.md)) deja la primera reserva colgada para siempre y el contador se infla solo |
 | B9 | `remaining` devuelve el saldo **descontando lo reservado y no confirmado** | Si solo descontara lo confirmado, dos ramas en paralelo verían el mismo saldo y ambas pasarían la comprobación: justo la carrera que B3 cierra |
 | B10 | El reparto entre personas es **«el primero que llega»** sobre el contador atómico, con un tope blando por persona de `2 × total / N` (`N` = personas LLM del fan-out) | Sin cuota fija no se desperdicia lo que una persona no usa; sin tope, una persona con *prompt* grande se lo come todo (R1) |
 | B11 | El fix tiene su **propio contador** por review (clave distinta), no el de la review | La aprobación humana puede tardar más que el TTL de la review (R3): compartir la clave dejaría al fix sin presupuesto, o lo recrearía con saldo entero |
@@ -81,7 +81,7 @@ class BudgetPort(Protocol):
 
 - Clave `budget:{review_key}` para la review y `budget:fix:{review_key}` para el fix
   (B11), con el mismo TTL que la review. Las filas nuevas van a
-  [`arquitectura.md`](../../arquitectura.md) §5.
+  [`arquitectura.md`](../../../arquitectura.md) §5.
 - `commit(reserved, actual=0)` **devuelve** la reserva no gastada (B8): es el camino
   que usa el bucle y el `LlmReviewer` si la llamada lanza. Sin él, el reintento
   reserva dos veces. Con `actual > reserved` **cobra el gasto real** (equivale a
@@ -95,15 +95,15 @@ class BudgetPort(Protocol):
   `LlmReviewer` su tope blando además del puerto compartido. El puerto no conoce el
   reparto: solo cuenta.
 - `LlmReviewer`, `LlmFixer`, el bucle de
-  [016](../archivo/016-lector-de-contexto/spec.md) y el verificador de 009 reciben el
+  [016](../016-lector-de-contexto/spec.md) y el verificador de 009 reciben el
   `BudgetPort` en su construcción, en lugar del entero `budget_tokens_per_pr`.
 - **El hecho, no el render.** `LlmReviewer` expone en `ReviewerResult` que se cortó
   por presupuesto (`budget_exhausted`) y los tokens que gastó; `ReviewOutcome` expone
   `tokens_spent` y `tokens_remaining`. Convertir eso en `ReviewCoverage`/`SkipReason.BUDGET`
-  es de [012](../012-cobertura-de-la-review/spec.md) C6, que aún no existe: 017 no la
+  es de [012](../../012-cobertura-de-la-review/spec.md) C6, que aún no existe: 017 no la
   espera para entregar el mecanismo.
 - **Enmienda 2026-10-16 (deuda D21).** `reserve` devuelve `bool` pero hoy nadie lo
-  mira: en el bucle de [016](../archivo/016-lector-de-contexto/spec.md) la guarda es
+  mira: en el bucle de [016](../016-lector-de-contexto/spec.md) la guarda es
   solo `remaining`; `_reserve` descarta el `False`. Al traer el adaptador real hay
   que tratar `reserve(...) is False` como presupuesto agotado (B7) y cubrirlo con un
   test donde `reserve` devuelva `False` con `remaining` aún alto (el `MemoryBudget`
@@ -126,7 +126,7 @@ class BudgetPort(Protocol):
 | # | Riesgo | Mitigación |
 |---|---|---|
 | R1 | **Una persona se lo come todo** y las demás no revisan | Reparto «el primero que llega» con tope blando por persona (B10) |
-| R2 | **Redis caído** | Sin Redis no hay review en `production` ([015](../015-puesta-en-marcha-real/spec.md) X4); fuera de `production`, adaptador en memoria |
+| R2 | **Redis caído** | Sin Redis no hay review en `production` ([015](../../015-puesta-en-marcha-real/spec.md) X4); fuera de `production`, adaptador en memoria |
 | R3 | **El fixer se queda sin presupuesto** después de una review cara, o la clave caducó antes de la aprobación | Contador propio del fix (B11), con su clave y su TTL |
 | R4 | **La estimación previa se queda corta** y el `usage` real supera la reserva | `commit` ajusta con el real; el exceso de una sola llamada está acotado por `max_tokens` |
 | R5 | **La reserva se filtra** en un fallo transitorio y el contador se infla con cada reintento | `commit(reserved, 0)` en el camino de error (B8); test de reintento (§7.2) |
@@ -140,16 +140,16 @@ class BudgetPort(Protocol):
    fallido colgada (test con un modelo que falla una vez; cierra B8).
 3. Agotado el presupuesto, la review termina anotando `budget_exhausted` en la persona
    y `tokens_spent`/`tokens_remaining` en el `ReviewOutcome`; el render como
-   `SkipReason.BUDGET` de [012](../012-cobertura-de-la-review/spec.md) lo consume
+   `SkipReason.BUDGET` de [012](../../012-cobertura-de-la-review/spec.md) lo consume
    cuando 012 exista (test del hecho, no del render).
 4. El fixer descuenta de **su** contador (`budget:fix:{review_key}`), no del de la
    review (test entre procesos con Redis falso; cierra B11).
 5. Un `reserve` que devuelva `False` con `remaining` alto detiene la llamada igual que
    un `remaining` corto, **y no se llama a `commit`** (test con un doble que lo fuerce;
    cierra D21 y §8 Q4).
-6. `D17` sale de [`arquitectura.md`](../../arquitectura.md) §7 y `D21` también (la
+6. `D17` sale de [`arquitectura.md`](../../../arquitectura.md) §7 y `D21` también (la
    enmienda la cierra); `make ci` en verde, con `make docs-check`;
-   [`operacion.md`](../../operacion.md) §2 explica la semántica nueva de
+   [`operacion.md`](../../../operacion.md) §2 explica la semántica nueva de
    `LLM_BUDGET_TOKENS_PER_PR` (por **review**, no por llamada).
 
 ## 8. Preguntas abiertas

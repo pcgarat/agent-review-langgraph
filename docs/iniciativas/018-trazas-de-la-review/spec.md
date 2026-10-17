@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Trazas de la review: el recorrido de una petición, visible
 
@@ -25,7 +25,7 @@ reconstruir a mano qué pasó, pero no se puede **ver**:
   —donde nacen los falsos positivos de la auditoría del PR #3
   ([006](../archivo/006-eval-de-la-review/spec.md))—;
 - el **gasto real** de tokens por review, hoy fragmentado y medido por llamada
-  (D17, lo cierra [017](../017-presupuesto-por-pr/spec.md)).
+  (D17, lo cierra [017](../archivo/017-presupuesto-por-pr/spec.md)).
 
 Se quiere:
 
@@ -100,7 +100,7 @@ clientes (`emotivoo-v2`). Self-hosted resuelve la **exfiltración**, no la
 |---|---|---|
 | T1 | **Puerto `TracingPort`** con dos adaptadores: `LangfuseTracer` y `NullTracer` (no-op) | Coherente con los puertos del repo (`LlmPort`, `VcsPort`, `ChatPort`); sin trazas configuradas, el sistema no cambia de comportamiento |
 | T2 | **La llamada al LLM se instrumenta con un decorador sobre el puerto** (`TracedLlm(LlmPort)`), no dentro de `OpenAiCompatibleLlm` | El adaptador HTTP sigue sin conocer Langfuse; el decorador envuelve cualquier `LlmPort` (el real, un fake, el del verificador futuro) y captura `LlmReply.usage` sin tocar el proveedor |
-| T3 | **Los nodos se instrumentan por envoltura** (decorador/handler al registrar el nodo), no editando cada función | Siete nodos instrumentados a mano serían siete sitios donde olvidarlo; la envoltura se aplica en `build_graph` y es uniforme. **Nota 2026-10-16:** ese punto ya existe: la [019](../019-panel-de-operacion/spec.md) (D2) dejó `graph/wrapper.node_wrapper` como el **único** *seam* de los nodos, aplicado al registrar cada uno en `build_graph` (anota el progreso y comprueba la cancelación). La 018 añade su traza **en ese mismo *seam***, no en una envoltura nueva, y hereda sus dos reglas: preservar la firma del nodo (`functools.wraps`) y no tragarse excepciones |
+| T3 | **Los nodos se instrumentan por envoltura** (decorador/handler al registrar el nodo), no editando cada función | Siete nodos instrumentados a mano serían siete sitios donde olvidarlo; la envoltura se aplica en `build_graph` y es uniforme. **Nota 2026-10-16:** ese punto ya existe: la [019](../archivo/019-panel-de-operacion/spec.md) (D2) dejó `graph/wrapper.node_wrapper` como el **único** *seam* de los nodos, aplicado al registrar cada uno en `build_graph` (anota el progreso y comprueba la cancelación). La 018 añade su traza **en ese mismo *seam***, no en una envoltura nueva, y hereda sus dos reglas: preservar la firma del nodo (`functools.wraps`) y no tragarse excepciones |
 | T4 | **`trace_id` determinista a partir de `review_key`** | La traza se encuentra sin buscar por metadatos y los dos procesos (`worker`, `fix-worker`) escriben en **el mismo** árbol, como el `fingerprint` de [ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md) |
 | T5 | La instrumentación es **opt-in por configuración** (`TRACING_ENABLED` + credenciales) | Igual que `SANDBOX_ENABLED`/`TEAMS_ENABLED`: un despliegue sin Langfuse no arranca nada extra ni gasta recursos |
 | T6 | La traza es **best-effort**: un fallo al emitir nunca tumba una review | La observabilidad no puede convertirse en una nueva causa de *fallo* del sistema que observa; el error se registra y se sigue |
@@ -235,7 +235,7 @@ el `sha` van como metadatos para poder filtrar por PR.
 - **Q5 — ¿ADR propio o basta la spec?** El patrón «trazado tras un puerto, opt-in,
   *best-effort*» es una decisión de arquitectura con alternativas descartadas
   (SaaS, acoplamiento directo): se propone ADR.
-- **Q6 — ¿Esto entra antes o después que [017](../017-presupuesto-por-pr/spec.md)?**
+- **Q6 — ¿Esto entra antes o después que [017](../archivo/017-presupuesto-por-pr/spec.md)?**
   Ambas comparten la lectura del `usage` real; 017 lo usa para decidir y 018 para
   observarlo. Si 018 va primero, la traza mide el gasto que 017 luego acotará.
 - **Q7 — ¿Se añade un endpoint de traza desde el checkpointer** (sin Langfuse) como

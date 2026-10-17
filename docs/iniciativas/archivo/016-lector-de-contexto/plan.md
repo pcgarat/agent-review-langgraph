@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Plan: Lector de contexto (puerto, bucle de herramientas y workspace de lectura)
 
@@ -126,5 +126,5 @@ docs con el código.
 - [ADR-0017](../../../adr/0017-replay-determinista-con-fingerprint.md): el bucle y los
   adaptadores deben ser **deterministas** (lo que se sirve entra en el *prompt* del
   siguiente turno y el *fingerprint* ya lo cubre).
-- El presupuesto real es de [017](../../017-presupuesto-por-pr/spec.md); 016 solo define
+- El presupuesto real es de [017](../017-presupuesto-por-pr/spec.md); 016 solo define
   el puerto mínimo que consume.

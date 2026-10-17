@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-16
+Última modificación: 2026-10-17 | Creado: 2026-10-16
 
 # Plan: Panel de operación
 
@@ -17,7 +17,7 @@ cancelar, y por eso va casi al final.
 Cinco frentes, en este orden:
 
 1. **El recorrido** (spec §5.2): leer el checkpointer y reconstruir los nodos de una
-   review. Es el peldaño que la [018](../018-trazas-de-la-review/spec.md) planteó
+   review. Es el peldaño que la [018](../../018-trazas-de-la-review/spec.md) planteó
    como Q7; se implementa **una vez** aquí y lo consume también la 018.
 2. **El progreso del worker** (spec §5.3): una marca en Redis con el nodo en curso.
    Cierra D16 («el latido mide vida, no avance») sin tocar el latido de compose.
@@ -40,8 +40,8 @@ necesitan una persona se marcan como tal.
 
 | # | Decisión | Motivo |
 |---|---|---|
-| D1 | **El recorrido vive en un módulo nuevo (`trace.py`), no en la API.** Se expone desde el `web` | La API declara que **no** habla con el checkpointer (spec §4.9 de 002, [`api/main.py`](../../../src/agent_review/api/main.py)); meterle Postgres rompería esa separación. El `web` sí construye un checkpointer de lectura |
-| D2 | **Un solo *seam* de envoltura de nodo**, compartido con [018](../018-trazas-de-la-review/spec.md) | La 018 envuelve los nodos para trazar (T3) y la 019 para el progreso (W4/O5). Dos envolturas distintas sobre el mismo grafo es deuda garantizada: se diseña una y las dos la usan |
+| D1 | **El recorrido vive en un módulo nuevo (`trace.py`), no en la API.** Se expone desde el `web` | La API declara que **no** habla con el checkpointer (spec §4.9 de 002, [`api/main.py`](../../../../src/agent_review/api/main.py)); meterle Postgres rompería esa separación. El `web` sí construye un checkpointer de lectura |
+| D2 | **Un solo *seam* de envoltura de nodo**, compartido con [018](../../018-trazas-de-la-review/spec.md) | La 018 envuelve los nodos para trazar (T3) y la 019 para el progreso (W4/O5). Dos envolturas distintas sobre el mismo grafo es deuda garantizada: se diseña una y las dos la usan |
 | D3 | **El progreso vive en Redis, no en el latido** (`HEARTBEAT_PATH`) | El latido es el healthcheck de compose y no puede depender de Redis; el progreso sí lo necesita para verse desde fuera del worker (spec Q5) |
 | D4 | **SSE leyendo un buffer, sin pub/sub asíncrono** | El runner verifica en un hilo bloqueante; un `asyncio.Queue` por suscriptor exige primitivas entre hilos. Leer el buffer con un `sleep` corto es robusto y suficiente para una consola (spec Q6) |
 | D5 | **Cancelar = marca para lo que corre + job para lo pausado**, y el hilo se **borra** al abortar | Con el worker bloqueado en `graph.invoke` no puede procesar un job de cancelación; la marca la lee el wrapper en la frontera de nodo. Un hilo abortado con `next` no vacío se reanudaría en una reentrega: borrarlo es la única guarda durable |
@@ -69,7 +69,7 @@ flowchart LR
     B5 --> B6["6 · Cierre<br/>(ADR + docs)"]
 ```
 
-- El **bloque 1** no depende de nada: se puede empezar hoy y [018](../018-trazas-de-la-review/spec.md)
+- El **bloque 1** no depende de nada: se puede empezar hoy y [018](../../018-trazas-de-la-review/spec.md)
   lo reutiliza en cuanto exista.
 - El **bloque 2** tampoco: es una marca nueva, sin tocar el resto del worker.
 - El **bloque 3** es el primero que levanta algo (el servicio `web`) y depende de 1 y 2

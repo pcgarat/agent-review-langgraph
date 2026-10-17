@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-17 | Creado: 2026-10-11
 
 # Iniciativas
 
@@ -11,17 +11,15 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 
 | # | Iniciativa | Spec | Estado | Depende de / lo que queda |
 |---|---|---|---|---|
-| 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | borrador | 🔵 Habilita la cascada | Sin dependencias (se mide con 006) · 5 preguntas abiertas · habilita 008, 009, 010 (fase 2) y 011 |
+| 007 | [Contrato de verificación del hallazgo](007-contrato-de-verificacion/spec.md) | aprobada | 🟢 Lista para implementar · [plan](007-contrato-de-verificacion/plan.md) · [todo](007-contrato-de-verificacion/todo.md) (V1–V8) | Sin dependencias · **va primero** (comparte `llm_reviewer.py` y la regrabación con 012) · habilita 008, 009, 010 (fase 2) y 011 |
 | 008 | [Contexto del revisor: L0 determinista y L1 contexto](008-contexto-del-revisor/spec.md) | borrador | 🔵 Capas baratas de la cascada | 007 y 012 · 6 preguntas abiertas |
 | 009 | [Verificador adversarial (L2)](009-verificador-adversarial/spec.md) | aprobada | 🔵 Capa de pago de la cascada | 007, 016 y 017 · falta plan y todo |
 | 010 | [Personas deterministas de wiring y configuración](010-personas-de-wiring/spec.md) | borrador | 🔵 Vía de recall | Fase 1 (gate de CI) sin dependencias; fase 2 (persona), 007 · 5 preguntas abiertas |
 | 011 | [Gate de severidad por política y observabilidad](011-gate-de-severidad/spec.md) | borrador | 🔵 Cierre de la cascada; único dueño de la severidad | 007, 008 y 009 · 7 preguntas abiertas |
-| 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | borrador | 🔵 Que el revisor vea el PR y diga lo que no vio | Sin dependencias (se mide con 006) · 4 preguntas abiertas · habilita 008 y 014 |
+| 012 | [Cobertura de la review](012-cobertura-de-la-review/spec.md) | aprobada | 🟢 Lista para implementar · [plan](012-cobertura-de-la-review/plan.md) · [todo](012-cobertura-de-la-review/todo.md) (CB1–CB11) · elimina `max_files_per_pr` | Sin dependencias de diseño; mejor tras 007 · habilita 008 y 014 |
 | 014 | [Revisor con herramientas de lectura](014-revisor-con-herramientas/spec.md) | aprobada | 🔵 Las personas LLM leen ficheros y hacen `grep` mientras revisan | 008, 012 y 016; un segundo rol, también 017 · falta plan y todo |
 | 015 | [Puesta en marcha real](015-puesta-en-marcha-real/spec.md) | borrador | 🟠 Smokes, pendientes humanos y endurecimiento de `production` | Sin dependencias de código · reúne los pendientes de 001–005 y 013 · **P7 primero** |
-| 017 | [Presupuesto de tokens por PR](017-presupuesto-por-pr/spec.md) | implementada | ✅ Tope real por review: contador compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](017-presupuesto-por-pr/todo.md) |
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
-| 019 | [Panel de operación](019-panel-de-operacion/spec.md) | implementada | ✅ Panel como servicio aparte: recorrido y progreso, servicio `web` con sesión y rol, consola del sandbox por SSE y comandos de cancelar/reintentar/reanudar · cierra D16 · [ADR-0020](../adr/0020-panel-como-servicio-aparte.md) · [todo](019-panel-de-operacion/todo.md) | Frontera con 018 (operación vs análisis) · comparte el `usage` de 017 |
 
 ### Orden
 
@@ -29,7 +27,8 @@ Las iniciativas **006–012** son el desglose de una única auditoría de la cal
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
 detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
 y **017** es la pieza compartida que salió de la deuda D17. La **016** (lector de
-contexto) ya está entregada y archivada.
+contexto), la **017** (presupuesto por PR) y la **019** (panel de operación) ya están
+entregadas y archivadas.
 
 ```mermaid
 flowchart LR
@@ -47,19 +46,21 @@ flowchart LR
     I018["018"] -. "recorrido (Q7)" .-> I019["019"]
 ```
 
-La **016** (lector de contexto) ya está entregada: 009 y 014 la consumen, no la
-esperan.
+La **016** (lector de contexto) y la **017** (presupuesto por PR) ya están
+entregadas: 009 y 014 las consumen, no las esperan.
 
-- **Aprobar primero lo que desbloquea:** 012 y 007 (9 preguntas abiertas entre las
-  dos) y después 008.
-- **Se puede empezar ya**, sin esperar a nadie: 017, la fase 1 de 010 y 015.
+- **Implementar ya:** 007 y después 012, aprobadas el 2026-10-17. Las dos regraban el
+  *gold set*: mejor una sola regrabación (V6 + CB9).
+- **Aprobar después:** 008, que depende de las dos.
+- **Se puede empezar ya**, sin esperar a nadie: la fase 1 de 010 y 015.
 - **015 corre en paralelo** a todo lo demás: depende de personas e infraestructura,
   no de código.
 
 ## Archivadas
 
 Sin tareas abiertas. Lo que les quedaba (smokes y pendientes humanos) se trasladó a
-[015](015-puesta-en-marcha-real/spec.md) el 2026-10-16, conservando sus IDs.
+[015](015-puesta-en-marcha-real/spec.md) el 2026-10-16 (OP35 de 019, el 2026-10-17),
+conservando sus IDs.
 
 | # | Iniciativa | Spec | Entregado |
 |---|---|---|---|
@@ -71,12 +72,14 @@ Sin tareas abiertas. Lo que les quedaba (smokes y pendientes humanos) se traslad
 | 006 | [Evaluación de la review: *gold set* y métricas](archivo/006-eval-de-la-review/spec.md) | implementada | E1–E12; mide el resto de iniciativas · [todo](archivo/006-eval-de-la-review/todo.md) |
 | 013 | [Canal bidireccional de Teams](archivo/013-canal-teams-bidireccional/spec.md) | implementada | T1–T9 y T11–T17 · [ADR-0016](../adr/0016-bot-de-teams-para-el-canal-de-decision.md) · [todo](archivo/013-canal-teams-bidireccional/todo.md) |
 | 016 | [Lector de contexto](archivo/016-lector-de-contexto/spec.md) | implementada | L1–L12 · puerto, bucle de herramientas y workspace de lectura en el runner · [ADR-0018](../adr/0018-workspace-de-lectura-en-el-runner.md) · [todo](archivo/016-lector-de-contexto/todo.md) |
+| 017 | [Presupuesto de tokens por PR](archivo/017-presupuesto-por-pr/spec.md) | implementada | P1–P12 · contador por review compartido y atómico, corte como hecho · cierra D17 y D21 · [ADR-0019](../adr/0019-presupuesto-de-tokens-por-review.md) · [todo](archivo/017-presupuesto-por-pr/todo.md) |
+| 019 | [Panel de operación](archivo/019-panel-de-operacion/spec.md) | implementada | OP1–OP51 · servicio `web` con sesión y rol, recorrido y progreso, consola del sandbox por SSE y comandos de cancelar/reintentar/reanudar · cierra D16 · [ADR-0020](../adr/0020-panel-como-servicio-aparte.md) · [todo](archivo/019-panel-de-operacion/todo.md) |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **019**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **020**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.
