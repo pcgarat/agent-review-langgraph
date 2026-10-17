@@ -107,13 +107,13 @@ Preguntas abiertas de las specs, resueltas aquí con la propuesta de cada spec. 
 
 | Pregunta | Supuesto en este documento |
 |---|---|
-| [011 Q1](../iniciativas/011-gate-de-severidad/spec.md) · ¿degradar o sección «posibles»? | `on_unverified: degrade`, `degrade_to: P3` |
-| [011 Q8](../iniciativas/011-gate-de-severidad/spec.md) · ¿`P2` exige verificación? | No: `require_verified_for: [P0, P1]` |
-| [011 Q9](../iniciativas/011-gate-de-severidad/spec.md) · ¿qué se hace con un refutado? | `on_refuted: drop` (no se publica) |
-| [008 Q1](../iniciativas/008-contexto-del-revisor/spec.md) · ¿de dónde sale el `base_sha`? | Lo trae el VCS en `PullRequestInfo` y viaja en el `request` |
-| [008 Q2](../iniciativas/008-contexto-del-revisor/spec.md) · ¿qué ADR se inyectan? | Los que declare el perfil en `context_docs:` |
-| [009 Q3](../iniciativas/009-verificador-adversarial/spec.md) · ¿verificar por lote o por hallazgo? | Por hallazgo, como dice el diseño de 009 §5.2 |
-| [009 Q7](../iniciativas/009-verificador-adversarial/spec.md) · `VERIFIER_MAX_FINDINGS` | 5 por review |
+| [011 Q1](../iniciativas/011-gate-de-severidad/spec.md) · ¿degradar o sección «posibles»? | *Decidido (VF15):* `on_unverified: degrade`, `degrade_to: P3` |
+| [011 Q8](../iniciativas/011-gate-de-severidad/spec.md) · ¿`P2` exige verificación? | *Decidido (VF15):* No: `require_verified_for: [P0, P1]` |
+| [011 Q9](../iniciativas/011-gate-de-severidad/spec.md) · ¿qué se hace con un refutado? | *Decidido (VF15):* `on_refuted: drop` (no se publica) |
+| [008 Q1](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿de dónde sale el `base_sha`? | Lo trae el VCS en `PullRequestInfo` y viaja en el `request` |
+| [008 Q2](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿qué ADR se inyectan? | Los que declare el perfil en `context_docs:` |
+| [009 Q3](../iniciativas/archivo/009-verificador-adversarial/spec.md) · ¿verificar por lote o por hallazgo? | Por hallazgo, como dice el diseño de 009 §5.2 |
+| [009 Q7](../iniciativas/archivo/009-verificador-adversarial/spec.md) · `VERIFIER_MAX_FINDINGS` | 5 por review |
 | [010 Q1](../iniciativas/010-personas-de-wiring/spec.md) · ¿dónde vive el contrato de wiring? | En el perfil del repo revisado (bloque `wiring:`); la persona existe solo si el perfil lo declara |
 | [012 Q1](../iniciativas/archivo/012-cobertura-de-la-review/spec.md) · ¿se mantiene `max_files_per_pr`? | No: se elimina; el único tope es el presupuesto de 017 |
 | [014 H4](../iniciativas/014-revisor-con-herramientas/spec.md) · roles con herramientas | Solo `correctness`; con 017 ya entregada se podría activar otro |
@@ -229,7 +229,7 @@ del plan de 012.
 El hallazgo gana cuatro campos del contrato de
 [007](../iniciativas/archivo/007-contrato-de-verificacion/spec.md), y `pre_existing` pasa a
 **calcularse** en vez de copiarse del modelo
-([008 D2](../iniciativas/008-contexto-del-revisor/spec.md)):
+([008 D2](../iniciativas/archivo/008-contexto-del-revisor/spec.md)):
 
 | Campo | Qué dice | Quién lo pone |
 |---|---|---|
@@ -437,7 +437,7 @@ estado:
   caían por el antiguo `max_files_per_pr` ordenado por churn.
 - **H6 no llega:** L0 busca la cita en el fichero y no está en ninguna línea
   (ni añadida, ni de contexto, ni borrada). Es evidencia fabricada y se descarta
-  ([008 D9](../iniciativas/008-contexto-del-revisor/spec.md)).
+  ([008 D9](../iniciativas/archivo/008-contexto-del-revisor/spec.md)).
 - **H5 lleva la etiqueta `pre_existing`** porque L0 comparó la cita con el fichero a
   `base_sha` y es idéntica. **No** baja la severidad: es un hecho que leerá el gate.
 - **H7 lleva `outside_diff`** por la regla de humildad de L1: `arch` no tiene
@@ -618,7 +618,7 @@ _Degradado de P1: sin verificar · preexistente_
 | H1 | Sí | Sí | Veredicto `verified_static` |
 | H2 | Sí | Sí | Veredicto y las dos citas del par |
 | H3 | **No** | **No** | Nada (`on_refuted: drop`); queda en el estado para la métrica |
-| H4 | Sí | Sí | El escenario **del verificador** ([009 V12](../iniciativas/009-verificador-adversarial/spec.md)) |
+| H4 | Sí | Sí | El escenario **del verificador** ([009 V12](../iniciativas/archivo/009-verificador-adversarial/spec.md)) |
 | H5 | Sí | Sí | «P3 degradado de P1», etiqueta «preexistente» |
 | H7 | Sí | Sí | Etiqueta «fuera del diff» |
 

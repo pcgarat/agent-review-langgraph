@@ -164,8 +164,16 @@ sin filtro ni mapeo pagaría de más y dejaría el `Finding` sin veredicto.
 
 ## Bloque 5 — Dependencias externas (humanas)
 
-- [ ] **VF14** *(Humano)* Elegir el modelo de `verifier` con el *gold set* (Q1)
-  - Comparar `qwen3.6` y `gemma4` contra el caso del PR #3; fijar el binding.
-- [ ] **VF15** *(Humano, con 011)* Cerrar el umbral y `on_refuted`
-  - 011 Q1/Q2 deciden qué se publica ante `unverified` y `refuted`; el nodo ya lee
-    su clave, así que no cambia código, solo el YAML.
+- [x] **VF14** Elegir el modelo de `verifier` con el *gold set* (Q1)
+  - Comparar `qwen3.6` y `gemma4` contra el caso C (y un A de dirección) con
+    adjudicación mecánica; fijar el binding.
+  - *Hecho 2026-10-17:* binding `verifier: gemma4`. En vivo, `qwen3.6` emite
+    veredicto sin `read_file` (citas no servidas → `UNPROVEN`); `gemma4` lee,
+    cita y refuta el caso C. Detalle en la Q1 de la spec.
+- [x] **VF15** Cerrar el umbral y `on_refuted` (con 011)
+  - 011 Q1/Q2/Q8/Q9 deciden qué se publica ante `unverified` y `refuted`; el nodo
+    ya lee su clave, así que no cambia código, solo el YAML.
+  - *Hecho 2026-10-17:* `severity_gate` en `config/autonomy.yaml` con
+    `require_verified_for: [P0, P1]`, `on_unverified: degrade`/`degrade_to: P3`,
+    `on_refuted: drop`. L2 consume el umbral ya; aplicar degradación/`drop` en
+    publish es el plan de 011 (spec aún borrador).

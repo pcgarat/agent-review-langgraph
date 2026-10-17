@@ -98,6 +98,8 @@ bindings:
   # Los revisores razonan; el fixer no (propone un parche corto con `json_object`).
   correctness: deepseek-v4-flash-revisor
   fixer: deepseek-v4-flash
-  # Verificador adversarial (009 V2): modelo distinto de todos los roles de
-  # revision. `qwen3.6` admite `json_schema`; se calibra contra el gold set (Q1).
-  verifier: qwen3.6
+  # Verificador adversarial (009 V2 / Q1): distinto de los roles de revision.
+  # `gemma4` (no `qwen3.6`): en el caso C del gold set, qwen responde desde el
+  # hunk sin `read_file` y la adjudicacion (cita servida) lo deja UNPROVEN;
+  # gemma lee el fichero, cita lo servido y REFUTA. Ambos admiten json_schema.
+  verifier: gemma4

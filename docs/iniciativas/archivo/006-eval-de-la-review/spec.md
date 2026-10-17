@@ -265,12 +265,12 @@ flowchart LR
 En `replay`, el puerto devuelve el `text` y el `usage` grabados y **aborta** si el
 fingerprint del prompt o del caso no coincide con la grabación (E4). Así, la corrida
 de CI reproduce el baseline exacto y las mejoras que actúan **después** del modelo
-(L0 de [008](../../008-contexto-del-revisor/spec.md), merge, gate de
+(L0 de [008](../008-contexto-del-revisor/spec.md), merge, gate de
 [011](../../011-gate-de-severidad/spec.md)) se ven **sin gastar un token**.
 
 Las que cambian **lo que recibe** el modelo (lotes de
 [012](../012-cobertura-de-la-review/spec.md), contexto L1 de 008, prompt del
-verificador de [009](../../009-verificador-adversarial/spec.md)) invalidan el
+verificador de [009](../009-verificador-adversarial/spec.md)) invalidan el
 fingerprint: exigen regrabar con `make eval-record`, y esa regrabación es parte del
 PR que las introduce. Las grabaciones se guardan **por rol y por llamada**
 (`correctness`, `verifier`…), de modo que regrabar un rol no invalida los demás.

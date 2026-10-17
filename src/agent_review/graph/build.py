@@ -512,7 +512,8 @@ def _apply_verdict(finding: Finding, result: VerificationResult) -> Finding:
     )
 
 
-# Respaldo del umbral L2 mientras 011 no declare `severity_gate` (009 Q10 / V10).
+# Respaldo del umbral L2 si la política no declara `severity_gate` (009 Q10 / V10).
+# Con `severity_gate` en autonomy.yaml (VF15) el nodo lee `require_verified_for`.
 _DEFAULT_REQUIRE_VERIFIED_FOR = frozenset({Severity.P0, Severity.P1})
 
 

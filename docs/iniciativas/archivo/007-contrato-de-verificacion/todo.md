@@ -75,7 +75,7 @@ campos. El `if/then` del JSON no lleva `required: [verification]` en el `if`
     verificados contra `008da57`. Baseline: precisión 0.0, recall 0.0, cobertura 0.2
     (antes 0.25 / 0.25 / 0.2). Lectura: el modelo rellena escenarios plausibles pero
     inalcanzables (R1 se materializa); el escenario no filtra FP por sí solo y la
-    verificación de [009](../../009-verificador-adversarial/spec.md) es la que debe
+    verificación de [009](../009-verificador-adversarial/spec.md) es la que debe
     hacerlo. Los TP de la auditoría (A, I) no salieron en esta muestra: con una sola
     grabación no se separa el efecto del *prompt* del ruido del muestreo.
 

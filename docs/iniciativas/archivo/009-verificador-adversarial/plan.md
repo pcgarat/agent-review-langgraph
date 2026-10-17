@@ -15,7 +15,7 @@ Cinco piezas, en este orden:
 2. **El nodo.** `verify` entre `merge` y `policy`, con paso directo cuando no hay
    binding `verifier` (el grafo se comporta como hoy).
 3. **El verificador.** `LlmVerifier` apoyado en el bucle *ReAct* que ya existe
-   (`adapters.tool_loop.run_tool_loop`, de [016](../archivo/016-lector-de-contexto/spec.md))
+   (`adapters.tool_loop.run_tool_loop`, de [016](../016-lector-de-contexto/spec.md))
    y en la adjudicación mecánica de §5.5.
 4. **El cableado y el estado.** `build_verifier` en el worker, `grounded_findings`
    y `verifications` en `ReviewState`, y el mapeo del veredicto al `Finding`.
@@ -45,7 +45,7 @@ aterrizar sobre el código de hoy (016, 017 y 007 ya entregadas).
   evidencia más rica venga de una copia del LLM (§5.1).
 - **Umbral provisional mientras 011 no existe.** La spec dice que L2 usa el mismo
   umbral que el gate (`severity_gate.require_verified_for` de
-  [011](../011-gate-de-severidad/spec.md), G9), pero **011 sigue en borrador**:
+  [011](../../011-gate-de-severidad/spec.md), G9), pero **011 sigue en borrador**:
   `config/autonomy.yaml` no tiene hoy la clave `severity_gate` y el motor de
   política no la conoce. Decisión de implementación: el nodo lee
   `severity_gate.require_verified_for` **si la clave existe** en la política

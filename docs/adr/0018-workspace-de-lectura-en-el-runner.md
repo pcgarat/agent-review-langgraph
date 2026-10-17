@@ -5,7 +5,7 @@
 
 ## Contexto
 
-El verificador adversarial ([009](../iniciativas/009-verificador-adversarial/spec.md))
+El verificador adversarial ([009](../iniciativas/archivo/009-verificador-adversarial/spec.md))
 y el revisor con herramientas ([014](../iniciativas/014-revisor-con-herramientas/spec.md))
 necesitan leer ficheros fuera del diff y hacer `grep` sobre el árbol completo a
 `head_sha`. `VcsPort.get_file` solo lee fichero a fichero, cada lectura lanza un

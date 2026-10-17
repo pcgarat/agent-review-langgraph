@@ -63,7 +63,7 @@ class LoopResult(BaseModel):
         """¿La cita `path:line …` referencia un fichero que el bucle sirvio? (W3).
 
         Es la comprobacion de
-        [009 V4](../../../docs/iniciativas/009-verificador-adversarial/spec.md) y
+        [009 V4](../../../docs/iniciativas/archivo/009-verificador-adversarial/spec.md) y
         [014 H7](../../../docs/iniciativas/014-revisor-con-herramientas/spec.md),
         escrita una sola vez: una cita a un fichero no servido no vale como prueba.
         """

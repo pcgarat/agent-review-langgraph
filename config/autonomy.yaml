@@ -6,6 +6,17 @@ max_autonomy: report
 
 default_action: report
 
+# Gate de severidad (011 / 009 VF15). El nodo `verify` (L2) ya consume
+# `require_verified_for` como umbral de candidatos. `on_unverified` / `on_refuted`
+# / `degrade_to` los aplica el motor cuando 011 aterrice; hasta entonces son
+# declaracion de politica (no se aplican en publish).
+severity_gate:
+  require_verified_for: [P0, P1]    # tambien umbral de candidatos de L2 (G9)
+  verified: [verified_static, verified_grounded, verified_executed]
+  on_unverified: degrade           # degrade | possibles (011 Q1)
+  degrade_to: P3
+  on_refuted: drop                 # drop | summary (011 Q9); nunca inline
+
 # Se evaluan en orden; gana la primera regla que casa.
 # Campos: protected_subject, severity, autofix_class, confidence, paths
 rules:

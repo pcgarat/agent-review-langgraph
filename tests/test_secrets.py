@@ -21,6 +21,8 @@ from agent_review.settings import (
     PROCESSES,
     Secret,
     Settings,
+    _EXTRA_BY_PROCESS,
+    _FEATURES,
     _secret_of,
     is_missing,
     secrets_for,
@@ -172,14 +174,15 @@ def test_ningun_campo_secreto_sin_declaracion() -> None:
     commit anterior al ADR-0022 y anade un campo con nombre de secreto, su rama esta
     verde y la declaracion falta al integrar. Por eso el mensaje nombra el ADR y como
     declarar el campo, en vez de senalar solo el nombre.
+
+    La excepcion real no necesita lista: `sandbox_runner_url` no termina en sufijo de
+    secreto (es una URL) y por eso no lo mira este test; si algun campo futuro lo
+    necesitara, su declaracion debe llevar `inventory_only` con el motivo.
     """
-    # Campos que el contrato no trata como secretos pese a su nombre (si aparecen).
-    exempt: set[str] = set()
     undeclared = [
         name
         for name, field_info in Settings.model_fields.items()
-        if name not in exempt
-        and (name.endswith(("_token", "_secret", "_password", "_api_key")))
+        if (name.endswith(("_token", "_secret", "_password", "_api_key")))
         and _secret_of(field_info) is None
     ]
     assert undeclared == [], (
@@ -187,7 +190,7 @@ def test_ningun_campo_secreto_sin_declaracion() -> None:
         "El contrato de secretos se deriva de `Settings` (ADR-0022, iniciativa 020):\n"
         "anade `Annotated[str, Secret(...)]` al campo, con `required_in` si solo lo\n"
         "exige algun proceso y `feature` si depende de una condicion (o\n"
-        '`feature="solo_inventario"` si solo debe aparecer en el inventario).'
+        '`inventory_only="motivo"` si solo debe aparecer en el inventario).'
     )
 
 
@@ -206,14 +209,39 @@ def test_procesos_y_features_son_cerrados() -> None:
         Secret(feature="inexistente")
     with pytest.raises(ValueError, match="expect"):
         Secret(expect="token")
+    with pytest.raises(ValueError, match="inventory_only"):
+        Secret(feature="teams", inventory_only="motivo")
+
+
+def test_secrets_for_rechaza_un_proceso_desconocido() -> None:
+    """Un `process` fuera de `PROCESSES` falla en vez de devolver contrato vacio.
+
+    Sin esto, un punto de arranque con el nombre mal escrito (`fix_worker`) pasaria
+    produccion con cero comprobaciones y los tests en verde."""
+    settings = Settings(_env_file=None, environment="production")
+    with pytest.raises(ValueError, match="proceso desconocido"):
+        secrets_for(settings, "fix_worker")
+
+
+def test_toda_feature_de_la_tabla_la_declara_alguien() -> None:
+    """Sin andamiaje muerto: cada clave de `_FEATURES` la usa un campo o un contrato
+    extra por proceso (`_EXTRA_BY_PROCESS`). Una clave huerfana se borra, no se deja."""
+    declared = {
+        secret.feature
+        for field_info in Settings.model_fields.values()
+        if (secret := _secret_of(field_info)) is not None and secret.feature is not None
+    }
+    used = declared | {feature for features in _EXTRA_BY_PROCESS.values() for feature in features}
+    assert used == set(_FEATURES), f"features sin declarar: {sorted(set(_FEATURES) - used)}"
 
 
 def test_los_secretos_de_peticion_se_quedan_fuera_del_contrato() -> None:
-    """Q2: las guardas de peticion (firma, bearer del runner, sesion de consola) no
-    forman parte del arranque, aunque se declaren en el inventario (I1)."""
+    """Q2: el bearer de consola del runner es guarda de peticion y no forma parte del
+    arranque, aunque se declare en el inventario (I1). La firma del webhook y el bearer
+    del runner **si** se exigen al arrancar; no son la excepcion."""
     console = _secret_of(Settings.model_fields["sandbox_console_token"])
     assert console is not None
-    assert console.feature == "solo_inventario"
+    assert console.inventory_only
     settings = Settings(_env_file=None, environment="production", sandbox_enabled=True)
     for process in ("api", "worker", "fix-worker"):
         assert "SANDBOX_CONSOLE_TOKEN" not in secrets_for(settings, process)

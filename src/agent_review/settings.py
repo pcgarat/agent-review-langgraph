@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +20,8 @@ PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot"})
 # un campo no puede capturar: el nombre se declara en el `Secret` y aqui vive como se
 # evalua. `sandbox` y `panel` miran el proceso porque su condicion cambia segun quien
 # pregunte: el contrato del `fix-worker` es hablar con el runner (siempre), y el `web`
-# **es** el panel (siempre). Escrito aqui, no escondido en una lista.
+# **es** el panel (siempre). Escrito aqui, no escondido en una lista. Todas se usan:
+# un nombre sin campo que lo declare es andamiaje muerto.
 _FEATURES: Mapping[str, Callable[[Settings, str], bool]] = {
     "sandbox": lambda s, process: s.sandbox_enabled or process == "fix-worker",
     "panel": lambda s, process: s.panel_enabled or process == "web",
@@ -29,12 +30,15 @@ _FEATURES: Mapping[str, Callable[[Settings, str], bool]] = {
     "vcs_github": lambda s, _process: s.vcs_provider == "github",
     "llm_legacy": lambda s, _process: s.llm_reviewer_enabled and not s.models_config.strip(),
     "llm_registry": lambda s, _process: s.llm_reviewer_enabled and bool(s.models_config.strip()),
-    # Campo declarado para que el inventario de secretos (I1) sea completo, pero que
-    # **no** forma parte del contrato de arranque de hoy: `TWG_TOKEN` es de Fase 4,
-    # `SANDBOX_REGISTRY_TOKEN` lo usa el runner para el `pull` de la imagen y
-    # `SANDBOX_CONSOLE_TOKEN` es una guarda de peticion. Declararlos documenta que
-    # existen y donde, sin cambiar un solo veredicto.
-    "solo_inventario": lambda _s, _process: False,
+}
+
+# Contrato extra por proceso que no cabe en el descriptor: el registro declarativo de
+# modelos nombra sus secretos en el YAML (`${VAR}`), no en un campo de `Settings` (R6).
+# Se declara aqui una vez, junto a la condicion, en vez de repetir el par
+# proceso/condicion dentro del recorrido generico.
+_EXTRA_BY_PROCESS: Mapping[str, tuple[str, ...]] = {
+    "api": ("llm_registry",),
+    "worker": ("llm_registry",),
 }
 
 
@@ -55,21 +59,25 @@ class Secret:
     # Es el segundo eje del contrato: la condicion puede depender del proceso
     # (p. ej. `sandbox`, que en el `fix-worker` es siempre).
     feature: str | None = None
-    # Se exige por estar VACIO, no por llevar un placeholder: un valor no vacio es
-    # legitimo aunque no sea un secreto (`TEAMS_NOTICES_KEY`).
-    required_when_empty: bool = False
-    # Que se espera del valor. `secret`: vacio o placeholder es «sin configurar».
-    # `url`/`value`: solo el vacio cuenta (una URL no es un secreto).
-    expect: str = "secret"
+    # Que se espera del valor. `secret`: vacio o placeholder cuenta como «sin
+    # configurar». `plain`: solo el vacio cuenta (una URL, el nombre de una cola).
+    # Un unico eje: `plain` cubre los dos casos que antes se declaraban ademas con
+    # `required_when_empty`.
+    expect: Literal["secret", "plain"] = "secret"
+    # Campo que se declara **solo** para que el inventario (I1) sea completo, con el
+    # motivo por el que no entra en el contrato de arranque. `""` = si entra.
+    inventory_only: str = ""
 
     def __post_init__(self) -> None:
         unknown = self.required_in - PROCESSES
         if unknown:
             raise ValueError(f"procesos desconocidos en `required_in`: {sorted(unknown)}")
-        if self.expect not in {"secret", "url", "value"}:
+        if self.expect not in {"secret", "plain"}:
             raise ValueError(f"`expect` desconocido: {self.expect!r}")
         if self.feature is not None and self.feature not in _FEATURES:
             raise ValueError(f"`feature` desconocida: {self.feature!r}")
+        if self.inventory_only and (self.required_in or self.feature is not None):
+            raise ValueError("un campo `inventory_only` no declara proceso ni condicion")
 
 
 class Settings(BaseSettings):
@@ -97,7 +105,9 @@ class Settings(BaseSettings):
     # API token de Atlassian (Jira/Confluence). Solo necesario si se usa
     # `twg jira` (escalado a workitem); twg lo lee de `TWG_TOKEN`. Fase 4: entra en
     # el inventario de secretos, no en el contrato de arranque de hoy.
-    twg_token: Annotated[str, Secret(feature="solo_inventario")] = ""
+    twg_token: Annotated[
+        str, Secret(inventory_only="TWG_TOKEN es de Fase 4 (`twg jira`), no de hoy")
+    ] = ""
 
     # GitHub (VCS_PROVIDER=github). `github_owner`/`github_repo` son la identidad
     # del repo revisado (equivalente a BITBUCKET_WORKSPACE/BITBUCKET_REPO). El
@@ -118,12 +128,7 @@ class Settings(BaseSettings):
     # defecto) es legitimo. El placeholder no debe contar aqui.
     teams_notices_key: Annotated[
         str,
-        Secret(
-            required_in=frozenset({"api", "worker"}),
-            feature="teams",
-            required_when_empty=True,
-            expect="value",
-        ),
+        Secret(required_in=frozenset({"api", "worker"}), feature="teams", expect="plain"),
     ] = "reviews:notices"
     # Espera de la lectura bloqueante de la outbox por parte del bot. Vencida, el
     # bucle vuelve a intentarlo (no distingue "sin avisos" de un Redis caido).
@@ -198,7 +203,9 @@ class Settings(BaseSettings):
     sandbox_registry_user: str = ""
     # Credencial del registro de la imagen del CI. La usa el runner para el `pull`;
     # entra en el inventario, no en el contrato de arranque de hoy.
-    sandbox_registry_token: Annotated[str, Secret(feature="solo_inventario")] = ""
+    sandbox_registry_token: Annotated[
+        str, Secret(inventory_only="lo usa el runner para el `pull`, no lo exige el arranque")
+    ] = ""
     # Token de Bitbucket de SOLO LECTURA que usa el runner para clonar. Distinto
     # del de `twg` del worker: aunque un PR malicioso lo viera, no da push (Q3).
     sandbox_git_token: Annotated[
@@ -211,7 +218,7 @@ class Settings(BaseSettings):
     # No es un secreto: es una URL que el fix-worker necesita SIEMPRE para arrancar.
     # Solo su contrato la exige (el worker de reviews la usa, pero no la exige).
     sandbox_runner_url: Annotated[
-        str, Secret(required_in=frozenset({"fix-worker"}), expect="url")
+        str, Secret(required_in=frozenset({"fix-worker"}), expect="plain")
     ] = ""
     sandbox_runner_token: Annotated[
         str, Secret(required_in=frozenset({"api", "worker", "fix-worker"}), feature="sandbox")
@@ -221,7 +228,9 @@ class Settings(BaseSettings):
     # no sirve para `POST /verify` ni para los workspaces, asi que el panel no puede
     # lanzar verificaciones. Vacio: la consola solo acepta `SANDBOX_RUNNER_TOKEN`.
     # Es una guarda de **peticion**: entra en el inventario, no en el arranque.
-    sandbox_console_token: Annotated[str, Secret(feature="solo_inventario")] = ""
+    sandbox_console_token: Annotated[
+        str, Secret(inventory_only="guarda de peticion de la consola del runner (019 OP24)")
+    ] = ""
     # Techo de una verificacion en el sandbox, si el perfil no lo declara. Vive en
     # el perfil (`sandbox.timeout_s`); esto es el fallback sin perfil.
     sandbox_timeout_s: float = 1200.0
@@ -411,41 +420,48 @@ def _secret_of(field_info: object) -> Secret | None:
 
 
 def _is_unset(value: str, secret: Secret) -> bool:
-    """¿El campo cuenta como «sin configurar» segun lo que se espera de el?"""
-    if secret.expect == "secret" and not secret.required_when_empty:
+    """¿El campo cuenta como «sin configurar» segun lo que se espera de el?
+
+    `secret`: vacio o placeholder. `plain`: solo el vacio (una URL, el nombre de una
+    cola de Redis).
+    """
+    if secret.expect == "secret":
         return is_missing(value)
     return not value.strip()
 
 
-def secrets_for(
-    settings: Settings,
-    process: str,
-    feature_enabled: Mapping[str, Callable[[Settings, str], bool]] | None = None,
-) -> list[str]:
+def secrets_for(settings: Settings, process: str) -> list[str]:
     """Nombres de los secretos sin configurar que este proceso exige al arrancar.
 
     Un unico recorrido de `model_fields`, no una lista a mano (020 D4, ADR-0022):
     anadir un campo secreto y olvidar su comprobacion deja de ser posible porque el
     contrato se deriva de la declaracion. El orden es el de `model_fields`, estable.
 
+    `process` se valida contra el conjunto cerrado `PROCESSES` (I3): un nombre
+    desconocido es un error, no un contrato vacio. Sin esta comprobacion, un punto de
+    arranque nuevo (o un `"fix_worker"` en vez de `"fix-worker"`) pasaria produccion
+    con cero comprobaciones y los tests en verde.
+
     La unica rama que no sale del descriptor es el registro declarativo de modelos:
     los secretos que exige los nombra el YAML (`unresolved_secrets`), no un campo de
-    `Settings` (R6).
+    `Settings` (R6); el proceso con ese contrato extra lo declara `_EXTRA_BY_PROCESS`.
     """
-    table = _FEATURES if feature_enabled is None else feature_enabled
+    if process not in PROCESSES:
+        raise ValueError(f"proceso desconocido: {process!r}; esperado uno de {sorted(PROCESSES)}")
     insecure: list[str] = []
     for name, field_info in Settings.model_fields.items():
         secret = _secret_of(field_info)
-        if secret is None:
+        if secret is None or secret.inventory_only:
             continue
         if secret.required_in and process not in secret.required_in:
             continue
-        if secret.feature is not None and not table[secret.feature](settings, process):
+        if secret.feature is not None and not _FEATURES[secret.feature](settings, process):
             continue
         if _is_unset(getattr(settings, name), secret):
             insecure.append(name.upper())
-    if process in {"api", "worker"} and settings.llm_reviewer_enabled:
-        insecure.extend(_unresolved_registry_secrets(settings))
+    for feature in _EXTRA_BY_PROCESS.get(process, ()):
+        if _FEATURES[feature](settings, process):
+            insecure.extend(_unresolved_registry_secrets(settings))
     return insecure
 
 

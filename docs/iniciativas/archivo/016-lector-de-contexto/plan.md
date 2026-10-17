@@ -6,7 +6,7 @@ Una pieza compartida, sin consumidor todavía: el *qué y por qué* vive en
 [`spec.md`](spec.md) y las tareas, en [`todo.md`](todo.md). Este plan fija el **orden**,
 las dependencias y los checkpoints. 016 **no** toca el grafo ni el contrato de
 hallazgo: entrega el puerto, el bucle, los adaptadores y el workspace, probados con
-fakes, para que [009](../../009-verificador-adversarial/spec.md) y
+fakes, para que [009](../009-verificador-adversarial/spec.md) y
 [014](../../014-revisor-con-herramientas/spec.md) los consuman después.
 
 ## Overview

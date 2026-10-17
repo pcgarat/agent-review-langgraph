@@ -8,7 +8,7 @@
 > repositorio** mientras razona: el `ContextReaderPort` con tres adaptadores, un
 > bucle de herramientas acotado sobre `LlmPort` y un workspace de solo lectura en el
 > `sandbox-runner` ([ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md)).
-> La usan el verificador de [009](../../009-verificador-adversarial/spec.md) y el
+> La usan el verificador de [009](../009-verificador-adversarial/spec.md) y el
 > revisor de [014](../../014-revisor-con-herramientas/spec.md). No ejecuta código del PR.
 
 ---
@@ -38,7 +38,7 @@ Se quiere:
   de 014. Este trabajo solo sirve el contexto y comprueba las citas.
 - **Ejecutar código.** El workspace sirve objetos de git; `/verify` no cambia.
 - ***Function calling* nativo.** El bucle es *ReAct* en JSON sobre `LlmPort`
-  ([009 §3.3](../../009-verificador-adversarial/spec.md)).
+  ([009 §3.3](../009-verificador-adversarial/spec.md)).
 - **El presupuesto por PR.** El bucle consulta un presupuesto que le pasa quien lo
   llama; el presupuesto por PR es [017](../017-presupuesto-por-pr/spec.md).
 
@@ -63,7 +63,7 @@ Se quiere:
 |---|---|---|
 | W1 | **Un puerto, tres adaptadores:** `VcsContextReader` (por `get_file`), `WorkspaceContextReader` (por el runner) y `FixtureContextReader` (ficheros del caso, para el *replay*) | Los consumidores no saben de dónde sale el contexto; el *replay* es determinista |
 | W2 | **Un bucle compartido** (`tool_loop`): protocolo de turno, hasta **3** peticiones por turno, **un** turno correctivo ante JSON inválido y un **turno final forzado** al agotar un tope | Mismas reglas para 009 y 014; las cifras salen de 014 Q2 |
-| W3 | El bucle lleva un **registro de lo servido** (`served: dict[path, ref]`) y expone `cite_served(cita)`; los consumidores lo usan para validar citas | Es la comprobación de [009 V4](../../009-verificador-adversarial/spec.md) y [014 H7](../../014-revisor-con-herramientas/spec.md), escrita una sola vez |
+| W3 | El bucle lleva un **registro de lo servido** (`served: dict[path, ref]`) y expone `cite_served(cita)`; los consumidores lo usan para validar citas | Es la comprobación de [009 V4](../009-verificador-adversarial/spec.md) y [014 H7](../../014-revisor-con-herramientas/spec.md), escrita una sola vez |
 | W4 | El resultado de cada herramienta va **delimitado** (`<tool_result>`) y el *system prompt* base dice que es dato, no instrucción | Defensa común contra la inyección desde ficheros del repo |
 | W5 | El `grep` sobre el árbol completo lo sirve un **workspace de lectura** en el runner: clon *bare* leído con `git show`, `git grep` y `git ls-tree`, sin *checkout* ni contenedor | [ADR-0018](../../../adr/0018-workspace-de-lectura-en-el-runner.md) |
 | W6 | El workspace se abre de forma **idempotente por `(repo, head_sha)`**, caduca por TTL (1800 s) con un máximo de 4 abiertos, y **no viaja en el estado** | Lo comparten 009 y 014 sin coordinar quién lo abre; una pausa HITL de días no deja clones vivos (cifras de 009 Q9) |

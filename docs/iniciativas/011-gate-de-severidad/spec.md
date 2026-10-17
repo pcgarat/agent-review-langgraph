@@ -26,8 +26,8 @@ Se quiere:
 2. **No perder recall al filtrar.** Un `unverified` **no se descarta**: se degrada
    (o se reubica en una sección «posibles»), de modo que el lector lo ve sin
    ensuciar los `P1`.
-3. **Un solo dueño de la severidad.** L0/L1 ([008](../008-contexto-del-revisor/spec.md))
-   y L2 ([009](../009-verificador-adversarial/spec.md)) solo emiten hechos
+3. **Un solo dueño de la severidad.** L0/L1 ([008](../archivo/008-contexto-del-revisor/spec.md))
+   y L2 ([009](../archivo/009-verificador-adversarial/spec.md)) solo emiten hechos
    (`pre_existing`, `context_scope`, `verification`); este gate es el único que los
    traduce en severidad publicada ([007 D11](../archivo/007-contrato-de-verificacion/spec.md)).
    Eso incluye qué se hace con un `refuted`.
@@ -40,8 +40,8 @@ Se quiere:
 
 Depende del contrato `verification` ([007](../archivo/007-contrato-de-verificacion/spec.md)),
 del contexto que reduce el `unverified` legítimo
-([008](../008-contexto-del-revisor/spec.md)) y del verificador que produce el
-veredicto ([009](../009-verificador-adversarial/spec.md)). Esta iniciativa **consume**
+([008](../archivo/008-contexto-del-revisor/spec.md)) y del verificador que produce el
+veredicto ([009](../archivo/009-verificador-adversarial/spec.md)). Esta iniciativa **consume**
 esos resultados; no los implementa. Su efecto se mide con
 [006](../archivo/006-eval-de-la-review/spec.md).
 
@@ -114,7 +114,7 @@ compartiendo el umbral con el verificador (G9).
 | G6 | El veredicto y su evidencia viajan al inline y al resumen | El lector humano debe ver **por qué** se sostiene (o se degrada) el hallazgo. |
 | G7 | La severidad efectiva se calcula **antes** de elegir la regla de acción, y un hallazgo degradado solo puede tener acción `report` | Si se degrada después, un P1 sin verificar sigue escalando a una persona con etiqueta P3; si la severidad degradada entra en las reglas sin guarda, un P1 dudoso convertido en P3 podría acabar en `fix_auto`. Cierra Q3. |
 | G8 | El gate es el **único** que cambia la severidad publicada; L0/L1 y L2 solo emiten hechos | Una explicación por hallazgo; el umbral se calibra en un sitio ([007 D11](../archivo/007-contrato-de-verificacion/spec.md)) |
-| G9 | `require_verified_for` es también el umbral de candidatos del verificador ([009 V10](../009-verificador-adversarial/spec.md)) | Si L2 y el gate tuvieran umbrales distintos, verificar fuera del umbral sería coste sin efecto y quedarse corto dejaría severidades sin poder ganarse |
+| G9 | `require_verified_for` es también el umbral de candidatos del verificador ([009 V10](../archivo/009-verificador-adversarial/spec.md)) | Si L2 y el gate tuvieran umbrales distintos, verificar fuera del umbral sería coste sin efecto y quedarse corto dejaría severidades sin poder ganarse |
 | G10 | Un `refuted` se trata con `on_refuted`: `drop` (por defecto: no se publica) o `summary` (en el resumen, marcado, nunca inline) | Sin regla explícita, un P1 refutado contaría como «no verificado», se degradaría a P3 y se publicaría |
 | G11 | `pre_existing` y `context_scope: outside_diff` no cambian la severidad por sí solos: se muestran como etiqueta | Un `P0`/`P1` con esas marcas que siga `unverified` ya lo degrada G1; uno verificado es real aunque el código fuera viejo |
 
@@ -229,13 +229,16 @@ ajusta con ellas, nunca a ojo.
 
 ## 8. Preguntas abiertas
 
-- **Q1 — ¿Degradar a `P3` o mover a una sección «posibles» del resumen?** Degradar es
-  más simple y no toca el render; la sección conserva la visibilidad sin mezclar los
-  `P1`. Se decide con el *gold set* delante. Es la única copia de esta pregunta:
-  008 Q6 y 009 Q6 enlazan aquí.
+- **Q1 — ¿Degradar a `P3` o mover a una sección «posibles» del resumen?**
+  *Resuelta (2026-10-17, 009 VF15).* `on_unverified: degrade`, `degrade_to: P3`.
+  Degradar no toca el render ni inventa una sección; el hallazgo sigue visible
+  sin ensuciar los `P1`. «Posibles» se revisa si el *gold set* muestra que los
+  degradados se confunden con `P3` nativos (G6/etiqueta). Declarado en
+  [`autonomy.yaml`](../../../config/autonomy.yaml).
 - **Q2 — ¿Bloque `severity_gate` o clave `verification` en el `when` con
-  `severity_override`?** Se propone el bloque (una sola fuente y `rules` intactas);
-  la alternativa integra todo en el mismo motor de reglas.
+  `severity_override`?** *Resuelta (2026-10-17, 009 VF15).* Bloque
+  `severity_gate` (G2): una sola fuente, `rules` intactas, y L2 ya lee
+  `require_verified_for` de esa clave (009 V10).
 - **Q3 —** *Resuelta (2026-10-16):* la severidad efectiva entra en las reglas y un
   degradado queda limitado a `report` (G7).
 - **Q4 —** *Resuelta (2026-10-16):* las métricas son de
@@ -246,8 +249,13 @@ ajusta con ellas, nunca a ojo.
   `confidence` no se comprueba en ningún sitio; decidir si el gate también la cruza.
 - **Q7 — ¿ADR nuevo o enmienda a ADR-0003?** El gate introduce una decisión de
   severidad que ADR-0003 no cubre; se propone un ADR propio que lo referencie.
-- **Q8 — ¿`P2` en `require_verified_for`?** El borrador de 009 verificaba desde `P2`;
-  aquí se propone `[P0, P1]` por coste. Como el umbral es compartido (G9), incluir
-  `P2` encarece L2: se decide con el coste medido en 006.
-- **Q9 — ¿`on_refuted` por defecto `drop` o `summary`?** `drop` no ensucia;
-  `summary` enseña que se comprobó y se descartó.
+- **Q8 — ¿`P2` en `require_verified_for`?** *Resuelta (2026-10-17, 009 VF15).*
+  No: `[P0, P1]`. Incluir `P2` duplicaría el coste de L2 (umbral compartido, G9)
+  sin evidencia de que merezca la pena; se reabre si 006 lo pide. Declarado en
+  [`autonomy.yaml`](../../../config/autonomy.yaml).
+- **Q9 — ¿`on_refuted` por defecto `drop` o `summary`?** *Resuelta (2026-10-17,
+  009 VF15).* `drop`: no se publica (ni inline ni resumen). El hallazgo **sigue
+  en `merged`** para la métrica (009 V6); publicar un refutado ensuciaría
+  precisión. `summary` se reabre si hace falta auditar a ojo qué se descartó.
+  Declarado en [`autonomy.yaml`](../../../config/autonomy.yaml). El motor aún no
+  aplica `on_refuted`/`on_unverified` (queda en el plan de esta iniciativa).

@@ -9,7 +9,7 @@
 > `grep` sobre el árbol a `head_sha` y comparar con la base antes de proponer
 > hallazgos. Usa el puerto, el bucle y el workspace de lectura de
 > [016](../archivo/016-lector-de-contexto/spec.md), los mismos que el verificador de
-> [009](../009-verificador-adversarial/spec.md). No ejecuta código y sigue anclando
+> [009](../archivo/009-verificador-adversarial/spec.md). No ejecuta código y sigue anclando
 > cada hallazgo al diff.
 
 ---
@@ -18,7 +18,7 @@
 
 Hoy cada persona LLM hace **una llamada** con el diff recortado
 ([`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py)). La
-[008](../008-contexto-del-revisor/spec.md) le añade el fichero completo de cada hunk y
+[008](../archivo/008-contexto-del-revisor/spec.md) le añade el fichero completo de cada hunk y
 los documentos que declare el perfil, pero el contexto sigue **preparado de
 antemano**: el modelo no puede pedir el fichero que de verdad necesita. Cuando la
 afirmación depende de código de otro fichero, lo más que puede hacer L1 es marcarla
@@ -44,9 +44,9 @@ Se quiere:
   iniciativa (Q6).
 - **Verificar hallazgos.** El revisor sigue emitiendo hipótesis (`unverified`,
   [007 D6](../archivo/007-contrato-de-verificacion/spec.md)); verificar es del nodo `verify`
-  de [009](../009-verificador-adversarial/spec.md).
+  de [009](../archivo/009-verificador-adversarial/spec.md).
 - ***Function calling* nativo del proveedor.** Se mantiene el bucle *ReAct* en JSON
-  sobre `LlmPort` ([009 §3.3](../009-verificador-adversarial/spec.md)).
+  sobre `LlmPort` ([009 §3.3](../archivo/009-verificador-adversarial/spec.md)).
 - **Un *prompt* propio por rol.** Hoy `correctness`, `security` y `arch` comparten el
   mismo *system prompt* (deuda D20 de [`arquitectura.md`](../../arquitectura.md) §7).
   Este trabajo añade el protocolo de herramientas a ese *prompt*, no lo especializa.
@@ -82,7 +82,7 @@ Esta tabla es la hipótesis que se mide; no es un resultado.
 - Los **lotes** de ficheros enteros y el presupuesto acumulado entre lotes son de
   [012](../archivo/012-cobertura-de-la-review/spec.md) (C2, C6).
 - `ReviewContext`, la regla de humildad y L0 son de
-  [008](../008-contexto-del-revisor/spec.md).
+  [008](../archivo/008-contexto-del-revisor/spec.md).
 
 Esta iniciativa no inventa piezas nuevas: **conecta** las de 016 al `LlmReviewer`.
 
@@ -158,7 +158,7 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
 - `ReviewerResult` gana `files_read` y el uso del bucle (`turns`, `tool_calls`,
   `bytes_served`), que `ReviewOutcome` expone para que
   [006](../archivo/006-eval-de-la-review/spec.md) mida el coste.
-- El `base_sha` es el mismo que necesita L0 de 008 ([008 Q1](../008-contexto-del-revisor/spec.md)).
+- El `base_sha` es el mismo que necesita L0 de 008 ([008 Q1](../archivo/008-contexto-del-revisor/spec.md)).
 
 ### 5.4 Variables nuevas
 

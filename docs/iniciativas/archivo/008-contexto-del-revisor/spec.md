@@ -34,16 +34,16 @@ Se quiere:
    (`context_scope: outside_diff`) en vez de inventar su semántica.
 3. **No perder recall.** L0/L1 **declaran hechos**, no deciden: lo dudoso se marca
    (`pre_existing`, `context_scope`) y es el gate de
-   [011](../011-gate-de-severidad/spec.md) quien decide su severidad. Solo se
+   [011](../../011-gate-de-severidad/spec.md) quien decide su severidad. Solo se
    descarta lo fabricado (una cita que no existe en el diff).
 
 El resto de la solución (verificación adversarial con otro modelo, ejecución en el
 sandbox y personas de *wiring*) queda **fuera** y vive en otras tajadas.
 
-Depende de la iniciativa [007 — contrato de verificación](../archivo/007-contrato-de-verificacion/spec.md),
+Depende de la iniciativa [007 — contrato de verificación](../007-contrato-de-verificacion/spec.md),
 que añade al contrato de hallazgo los campos `verification` y `context_scope` que L0
 y L1 necesitan para expresar sus veredictos, y de
-[012 — cobertura](../archivo/012-cobertura-de-la-review/spec.md): el fichero completo solo
+[012 — cobertura](../012-cobertura-de-la-review/spec.md): el fichero completo solo
 cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado.
 
 ## 2. No-objetivos
@@ -58,11 +58,11 @@ cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado
   caracteres propio; no resuelve D17.
 - **Cambiar el gate de publicación ni la política.** L0/L1 producen hechos en el
   hallazgo; qué se hace con ellos (degradar, publicar en el resumen) lo decide el
-  gate de [011](../011-gate-de-severidad/spec.md).
+  gate de [011](../../011-gate-de-severidad/spec.md).
 - **Que el diff llegue entero al revisor.** Es
-  [012](../archivo/012-cobertura-de-la-review/spec.md).
+  [012](../012-cobertura-de-la-review/spec.md).
 - **Enrutado dinámico de modelos o recarga en caliente.** Sigue la decisión D2 de la
-  iniciativa 005 ([ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)).
+  iniciativa 005 ([ADR-0015](../../../adr/0015-registro-declarativo-de-modelos.md)).
 - **Sustituir al `ToolingReviewer`.** PHPStan ya está *grounded*; L0/L1 son para las
   **hipótesis** del `LlmReviewer`.
 
@@ -70,7 +70,7 @@ cabe si el revisor trabaja por lotes de ficheros, no en un prompt único cortado
 
 ### 3.1 Una review real, medida a mano
 
-La auditoría del PR #3 está en [006 §3.1](../archivo/006-eval-de-la-review/spec.md), que es
+La auditoría del PR #3 está en [006 §3.1](../006-eval-de-la-review/spec.md), que es
 también la fuente del baseline. Los hallazgos relevantes para L0/L1:
 
 | # | Hallazgo | Veredicto | Por qué | Capa que lo caza |
@@ -86,13 +86,13 @@ también la fuente del baseline. Los hallazgos relevantes para L0/L1:
 Los tres P1 no detectados (el `fix-worker` con todos los secretos, un worker que no
 arranca en producción y `MODELS_CONFIG` que pisa `LLM_*`) estaban en el diff del PR,
 pero el `scope` y el corte de caracteres los dejaron fuera de lo que vio el modelo:
-es [012](../archivo/012-cobertura-de-la-review/spec.md). Su detección determinista como pares
-de configuración es [010](../010-personas-de-wiring/spec.md). L1 ataca la otra causa:
+es [012](../012-cobertura-de-la-review/spec.md). Su detección determinista como pares
+de configuración es [010](../../010-personas-de-wiring/spec.md). L1 ataca la otra causa:
 el contexto inventado sobre lo que sí se ve.
 
 ### 3.2 El revisor invierte contexto por forma, no por lectura
 
-En [`llm_reviewer.py`](../../../src/agent_review/adapters/llm_reviewer.py) el prompt
+En [`llm_reviewer.py`](../../../../src/agent_review/adapters/llm_reviewer.py) el prompt
 es el *system* más el *schema hint* más el diff recortado a `_MAX_DIFF_CHARS`
 (60 000 caracteres). El modelo:
 - **no** recibe el fichero, solo los `+`/`-`/contexto del hunk;
@@ -100,24 +100,24 @@ es el *system* más el *schema hint* más el diff recortado a `_MAX_DIFF_CHARS`
   supone (B, D, E, G) o "descubre" lo que un ADR ya decidió (H);
 - **no** puede comparar con la base, así que llama regresión a lo preexistente (F).
 
-El anclaje actual ([`diff_parser.best_line`](../../../src/agent_review/adapters/diff_parser.py))
+El anclaje actual ([`diff_parser.best_line`](../../../../src/agent_review/adapters/diff_parser.py))
 ya elige entre líneas **añadidas**, pero cae a «la más cercana al *hint*» cuando la
 evidencia no resuelve: eso recoloca en una línea añadida una afirmación que puede ser
 sobre una línea de contexto, sin dejar rastro. Y `pre_existing`
-([`_to_finding`](../../../src/agent_review/adapters/llm_reviewer.py)) se **copia del
+([`_to_finding`](../../../../src/agent_review/adapters/llm_reviewer.py)) se **copia del
 modelo**, no se calcula: el campo existe en el contrato
-([`findings-schema.json`](../../../contracts/findings-schema.json)) pero nadie lo
+([`findings-schema.json`](../../../../contracts/findings-schema.json)) pero nadie lo
 verifica.
 
 ### 3.3 Lo que ya está disponible y no se explota
 
 - `VcsPort.get_file(repo, path, ref)` ya lee un fichero a un `ref`
-  ([`vcs.py`](../../../src/agent_review/ports/vcs.py)): sirve para el fichero
+  ([`vcs.py`](../../../../src/agent_review/ports/vcs.py)): sirve para el fichero
   completo (al `head_sha`) y para la comparación con la base.
-- El nodo [`scope`](../../../src/agent_review/graph/build.py) corre **una vez** por
+- El nodo [`scope`](../../../../src/agent_review/graph/build.py) corre **una vez** por
   review, ya tiene el `VcsPort` y el `request`, y su salida la ven todas las ramas
   del fan-out: es el sitio natural para ensamblar el contexto una sola vez.
-- En este repo, `CONTEXT.md` ([`../../../CONTEXT.md`](../../../CONTEXT.md)) ya es el
+- En este repo, `CONTEXT.md` ([`../../../../CONTEXT.md`](../../../../CONTEXT.md)) ya es el
   glosario único, y `docs/operacion.md` §2 ya contiene la tabla de variables que
   documento y código comparten. Otro repo revisado (p. ej. `emotivoo-v2`) no tiene
   por qué tener nada de eso: lo que se inyecta lo declara su perfil.
@@ -128,19 +128,19 @@ verifica.
 |---|---|---|
 | D1 | L0 es **determinista y sin tokens**; conserva el anclaje y añade anclaje estricto, cita contrastada y `pre_existing` | El 80% de los falsos positivos son baratos de matar. F muere sin una llamada al modelo. |
 | D2 | `pre_existing` se **calcula**, no se copia del modelo, y significa «el código citado es idéntico en la base», no «el problema ya existía» | Hoy el modelo lo rellena; eso es lo que produce F. Pero un cambio en otro sitio (un llamador nuevo) puede romper una línea vieja: el código preexistente no hace preexistente al problema. |
-| D3 | L0 **no concede verificación** por sí sola: filtra lo fabricado, pero un hallazgo anclado sigue `unverified` | Un ancla correcta no prueba la semántica. La severidad se gana con verificación, en el gate de [011](../011-gate-de-severidad/spec.md). |
+| D3 | L0 **no concede verificación** por sí sola: filtra lo fabricado, pero un hallazgo anclado sigue `unverified` | Un ancla correcta no prueba la semántica. La severidad se gana con verificación, en el gate de [011](../../011-gate-de-severidad/spec.md). |
 | D4 | El contexto (L1) se ensambla **una vez** en `scope` y viaja en el estado hacia el fan-out | Una lectura por review, no una por persona; coherente con el fan-out que comparte *closure*. |
 | D5 | L1 inyecta **fichero completo del hunk + documentos de contexto declarados en el perfil** (`context_docs:`), con tope de caracteres | Da el contexto que falta y las decisiones ya tomadas (H) sin acoplar el código a los documentos de un repo concreto. |
 | D6 | Regla de **humildad** en el *system prompt*: claim que depende de código no visible → `context_scope: outside_diff` y no probado | Ata el hueco de contexto a un campo del contrato en vez de a la inventiva del modelo. |
-| D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
-| D8 | El contexto se reparte **por lote** de [012](../archivo/012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
+| D7 | L0/L1 **no tocan la severidad**: `pre_existing` y `outside_diff` son hechos que el gate de [011](../../011-gate-de-severidad/spec.md) lee; se muestran como etiqueta («preexistente», «fuera del diff») | Un solo dueño de la severidad (007 D11); la calibración se hace en el gate, con el *gold set*. |
+| D8 | El contexto se reparte **por lote** de [012](../012-cobertura-de-la-review/spec.md): cada lote lleva el fichero completo de sus ficheros y los documentos de contexto | Un prompt único con todos los ficheros completos revienta cualquier tope. |
 | D9 | Una cita que **no existe** en ninguna línea del fichero (ni añadida, ni de contexto, ni borrada) **se descarta** | No es un caso dudoso que proteger: es evidencia fabricada. Descartarla no cuesta recall real. |
 | D10 | El `base_sha` viaja en `PullRequestInfo`/`ReviewRequest`; lo puebla el VCS (Q1) | La rama de destino se mueve; el SHA de merge-base no. `destination_branch` como `ref` mentiría en `pre_existing` |
 | D11 | Los ADR de L1 son un **índice curado** en el perfil (`context_docs.decisions:`), no matching ni el árbol entero (Q2) | Matching es opaco; el índice completo infla el prompt (R2). Si mantener la lista duele, se abre otra iniciativa |
 | D12 | El tope de caracteres de L1 es **config** (`Settings` y/o perfil) y cuenta en `_estimate_tokens` (Q3) | Un fijo es rígido; un % del presupuesto de 017 acopla L1 al gasto de razonamiento y L2 |
 | D13 | L0 vive en un módulo compartido `verification/l0.py` desde el día 1; L1 se ensambla **dentro de `LlmReviewer`** hasta que otra persona lo necesite (Q4) | L0 es puro y lo reutilizarán otras capas; L1 es ensamblaje de *prompt* acoplado al revisor |
 | D14 | El fichero completo de L1 se lee al `head_sha`; `base_sha` solo alimenta el cálculo de `pre_existing` (Q5) | El modelo opina sobre el cambio; `pre_existing` compara con la base |
-| D15 | Qué se publica ante `pre_existing`/`outside_diff` **no lo decide 008**: solo marca hechos; la publicación es [011 Q1](../011-gate-de-severidad/spec.md) (Q6) | Coherente con D7 (un solo dueño de la severidad) |
+| D15 | Qué se publica ante `pre_existing`/`outside_diff` **no lo decide 008**: solo marca hechos; la publicación es [011 Q1](../../011-gate-de-severidad/spec.md) (Q6) | Coherente con D7 (un solo dueño de la severidad) |
 
 ## 5. Diseño o contrato
 
@@ -165,7 +165,7 @@ flowchart LR
 1. **Anclaje estricto.** La línea del hallazgo debe pertenecer al conjunto de líneas
    **añadidas** del diff. Si el `line` del modelo o la cita apuntan a una línea de
    contexto o borrada, **no** se recoloca por cercanía: se marca (hoy
-   [`best_line`](../../../src/agent_review/adapters/diff_parser.py) sí recoloca).
+   [`best_line`](../../../../src/agent_review/adapters/diff_parser.py) sí recoloca).
 2. **Cita contrastada.** La primera evidencia debe casar, normalizando espacios, con
    una línea **añadida** del fichero citado. Si casa con una línea de contexto o
    borrada, el hallazgo se publica en el resumen, no anclado. Si no casa con ninguna
@@ -173,7 +173,7 @@ flowchart LR
 3. **`pre_existing`.** ¿El código citado es idéntico en la base? Se decide en dos
    pasos: (a) si la cita casa con el lado viejo del propio diff (contexto o `-`), sí;
    (b) si no, se lee el fichero a `base_sha` con
-   [`get_file`](../../../src/agent_review/ports/vcs.py) y se compara. Es un **hecho**
+   [`get_file`](../../../../src/agent_review/ports/vcs.py) y se compara. Es un **hecho**
    (D2, D7): el render lo muestra como «preexistente», el verificador de
    [009](../009-verificador-adversarial/spec.md) lo recibe, y un `P0`/`P1` sin
    verificar ya lo degrada el gate. En **F**, el lector ve que no es una regresión
@@ -203,23 +203,23 @@ incluye:
   ```
 
   En este repo: el glosario, los ADR listados (p. ej.
-  [`ADR-0013`](../../adr/0013-secretos-por-entorno-fail-closed.md), que ya documenta
+  [`ADR-0013`](../../../adr/0013-secretos-por-entorno-fail-closed.md), que ya documenta
   la decisión de H) y la tabla de variables de
-  [`docs/operacion.md`](../../operacion.md) §2. Un perfil sin `context_docs:` solo
+  [`docs/operacion.md`](../../../operacion.md) §2. Un perfil sin `context_docs:` solo
   recibe el fichero completo. El tope de caracteres de este bloque es config y
   cuenta en `_estimate_tokens` (D12).
 
 Y una **regla de humildad** explícita en el *system prompt*: «si tu afirmación
 depende de código que no ves, declara el hallazgo `context_scope: outside_diff` y no
 inventes su semántica». Qué severidad se publica para ese hallazgo lo decide el gate
-de [011](../011-gate-de-severidad/spec.md).
+de [011](../../011-gate-de-severidad/spec.md).
 
 ### 5.2 Contrato y cableado
 
 - **`ReviewContext`**: estructura inmutable con el diff indexado, los ficheros
   completos (acotados) y los documentos de contexto que declare el perfil.
   La construye `scope` (una vez por review) y viaja en el estado hacia el fan-out.
-- **`ReviewerPort.review`** ([`ports/reviewer.py`](../../../src/agent_review/ports/reviewer.py))
+- **`ReviewerPort.review`** ([`ports/reviewer.py`](../../../../src/agent_review/ports/reviewer.py))
   gana un parámetro opcional `context: ReviewContext | None = None`, por
   compatibilidad con las personas que no lo usan (la estática, la nula).
 - **`ReviewerResult`** transporta los veredictos de L0/L1 hacia el merge: el hallazgo
@@ -232,7 +232,7 @@ de [011](../011-gate-de-severidad/spec.md).
 
 ### 5.3 Presupuesto por lote
 
-Los lotes de [012](../archivo/012-cobertura-de-la-review/spec.md) ya garantizan que ningún
+Los lotes de [012](../012-cobertura-de-la-review/spec.md) ya garantizan que ningún
 fichero del diff se corta. L1 añade al lote su contexto con prioridad —diff, luego
 fichero completo, luego documentos de contexto— y un tope de caracteres de *config*
 (D12). Cuando el contexto no entra, el lote sale sin él y la cobertura lo anota;
@@ -267,7 +267,7 @@ presupuesto mide de menos (D17).
 - [x] L0/L1 no modifican `severity` en ningún caso (test).
 - [x] El contexto nunca desplaza diff dentro de un lote (test).
 - [ ] L0/L1 son una **mejora** sobre el baseline de
-      [006](../archivo/006-eval-de-la-review/spec.md) según su criterio de dominancia.
+      [006](../006-eval-de-la-review/spec.md) según su criterio de dominancia.
       *(Pendiente: `make eval-record` conjunto con 009; replay en `xfail`.)*
 - [x] `make ci` en verde, con `make docs-check`; y los vivos al día: procedimientos
       de `arquitectura.md` §3–4 (persona y contexto) y `desarrollo.md` §2–3 (tests y
@@ -290,7 +290,7 @@ Todas resueltas el 2026-10-17 (salvo Q7, del 2026-10-16). Spec aprobada el
 - **Q5.** *Resuelta:* fichero completo al `head_sha`; `base_sha` solo para
   `pre_existing` (D14).
 - **Q6.** *Resuelta (aparcada):* 008 solo marca hechos; qué se publica lo decide
-  [011 Q1](../011-gate-de-severidad/spec.md) (D15).
+  [011 Q1](../../011-gate-de-severidad/spec.md) (D15).
 - **Q7.** *Resuelta (2026-10-16):* «no probado» es `verification: unverified` con
   `context_scope: outside_diff`
-  ([007 D10](../archivo/007-contrato-de-verificacion/spec.md)).
+  ([007 D10](../007-contrato-de-verificacion/spec.md)).

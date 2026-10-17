@@ -22,7 +22,7 @@ fixer, ni entre reintentos (deuda D17 de [`arquitectura.md`](../../../arquitectu
 - [012](../012-cobertura-de-la-review/spec.md) acumula el gasto entre los lotes de
   **una** persona (C6), no entre personas; y es quien **pinta** el corte por
   presupuesto en la `ReviewCoverage` (`SkipReason.BUDGET`), que aún no existe.
-- [009](../../009-verificador-adversarial/spec.md) añade varias llamadas por hallazgo
+- [009](../009-verificador-adversarial/spec.md) añade varias llamadas por hallazgo
   (su Q5 pregunta dónde se arregla D17).
 - [014](../../014-revisor-con-herramientas/spec.md) añade turnos por lote, y activar un
   segundo rol con herramientas exige antes resolver D17 (014 Q7).

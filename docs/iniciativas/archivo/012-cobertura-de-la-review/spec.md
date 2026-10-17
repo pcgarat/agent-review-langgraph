@@ -46,10 +46,10 @@ Se quiere:
 ## 2. No-objetivos
 
 - **Dar contexto fuera del diff** (fichero completo, ADR, glosario). Es
-  [008](../../008-contexto-del-revisor/spec.md); esta iniciativa solo garantiza que el
+  [008](../008-contexto-del-revisor/spec.md); esta iniciativa solo garantiza que el
   diff mismo llegue.
 - **El anclaje estricto.** Que `best_line` deje de recolocar por cercanía es L0 de
-  [008](../../008-contexto-del-revisor/spec.md); aquí solo se documenta el síntoma.
+  [008](../008-contexto-del-revisor/spec.md); aquí solo se documenta el síntoma.
 - **El presupuesto de tokens.** Lo resolvió [017](../017-presupuesto-por-pr/spec.md):
   un contador por review, compartido y atómico. Esta iniciativa lo consume lote a
   lote; no lo redefine.

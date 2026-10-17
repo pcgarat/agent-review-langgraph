@@ -51,7 +51,7 @@ publicada era la que el modelo decía.
   regrabación del *gold set* (2026-10-17, `deepseek-v4-flash`) el modelo rellenó el
   escenario de los 7 hallazgos y los 7 eran falsos positivos con escenarios
   plausibles pero inalcanzables. El filtro real es la verificación (L2,
-  [009](../iniciativas/009-verificador-adversarial/spec.md)); el escenario es lo que
+  [009](../iniciativas/archivo/009-verificador-adversarial/spec.md)); el escenario es lo que
   le da algo concreto que refutar.
 - L2 y L3 añaden coste: se pagan contra el presupuesto por review
   ([ADR-0019](0019-presupuesto-de-tokens-por-review.md)).
