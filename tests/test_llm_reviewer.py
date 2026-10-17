@@ -432,6 +432,69 @@ def test_el_prompt_pide_escenario_y_alcance_y_no_requires_verification() -> None
     assert "requires_verification" not in prompt
 
 
+def test_system_pide_humildad_outside_diff() -> None:
+    # 008 CX9 / D6: regla en el system; un hallazgo outside_diff sobrevive.
+    from agent_review.domain.models import ContextScope
+
+    llm = FakeLlm(_response(_finding_json(context_scope="outside_diff")))
+    reviewer = LlmReviewer(llm=llm)
+    [finding] = reviewer.review(repo="r", pr_id=1, diff=DIFF).findings
+    assert "outside_diff" in llm.calls[0][0]
+    assert "no inventes" in llm.calls[0][0]
+    assert finding.context_scope is ContextScope.OUTSIDE_DIFF
+    assert finding.severity is Severity.P2
+
+
+def test_l1_incluye_fichero_y_docs_sin_desplazar_el_diff() -> None:
+    # 008 CX8: el diff completo va siempre; el contexto cabe bajo el tope.
+    from agent_review.domain.models import ReviewContext
+
+    llm = FakeLlm(_response())
+    ctx = ReviewContext(
+        head_sha="h",
+        contents={TRANSFER: "<?php\nclass Transfer {}\n"},
+        docs={"CONTEXT.md": "# glosario\n"},
+    )
+    LlmReviewer(llm=llm, context_max_chars=10_000).review(
+        repo="r", pr_id=1, diff=DIFF, context=ctx
+    )
+    prompt = llm.calls[0][1]
+    assert "DIFF:\n" in prompt
+    assert "throw new InsufficientBalance" in prompt  # diff no recortado
+    assert f"FILE {TRANSFER}:" in prompt
+    assert "DOC CONTEXT.md:" in prompt
+    # El bloque CONTEXT va despues del DIFF.
+    assert prompt.index("DIFF:") < prompt.index("CONTEXT:")
+
+
+def test_l1_omite_contexto_que_no_cabe_y_respeta_el_tope() -> None:
+    from agent_review.adapters.llm_reviewer import pack_l1_context
+    from agent_review.domain.models import ReviewContext
+
+    huge = "x" * 5000
+    ctx = ReviewContext(
+        contents={"a.py": huge, "b.py": "short"},
+        docs={"CONTEXT.md": "doc"},
+    )
+    block, omitted = pack_l1_context(paths=["a.py", "b.py"], context=ctx, max_chars=100)
+    assert len(block) <= 100
+    assert "a.py" in omitted
+    assert "FILE b.py:" in block or "b.py" in omitted
+
+    llm = FakeLlm(_response(_finding_json()))
+    result = LlmReviewer(llm=llm, context_max_chars=50).review(
+        repo="r",
+        pr_id=1,
+        diff=_file_block("a.py", 3),
+        context=ReviewContext(contents={"a.py": huge}),
+    )
+    prompt = llm.calls[0][1]
+    assert "DIFF:\n" in prompt
+    assert "@@ -0,0 +1,3 @@" in prompt  # diff intacto
+    assert "FILE a.py:" not in prompt
+    assert "a.py" in result.coverage.context_omitted
+
+
 def _file_block(path: str, lines: int) -> str:
     body = "".join(f"+linea {i} de {path}\n" for i in range(1, lines + 1))
     return (

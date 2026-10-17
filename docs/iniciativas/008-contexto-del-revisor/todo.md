@@ -85,7 +85,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Verifica: `tests/test_profile.py`.
   - *Hecho 2026-10-17:* contrato del perfil + lectura en `scope` (CX6).
 
-- [ ] **CX8** L1 por lote + tope de config (D8, D12)
+- [x] **CX8** L1 por lote + tope de config (D8, D12)
   - `settings.py` + `.env.example` + `operacion.md` §2: `LLM_CONTEXT_MAX_CHARS`.
   - `LlmReviewer`: cada lote incluye fichero completo de sus paths y los docs, con
     prioridad diff → fichero → docs; el contexto que no cabe se omite y la
@@ -93,8 +93,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - `_estimate_tokens` cuenta el contexto.
   - Aceptación: test de que el contexto no desplaza diff; tope respetado.
   - Verifica: `tests/test_llm_reviewer.py`.
+  - *Hecho 2026-10-17:* `pack_l1_context`; `ReviewCoverage.context_omitted`;
+    secciones `#N` en `assemble_review_context`.
 
-- [ ] **CX9** Regla de humildad en el *system prompt* (D6)
+- [x] **CX9** Regla de humildad en el *system prompt* (D6)
   - Texto explícito: claim que depende de código no visible →
     `context_scope: outside_diff`, sin inventar semántica.
   - `_to_finding` ya respeta `context_scope` del modelo (007); test con entrada que
@@ -102,6 +104,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
   - Aceptación: el *system* contiene la regla; un hallazgo con
     `outside_diff` sobrevive y no cambia `severity`.
   - Verifica: `tests/test_llm_reviewer.py`.
+  - *Hecho 2026-10-17:* regla en `_SYSTEM`; test de supervivencia sin tocar severidad.
 
 ## Bloque 3 — Cierre (checkpoint C3)
 

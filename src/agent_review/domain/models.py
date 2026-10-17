@@ -211,6 +211,9 @@ class ReviewCoverage(BaseModel):
     reviewed: list[str] = Field(default_factory=list)
     skipped: dict[str, SkipReason] = Field(default_factory=dict)
     file_class: dict[str, FileClass] = Field(default_factory=dict)
+    # L1 (008 CX8): rutas de fichero/doc cuyo contenido completo no cabia en el
+    # tope; el diff del lote si se reviso. No marca la review como parcial.
+    context_omitted: list[str] = Field(default_factory=list)
 
     @property
     def partial(self) -> bool:
@@ -241,6 +244,7 @@ class ReviewCoverage(BaseModel):
             reviewed=reviewed,
             skipped=skipped,
             file_class={**other.file_class, **self.file_class},
+            context_omitted=list(dict.fromkeys([*self.context_omitted, *other.context_omitted])),
         )
 
 

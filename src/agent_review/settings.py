@@ -337,6 +337,9 @@ class Settings(BaseSettings):
     # Reintentos de un lote ante un fallo transitorio (021 R14): se repite ese lote,
     # no la persona entera; agotados, el lote sale `failed` y se sigue.
     llm_batch_retries: int = 2
+    # Tope de caracteres del bloque L1 (fichero completo + docs del perfil) por
+    # lote (008 CX8 / D12). El diff del lote no se recorta; lo que no cabe se omite.
+    llm_context_max_chars: int = 40000
 
     # Verificador adversarial L2 (009 V8/V11): topes por review y por bucle.
     # Sin binding `verifier` el nodo es paso directo y estos ajustes no se usan.

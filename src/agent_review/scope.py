@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 
 from agent_review.adapters.diff_parser import parse_unified_diff
@@ -9,6 +10,8 @@ from agent_review.globs import matches_any, path_matches
 from agent_review.ports.vcs import VcsPort
 
 logger = logging.getLogger(__name__)
+
+_HEADING = re.compile(r"^(#{1,6})\s+(\S.*?)\s*$", re.MULTILINE)
 
 # Ficheros que no aportan senal a una review: generados, lockfiles, vendor y
 # artefactos de build. Filtrarlos antes de las personas evita gastar tokens (o
@@ -210,12 +213,27 @@ def assemble_review_context(
 
     docs: dict[str, str] = {}
     for raw in doc_paths:
-        path = raw.split("#", 1)[0].strip()
-        if not path or path in docs:
+        path, _, fragment = raw.partition("#")
+        path = path.strip()
+        fragment = fragment.strip()
+        key = f"{path}#{fragment}" if fragment else path
+        if not path or key in docs:
             continue
         text = read(path, head_sha)
-        if text is not None:
-            docs[path] = text
+        if text is None:
+            continue
+        if fragment:
+            sliced = slice_markdown_section(text, fragment)
+            if sliced is None:
+                logger.warning(
+                    "ReviewContext: sin seccion %r en %s; se usa el fichero entero",
+                    fragment,
+                    path,
+                )
+                sliced = text
+            docs[key] = sliced
+        else:
+            docs[key] = text
 
     return ReviewContext(
         head_sha=head_sha,
@@ -223,6 +241,37 @@ def assemble_review_context(
         contents=contents,
         docs=docs,
     )
+
+
+def slice_markdown_section(text: str, fragment: str) -> str | None:
+    """Recorta un markdown desde el encabezado que empieza por `fragment`.
+
+    `fragment` es lo que sigue a `#` en `context_docs.extra` (p. ej. `2` →
+    `## 2. Configuración`). Corta hasta el siguiente encabezado del mismo nivel
+    o superior.
+    """
+    needle = fragment.strip()
+    if not needle:
+        return None
+    matches = list(_HEADING.finditer(text))
+    start_at: int | None = None
+    level = 0
+    for match in matches:
+        title = match.group(2).strip()
+        if title == needle or title.startswith(f"{needle}.") or title.startswith(f"{needle} "):
+            start_at = match.start()
+            level = len(match.group(1))
+            break
+    if start_at is None:
+        return None
+    end_at = len(text)
+    for match in matches:
+        if match.start() <= start_at:
+            continue
+        if len(match.group(1)) <= level:
+            end_at = match.start()
+            break
+    return text[start_at:end_at].rstrip() + "\n"
 
 
 def _block_path(header_line: str) -> str | None:

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import ValidationError
@@ -46,7 +46,9 @@ _SYSTEM = (
     "Eres un revisor de codigo senior. Analizas un diff unificado y devuelves "
     "hallazgos accionables. Respondes SOLO con JSON valido, sin texto alrededor. "
     "Cada hallazgo razona sobre el cambio, no sobre estilo que una herramienta "
-    'estatica ya cubre. Si no hay hallazgos, devuelve {"findings": []}.'
+    "estatica ya cubre. Si tu afirmacion depende de codigo que no ves (fuera del "
+    "diff y del CONTEXT), declara `context_scope: outside_diff` y no inventes su "
+    'semantica. Si no hay hallazgos, devuelve {"findings": []}.'
 )
 
 _SCHEMA_HINT = """\
@@ -82,6 +84,8 @@ Como maximo %d hallazgos.
 # de 60 000 caracteres agota la salida del proveedor antes de responder (021 R12) y
 # uno de 30 000 puede pasar del tope de duracion del stream (~3 min, R15).
 DEFAULT_BATCH_MAX_CHARS = 20_000
+# Tope del bloque L1 por lote (`LLM_CONTEXT_MAX_CHARS`, 008 CX8 / D12).
+DEFAULT_CONTEXT_MAX_CHARS = 40_000
 # Reintentos por lote ante un fallo transitorio (`LLM_BATCH_RETRIES`, 021 R14) y la
 # espera base entre ellos (se dobla en cada intento).
 DEFAULT_BATCH_RETRIES = 2
@@ -94,6 +98,42 @@ _CHARS_PER_TOKEN = 4
 
 def _estimate_tokens(text: str) -> int:
     return len(text) // _CHARS_PER_TOKEN
+
+
+def pack_l1_context(
+    *,
+    paths: Sequence[str],
+    context: ReviewContext | None,
+    max_chars: int,
+) -> tuple[str, list[str]]:
+    """Empaqueta ficheros del lote + docs bajo el tope L1 (008 CX8).
+
+    Prioridad: ficheros del lote, luego docs del perfil. Lo que no cabe se omite
+    (lista de rutas omitidas). El diff va aparte y nunca se recorta aqui.
+    """
+    if context is None or max_chars <= 0:
+        return "", []
+    parts: list[str] = []
+    used = 0
+    omitted: list[str] = []
+
+    def try_add(label: str, path: str, body: str) -> None:
+        nonlocal used
+        chunk = f"\n{label} {path}:\n{body}"
+        if used + len(chunk) > max_chars:
+            omitted.append(path)
+            return
+        parts.append(chunk)
+        used += len(chunk)
+
+    for path in paths:
+        body = context.contents.get(path)
+        if body is None:
+            continue
+        try_add("FILE", path, body)
+    for path, body in context.docs.items():
+        try_add("DOC", path, body)
+    return "".join(parts), omitted
 
 
 def _usage_meta(reply: LlmReply, *, findings: int | None) -> dict[str, Any]:
@@ -185,6 +225,7 @@ class LlmReviewer:
         budget: BudgetPort | None = None,
         budget_limit: int | None = None,
         batch_max_chars: int = DEFAULT_BATCH_MAX_CHARS,
+        context_max_chars: int = DEFAULT_CONTEXT_MAX_CHARS,
         reasoning_sink: ReasoningSink | None = None,
         batch_retries: int = DEFAULT_BATCH_RETRIES,
         sleep: Callable[[float], None] = time.sleep,
@@ -194,6 +235,7 @@ class LlmReviewer:
         self._max_findings = max_findings
         self._max_tokens = max_tokens
         self._batch_max_chars = batch_max_chars
+        self._context_max_chars = max(0, context_max_chars)
         # Destino del razonamiento (021 R3): sin el, no se escucha al modelo y la
         # review es la de siempre.
         self._reasoning_sink = reasoning_sink
@@ -219,6 +261,8 @@ class LlmReviewer:
         self.budget_exhausted = False
         self.tokens_used = 0
         self._context: ReviewContext | None = None
+        # Rutas de L1 omitidas por tope en esta review (cobertura / diagnostico).
+        self.context_omitted: list[str] = []
 
     # Revisa por lotes y declara lo que no lee (012): si la persona cae entera, el
     # nodo marca sus ficheros como `failed` en vez de callar.
@@ -235,12 +279,12 @@ class LlmReviewer:
         context: ReviewContext | None = None,
     ) -> ReviewerResult:
         del repo, pr_id, head_sha
-        # CX8 ensamblara el prompt con `context`; CX6 solo lo acepta.
         self._context = context
         # El worker reutiliza la instancia entre reviews: los hechos del presupuesto
         # son **por review**, no acumulados en el objeto (017 B4).
         self.budget_exhausted = False
         self.tokens_used = 0
+        self.context_omitted = []
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
@@ -291,7 +335,11 @@ class LlmReviewer:
             findings=self._cap(findings),
             budget_exhausted=self.budget_exhausted,
             tokens_used=self.tokens_used,
-            coverage=ReviewCoverage(reviewed=reviewed, skipped=skipped),
+            coverage=ReviewCoverage(
+                reviewed=reviewed,
+                skipped=skipped,
+                context_omitted=list(self.context_omitted),
+            ),
         )
 
     def _call_with_retries(
@@ -310,7 +358,12 @@ class LlmReviewer:
         for attempt in range(self._batch_retries + 1):
             event("start", meta={"files": paths})
             try:
-                return self._call(text, review_key, on_reasoning=self._listener(event))
+                return self._call(
+                    text,
+                    review_key,
+                    paths=paths,
+                    on_reasoning=self._listener(event),
+                )
             except Exception as exc:
                 if attempt < self._batch_retries:
                     retry = f"{attempt + 1}/{self._batch_retries}"
@@ -368,13 +421,32 @@ class LlmReviewer:
         diff: str,
         review_key: str = "",
         *,
+        paths: Sequence[str] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
     ) -> LlmReply | None:
         """Una llamada por lote. `None` y `budget_exhausted` = sin presupuesto; `None`
         sin el = fallo permanente del modelo (el motivo queda en `_last_error`)."""
         self._last_error = ""
         # El modelo ve el diff numerado (021 R13); el anclaje usa el original.
-        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{number_diff(diff)}"
+        # L1 (008 CX8): ficheros + docs bajo tope propio; el diff no se recorta.
+        numbered = number_diff(diff)
+        l1, omitted = pack_l1_context(
+            paths=list(paths or ()),
+            context=self._context,
+            max_chars=self._context_max_chars,
+        )
+        if omitted:
+            for path in omitted:
+                if path not in self.context_omitted:
+                    self.context_omitted.append(path)
+            logger.info(
+                "correctness: contexto L1 omitido por tope (%d chars): %s",
+                self._context_max_chars,
+                ", ".join(omitted),
+            )
+        prompt = f"{_SCHEMA_HINT % self._max_findings}\n\nDIFF:\n{numbered}"
+        if l1:
+            prompt = f"{prompt}\n\nCONTEXT:{l1}"
         estimated = _estimate_tokens(_SYSTEM) + _estimate_tokens(prompt) + self._max_tokens
         self.last_estimated_tokens = estimated
         # Tope blando por persona (B10), sobre lo **acumulado** entre lotes: acota lo

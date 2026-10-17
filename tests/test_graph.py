@@ -234,7 +234,7 @@ def test_scope_lee_cada_fichero_una_vez_con_dos_personas() -> None:
     ctx = state["review_context"]
     assert ctx.contents["src/a.py"] == "# src/a.py@deadbeef\n"
     assert ctx.docs["CONTEXT.md"] == "# CONTEXT.md@deadbeef\n"
-    assert "docs/operacion.md" in ctx.docs
+    assert "docs/operacion.md#2" in ctx.docs
     assert ctx.head_sha == "deadbeef"
     assert ctx.base_sha == "basebase"
 
