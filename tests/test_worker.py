@@ -406,7 +406,8 @@ def test_build_reviewers_herramientas_opt_in_por_rol(tmp_path: Path) -> None:
             review_tools_roles="correctness",
             review_tools_calls_per_turn=5,
             review_tools_strict_calls=True,
-        )
+        ),
+        vcs=FakeVcs(),
     )
     by_name = {r.name: r for r in con if isinstance(r, LlmReviewer)}
     assert by_name["correctness"]._reader_factory is not None
