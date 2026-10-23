@@ -144,4 +144,3 @@ class ClaudeArtifactReviewer:
                 )
             )
         return ReviewerResult(findings=kept)
-
