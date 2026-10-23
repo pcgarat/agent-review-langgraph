@@ -1176,6 +1176,7 @@ def test_aviso_de_pausa_sin_marca_de_dedupe() -> None:
     config = {"configurable": {"thread_id": request.thread_id}}
     approval = graph_build_approval(graph.get_state(config).values)
     assert approval is not None
+    assert approval.pause_kind is None
     notice = render_pause_notice(approval)
     assert request.dedupe_token not in notice
     assert ":ok" not in notice and ":partial" not in notice

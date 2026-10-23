@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -12,6 +13,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
+from agent_review.adapters.claude_artifact import ClaudeArtifactReviewer, ClaudeArtifactStore
+from agent_review.adapters.claude_client import HttpClaudeRunner
 from agent_review.adapters.context_factory import build_reader_factory
 from agent_review.adapters.github_vcs import GithubVcsAdapter
 from agent_review.adapters.llm_fixer import LlmFixer
@@ -51,10 +54,11 @@ from agent_review.domain.models import (
 )
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
-from agent_review.errors import Cancelled, is_transient
+from agent_review.errors import Cancelled, PermanentError, is_transient
 from agent_review.fix.delivery import DeliveryFormatter, DiffFormatter, SuggestionFormatter
 from agent_review.graph.build import (
     ReviewState,
+    build_claude_graph,
     build_graph,
     build_pause,
     outcome_from_state,
@@ -66,6 +70,7 @@ from agent_review.pending_store import PendingStore, RedisPendingStore
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
+from agent_review.ports.claude import ClaudeInvalidOutput, ClaudeQuotaExceeded, ClaudeRunner
 from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
@@ -536,6 +541,14 @@ def build_runtime(
     verifier: VerifierPort | None = None,
     progress: ProgressPort | None = None,
 ) -> Any:
+    if settings.review_engine == "claude":
+        return _build_claude_runtime(
+            settings,
+            vcs=vcs,
+            chat=chat,
+            checkpointer=checkpointer,
+            progress=progress,
+        )
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
@@ -585,6 +598,56 @@ def build_runtime(
     return graph.compile(checkpointer=saver)
 
 
+def _build_claude_runtime(
+    settings: Settings,
+    *,
+    vcs: VcsPort | None,
+    chat: ChatPort | None,
+    checkpointer: BaseCheckpointSaver[Any] | None,
+    progress: ProgressPort | None,
+) -> Any:
+    """Compila el grafo claude. No construye personas LLM, verificador ni politica.
+
+    `reviewers`, `fixer` y `verifier` de `build_runtime` no aplican: un doble
+    inyectado por esa via no se llama. La persona estatica entra solo si el
+    perfil declara `checks.typecheck`.
+    """
+    validate_tooling_template(settings)
+    vcs = vcs or build_vcs(settings)
+    if chat is None:
+        chat = build_chat(settings)
+    saver = checkpointer or build_checkpointer(
+        settings.database_url, required=is_production(settings)
+    )
+    progress = progress if progress is not None else build_progress(settings)
+    cancellation = build_cancellation(settings)
+    profile = load_profile(settings)
+    reviewers: list[ReviewerPort] = [
+        ClaudeArtifactReviewer(ClaudeArtifactStore(root=settings.claude_artifact_root))
+    ]
+    checks = profile.get("checks") or {}
+    if isinstance(checks, dict) and checks.get("typecheck"):
+        reviewers.append(
+            ToolingReviewer(
+                source=FileToolingOutputSource(
+                    template=settings.tooling_output_template,
+                    root=settings.tooling_output_root,
+                )
+            )
+        )
+    graph = build_claude_graph(
+        vcs=vcs,
+        reviewers=reviewers,
+        chat=chat,
+        scope_ignore=settings.scope_ignore,
+        scope_classes=scope_classes(profile),
+        retry_policy=node_retry_policy(settings),
+        progress=progress,
+        cancel=cancellation.is_cancelled if cancellation is not None else None,
+    )
+    return graph.compile(checkpointer=saver)
+
+
 def verification_enabled(settings: Settings) -> bool:
     """¿Hay quien verifique un parche? `SANDBOX_ENABLED` y la URL del runner.
 
@@ -592,6 +655,39 @@ def verification_enabled(settings: Settings) -> bool:
     `NOT_VERIFIABLE` al despacharlo en vez de pausar la review hasta el TTL.
     """
     return settings.sandbox_enabled and bool(settings.sandbox_runner_url.strip())
+
+
+def build_claude_runner(settings: Settings) -> HttpClaudeRunner:
+    """Cliente del servicio. El worker no lanza el binario."""
+    url = settings.claude_runner_url.strip()
+    if not url:
+        raise PermanentError("REVIEW_ENGINE=claude necesita CLAUDE_RUNNER_URL")
+    return HttpClaudeRunner(
+        url=url,
+        token=settings.claude_runner_token,
+        timeout_s=settings.claude_timeout_s,
+    )
+
+
+def ensure_claude_artifact(
+    request: ReviewRequest,
+    *,
+    runner: ClaudeRunner,
+    store: ClaudeArtifactStore,
+) -> None:
+    """Una llamada al CLI por `head_sha`, antes del grafo.
+
+    Artefacto ya válido: no se vuelve a llamar. Stdout inválido o proceso
+    caído: no se guarda y se relanza para que el job se reintente. El cupo
+    no se reintenta. El grafo no se arranca aquí.
+    """
+    if store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha) is not None:
+        return
+    stdout = runner.run(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    if not store.save(stdout, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha):
+        raise ClaudeInvalidOutput(
+            f"stdout de claude no es una lista de hallazgos para {request.review_key}"
+        )
 
 
 def process_request(
@@ -603,6 +699,8 @@ def process_request(
     vcs: VcsPort | None = None,
     fix_queue: FixQueue | None = None,
     fix_ttl_s: float | None = None,
+    claude_runner: ClaudeRunner | None = None,
+    claude_store: ClaudeArtifactStore | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -675,6 +773,8 @@ def process_request(
                 request.decision.actor,
                 request.review_key,
             )
+        if claude_runner is not None and claude_store is not None:
+            ensure_claude_artifact(request, runner=claude_runner, store=claude_store)
         result = cast(
             "ReviewState", graph.invoke({"request": request, "findings": []}, config=config)
         )
@@ -1295,6 +1395,118 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
     return snapshot
 
 
+# Tras un cupo, los jobs siguientes no vuelven a llamar al CLI hasta que pase.
+_QUOTA_COOLDOWN_S = 900.0
+
+_PARK_NOTICES: dict[str, tuple[str, str]] = {
+    "session": (
+        "Claude sin sesion",
+        "Las reviews de este motor esperan fuera de la cola. Inicia sesion en el panel.",
+    ),
+    "quota": (
+        "Cupo de Claude agotado",
+        "La review no se ha publicado. El cupo no se reintenta.",
+    ),
+}
+
+
+def panel_claude_link(settings: Settings) -> str | None:
+    """URL del formulario. Vacía si el despliegue no publica el panel."""
+    base = settings.panel_public_url.strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/claude"
+
+
+def claude_session_ready(queue: ReviewQueue, probe: Callable[[], bool] | None) -> bool:
+    """True si este worker puede correr el CLI.
+
+    Con sesión, suelta lo parqueado por falta de ella. El cupo se queda: soltarlo
+    volvería a gastar el límite. Sin sonda (motor `llm`) no mira el parking.
+    """
+    if probe is None:
+        return True
+    try:
+        active = probe()
+    except Exception:
+        logger.warning("No se pudo consultar la sesion de Claude; el job se parkea")
+        return False
+    if active:
+        try:
+            queue.release_parked(reason="session")
+        except Exception:
+            logger.exception("No se pudo soltar el parking de Claude")
+    return active
+
+
+def park_claude_job(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    reason: str,
+    chat: ChatPort | None,
+    link: str | None,
+) -> None:
+    """Mueve el job a `reviews:claude:parked` y, la primera vez, avisa."""
+    queue.park(request, reason=reason)
+    ttl = _QUOTA_COOLDOWN_S if reason == "quota" else None
+    if not queue.claim_notice(reason, ttl_s=ttl) or chat is None:
+        return
+    title, body = _PARK_NOTICES[reason]
+    chat.notify(
+        repo=request.repo,
+        pr_id=request.pr_id,
+        review_key=request.review_key,
+        title=title,
+        body=body,
+        link=link,
+    )
+
+
+def dispatch_job(
+    queue: ReviewQueue,
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    paused: PausedStore | None = None,
+    chat: ChatPort | None = None,
+    vcs: VcsPort | None = None,
+    fix_queue: FixQueue | None = None,
+    fix_ttl_s: float | None = None,
+    progress: ProgressPort | None = None,
+    cancel: CancellationPort | None = None,
+    history: ReviewHistory | None = None,
+    reasoning: bool = False,
+    claude_runner: ClaudeRunner | None = None,
+    claude_store: ClaudeArtifactStore | None = None,
+    claude_session: Callable[[], bool] | None = None,
+    park_link: str | None = None,
+) -> None:
+    """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`."""
+    if not claude_session_ready(queue, claude_session):
+        park_claude_job(queue, request, reason="session", chat=chat, link=park_link)
+        return
+    _consume(
+        queue,
+        graph,
+        request,
+        max_attempts=max_attempts,
+        paused=paused,
+        chat=chat,
+        vcs=vcs,
+        fix_queue=fix_queue,
+        fix_ttl_s=fix_ttl_s,
+        progress=progress,
+        cancel=cancel,
+        history=history,
+        reasoning=reasoning,
+        claude_runner=claude_runner,
+        claude_store=claude_store,
+        park_link=park_link,
+    )
+
+
 def _consume(
     queue: ReviewQueue,
     graph: ReviewGraph,
@@ -1310,6 +1522,9 @@ def _consume(
     cancel: CancellationPort | None = None,
     history: ReviewHistory | None = None,
     reasoning: bool = False,
+    claude_runner: ClaudeRunner | None = None,
+    claude_store: ClaudeArtifactStore | None = None,
+    park_link: str | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1330,6 +1545,9 @@ def _consume(
     if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
         _on_cancelled(graph, request, paused=paused)
         return
+    if _quota_on_cooldown(queue, request, claude_runner=claude_runner, claude_store=claude_store):
+        park_claude_job(queue, request, reason="quota", chat=chat, link=park_link)
+        return
     request = _with_base_sha(request, vcs)
     try:
         outcome = process_request(
@@ -1340,6 +1558,8 @@ def _consume(
             vcs=vcs,
             fix_queue=fix_queue,
             fix_ttl_s=fix_ttl_s,
+            claude_runner=claude_runner,
+            claude_store=claude_store,
         )
         # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
         # Una reentrega del mismo job actualiza su entrada, no la duplica.
@@ -1349,6 +1569,14 @@ def _consume(
                     outcome, finished_at=datetime.now(UTC), reasoning=reasoning
                 )
             )
+    except ClaudeQuotaExceeded:
+        # No se reintenta: otra pasada volvería a gastar el cupo, y entrar al
+        # grafo publicaría sin review. El login no lo suelta.
+        logger.error("Cupo de Claude agotado en %s; se parkea", request.review_key)
+        try:
+            park_claude_job(queue, request, reason="quota", chat=chat, link=park_link)
+        except Exception:
+            logger.exception("No se pudo parquear el cupo de %s", request.review_key)
     except Cancelled:
         # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
         # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo
@@ -1378,6 +1606,25 @@ def _consume(
             )
     finally:
         clear_progress(progress, request.review_key)
+
+
+def _quota_on_cooldown(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    claude_runner: ClaudeRunner | None,
+    claude_store: ClaudeArtifactStore | None,
+) -> bool:
+    """Un cupo reciente no debe relanzar el CLI en el job siguiente."""
+    if claude_runner is None or claude_store is None:
+        return False
+    if request.decision is not None or request.fix_resolution is not None:
+        return False
+    try:
+        return queue.notice_held("quota")
+    except Exception:
+        logger.exception("No se pudo leer el enfriamiento del cupo de Claude")
+        return False
 
 
 def _on_cancelled(
@@ -1491,6 +1738,15 @@ def run_forever(
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     history = build_history(settings)
+    claude_runner: ClaudeRunner | None = None
+    claude_store: ClaudeArtifactStore | None = None
+    claude_session: Callable[[], bool] | None = None
+    if settings.review_engine == "claude":
+        claude_store = ClaudeArtifactStore(root=settings.claude_artifact_root)
+        runner = build_claude_runner(settings)
+        claude_runner = runner
+        claude_session = runner.active
+    park_link = panel_claude_link(settings)
     saver = getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
@@ -1500,7 +1756,7 @@ def run_forever(
     while True:
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
-            _consume(
+            dispatch_job(
                 queue,
                 graph,
                 request,
@@ -1514,6 +1770,10 @@ def run_forever(
                 cancel=cancellation,
                 history=history,
                 reasoning=settings.reasoning_stream_enabled,
+                claude_runner=claude_runner,
+                claude_store=claude_store,
+                claude_session=claude_session,
+                park_link=park_link,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).

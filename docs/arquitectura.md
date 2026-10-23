@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Arquitectura
 
@@ -179,6 +179,47 @@ flowchart TD
 | `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
 | `notify` | Sí | Avisa de una review publicada, a la outbox del canal. Un fallo no transitorio se registra y no tumba la review. |
 
+El diagrama y la tabla son el motor `llm` (`REVIEW_ENGINE=llm`). El motor `claude`
+compila otro grafo ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md),
+[ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)):
+
+```mermaid
+flowchart TD
+    START([START]) --> scope
+    scope["scope<br/>diff para anclar"] -->|"Send"| persona
+    persona["persona<br/>cargador claude + estática si el perfil declara typecheck"] --> merge
+    merge --> stamp
+    stamp["stamp<br/>acción publish, sin política"] --> hitl
+    hitl{"hitl<br/>¿cuáles se publican?"} -->|no| publish
+    hitl -.->|"sí: interrupt"| PAUSE(["pausa"])
+    PAUSE -.->|"Command(resume=HitlDecision)"| hitl
+    publish --> notify
+    notify --> END([END])
+```
+
+No hay `verify`, `policy` ni `fix_dispatch`. El cargador lee el artefacto ya
+validado y tira con L0 la cita que no está en el diff. El sello marca cada
+hallazgo que pasó con acción `publish` y `publication=full`; no ejecuta la
+política. `dropped` no se publica (ni inline ni resumen) y no es `rejected`.
+Con `silence_without_choice`, si no queda nada elegido y no hay una fuente
+estática sin cubrir, `publish` no escribe en el PR. `notify` manda entonces un
+aviso corto. Una fuente estática sin cubrir sigue comentando el PR. `stamp`
+deja `pause_kind=publication` en el estado y `build_approval` lo copia a la
+pausa: el worker reconstruye la `ApprovalRequest` desde el estado, no desde el
+`interrupt`. La tarjeta de Teams, con ese campo, ofrece tres lotes (solo
+bloqueantes, todos, ninguno) y el marcado suelto; el bot los traduce a una
+`HitlDecision` antes de encolar. Sin el campo, la tarjeta sigue siendo Aprobar,
+Rechazar y Anotar. Antes de arrancar el grafo, el worker pide stdout al
+servicio `claude-runner` (perfil `claude`) y lo guarda si es una lista de
+hallazgos. Si ese `head_sha` ya es válido, no vuelve a llamar. Un stdout
+inválido o un proceso caído no entra al grafo y el job se reintenta. Sin
+sesión (`GET /session` responde no), el job sale a `reviews:claude:parked` y
+el bucle sigue con el resto de la cola; el primer caso encola un aviso con
+enlace al panel y el segundo no. El token vive en un fichero `0600` que el
+worker no abre. El cupo parkea con otro aviso, no entra al grafo y, mientras
+dura el enfriamiento, los jobs siguientes no vuelven a llamar al CLI. El login
+del operador suelta solo lo parqueado por la sesión.
+
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
 `ProgressPort` anota la frontera de cada nodo (`reviews:active:<review_key>`, W10);
@@ -205,6 +246,8 @@ LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
 | `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
 | `fix_wait` (wave) | Sustituye | La wave pendiente; la escribe `fix_wait` al pausar |
 | `published`, `inlined_count` | Sustituye | Señal de `publish` a `notify` |
+| `silence_without_choice` | Sustituye | Solo lo escribe el grafo `claude`. Sin él, una review parcial del motor `llm` sigue comentando el PR |
+| `pause_kind` | Sustituye | Solo lo escribe `stamp` del grafo `claude` (`publication`). `build_approval` lo copia a la tarjeta. El grafo `llm` no lo escribe |
 
 `pending_approvals` no se guarda: se deriva de `decisions`.
 
@@ -334,6 +377,9 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session` o `quota` + `ReviewRequest`). Fuera del `BLPOP` | — |
+| Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
+| Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
 | Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |
 | Redis | `reviews:fixes:dead` | DLQ de fixes | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
@@ -404,7 +450,9 @@ suscriptor vivo.
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
 El estado vivo de cada iniciativa y sus tareas están en
-[`iniciativas/README.md`](iniciativas/README.md).
+[`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
+[025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
+tarjeta de lote, `claude-runner` y sesión en el panel.
 
 ---
 

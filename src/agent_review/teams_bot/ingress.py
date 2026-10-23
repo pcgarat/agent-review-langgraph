@@ -11,9 +11,10 @@ Una accion llega de dos formas y ambas se despachan por `data.action` (T0):
 - `Action.Submit` -> un mensaje con el `data` en `value` (fallback de clientes
   antiguos, que el SDK entrega por `on_message`).
 
-Dos acciones: marcar un hallazgo (`teams.decision`) y enviar la decision
-(`teams.submit`). Enviar reutiliza el `DecisionSubmitter` de T3: el bot solo
-encola, nunca reanuda (C4).
+Tres acciones: marcar un hallazgo (`teams.decision`), enviar la decision
+(`teams.submit`) y, en una pausa `publication`, un lote (`teams.publish_batch`).
+Enviar y el lote reutilizan el `DecisionSubmitter`: el bot solo encola, nunca
+reanuda (C4). El grafo no ve el botón.
 
 La accion **no puede tumbar el endpoint**: un fallo de infraestructura (Redis caido
 al marcar o al encolar) se convierte en un aviso para que la persona reintente, no
@@ -32,11 +33,12 @@ from agent_review.paused_store import PausedStore
 from agent_review.teams_bot.card_service import DecisionCardService
 from agent_review.teams_bot.cards import (
     DECISION_ACTION,
+    PUBLISH_BATCH_ACTION,
     SUBMIT_ACTION,
     render_decided_card,
     render_decision_card,
 )
-from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitStatus
+from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitOutcome, SubmitStatus
 from agent_review.teams_bot.transport import ChannelTransport
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,8 @@ class CardIngress:
                 return self._mark(review_key, data, user_id=user_id)
             if action == SUBMIT_ACTION:
                 return await self._submit(review_key, user_id=user_id, actor=actor)
+            if action == PUBLISH_BATCH_ACTION:
+                return await self._submit_batch(review_key, data, user_id=user_id, actor=actor)
         except Exception as exc:  # noqa: BLE001 - el canal nunca recibe un 500
             logger.warning("Fallo al aplicar la accion %s de %s: %s", action, review_key, exc)
             return CardUpdate(notice=f"No se pudo registrar la accion. {_RETRY}")
@@ -120,10 +124,35 @@ class CardIngress:
         paused = self._human_pause(review_key)
         if paused is None:
             return CardUpdate(notice=_GONE)
-        approval = paused.human_request
         outcome = self._submitter.submit(review_key, user_id=user_id, actor=actor)
+        return await self._respond(
+            review_key, paused.human_request, outcome, user_id=user_id, pause=paused.pause_id
+        )
+
+    async def _submit_batch(
+        self, review_key: str, data: dict[str, Any], *, user_id: str, actor: str
+    ) -> CardUpdate:
+        paused = self._human_pause(review_key)
+        if paused is None:
+            return CardUpdate(notice=_GONE)
+        outcome = self._submitter.submit_batch(
+            review_key, actor=actor, batch=str(data.get("batch", ""))
+        )
+        return await self._respond(
+            review_key, paused.human_request, outcome, user_id=user_id, pause=paused.pause_id
+        )
+
+    async def _respond(
+        self,
+        review_key: str,
+        approval: ApprovalRequest,
+        outcome: SubmitOutcome,
+        *,
+        user_id: str,
+        pause: str,
+    ) -> CardUpdate:
         if outcome.status is SubmitStatus.ENQUEUED:
-            decided = render_decided_card(approval, actor=actor)
+            decided = render_decided_card(approval, actor=outcome.actor)
             # C7/C11: la tarjeta del canal pasa a «decidido por X». Es cosmetico:
             # la decision ya esta encolada, asi que un fallo de Teams no la pierde.
             await self._edit_card(review_key, approval, decided)
@@ -136,7 +165,7 @@ class CardIngress:
         if outcome.status is SubmitStatus.INCOMPLETE:
             # Vuelve la tarjeta con lo marcado y el aviso de que falta algo.
             return CardUpdate(
-                card=self._cards.render(approval, user_id=user_id, pause=paused.pause_id),
+                card=self._cards.render(approval, user_id=user_id, pause=pause),
                 notice=outcome.reason or "Faltan hallazgos por decidir",
             )
         return CardUpdate(

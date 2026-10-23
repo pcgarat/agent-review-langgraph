@@ -29,7 +29,7 @@ from agent_review.domain.models import PendingDecision
 from agent_review.domain.trace import ReviewTrace
 from agent_review.history_store import ReviewHistory
 from agent_review.settings import get_settings
-from agent_review.web.auth import Session, require_session
+from agent_review.web.auth import Session, require_operador, require_session
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -106,6 +106,28 @@ def history_page(
     return HTMLResponse(_history_page(items, session, repo=repo, pr_id=pr_id))
 
 
+@router.get("/claude", response_class=HTMLResponse)
+def claude_session_page(session: Annotated[Session, Depends(require_operador)]) -> HTMLResponse:
+    """Formulario del operador. El token viaja en el POST JSON, no en esta página."""
+    body = (
+        "<section><h2>Sesión de Claude</h2>"
+        '<p class="meta">Se guarda en un fichero del servidor. '
+        "La respuesta no lo devuelve y el canal no lo ve.</p>"
+        '<label>Token <input id="claude-token" type="password" autocomplete="off"></label> '
+        '<button type="button" class="decide" id="claude-save">Guardar</button>'
+        "</section>"
+    )
+    return HTMLResponse(
+        _page(
+            title="Sesión de Claude",
+            meta="Solo el rol operador",
+            body=body,
+            session=session,
+            script=_CLAUDE_SCRIPT,
+        )
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(
     session: Annotated[Session, Depends(require_session)],
@@ -131,6 +153,13 @@ def review_detail(
 # --- Paginas ---------------------------------------------------------------------
 
 
+def _home_links(session: Session) -> str:
+    links = '<a href="/history">Histórico de reviews &rarr;</a>'
+    if session.can_command():
+        links += ' · <a href="/claude">Sesión de Claude</a>'
+    return f'<p class="breadcrumb">{links}</p>'
+
+
 def _global_page(state: PanelState, session: Session) -> str:
     budgets = {item.review_key: item for item in state.budget}
     body = "".join(
@@ -146,7 +175,7 @@ def _global_page(state: PanelState, session: Session) -> str:
     return _page(
         title="Panel de operación",
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
-        body='<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a></p>' + body,
+        body=_home_links(session) + body,
         session=session,
         script=_COMMAND_SCRIPT,
     )
@@ -608,6 +637,38 @@ ul.pending li { margin: 0 0 .5rem; }
 #reasoning details.failed summary { color: var(--bad); }
 #reasoning pre { margin: .4rem 0; }
 """
+
+_CLAUDE_SCRIPT = """<script>
+(() => {
+  const button = document.getElementById("claude-save");
+  const field = document.getElementById("claude-token");
+  if (!button || !field) {
+    return;
+  }
+  const error = document.getElementById("error");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const response = await fetch("/api/claude/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: field.value }),
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      field.value = "";
+      button.textContent = "Guardado";
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      button.disabled = false;
+    }
+  });
+})();
+</script>"""
 
 _COMMAND_SCRIPT = """<script>
 (() => {

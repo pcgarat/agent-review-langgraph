@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -43,6 +43,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | Término | Definición |
 |---|---|
 | **Artefacto** | Salida cruda de una herramienta estática (hoy PHPStan en JSON) que el CI del repo revisado manda a `POST /webhook/tooling`. Se guarda en `var/tooling/<pr>/<sha>/<tool>.json`. |
+| **Artefacto de Claude** | Lista de hallazgos ya validada contra el contrato, guardada por el worker con clave `repo + pr + head_sha`. El CLI no elige la ruta. Una lista vacía es válida; un cuerpo que no es esa lista no se guarda y no cuenta como review sin hallazgos. Distinto del artefacto de tooling. |
 | **Ingesta diferida** | La review se encola cuando ya han llegado los artefactos que necesita, no cuando se abre el PR. |
 | **Herramientas esperadas** | Artefactos que la ingesta espera antes de encolar (`expected_tools` del perfil; hoy `[phpstan]`). |
 | **Barrera** | La condición «han llegado todas las herramientas esperadas». |
@@ -72,6 +73,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **`pre_existing`** | Hecho: el código citado es idéntico en la base (lado viejo del diff o fichero a `base_sha`). Etiqueta «preexistente» en el render; no degrada severidad (eso es 011). |
 | **`autofix_class`** | `gated_auto` (arreglable con control), `manual` (decisión de diseño), `advisory` (solo informar). |
 | **Tema protegido** (`protected_subject`) | Auth, cripto, concurrencia, pérdida de datos, inyección, secretos, memoria, contrato público. Nunca se arregla solo. |
+| **Motor** (`REVIEW_ENGINE`) | Quién produce los hallazgos de una review, elegido al arrancar el worker. `llm` es el grafo de personas, L2 y la pausa de hoy. `claude` corre un CLI en el servicio `claude-runner`, fuera del worker ([025](docs/iniciativas/archivo/025-revisor-claude-cli/spec.md), [ADR-0028](docs/adr/0028-cli-claude-fuera-del-worker.md)); el worker guarda el stdout si cumple el contrato y el núcleo solo lee hallazgos ya validados. Sin sesión, el job espera en `reviews:claude:parked` y el token no entra en Redis ni en Teams. No hay interruptor por PR. |
 | **Persona** | Un revisor que produce hallazgos sobre el diff. Corren en paralelo (fan-out). |
 | **`standards`** | Persona estática (`ToolingReviewer`): convierte el artefacto de PHPStan en hallazgos anclados al diff. No ejecuta la herramienta. |
 | **`correctness`** | Persona LLM (`LlmReviewer`), opt-in. Sus hallazgos se validan contra el contrato; una línea inventada se descarta. |
@@ -97,8 +99,8 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | Término | Definición |
 |---|---|
 | **Política** | `config/autonomy.yaml`: reglas ordenadas (gana la primera que casa), guardas y techo. Determinista, sin LLM. |
-| **Acción** (`FindingAction`) | Lo que la política asigna a un hallazgo: `report`, `escalate`, `fix_with_approval`, `fix_auto`. |
-| **Acción pendiente** | `escalate` o `fix_with_approval`: necesita a una persona y **pausa** la review. |
+| **Acción** (`FindingAction`) | Lo que se asigna a un hallazgo: `report`, `escalate`, `fix_with_approval`, `fix_auto`, y `publish` (solo el sello del motor `claude`; la política no la emite y no es un arreglo). |
+| **Acción pendiente** | `escalate`, `fix_with_approval` o `publish`: necesita a una persona y **pausa** la review. |
 | **Decisión de política** (`Decision`) | Resultado de la política para un hallazgo: acción, razón, `matched_rule`, `policy_version`, severidad efectiva, motivo del gate y modo de publicación. **No** confundir con la decisión humana. |
 | **Gate de severidad** (`severity_gate`) | Bloque de `autonomy.yaml` que decide la severidad **publicada** antes de las reglas de acción ([011](docs/iniciativas/archivo/011-gate-de-severidad/spec.md), [ADR-0024](docs/adr/0024-gate-de-severidad-en-la-politica.md)). Un `P0`/`P1` sin veredicto positivo se degrada; un `refuted` sigue `on_refuted` (`drop` o `summary`). Mismo umbral que L2. |
 | **Severidad efectiva** | La severidad tras el gate: la original si está verificada (o fuera del umbral), o `degrade_to` si no. Viaja en `Decision.severity`; el `Finding.severity` no se muta. Es la que ven el render, el HITL y las reglas de acción. |
@@ -115,18 +117,18 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | Término | Definición |
 |---|---|
 | **Pausa** | `interrupt` de LangGraph en el nodo `hitl` cuando hay acciones pendientes. Es durable: el estado vive en Postgres y sobrevive a un reinicio. |
-| **Solicitud de aprobación** (`ApprovalRequest`) | Carga de la pausa: los `PendingDecision` (hallazgo + acción propuesta + razón) y la orden de CLI para decidir. |
+| **Solicitud de aprobación** (`ApprovalRequest`) | Carga de la pausa: los `PendingDecision` (hallazgo + acción propuesta + razón) y la orden de CLI para decidir. En el motor `claude` lleva `pause_kind=publication`; el grafo `llm` no escribe ese campo. |
 | **`PendingDecision`** | Un hallazgo pendiente con lo necesario para decidirlo sin abrir el PR: título, severidad, `fichero:línea`, la explicación del problema y el enlace al código. |
 | **Bot de Teams** (`teams-bot`) | Proceso que consume la outbox, publica/edita en el canal y recibe las acciones de la tarjeta (`POST /api/messages`). Traduce a `HitlDecision` con `build_decision` y **encola**; no reanuda el grafo ni conoce el worker. |
 | **Hilo por PR** | Un mensaje raíz por `repo:pr` en el canal dedicado; el resto de avisos van como reply y la tarjeta se edita in-place. El mapeo vive en Redis (`reviews:teams:threads`) y es UI, no verdad: si se pierde, se abre otro hilo. |
-| **Tarjeta de decisión** | La Adaptive Card que el bot publica en Teams a partir de la `ApprovalRequest`. Un botón por hallazgo y un Enviar gobernado por el **estado por usuario** (`reviews:teams:card:<key>`, lo que cada uno ha marcado). La primera decisión enviada **sella** la pausa (`pause_id`) y la tarjeta queda «decidido por X». |
+| **Tarjeta de decisión** | La Adaptive Card que el bot publica en Teams a partir de la `ApprovalRequest`. Sin `pause_kind`, un botón por hallazgo (Aprobar, Rechazar, Anotar) y un Enviar gobernado por el **estado por usuario** (`reviews:teams:card:<key>`). Con `pause_kind=publication`, tres lotes que se envían solos (solo bloqueantes = P0 y P1, todos, ninguno) y el marcado suelto (`approved` o `dropped`); Enviar sigue exigiendo cubrir todos. El bot traduce el lote a una `HitlDecision` antes de encolar: el grafo no ve el botón. La primera decisión enviada **sella** la pausa (`pause_id`) y la tarjeta queda «decidido por X». |
 | **Canal dedicado** | La conversación de Teams donde el bot publica y desde la que acepta decisiones. Es la primera que captura (no personal); otra no la sustituye. Autoriza por pertenencia: quien está en el canal, decide. |
 | **Inbox** | Índice en Redis de las reviews pausadas (`reviews:paused:<review_key>`). Sirve para descubrirlas; la verdad está en el checkpoint. |
 | **Aviso de pausa** | Aviso al canal (Teams) de que una review quedó pausada. Viaja por la **outbox** con la `ApprovalRequest` estructurada; **no lleva marca de dedupe.** |
 | **Outbox del canal** | Cola Redis `reviews:notices` donde el worker **encola** los avisos (`ChatNotice`) en vez de llamar por HTTP; el bot los consume con `BLPOP`. Un bot caído no pierde el aviso: se publica al arrancar |
 | **`ChatNotice`** | Aviso del worker al canal: `kind` `published` (teaser de una review) o `pause` (tarjeta de decisión, con la `ApprovalRequest`). Lleva siempre `repo`/`pr_id`/`review_key` para resolver el hilo |
 | **Decisión humana** (`HitlDecision`) | Respuesta de una persona: `actor`, `decision_id` e `items`, con un resultado por cada hallazgo pendiente. Debe cubrir **todos** los pendientes. Se emite por el CLI, `POST /reviews/{review_key}/decision` (API), la tarjeta de Teams o el comando de decisión del panel ([022](docs/iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)); todos la construyen con `build_decision`. |
-| **Resultado** (`DecisionOutcome`) | `approved` (autoriza el arreglo), `rejected` (descarta el hallazgo), `noted` (se atiende fuera del agente), `expired` (lo emite el sistema al vencer el TTL). |
+| **Resultado** (`DecisionOutcome`) | `approved` (en el motor `llm` autoriza el arreglo; en `claude` significa publicar), `rejected` (descarta el hallazgo; sigue en el resumen como «descartado»), `dropped` (motor `claude`: ni inline ni resumen; no es `rejected`), `noted` (se atiende fuera del agente), `expired` (lo emite el sistema al vencer el TTL). |
 | **Reanudación** | Job con `ReviewRequest.decision`: el worker hace `Command(resume=…)` sobre el **mismo** hilo. |
 | **Expiración** | Pasado `DECISION_TTL_S` (7 días), el barrido reanuda con `expired` y `actor=system:ttl`. Una review nunca se queda colgada. |
 | **Reconciliación** | El worker vuelve a meter en el inbox los hilos pausados que el checkpointer conoce y el inbox ha perdido. |

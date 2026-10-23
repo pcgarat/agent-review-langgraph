@@ -12,9 +12,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # falla al construir `Settings` (arranque), no en la primera review.
 _VCS_PROVIDERS = {"twg", "github"}
 
+# Motores de review (025, ADR-0028). Se elige al arrancar el worker. Un valor
+# distinto aborta el proceso: no hay interruptor por PR ni caida silenciosa.
+_REVIEW_ENGINES = {"llm", "claude"}
+
 # Procesos que tienen contrato de secretos propio (I3). Un `required_in` con otro
 # nombre es un error al construir el descriptor: un secreto que nadie exige nunca.
-PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot"})
+PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot", "claude-runner"})
 
 # Condiciones de activacion del contrato (020 §5.3). Lo unico que la declaracion de
 # un campo no puede capturar: el nombre se declara en el `Secret` y aqui vive como se
@@ -30,6 +34,8 @@ _FEATURES: Mapping[str, Callable[[Settings, str], bool]] = {
     "vcs_github": lambda s, _process: s.vcs_provider == "github",
     "llm_legacy": lambda s, _process: s.llm_reviewer_enabled and not s.models_config.strip(),
     "llm_registry": lambda s, _process: s.llm_reviewer_enabled and bool(s.models_config.strip()),
+    # El servicio que clona la exige siempre. El worker, solo en el motor claude.
+    "claude_engine": lambda s, process: process == "claude-runner" or s.review_engine == "claude",
 }
 
 # Contrato extra por proceso que no cabe en el descriptor: el registro declarativo de
@@ -89,6 +95,43 @@ class Settings(BaseSettings):
     # o `github` (API REST). El grafo no lo conoce; solo el `build_vcs` del worker
     # y la verificacion de repo de la API leen esta clave.
     vcs_provider: str = "twg"
+
+    # Motor de la review (025, ADR-0028). `llm` compila el grafo de personas.
+    # `claude` no lo reutiliza: su grafo es otro builder. Se lee al arrancar.
+    review_engine: str = "llm"
+    # Raiz de los artefactos ya validados del motor claude. La ruta relativa
+    # (repo + pr + head_sha) la elige el worker; el CLI no escribe el fichero.
+    claude_artifact_root: str = "var/claude"
+    # Tiempo de pared y tope de turnos del subproceso. No es un presupuesto
+    # de tokens: el motor llm sigue midiendose como hasta ahora.
+    claude_timeout_s: float = 900.0
+    claude_max_turns: int = 30
+    claude_bin: str = "claude"
+    # Arbol de trabajo del servicio. Distinto del clon bare (`read-ws-`) y de
+    # la raiz donde el worker guarda el JSON ya validado.
+    claude_workspace_root: str = "var/claude-checkout"
+    claude_runner_port: int = 8098
+    # El worker llama a este URL antes del grafo. Vacio en el motor llm.
+    claude_runner_url: Annotated[
+        str,
+        Secret(required_in=frozenset({"worker"}), feature="claude_engine", expect="plain"),
+    ] = ""
+    # Bearer worker → claude-runner. La credencial de clonado es otra.
+    claude_runner_token: Annotated[
+        str,
+        Secret(required_in=frozenset({"worker", "claude-runner"}), feature="claude_engine"),
+    ] = ""
+    # Solo el servicio que clona. El worker que publica no lo exige.
+    claude_git_token: Annotated[
+        str, Secret(required_in=frozenset({"claude-runner"}), feature="claude_engine")
+    ] = ""
+    # Fichero 0600 de la sesión. Lo escriben el panel y lo lee el runner.
+    # El worker no lo abre: pregunta GET /session.
+    claude_session_path: str = "var/claude-session/session.json"
+    # Caducidad que pone el panel al guardar. El runner retira el fichero vencido.
+    claude_session_ttl_s: float = 43200.0
+    # Enlace del aviso de Teams. Vacío: el aviso sale sin URL.
+    panel_public_url: str = "http://localhost:8090"
 
     bitbucket_workspace: str = ""
     bitbucket_repo: str = ""
@@ -420,6 +463,19 @@ class Settings(BaseSettings):
             return normalized
         return value
 
+    @field_validator("review_engine", mode="before")
+    @classmethod
+    def _normalize_review_engine(cls, value: object) -> object:
+        """Normaliza el motor. Un valor desconocido aborta el arranque."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in _REVIEW_ENGINES:
+                raise ValueError(
+                    f"REVIEW_ENGINE debe ser uno de {sorted(_REVIEW_ENGINES)}, no {value!r}"
+                )
+            return normalized
+        return value
+
     @field_validator("vcs_provider", mode="before")
     @classmethod
     def _normalize_vcs_provider(cls, value: object) -> object:
@@ -620,6 +676,17 @@ def require_teams_bot_secrets(settings: Settings) -> None:
     if not is_production(settings):
         return
     _raise_if_insecure(teams_bot_insecure_secrets(settings))
+
+
+def require_claude_runner_secrets(settings: Settings) -> None:
+    """Contrato del servicio que clona y ejecuta el CLI (025 R4).
+
+    Exige el bearer y la credencial de clonado. No exige el token con el que
+    el worker publica en el PR: ese proceso no lo recibe.
+    """
+    if not is_production(settings):
+        return
+    _raise_if_insecure(secrets_for(settings, "claude-runner"))
 
 
 def _raise_if_insecure(insecure: list[str]) -> None:

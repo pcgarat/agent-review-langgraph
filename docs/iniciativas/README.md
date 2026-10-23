@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 
 # Iniciativas
@@ -18,14 +18,13 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 023 | [Eficacia del bucle de lectura](023-eficacia-del-bucle-de-lectura/spec.md) | aprobada | 🟠 Que `grep`, `read_file` y `list_dir` de 014 sirvan de verdad: dialecto portable único, contrato de lectura con metadatos, `forwarding` a las cuatro superficies, corte con tamaño real, `outline`, estado y `Reading` por review · [plan](023-eficacia-del-bucle-de-lectura/plan.md) · [todo](023-eficacia-del-bucle-de-lectura/todo.md) | 014 (medida) · 024 (S y colocación del bloque) · K1 y K2 cerrados (G1, R1, L1, P1, S1 y C1 hechas); K0 pendiente de T2/C0c (regrabación *live*) y K3 de M1 (informe por configuración) |
 | 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | aprobada | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) · [plan](024-contexto-conversacional-del-bucle/plan.md) · [todo](024-contexto-conversacional-del-bucle/todo.md) | 023 (K0 y K3) · S1–S5 (medida) van antes de las corridas *live* de 023 · A tras K3 · B solo con número · S–D pendientes |
-
 ### Orden
 
 Las iniciativas **006–012** son el desglose de una única auditoría de la calidad de
 la review del PR #3 (6 falsos positivos, 1 hallazgo invertido y 6 hallazgos reales no
 detectados —3 P1 de integración y 3 P2 de código—). La **014** amplía esa cascada,
 y **017** es la pieza compartida que salió de la deuda D17. La **008**, **009**,
-**011**, **016**, **017**, **019**, **020** y **021** ya están entregadas y
+**011**, **016**, **017**, **019**, **020**, **021** y **025** ya están entregadas y
 archivadas.
 
 ```mermaid
@@ -79,12 +78,13 @@ conservando sus IDs.
 | 020 | [Contrato de secretos declarado en el modelo](archivo/020-secretos-declarados/spec.md) | implementada | S1–S7 · contrato derivado de `Settings` (`secrets_for`) · cierra D22 · [ADR-0022](../adr/0022-contrato-de-secretos-declarado.md) · [todo](archivo/020-secretos-declarados/todo.md) |
 | 021 | [Razonamiento del revisor visible en el panel](archivo/021-razonamiento-visible/spec.md) | implementada | RZ1–RZ14 · *streaming*, sink Redis, panel en vivo e histórico · *gold set* 0.375/0.375 (superado por la regrabación con herramientas: 0.30/0.375, ver 014 RH10) · [ADR-0023](../adr/0023-razonamiento-por-streaming-y-stream-de-redis.md) · [todo](archivo/021-razonamiento-visible/todo.md) |
 | 022 | [Decisión humana desde el panel](archivo/022-decision-humana-en-el-panel/spec.md) | implementada | DH1–DH14 · el detalle muestra cada pendiente y el formulario decide (`approved`/`rejected`/`noted`) con `build_decision`; la UI deja de ofrecer «Reanudar» en pausas humanas · [todo](archivo/022-decision-humana-en-el-panel/todo.md) |
+| 025 | [Review con Claude CLI](archivo/025-revisor-claude-cli/spec.md) | implementada | Motor `claude`: CLI fuera del worker, pausa de publicación en Teams y sesión en el panel. El modo `llm` no cambia · [ADR-0028](../adr/0028-cli-claude-fuera-del-worker.md) · [todo](archivo/025-revisor-claude-cli/todo.md) |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **025**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **026**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

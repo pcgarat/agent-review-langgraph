@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -116,9 +116,9 @@ omitido hasta que exista su baseline.
 | Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `test_web_ui` (pestaña, sin `innerHTML`) |
 | Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web_ui` y `test_web` (página `/history` y `/api/history`) |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
-| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
+| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_claude_card` (lote de publicación y la tarjeta de `llm` sin `pause_kind`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
-| Perfil y worker | `test_profile`, `test_worker` |
+| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio), `test_claude_parking` (parking, aviso único, login del operador y cupo) |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
 | Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
 
@@ -141,6 +141,28 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
    de pausa); `None` si el host no lo soporta. Nunca aborta.
 6. Añade el valor a `settings._VCS_PROVIDERS`, ramifica `worker.build_vcs` y
    `api._expected_repo`, y cubre la credencial en `insecure_secrets`.
+
+### El CLI de Claude (025)
+
+El puerto es `ClaudeRunner` (`ports/claude.py`): `run` devuelve stdout. El
+worker lo llama en `ensure_claude_artifact` antes de `invoke`, y no vuelve a
+llamar si el artefacto de ese `head_sha` ya es válido. El tiempo agotado, el
+cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
+de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
+convierte en «cero hallazgos».
+
+El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
+servicio `claude-runner`, no en el worker. El argv lleva `--max-turns` y solo
+`Read,Grep,Glob`. El entorno del hijo es la lista `CHILD_ENV_ALLOW`: no se
+construye tachando secretos. El token de sesión, si el fichero sigue vigente,
+se inyecta aparte (`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. El
+checkout (`claude_runner/checkout.py`) quita los remotos después del fetch.
+
+Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
+`invoke`. El aviso sale una vez (`claim_notice`). `POST /api/claude/session`
+(`require_command_session`) escribe el fichero `0600` y suelta solo el motivo
+`session`. El cupo parkea con su aviso y, mientras `reviews:claude:notice:quota`
+sigue, el job siguiente no relanza el CLI.
 
 ### Una persona nueva
 
@@ -419,7 +441,8 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
    `ChannelTransport` (hilo por PR, edición de tarjeta).
 2. **Ingress:** `CardIngress` traduce las acciones; `sdk_handlers` cablea el SDK.
    La decisión pasa por `build_decision` y se **encola** en `reviews:jobs` (C4): el
-   bot no reanuda el grafo.
+   bot no reanuda el grafo. Un lote de `pause_kind=publication` entra por
+   `submit_batch` y no se acepta sobre una pausa del motor `llm`.
 3. Un canal nuevo (Slack, etc.) es otro consumidor de la outbox + otro ingress; el
    worker y el grafo no cambian. El SDK de Teams solo se importa en
    `sdk_client.py` / `sdk_handlers.py`.
@@ -448,6 +471,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **Ninguna persona compara su propia llamada contra un entero de presupuesto.** El
   gasto se reserva y se confirma contra el `BudgetPort` compartido; el hecho del
   corte (`budget_exhausted`) viaja, no se silencia.
+- **El token de la sesión de Claude no entra en Redis ni en el aviso.** El worker
+  pregunta `GET /session`. El fichero `0600` lo escriben el panel y lo lee el
+  runner.
 - **Un secreto, una declaración.** El contrato de arranque se deriva de `Settings`
   (`secrets_for`), no de una lista a mano: cada campo secreto declara su descriptor
   `Secret` y el valor de ejemplo vive en `PLACEHOLDER_VALUES`
