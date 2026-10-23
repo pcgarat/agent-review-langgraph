@@ -56,7 +56,10 @@ class HttpClaudeRunner:
                 raise ClaudeTimeout("claude excedio el tiempo de pared")
             if response.status_code != 200:
                 raise ClaudeProcessCrashed(f"claude-runner respondio {response.status_code}")
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise ClaudeProcessCrashed("el servicio no devolvio JSON") from exc
             stdout = payload.get("stdout") if isinstance(payload, dict) else None
             if not isinstance(stdout, str):
                 raise ClaudeProcessCrashed("el servicio no devolvio stdout")
@@ -79,7 +82,10 @@ class HttpClaudeRunner:
                 return False
             if response.status_code != 200:
                 return False
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError:
+                return False
             return bool(payload.get("active")) if isinstance(payload, dict) else False
         finally:
             if own:

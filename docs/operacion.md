@@ -131,7 +131,7 @@ ficheros versionados:
 | Tema | Variables (valor por defecto) |
 |---|---|
 | Entorno | `ENVIRONMENT` (`development`; `production` activa el *fail-closed*), `LOG_LEVEL` (`INFO`) |
-| Motor | `REVIEW_ENGINE` (`llm` \| `claude`, por defecto `llm`; [ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)). Se lee al arrancar: cambiarlo es reiniciar el worker. `llm` compila el grafo de personas. `claude` compila el otro ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md)): el worker llama al `claude-runner` antes del grafo, guarda el stdout si es una lista de hallazgos y no vuelve a llamar si ese `head_sha` ya es válido. Sin sesión, el job pasa a `reviews:claude:parked` y el bucle sigue. El cupo también parkea, con otro aviso, y no se reintenta. Cualquier otro valor aborta al construir `Settings`. `CLAUDE_ARTIFACT_ROOT` (`var/claude`): JSON ya validado. `CLAUDE_RUNNER_URL` (vacío en `llm`). `CLAUDE_TIMEOUT_S` (900) y `CLAUDE_MAX_TURNS` (30): topes del subproceso, no de tokens. `CLAUDE_WORKSPACE_ROOT`: árbol del servicio, distinto del clon *bare*. `CLAUDE_SESSION_PATH` y `CLAUDE_SESSION_TTL_S` (43200): fichero de sesión y caducidad que anota el panel. `PANEL_PUBLIC_URL`: enlace del aviso |
+| Motor | `REVIEW_ENGINE` (`llm` \| `claude`, por defecto `llm`; [ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)). Se lee al arrancar: cambiarlo es reiniciar el worker. `llm` compila el grafo de personas. `claude` compila el otro ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md)): el worker llama al `claude-runner` antes del grafo, guarda el stdout si es una lista de hallazgos y no vuelve a llamar si ese `head_sha` ya es válido. Sin sesión, el job pasa a `reviews:claude:parked` y el bucle sigue (una reanudación con decisión no). El job que agota el cupo parkea y no se reintenta; los siguientes esperan como `quota-wait` hasta que caduca el aviso. Cualquier otro valor aborta al construir `Settings`. `CLAUDE_ARTIFACT_ROOT` (`var/claude`): JSON ya validado. `CLAUDE_RUNNER_URL` (vacío en `llm`). `CLAUDE_TIMEOUT_S` (900) y `CLAUDE_MAX_TURNS` (30): topes del subproceso, no de tokens. `CLAUDE_WORKSPACE_ROOT`: árbol del servicio, distinto del clon *bare*. `CLAUDE_SESSION_PATH` y `CLAUDE_SESSION_TTL_S` (43200): fichero de sesión y caducidad que anota el panel. `PANEL_PUBLIC_URL`: enlace del aviso |
 | VCS | `VCS_PROVIDER` (`twg` \| `github`). Bitbucket: `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO`, `TWG_BIN`, `TWG_BBC_TOKEN`, `TWG_SITE`, `TWG_USER`, `TWG_TOKEN` (Jira), `TWG_TIMEOUT_S` (60). GitHub: `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_API_URL` |
 | Infraestructura | `REDIS_URL`, `DATABASE_URL`, `POSTGRES_PASSWORD` |
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
@@ -313,17 +313,21 @@ curl -sS -X POST "$REVIEWS_URL/webhook/tooling" \
 | `GET` | `/profile/{repo}` | — | Ruta del perfil cargado (ignora `{repo}`) |
 
 Cuerpo de una decisión:
-`{"actor": "ana", "items": [{"finding_id": "…", "outcome": "approved|rejected|noted", "note": ""}]}`.
+`{"actor": "ana", "items": [{"finding_id": "…", "outcome": "approved|rejected|noted|dropped", "note": ""}]}`.
+En la pausa del motor `llm` valen `approved`, `rejected` y `noted`. En la de
+publicación (`pause_kind=publication`) valen `approved` (publicar) y `dropped`
+(no publicar).
 
 ```bash
 agent_review list                                       # reviews pausadas y orden sugerida
 agent_review decide '<review_key>' --actor ana \
   --approve <id> --reject <id> --note "falso positivo" --noted <id>
+agent_review decide '<review_key>' --actor ana --drop <id>   # pausa de publicación
 ```
 
 La `review_key` lleva `/` y `:` (`cqm/emotivoo-v2:430:<sha>:<pipeline>`): ponla entre
 comillas. Exit `1` = no está pausada; exit `2` = decisión rechazada (falta algún
-pendiente, un id es ajeno o se usó `expired`).
+pendiente, un id es ajeno, se usó `expired` o el resultado no vale en esa pausa).
 
 ### Panel de operación (`web`, perfil `panel`)
 
@@ -345,7 +349,7 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
 | `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
-| `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` con `approved`/`rejected`/`noted`; la construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana o no cubre **todos** los pendientes; `503` si Redis no responde |
+| `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}`. En una pausa de arreglo, `approved`/`rejected`/`noted`; en una de publicación, `approved` (publicar) y `dropped` (no publicar). La construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana, no cubre **todos** los pendientes o el resultado no vale en esa pausa; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
 | `GET` | `/claude` | `operador` | Formulario de la sesión de Claude. El `lector` recibe `403` |
@@ -362,8 +366,10 @@ publicó (solo «cancelar lo pendiente»).
 Una pausa humana se **decide** desde el detalle de la review (022): el formulario muestra
 cada hallazgo pendiente y envía la `HitlDecision` al endpoint de decisión, que la
 construye con `build_decision` y la encola; el worker reanuda el mismo hilo (ADR-0008).
-La UI ya no ofrece «Reanudar» en pausas humanas: decidir es la acción y `expired` es del
-sistema (TTL).
+En una pausa de arreglo las opciones son Aprobar, Rechazar y Anotar, y aprobar solo
+autoriza a intentar el arreglo. En una de publicación son Publicar y No publicar.
+La UI ya no ofrece «Reanudar» en pausas humanas: decidir es la acción. `expired` es del
+sistema (TTL) y, en la pausa de publicación, el barrido reanuda con `dropped`.
 
 Con la sesión en la cookie, un comando solo se acepta como `fetch` JSON del mismo
 origen (`Content-Type: application/json`, y `Origin`/`Sec-Fetch-Site` del propio panel

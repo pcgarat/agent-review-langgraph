@@ -152,17 +152,25 @@ de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
 convierte en «cero hallazgos».
 
 El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
-servicio `claude-runner`, no en el worker. El argv lleva `--max-turns` y solo
-`Read,Grep,Glob`. El entorno del hijo es la lista `CHILD_ENV_ALLOW`: no se
-construye tachando secretos. El token de sesión, si el fichero sigue vigente,
-se inyecta aparte (`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. El
-checkout (`claude_runner/checkout.py`) quita los remotos después del fetch.
+servicio `claude-runner`, no en el worker. El argv lleva `--max-turns`,
+`--allowedTools Read,Grep,Glob`, `--disallowedTools` (Bash, Edit, Write,
+NotebookEdit, WebFetch, WebSearch) y `--permission-mode dontAsk`. El entorno
+del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando secretos. El
+token de sesión, si el fichero sigue vigente, se inyecta aparte
+(`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. `CLAUDE_CONFIG_DIR` apunta
+fuera del checkout. El checkout (`claude_runner/checkout.py`) quita los remotos
+después del fetch y no arranca el CLI si alguno sigue; `core.symlinks` queda
+en falso. Git corre con un entorno sin los tokens del proceso y con tope de
+tiempo.
 
 Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
-`invoke`. El aviso sale una vez (`claim_notice`). `POST /api/claude/session`
+`invoke`, salvo que el job ya traiga `decision` o `fix_resolution`. El aviso
+sale una vez (`claim_notice`). `POST /api/claude/session`
 (`require_command_session`) escribe el fichero `0600` y suelta solo el motivo
-`session`. El cupo parkea con su aviso y, mientras `reviews:claude:notice:quota`
-sigue, el job siguiente no relanza el CLI.
+`session`. El job que agota el cupo parkea con `quota` y no se reintenta.
+Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
+`quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
+artefacto ya válido no espera.
 
 ### Una persona nueva
 

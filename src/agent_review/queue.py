@@ -20,7 +20,9 @@ DEAD_LETTER_KEY = "reviews:jobs:dead"
 # `reviews:jobs` para que el bucle no los vuelva a sacar en la misma vuelta.
 PARKED_KEY = "reviews:claude:parked"
 NOTICE_KEY_PREFIX = "reviews:claude:notice:"
-PARK_REASONS = frozenset({"session", "quota"})
+# `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
+# siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
+PARK_REASONS = frozenset({"session", "quota", "quota-wait"})
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve
 # el worker de fixes. Vive en su propia clave para no mezclarse con las reviews.
@@ -175,16 +177,21 @@ class RedisReviewQueue:
 
     def release_parked(self, *, reason: str) -> list[ReviewRequest]:
         _check_park_reason(reason)
+        # Un solo script: entre LREM y RPUSH una caída perdía el job.
+        raw_items = self._client.eval(
+            _RELEASE_PARKED,
+            2,
+            self._parked_key,
+            self._key,
+            reason,
+        )
         released: list[ReviewRequest] = []
-        for item in self._client.lrange(self._parked_key, 0, -1):
+        for item in raw_items or []:
             raw = item.decode() if isinstance(item, bytes) else str(item)
-            parsed = _parse_park(raw)
-            if parsed is None or parsed[0] != reason:
-                continue
-            if not self._client.lrem(self._parked_key, 1, raw):
-                continue
-            self._client.rpush(self._key, parsed[1].model_dump_json())
-            released.append(parsed[1])
+            try:
+                released.append(ReviewRequest.model_validate_json(raw))
+            except ValueError:
+                logger.warning("Job ilegible al soltar el parking de Claude")
         return released
 
     def claim_notice(self, kind: str, *, ttl_s: float | None = None) -> bool:
@@ -297,6 +304,38 @@ def _parse_dead_letter(item: str | bytes) -> dict[str, object] | None:
     except ValueError:
         return None
     return entry if isinstance(entry, dict) else None
+
+
+# Mueve, en una operación, las entradas cuyo `reason` coincide. El payload es
+# `{"reason": "<motivo>", "request": <ReviewRequest>}` (json.dumps).
+_RELEASE_PARKED = """
+local reason = ARGV[1]
+local prefix = '{"reason": "' .. reason .. '"'
+local items = redis.call('LRANGE', KEYS[1], 0, -1)
+local kept = {}
+local released = {}
+for _, raw in ipairs(items) do
+  if string.sub(raw, 1, #prefix) == prefix then
+    local at = string.find(raw, '"request":', 1, true)
+    local brace = at and string.find(raw, '{', at, true) or nil
+    if brace then
+      table.insert(released, string.sub(raw, brace, #raw - 1))
+    else
+      table.insert(kept, raw)
+    end
+  else
+    table.insert(kept, raw)
+  end
+end
+redis.call('DEL', KEYS[1])
+if #kept > 0 then
+  redis.call('RPUSH', KEYS[1], unpack(kept))
+end
+if #released > 0 then
+  redis.call('RPUSH', KEYS[2], unpack(released))
+end
+return released
+"""
 
 
 def _check_park_reason(reason: str) -> None:

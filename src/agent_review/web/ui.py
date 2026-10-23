@@ -392,6 +392,23 @@ def _decision_section(trace: ReviewTrace, paused: PausedItem | None, session: Se
             '<section><h2>Decisión</h2><p class="empty">Solo el rol operador decide.</p></section>'
         )
     endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/decision"
+    if paused.publication:
+        options = (
+            '<option value="approved">Publicar</option><option value="dropped">No publicar</option>'
+        )
+        hint = (
+            '<p class="meta">Publicar escribe el hallazgo en el PR. No publicar lo deja fuera.</p>'
+        )
+    else:
+        options = (
+            '<option value="approved">Aprobar</option>'
+            '<option value="rejected">Rechazar</option>'
+            '<option value="noted">Anotar</option>'
+        )
+        hint = (
+            '<p class="meta">Aprobar solo autoriza a <em>intentar</em> el arreglo: los '
+            "temas protegidos y las rutas nunca-auto siguen mandando (ADR-0009).</p>"
+        )
     rows = [
         "<tr>"
         f"<td><strong>{_esc(item.title)}</strong><br>"
@@ -399,19 +416,13 @@ def _decision_section(trace: ReviewTrace, paused: PausedItem | None, session: Se
         f"{_esc(item.proposed_action.value)} · {_esc(item.file)}:{_esc(item.line)}</span><br>"
         f"{_esc(item.why_it_matters)}</td>"
         f'<td><select name="outcome" data-finding="{_esc(item.finding_id)}">'
-        f'<option value="approved">Aprobar</option>'
-        f'<option value="rejected">Rechazar</option>'
-        f'<option value="noted">Anotar</option></select></td>'
+        f"{options}</select></td>"
         f'<td><input name="note" data-finding="{_esc(item.finding_id)}" '
         f'placeholder="nota opcional"></td>'
         "</tr>"
         for item in paused.pending
     ]
     table = _table(["Hallazgo", "Resultado", "Nota"], rows)
-    hint = (
-        '<p class="meta">Aprobar solo autoriza a <em>intentar</em> el arreglo: los '
-        "temas protegidos y las rutas nunca-auto siguen mandando (ADR-0009).</p>"
-    )
     return (
         "<section><h2>Decisión</h2>"
         f"{hint}{table}"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import logging
 import threading
 import time
@@ -681,13 +682,21 @@ def ensure_claude_artifact(
     caído: no se guarda y se relanza para que el job se reintente. El cupo
     no se reintenta. El grafo no se arranca aquí.
     """
-    if store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha) is not None:
-        return
-    stdout = runner.run(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
-    if not store.save(stdout, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha):
-        raise ClaudeInvalidOutput(
-            f"stdout de claude no es una lista de hallazgos para {request.review_key}"
-        )
+    path = store.path_for(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Dos workers no lanzan el CLI a la vez por el mismo `head_sha`.
+    with path.with_suffix(".lock").open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        loaded = store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        if loaded is not None:
+            return
+        stdout = runner.run(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        if not store.save(
+            stdout, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha
+        ):
+            raise ClaudeInvalidOutput(
+                f"stdout de claude no es una lista de hallazgos para {request.review_key}"
+            )
 
 
 def process_request(
@@ -1268,11 +1277,15 @@ def sweep_expired(
         # TTL (`FIX_VERIFY_TTL_S`, F20), no se reanuda como "sin decision".
         if review.kind is not PauseKind.HUMAN:
             continue
+        # La pausa de publicación no tiene arreglo que autorizar: el silencio
+        # es `dropped`. `expired` seguiría escribiendo el resumen del motor llm.
+        publication = review.human_request.pause_kind == "publication"
+        outcome = DecisionOutcome.DROPPED if publication else DecisionOutcome.EXPIRED
         expired = HitlDecision(
             review_key=review.review_key,
             actor="system:ttl",
             items=[
-                FindingDecision(finding_id=item.finding_id, outcome=DecisionOutcome.EXPIRED)
+                FindingDecision(finding_id=item.finding_id, outcome=outcome)
                 for item in review.human_request.pending
             ],
         )
@@ -1281,8 +1294,9 @@ def sweep_expired(
         paused.mark_expired_enqueued(review.review_key, now=now)
         enqueued.append(request)
         logger.warning(
-            "Pausa de %s vencida; se reanuda como sin decision (%d hallazgo(s))",
+            "Pausa de %s vencida; se reanuda como %s (%d hallazgo(s))",
             review.review_key,
+            "sin publicar" if publication else "sin decision",
             len(expired.items),
         )
     return enqueued
@@ -1439,6 +1453,21 @@ def claude_session_ready(queue: ReviewQueue, probe: Callable[[], bool] | None) -
     return active
 
 
+def release_quota_wait(queue: ReviewQueue) -> list[ReviewRequest]:
+    """Suelta `quota-wait` cuando el aviso de cupo ya caducó.
+
+    El job que agotó el cupo (`quota`) se queda. Soltarlo volvería a gastar
+    el límite.
+    """
+    try:
+        if queue.notice_held("quota"):
+            return []
+        return queue.release_parked(reason="quota-wait")
+    except Exception:
+        logger.exception("No se pudo soltar la espera de cupo de Claude")
+        return []
+
+
 def park_claude_job(
     queue: ReviewQueue,
     request: ReviewRequest,
@@ -1449,10 +1478,13 @@ def park_claude_job(
 ) -> None:
     """Mueve el job a `reviews:claude:parked` y, la primera vez, avisa."""
     queue.park(request, reason=reason)
+    notice = _PARK_NOTICES.get(reason)
+    if notice is None:
+        return
     ttl = _QUOTA_COOLDOWN_S if reason == "quota" else None
     if not queue.claim_notice(reason, ttl_s=ttl) or chat is None:
         return
-    title, body = _PARK_NOTICES[reason]
+    title, body = notice
     chat.notify(
         repo=request.repo,
         pr_id=request.pr_id,
@@ -1483,9 +1515,19 @@ def dispatch_job(
     claude_session: Callable[[], bool] | None = None,
     park_link: str | None = None,
 ) -> None:
-    """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`."""
-    if not claude_session_ready(queue, claude_session):
-        park_claude_job(queue, request, reason="session", chat=chat, link=park_link)
+    """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`.
+
+    Una reanudación (`decision` o `fix_resolution`) no necesita el CLI: parquearla
+    por la sesión dejaría la decisión detrás de un login que no hace falta.
+    """
+    release_quota_wait(queue)
+    ready = claude_session_ready(queue, claude_session)
+    needs_cli = request.decision is None and request.fix_resolution is None
+    if needs_cli and not ready:
+        try:
+            park_claude_job(queue, request, reason="session", chat=chat, link=park_link)
+        except Exception:
+            logger.exception("No se pudo parquear %s por falta de sesion", request.review_key)
         return
     _consume(
         queue,
@@ -1546,7 +1588,10 @@ def _consume(
         _on_cancelled(graph, request, paused=paused)
         return
     if _quota_on_cooldown(queue, request, claude_runner=claude_runner, claude_store=claude_store):
-        park_claude_job(queue, request, reason="quota", chat=chat, link=park_link)
+        try:
+            park_claude_job(queue, request, reason="quota-wait", chat=chat, link=park_link)
+        except Exception:
+            logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
         return
     request = _with_base_sha(request, vcs)
     try:
@@ -1568,6 +1613,29 @@ def _consume(
                 ReviewSummary.from_outcome(
                     outcome, finished_at=datetime.now(UTC), reasoning=reasoning
                 )
+            )
+    except ClaudeInvalidOutput:
+        logger.warning("Stdout de Claude invalido en %s; se reintenta", request.review_key)
+        if request.attempts == 0 and chat is not None:
+            try:
+                chat.notify(
+                    repo=request.repo,
+                    pr_id=request.pr_id,
+                    review_key=request.review_key,
+                    title="Salida de Claude invalida",
+                    body=(
+                        "No cumple el contrato de hallazgos. Se reintentara. No se ha publicado."
+                    ),
+                )
+            except Exception:
+                logger.exception("No se pudo avisar la salida invalida de %s", request.review_key)
+        try:
+            _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        except Exception:
+            logger.exception(
+                "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
+                request.review_key,
+                request.model_dump_json(),
             )
     except ClaudeQuotaExceeded:
         # No se reintenta: otra pasada volvería a gastar el cupo, y entrar al
@@ -1619,6 +1687,15 @@ def _quota_on_cooldown(
     if claude_runner is None or claude_store is None:
         return False
     if request.decision is not None or request.fix_resolution is not None:
+        return False
+    try:
+        if (
+            claude_store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+            is not None
+        ):
+            return False
+    except Exception:
+        logger.exception("No se pudo leer el artefacto de Claude durante el enfriamiento")
         return False
     try:
         return queue.notice_held("quota")
@@ -1779,6 +1856,9 @@ def run_forever(
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
         now = time.monotonic()
         if now - last_sweep >= sweep_s:
+            if claude_session is not None:
+                claude_session_ready(queue, claude_session)
+            release_quota_wait(queue)
             sweep_pending(settings, queue, pending=pending_store)
             sweep_expired(paused_store, queue)
             sweep_fix_expired(paused_store, queue)

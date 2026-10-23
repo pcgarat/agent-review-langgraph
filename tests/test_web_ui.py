@@ -253,6 +253,19 @@ def test_el_formulario_de_decision_pinta_cada_pendiente(panel: Panel) -> None:
     assert "ADR-0009" in body, "el aviso de que aprobar solo autoriza a intentarlo"
 
 
+def test_la_pausa_de_publicacion_ofrece_publicar_o_no(panel: Panel) -> None:
+    panel.model.state().paused.human[0].publication = True
+    panel.model.traces[_HUMAN_KEY] = _trace(
+        state="paused", pause_kind="human", review_key=_HUMAN_KEY
+    )
+    body = panel.client.get(f"/review/{_HUMAN_KEY}").text
+    assert "Publicar" in body
+    assert "No publicar" in body
+    assert 'value="dropped"' in body
+    assert 'value="rejected"' not in body
+    assert "ADR-0009" not in body
+
+
 def test_el_formulario_de_decision_escapa_el_texto_del_pr(panel: Panel) -> None:
     panel.model.state().paused.human[0].pending = [_pending("f1", title=_XSS, why_it_matters=_XSS)]
     panel.model.traces[_HUMAN_KEY] = _trace(

@@ -1227,6 +1227,43 @@ def test_sweep_expired_reencola_sin_decision() -> None:
     assert paused.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
 
 
+def test_sweep_expired_en_publicacion_es_dropped() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused = InMemoryPausedStore(ttl_s=60.0)
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    approval = ApprovalRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pause_kind="publication",
+        pending=[
+            PendingDecision(
+                finding_id="w1",
+                proposed_action=FindingAction.PUBLISH,
+                reason="publicar",
+                matched_rule="claude",
+                policy_version="1",
+                title="T",
+                file="a.php",
+                line=1,
+                severity=Severity.P1,
+            )
+        ],
+    )
+    paused.pause(request, approval)
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    sweep_expired(paused, queue, now=future)
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.items[0].outcome is DecisionOutcome.DROPPED
+
+
 # ---------------------------------------------------------------------------
 # Fase 3-E7 (F17): worker kind-aware. La pausa de fix encola la wave y reanuda
 # con el `FixResolutions`; nunca pasa por el HITL.

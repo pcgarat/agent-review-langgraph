@@ -137,6 +137,31 @@ def test_build_decision_rechaza_expired() -> None:
         build_decision(paused, actor="alice", items=items, reviewed_key=REVIEW_KEY)
 
 
+def test_cli_decide_drop_en_publicacion(stores) -> None:
+    paused, queue = stores
+    approval = _approval().model_copy(update={"pause_kind": "publication"})
+    paused.pause(_request(), approval)
+
+    code = cli.main(["decide", REVIEW_KEY, "--actor", "alice", "--drop", "f1"])
+
+    assert code == 0
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.outcome_for("f1") is DecisionOutcome.DROPPED
+
+
+def test_cli_decide_reject_en_publicacion_no_encola(stores, capsys) -> None:
+    paused, queue = stores
+    approval = _approval().model_copy(update={"pause_kind": "publication"})
+    paused.pause(_request(), approval)
+
+    code = cli.main(["decide", REVIEW_KEY, "--actor", "alice", "--reject", "f1"])
+
+    assert code == 2
+    assert "no permitido" in capsys.readouterr().err
+    assert len(queue) == 0
+
+
 def test_build_decision_rechaza_review_key_ajena() -> None:
     paused = InMemoryPausedStore().pause(_request(), _approval())
     items = [FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)]

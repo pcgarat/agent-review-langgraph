@@ -283,7 +283,8 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
         pending=pending,
         pause_kind=pause_kind,
         # La decision debe cubrir todos los pendientes (`build_decision`): la pista
-        # los nombra todos; se cambia `--approve` por `--reject`/`--noted` donde toque.
+        # publica todos (`--approve`). En la pausa de arreglo se cambia por
+        # `--reject`/`--noted`; en la de publicación, por `--drop`.
         # Los ids pueden venir del LLM (espacios, parentesis...): se citan para que
         # la pista se pueda pegar tal cual en la shell.
         command_hint=(
@@ -1362,9 +1363,14 @@ def _publish_review(
         if decision.publication is PublicationMode.DROP:
             continue
         # 025: `dropped` no reescribe el sello. En publish es un DROP:
-        # ni inline ni resumen. `rejected` sigue en el resumen.
-        if human is not None and human.outcome_for(_finding_id(finding)) is DecisionOutcome.DROPPED:
-            continue
+        # ni inline ni resumen. En el motor claude solo `approved` se publica:
+        # `expired`, `rejected` y `noted` dejan el PR en silencio.
+        if human is not None:
+            outcome = human.outcome_for(_finding_id(finding))
+            if outcome is DecisionOutcome.DROPPED:
+                continue
+            if state.get("silence_without_choice") and outcome is not DecisionOutcome.APPROVED:
+                continue
         publishable.append(finding)
     # Solo el grafo claude escribe el campo. Sin eleccion y sin fuente
     # estatica sin cubrir, no se comenta el PR aunque la cobertura sea parcial.
@@ -1400,6 +1406,10 @@ def _publish_review(
             request.thread_id,
             "completa" if complete else "degradada",
         )
+        # El comentario ya está. Devolver vacío dejaría `published` a falso y,
+        # con `silence_without_choice`, el aviso diría que no se escribió nada.
+        if state.get("silence_without_choice"):
+            return {"published": True}
         return {}
     if unavailable:
         # La review NO esta completa: no se puede leer "sin hallazgos" como
@@ -1528,16 +1538,21 @@ def _notify_review(
     request = ReviewRequest.model_validate(state["request"])
     try:
         pr = vcs.get_pull_request(request.repo, request.pr_id)
+        body = (
+            _render_publication_notice(state)
+            if state.get("silence_without_choice")
+            else _render_teams_body(
+                _merged(state),
+                state.get("decisions", []),
+                inlined_count=state.get("inlined_count", 0),
+            )
+        )
         chat.notify(
             repo=request.repo,
             pr_id=request.pr_id,
             review_key=request.review_key,
             title=f"Review de {request.repo}#{request.pr_id}",
-            body=_render_teams_body(
-                _merged(state),
-                state.get("decisions", []),
-                inlined_count=state.get("inlined_count", 0),
-            ),
+            body=body,
             link=pr.url or None,
         )
     except Exception as exc:
@@ -1938,6 +1953,20 @@ def _render_incomplete_header(
         f"analisis y su ausencia de hallazgos no equivale a un PR limpio. {detail}",
         "",
     ]
+
+
+def _render_publication_notice(state: ReviewState) -> str:
+    """Aviso del motor claude: cuenta lo publicado, no lo que sigue pendiente."""
+    human = state.get("human_decisions")
+    published = 0
+    left_out = 0
+    for finding in _merged(state):
+        outcome = human.outcome_for(_finding_id(finding)) if human is not None else None
+        if outcome is DecisionOutcome.APPROVED:
+            published += 1
+        else:
+            left_out += 1
+    return f"Se publicaron {published} hallazgo(s); {left_out} quedaron fuera."
 
 
 def _render_teams_body(

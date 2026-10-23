@@ -8,6 +8,7 @@ credenciales. El servicio no es el clon bare ni recibe el token de publicación.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,12 @@ import yaml
 from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.adapters.claude_cli import SubprocessClaudeRunner, claude_argv
 from agent_review.adapters.claude_client import HttpClaudeRunner
-from agent_review.claude_runner.checkout import checkout_directory, drop_push_remotes
+from agent_review.claude_runner.checkout import (
+    CheckoutError,
+    checkout_directory,
+    drop_push_remotes,
+    prepare_checkout,
+)
 from agent_review.domain.models import ReviewRequest
 from agent_review.errors import PermanentError, TransientError
 from agent_review.ports.claude import (
@@ -100,13 +106,14 @@ def test_los_errores_del_puerto_se_distinguen() -> None:
     assert not issubclass(ClaudeQuotaExceeded, TransientError)
 
 
-def test_el_argv_lleva_el_tope_de_turnos_y_no_nombra_escritura() -> None:
+def test_el_argv_limita_herramientas_y_no_pregunta() -> None:
     argv = claude_argv([sys.executable, "claude"], max_turns=7)
-    indice = argv.index("--max-turns")
-    assert argv[indice + 1] == "7"
-    texto = " ".join(argv)
-    for herramienta in ("Bash", "Edit", "Write", "NotebookEdit"):
-        assert herramienta not in texto
+    assert argv[argv.index("--max-turns") + 1] == "7"
+    assert argv[argv.index("--allowedTools") + 1] == "Read,Grep,Glob"
+    denied = argv[argv.index("--disallowedTools") + 1].split(",")
+    for herramienta in ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"):
+        assert herramienta in denied
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
 
 
 def test_el_subproceso_no_hereda_credenciales(tmp_path: Path) -> None:
@@ -130,8 +137,9 @@ def test_el_subproceso_no_hereda_credenciales(tmp_path: Path) -> None:
     visto = json.loads(stdout)
     assert "--max-turns" in visto["argv"]
     assert "4" in visto["argv"]
-    for herramienta in ("Bash", "Edit", "Write", "NotebookEdit"):
-        assert herramienta not in " ".join(visto["argv"])
+    assert visto["argv"][visto["argv"].index("--allowedTools") + 1] == "Read,Grep,Glob"
+    assert "--disallowedTools" in visto["argv"]
+    assert "dontAsk" in visto["argv"]
     for nombre in _SECRETOS:
         assert nombre not in visto["env"]
         assert f"secreto-{nombre}" not in stdout
@@ -212,6 +220,45 @@ def test_stdout_invalido_no_entra_al_grafo_y_el_job_se_reintenta(tmp_path: Path)
     assert retried.attempts == 1
 
 
+def test_stdout_invalido_avisa_una_vez_y_no_en_el_reintento(tmp_path: Path) -> None:
+    class _Chat:
+        def __init__(self) -> None:
+            self.avisos: list[dict[str, object]] = []
+
+        def notify(self, **kwargs: object) -> None:
+            self.avisos.append(kwargs)
+
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(stdout="esto no es una lista")
+    chat = _Chat()
+    queue = InMemoryReviewQueue()
+    request = _request()
+
+    _consume(
+        queue,
+        _Graph(),
+        request,
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+        chat=chat,
+    )
+    retried = queue.dequeue()
+    assert retried is not None
+    _consume(
+        queue,
+        _Graph(),
+        retried,
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+        chat=chat,
+    )
+
+    assert len(chat.avisos) == 1
+    assert "No se ha publicado" in str(chat.avisos[0]["body"])
+
+
 def test_un_proceso_caido_no_invoca_el_grafo(tmp_path: Path) -> None:
     store = ClaudeArtifactStore(root=tmp_path)
     runner = _Runner(error=ClaudeProcessCrashed("murio"))
@@ -265,6 +312,19 @@ def test_el_cliente_http_traduce_el_cupo_y_devuelve_stdout_sin_validar() -> None
     )
     assert runner.run(repo="r", pr_id=1, head_sha="abc") == "no es json"
 
+    def roto(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, text="no es json")
+
+    runner = HttpClaudeRunner(
+        url="http://claude-runner",
+        token="",
+        timeout_s=1,
+        client=httpx.Client(transport=httpx.MockTransport(roto)),
+    )
+    with pytest.raises(ClaudeProcessCrashed, match="JSON"):
+        runner.run(repo="r", pr_id=1, head_sha="abc")
+
 
 def test_el_checkout_no_es_el_clon_bare(tmp_path: Path) -> None:
     bare = Path(tempfile.mkdtemp(prefix=BARE_CLONE_PREFIX))
@@ -307,6 +367,122 @@ def test_quitar_remotos_borra_la_url_con_token(tmp_path: Path) -> None:
     config = (repo / ".git" / "config").read_text(encoding="utf-8")
     assert listed.stdout.strip() == ""
     assert token not in config
+
+
+def _git_falso(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "git"
+    script.write_text(body, encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def test_prepare_checkout_redacta_el_token_si_el_fetch_falla(tmp_path: Path) -> None:
+    url_file = tmp_path / "url"
+    git_bin = _git_falso(
+        tmp_path,
+        "#!/bin/sh\n"
+        'if [ "$1" = "-C" ]; then shift 2; fi\n'
+        f'if [ "$1" = "remote" ] && [ "$2" = "add" ]; then\n'
+        f'  printf "%s" "$4" > "{url_file}"\n'
+        "  exit 0\n"
+        "fi\n"
+        f'if [ "$1" = "fetch" ]; then echo "fatal: $(cat "{url_file}")" >&2; exit 1; fi\n'
+        "exit 0\n",
+    )
+    token = "secreto-de-clonado"
+    with pytest.raises(CheckoutError) as exc:
+        prepare_checkout(
+            tmp_path / "arbol",
+            repo="cqm/demo",
+            head_sha="abc",
+            git_token=token,
+            git_bin=str(git_bin),
+            timeout_s=5,
+        )
+    assert token not in str(exc.value)
+    assert token in url_file.read_text(encoding="utf-8")
+
+
+def test_si_el_remoto_no_se_quita_el_checkout_no_queda_listo(tmp_path: Path) -> None:
+    git_bin = _git_falso(
+        tmp_path,
+        "#!/bin/sh\n"
+        'if [ "$1" = "-C" ]; then shift 2; fi\n'
+        'if [ "$1" = "remote" ] && [ "$2" = "remove" ]; then exit 1; fi\n'
+        'if [ "$1" = "remote" ]; then echo origin; exit 0; fi\n'
+        "exit 0\n",
+    )
+    with pytest.raises(CheckoutError, match="remoto"):
+        prepare_checkout(
+            tmp_path / "arbol",
+            repo="cqm/demo",
+            head_sha="abc",
+            git_token="secreto-de-clonado",
+            git_bin=str(git_bin),
+            timeout_s=5,
+        )
+
+
+def test_prepare_checkout_deja_el_arbol_en_el_sha_sin_remotos(tmp_path: Path) -> None:
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b.c"}
+    env["GIT_COMMITTER_NAME"] = "a"
+    env["GIT_COMMITTER_EMAIL"] = "a@b.c"
+    subprocess.run(["git", "init", "-q", str(origin)], check=True, capture_output=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(origin), "config", "uploadpack.allowReachableSHA1InWant", "true"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    (origin / "f.txt").write_text("hola\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(origin), "add", "f.txt"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    subprocess.run(
+        ["git", "-C", str(origin), "commit", "-q", "-m", "uno"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(origin), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    ).stdout.strip()
+    dest = tmp_path / "checkout"
+    token = "secreto-de-clonado"
+    prepare_checkout(
+        dest,
+        repo="cqm/demo",
+        head_sha=sha,
+        git_token=token,
+        remote_url=origin.as_uri(),
+        timeout_s=20,
+    )
+    assert (dest / "f.txt").read_text(encoding="utf-8") == "hola\n"
+    listed = subprocess.run(
+        ["git", "-C", str(dest), "remote"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    config = (dest / ".git" / "config").read_text(encoding="utf-8")
+    symlinks = subprocess.run(
+        ["git", "-C", str(dest), "config", "--get", "core.symlinks"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert listed.stdout.strip() == ""
+    assert token not in config
+    assert symlinks.stdout.strip() == "false"
 
 
 def test_el_compose_no_pasa_el_token_de_publicacion_al_runner() -> None:

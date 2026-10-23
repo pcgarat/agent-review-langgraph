@@ -201,9 +201,14 @@ No hay `verify`, `policy` ni `fix_dispatch`. El cargador lee el artefacto ya
 validado y tira con L0 la cita que no está en el diff. El sello marca cada
 hallazgo que pasó con acción `publish` y `publication=full`; no ejecuta la
 política. `dropped` no se publica (ni inline ni resumen) y no es `rejected`.
-Con `silence_without_choice`, si no queda nada elegido y no hay una fuente
-estática sin cubrir, `publish` no escribe en el PR. `notify` manda entonces un
-aviso corto. Una fuente estática sin cubrir sigue comentando el PR. `stamp`
+Con `silence_without_choice`, solo un `approved` se publica. `dropped`,
+`rejected`, `noted` y el `expired` del TTL dejan el hallazgo fuera; si no queda
+nada elegido y no hay una fuente estática sin cubrir, `publish` no escribe en
+el PR. El barrido del TTL, en esta pausa, reanuda con `dropped` (en la pausa
+del motor `llm` sigue siendo `expired`). `notify` manda entonces un aviso
+corto; si sí se publicó, el aviso cuenta publicados y dejados fuera, no los
+pendientes de la política. Una fuente estática sin cubrir sigue comentando el
+PR. `stamp`
 deja `pause_kind=publication` en el estado y `build_approval` lo copia a la
 pausa: el worker reconstruye la `ApprovalRequest` desde el estado, no desde el
 `interrupt`. La tarjeta de Teams, con ese campo, ofrece tres lotes (solo
@@ -215,10 +220,15 @@ hallazgos. Si ese `head_sha` ya es válido, no vuelve a llamar. Un stdout
 inválido o un proceso caído no entra al grafo y el job se reintenta. Sin
 sesión (`GET /session` responde no), el job sale a `reviews:claude:parked` y
 el bucle sigue con el resto de la cola; el primer caso encola un aviso con
-enlace al panel y el segundo no. El token vive en un fichero `0600` que el
-worker no abre. El cupo parkea con otro aviso, no entra al grafo y, mientras
-dura el enfriamiento, los jobs siguientes no vuelven a llamar al CLI. El login
-del operador suelta solo lo parqueado por la sesión.
+enlace al panel y el segundo no. Una reanudación que ya trae `decision` o
+`fix_resolution` no se parkea: no necesita el CLI. El token vive en un fichero
+`0600` que el worker no abre. El job que agota el cupo parkea con `reason`
+`quota`, no entra al grafo y no se reintenta. Mientras dura el aviso (900 s),
+los jobs siguientes salen a la misma lista con `reason` `quota-wait` y vuelven
+a la cola cuando el aviso caduca; un artefacto ya válido de ese `head_sha` no
+espera. El login del operador suelta solo lo parqueado por la sesión. El
+barrido de cola vacía vuelve a mirar la sesión y suelta `quota-wait` si el
+aviso ya no está.
 
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
@@ -377,7 +387,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
-| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session` o `quota` + `ReviewRequest`). Fuera del `BLPOP` | — |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota` o `quota-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` no | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
 | Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |

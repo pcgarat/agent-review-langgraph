@@ -39,9 +39,10 @@ CHILD_ENV_ALLOW = frozenset(
     }
 )
 
-# Herramientas de lectura. Las de escritura no se nombran: nombrarlas en un
-# `--disallowedTools` las metería igual en el argv.
+# Lectura permitida y escritura denegada. Nombrarlas en `--disallowedTools`
+# es la denegación: el proceso no tiene modo interactivo que pregunte.
 _READ_TOOLS = "Read,Grep,Glob"
+_DENIED_TOOLS = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 
 _PROMPT = (
     "Revisa el árbol de trabajo. Responde solo un array JSON de hallazgos "
@@ -56,6 +57,17 @@ _QUOTA_MARKERS = (
     "credit balance",
     "insufficient credit",
 )
+
+
+def redact_text(text: str, secrets: Sequence[str]) -> str:
+    """Sustituye secretos en texto que puede salir del proceso o del checkout."""
+    cleaned = text
+    for secret in secrets:
+        token = secret.strip()
+        if len(token) < 8:
+            continue
+        cleaned = cleaned.replace(token, "***")
+    return cleaned
 
 
 def child_env(parent: Mapping[str, str]) -> dict[str, str]:
@@ -74,6 +86,10 @@ def claude_argv(prefix: Sequence[str], *, max_turns: int) -> list[str]:
         str(max_turns),
         "--allowedTools",
         _READ_TOOLS,
+        "--disallowedTools",
+        _DENIED_TOOLS,
+        "--permission-mode",
+        "dontAsk",
         _PROMPT,
     ]
 
@@ -90,6 +106,7 @@ class SubprocessClaudeRunner:
         environ: Mapping[str, str] | None = None,
         extra_env: Mapping[str, str] | None = None,
         cwd: str | Path | None = None,
+        redact: Sequence[str] = (),
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("el tiempo de pared tiene que ser positivo")
@@ -101,6 +118,7 @@ class SubprocessClaudeRunner:
         if extra_env:
             self._environ.update(extra_env)
         self._cwd = None if cwd is None else str(cwd)
+        self._redact = tuple(redact)
 
     def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
         del repo, pr_id, head_sha
@@ -119,11 +137,11 @@ class SubprocessClaudeRunner:
         except FileNotFoundError as exc:
             raise ClaudeProcessCrashed("no se encontro el ejecutable de claude") from exc
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()
+            detail = redact_text((completed.stderr or completed.stdout or "").strip(), self._redact)
             if _is_quota(detail):
                 raise ClaudeQuotaExceeded("cupo de claude agotado")
             raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {completed.returncode}")
-        return completed.stdout
+        return redact_text(completed.stdout, self._redact)
 
 
 def _is_quota(text: str) -> bool:

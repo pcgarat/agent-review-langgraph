@@ -267,6 +267,30 @@ def test_fuente_estatica_sin_cubrir_sigue_comentando(tmp_path: Path) -> None:
     assert "No publicar" not in body
 
 
+def test_expired_no_escribe_en_el_pr(tmp_path: Path) -> None:
+    chat = _Chat()
+    vcs = FakeVcs(anchors={"tests/FooTest.php": _ancla()})
+    store, graph = _grafo(tmp_path, [], chat=chat, vcs=vcs)
+    hallazgo = make_finding("No publicar").model_copy(update={"id": "uno"})
+    _invoke(graph, store, [hallazgo])
+    graph.invoke(Command(resume=_decision([("uno", DecisionOutcome.EXPIRED)])), config=_config())
+    assert vcs.comments == []
+    assert vcs.inlines == []
+    assert "No se escribió" in str(chat.avisos[-1]["body"])
+
+
+def test_el_aviso_cuenta_lo_publicado(tmp_path: Path) -> None:
+    chat = _Chat()
+    vcs = FakeVcs(anchors={"tests/FooTest.php": _ancla()})
+    store, graph = _grafo(tmp_path, [], chat=chat, vcs=vcs)
+    hallazgo = make_finding("Publicar").model_copy(update={"id": "uno"})
+    _invoke(graph, store, [hallazgo])
+    graph.invoke(Command(resume=_decision([("uno", DecisionOutcome.APPROVED)])), config=_config())
+    body = str(chat.avisos[-1]["body"])
+    assert "Se publicaron 1" in body
+    assert "requieren decision" not in body
+
+
 def test_solo_bloqueantes_deja_el_resto_fuera_del_resumen(tmp_path: Path) -> None:
     vcs = FakeVcs(anchors={"tests/FooTest.php": _ancla()})
     store, graph = _grafo(tmp_path, [], vcs=vcs)

@@ -16,7 +16,7 @@ from agent_review.adapters.diff_parser import file_key, parse_unified_diff
 from agent_review.adapters.tooling_source import safe_segment
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import Finding, ReviewContext, ReviewerResult
-from agent_review.verification.l0 import L0Disposition, evaluate_l0
+from agent_review.verification.l0 import L0Disposition, cite_text, evaluate_l0
 
 
 class ClaudeArtifactStore:
@@ -135,7 +135,7 @@ class ClaudeArtifactReviewer:
             key = file_key(files, finding.file)
             if key is None:
                 continue
-            l0 = evaluate_l0(files[key], hint=finding.line, cite=_cite_text(finding.evidence))
+            l0 = evaluate_l0(files[key], hint=finding.line, cite=cite_text(finding.evidence))
             if l0.disposition is L0Disposition.DROP or l0.line is None:
                 continue
             kept.append(
@@ -145,15 +145,3 @@ class ClaudeArtifactReviewer:
             )
         return ReviewerResult(findings=kept)
 
-
-def _cite_text(evidence: list[str]) -> str | None:
-    """Texto de la cita, sin el prefijo `file:line`. Misma lectura que el revisor LLM."""
-    for item in evidence:
-        head, _, rest = item.partition(" ")
-        if rest and ":" in head:
-            return rest.strip()
-        if rest:
-            return rest.strip()
-        if item.strip():
-            return item.strip()
-    return None

@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
 
+from agent_review.decision import outcomes_for_pause
 from agent_review.domain.models import ApprovalRequest, DecisionOutcome, PendingDecision, Severity
 
 # Discriminantes de la accion, en `data.action`. El ingress despacha por aqui, de
@@ -107,20 +108,8 @@ def outcome_from_button(action: str) -> DecisionOutcome | None:
 
 
 def allowed_outcomes(approval: ApprovalRequest) -> frozenset[DecisionOutcome]:
-    """Resultados que esta tarjeta puede marcar.
-
-    Un `dropped` en la pausa de `llm` se publicaría como silencio en vez de
-    «descartado». Un `approved` de lote en esa misma pausa autorizaría un arreglo.
-    """
-    if approval.pause_kind == "publication":
-        return frozenset({DecisionOutcome.APPROVED, DecisionOutcome.DROPPED})
-    return frozenset(
-        {
-            DecisionOutcome.APPROVED,
-            DecisionOutcome.REJECTED,
-            DecisionOutcome.NOTED,
-        }
-    )
+    """Resultados que esta tarjeta puede marcar. La regla vive en `decision`."""
+    return outcomes_for_pause(approval.pause_kind)
 
 
 def publish_batch_data(review_key: str, batch: PublishBatch) -> dict[str, str]:

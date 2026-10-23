@@ -101,6 +101,7 @@ class PausedItem(BaseModel):
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
+    publication: bool = False
 
 
 class PausedGroups(BaseModel):
@@ -388,6 +389,7 @@ def _paused_item(review: PausedReview) -> PausedItem:
         state="PAUSED",
         pending=list(approval.pending),
         command_hint=approval.command_hint,
+        publication=approval.pause_kind == "publication",
     )
 
 

@@ -20,12 +20,22 @@ from agent_review.adapters.claude_client import HttpClaudeRunner
 from agent_review.chat_outbox import InMemoryChatOutbox, OutboxChatAdapter
 from agent_review.claude_runner.main import build_app
 from agent_review.claude_session import write_session
-from agent_review.domain.models import ReviewRequest
+from agent_review.domain.models import (
+    DecisionOutcome,
+    FindingDecision,
+    HitlDecision,
+    ReviewRequest,
+)
 from agent_review.ports.claude import ClaudeQuotaExceeded
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.web.main import ClaudeLogin, app
-from agent_review.worker.main import _consume, claude_session_ready, dispatch_job
+from agent_review.worker.main import (
+    _consume,
+    claude_session_ready,
+    dispatch_job,
+    release_quota_wait,
+)
 
 _ROOT = Path(__file__).resolve().parents[1]
 _COMPOSE = _ROOT / "docker-compose.yml"
@@ -285,3 +295,75 @@ def test_el_worker_no_monta_el_fichero_de_sesion() -> None:
     assert "CLAUDE_SESSION_PATH" not in services["worker"]["environment"]
     assert any("claude-session" in item for item in runner)
     assert any("claude-session" in item for item in web)
+
+
+def test_la_espera_de_cupo_se_suelta_al_enfriar(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeQuotaExceeded("cupo"))
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        _Graph(),
+        _request("uno"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    _consume(
+        queue,
+        _Graph(),
+        _request("dos"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    crudo = list(queue._parked)
+    assert '"quota-wait"' not in crudo[0]
+    assert '"quota-wait"' in crudo[1]
+    assert release_quota_wait(queue) == []
+    queue.clear_notice("quota")
+    sueltos = release_quota_wait(queue)
+    assert [item.head_sha for item in sueltos] == ["dos"]
+    assert [item.head_sha for item in queue.parked()] == ["uno"]
+
+
+def test_el_enfriamiento_no_cubre_un_artefacto_ya_valido(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    request = _request("ya")
+    assert store.save("[]", repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    queue = InMemoryReviewQueue()
+    assert queue.claim_notice("quota", ttl_s=900)
+
+    class _Ok:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
+            del repo, pr_id
+            self.calls.append(head_sha)
+            return "[]"
+
+    runner = _Ok()
+    graph = _Graph()
+    _consume(queue, graph, request, max_attempts=3, claude_runner=runner, claude_store=store)
+    assert runner.calls == []
+    assert graph.calls == 1
+    assert queue.parked() == []
+
+
+def test_una_decision_sin_sesion_no_se_parkea() -> None:
+    queue = InMemoryReviewQueue()
+    graph = _Graph()
+    request = _request("dec")
+    request = request.model_copy(
+        update={
+            "decision": HitlDecision(
+                review_key=request.review_key,
+                actor="ana",
+                items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+            )
+        }
+    )
+    dispatch_job(queue, graph, request, max_attempts=3, claude_session=lambda: False)
+    assert graph.calls == 1
+    assert queue.parked() == []
