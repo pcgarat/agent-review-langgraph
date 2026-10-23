@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Arquitectura
 
@@ -61,8 +61,12 @@ flowchart LR
 > los consume, publica/edita en el hilo del PR y traduce las acciones de la
 > tarjeta a una `HitlDecision` encolada en `reviews:jobs` (no reanuda el grafo).
 > Solo acepta acciones del canal capturado y, con `TEAMS_BOT_TENANT_ID`, de ese
-> tenant (C5): sin canal capturado, rechaza todas. El respaldo de decisión sigue
-> siendo el CLI y `POST /decision`. Pendiente humano: alta del bot en el tenant (T10).
+> tenant (C5): sin canal capturado, rechaza todas. La **bandeja** del panel
+> ([ADR-0030](adr/0030-bandeja-web-de-la-decision.md)) lista las mismas pausas
+> humanas y responde con el mismo sello: la primera respuesta borra la tarjeta
+> de Teams. Sin Teams, la bandeja es la única superficie. El CLI y
+> `POST /decision` siguen siendo respaldo. Pendiente humano: alta del bot en el
+> tenant (T10).
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
@@ -70,8 +74,8 @@ flowchart LR
 | `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. Un lanzamiento del panel (`launch`, sin SHA) lo resuelve contra el VCS antes de invocar el grafo ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
-| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
-| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. |
+| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
+| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. La **bandeja** ([026](iniciativas/archivo/026-bandeja-de-decisiones/spec.md)) es la lista de esas preguntas y comparte el sello con Teams y con el detalle. |
 
 ---
 
@@ -328,13 +332,18 @@ sequenceDiagram
     W->>PG: invoke → hitl → interrupt(ApprovalRequest)
     W->>R: inbox reviews:paused:<review_key>
     W->>T: aviso de pausa (sin marca)
-    H->>API: agent_review decide … / POST decision / decidir en el panel
+    H->>API: agent_review decide … / POST decision / detalle o bandeja del panel
     API->>R: build_decision (todos los pendientes) → RPUSH job con decision
     R->>W: BLPOP
     W->>PG: Command(resume=HitlDecision) sobre el mismo thread_id
     W->>W: fix → publish → notify
     W->>R: borra la entrada del inbox
 ```
+
+La bandeja y el detalle sellan la pausa antes de encolar. Si Teams está activo,
+quien gana encola `withdraw` y el bot borra el mensaje. Una pausa ya sellada no
+vuelve a publicarse si el aviso de pausa llega tarde. El CLI y la API no sellan:
+el barrido del bot retira la tarjeta cuando la pausa sale del inbox.
 
 Al publicar con una decisión humana:
 
@@ -404,13 +413,13 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:reasoning:<review_key>` | *Stream* del **razonamiento de los revisores** (021): un evento por inicio, trozo de texto (agrupado), fin o fallo de cada lote, con persona, lote *i/N*, ficheros y `usage`. Lo escribe el worker con `REASONING_STREAM_ENABLED` y lo lee el panel por SSE. `MAXLEN ~` por `REASONING_MAX_BYTES` | `REASONING_TTL_S` (10 días) |
 | Redis | `reviews:history` / `reviews:history:data` | **Histórico de reviews terminadas** (021): *sorted set* `review_key` → instante de cierre y hash `review_key` → `ReviewSummary` en JSON. Lo escribe el worker al cerrar cada review (una reentrega actualiza la entrada) y lo lee el panel | Poda por fecha con `CHECKPOINT_RETENTION_DAYS` (30 días), al escribir y en el barrido |
 | Redis | `reviews:cancel:<review_key>` | Marca de **cancelación** (019 §5.4): la escribe el panel y la leen la frontera de nodo y `_consume` al desencolar, que abortan la review. Tras abortar queda como *tombstone* para abortar los jobs rezagados (sin hilo arrancarían desde `START`); solo «Reintentar» la retira. Una pausa de fix no se marca | `CANCEL_TTL_S` (7 días) |
-| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
+| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10). `kind` `published`, `pause` o `withdraw` (retirar la tarjeta ya respondida) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
 | Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome`: estado de la tarjeta, por usuario (C8) | 8 días |
 | Redis | `reviews:teams:card:<review_key>:final:<pause_id>` | Actor de la primera decisión de **esa pausa** (`SETNX`, C11). `pause_id` = `thread_id@created_at`: la pasada degradada y la completa comparten `review_key` y no se cierran entre sí | 8 días |
 | Redis | `reviews:teams:channel` | `conversation_id` (id base, sin `;messageid=`) + `service_url` del canal dedicado (C14). **Gana la primera captura**; mover el canal es borrar la clave | — |
 | Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
-| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
+| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url, review_key}`: mensaje de la tarjeta (C7). El bot lo borra al sellarse la pausa o al salir del inbox. Una entrada antigua sin `review_key` solo se borra con un `withdraw` que traiga la clave | — |
 | Redis | `budget:<review_key>` / `budget:reserved:<review_key>` | Gasto confirmado y reservado sin confirmar del presupuesto de tokens de la review (017). Contador compartido por el fan-out; el script Lua reserva y confirma de forma atómica | 8 días |
 | Redis | `budget:fix:<review_key>` / `budget:fix:reserved:<review_key>` | Mismo contador para el fix (017 B11): clave aparte para que una review cara no deje sin presupuesto lo aprobado | 8 días |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |

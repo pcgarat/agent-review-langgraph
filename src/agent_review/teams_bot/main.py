@@ -40,6 +40,7 @@ from agent_review.teams_bot.service import TeamsBotService, build_teams_bot
 from agent_review.teams_bot.state import RedisCardStore
 from agent_review.teams_bot.threads import RedisChannelStore
 from agent_review.teams_bot.transport import ChannelTransport
+from agent_review.teams_bot.withdrawal import OutboxPauseWithdrawal
 
 logger = logging.getLogger(__name__)
 
@@ -63,21 +64,29 @@ def run_forever(*, settings: Settings | None = None) -> None:
     cards = RedisCardStore(url=settings.redis_url, ttl_s=int(settings.decision_ttl_s))
     client = SDKChannelClient(app)
     transport = ChannelTransport(client=client, store=store)
+    outbox = RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key)
+    # El mismo retiro que usa la bandeja: una respuesta en Teams tambien pide
+    # borrar la tarjeta, por si el borrado sincronico de abajo no llega.
+    withdrawal = OutboxPauseWithdrawal(outbox)
 
     service = build_teams_bot(
         settings,
         client=client,
-        outbox=RedisChatOutbox(url=settings.redis_url, key=settings.teams_notices_key),
+        outbox=outbox,
         store=store,
         paused=paused,
+        cards=cards,
     )
     # El ingress (T7) reutiliza el mismo transporte y el inbox: marca, encola y
-    # edita la tarjeta. No reanuda el grafo (C4).
+    # retira la tarjeta. No reanuda el grafo (C4).
     ingress = CardIngress(
         paused=paused,
         cards=DecisionCardService(store=cards),
         submitter=DecisionSubmitter(
-            paused=paused, queue=RedisReviewQueue(url=settings.redis_url), cards=cards
+            paused=paused,
+            queue=RedisReviewQueue(url=settings.redis_url),
+            cards=cards,
+            withdrawal=withdrawal,
         ),
         transport=transport,
     )

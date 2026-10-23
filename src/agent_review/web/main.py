@@ -23,11 +23,12 @@ from agent_review.claude_session import write_session
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import FindingDecision
 from agent_review.history_store import ReviewHistory
-from agent_review.paused_store import RedisPausedStore
 from agent_review.ports.reasoning import ReasoningReader
 from agent_review.queue import RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
 from agent_review.web.auth import Session, require_command_session, require_session
+from agent_review.web.bandeja import build_bandeja
+from agent_review.web.bandeja import router as bandeja_router
 from agent_review.web.commands import (
     CommandEffect,
     CommandError,
@@ -58,10 +59,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.read_model = build_panel_read_model(settings)
     cancellation = build_cancellation(settings)
     if cancellation is not None:
+        # La bandeja y el formulario del detalle comparten sello y cola: la
+        # primera respuesta, venga de donde venga, es la que se encola.
+        bandeja = build_bandeja(settings)
+        app.state.bandeja = bandeja
         app.state.commands = build_command_service(
-            queue=RedisReviewQueue(url=settings.redis_url),
-            paused=RedisPausedStore(url=settings.redis_url),
+            queue=bandeja.queue,
+            paused=bandeja.paused,
             cancellation=cancellation,
+            submitter=bandeja.submitter,
         )
     app.state.console = build_runner_client(settings)
     app.state.reasoning = build_reasoning_reader(settings)
@@ -453,6 +459,7 @@ def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:
 # La UI (OP15/OP33) vive en su propio router para no engordar este modulo; la app
 # la monta aqui para que el panel sea un unico proceso con una unica sesion.
 app.include_router(ui_router)
+app.include_router(bandeja_router)
 
 
 def main() -> None:

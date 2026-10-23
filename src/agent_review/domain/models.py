@@ -428,11 +428,14 @@ class ChatNotice(BaseModel):
     Es el mensaje que el worker **encola** (`reviews:notices`): durable y sin
     conocer el transporte. `published` es el teaser de una review ya publicada en
     el PR; `pause` es la tarjeta de decision y lleva la `ApprovalRequest`
-    **estructurada** (C12), no su render en texto. `review_key`, `repo` y `pr_id`
-    viajan siempre: son la identidad con la que el canal resuelve el hilo (C6).
+    **estructurada** (C12), no su render en texto. `withdraw` pide al canal que
+    retire la tarjeta ya publicada: lo encola quien gano la decision (la bandeja
+    o el propio bot) para que el mensaje desaparezca tambien del otro sitio.
+    `review_key`, `repo` y `pr_id` viajan siempre: son la identidad con la que el
+    canal resuelve el hilo (C6).
     """
 
-    kind: Literal["published", "pause"]
+    kind: Literal["published", "pause", "withdraw"]
     review_key: str
     repo: str
     pr_id: int
@@ -449,7 +452,7 @@ class ChatNotice(BaseModel):
         if self.kind == "pause":
             if self.approval is None:
                 raise ValueError("un aviso de pausa necesita la ApprovalRequest")
-        elif not self.title.strip():
+        elif self.kind == "published" and not self.title.strip():
             raise ValueError("un aviso de review necesita titulo")
         return self
 

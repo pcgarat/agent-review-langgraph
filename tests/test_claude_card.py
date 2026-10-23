@@ -261,6 +261,9 @@ class _Canal:
     ) -> None:
         del conversation_id, message_id, payload, service_url
 
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        del conversation_id, message_id, service_url
+
 
 async def test_el_bot_traduce_el_lote_de_la_tarjeta_antes_de_encolar() -> None:
     approval = _approval()

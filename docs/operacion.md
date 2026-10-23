@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Operación
 
@@ -358,6 +358,9 @@ token, para no lanzar la URL de otro repositorio
 | `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}`. En una pausa de arreglo, `approved`/`rejected`/`noted`; en una de publicación, `approved` (publicar) y `dropped` (no publicar). La construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana, no cubre **todos** los pendientes o el resultado no vale en esa pausa; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
 | `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
+| `GET` | `/api/bandeja` | Sesión | Pausas humanas abiertas (sin sello): las mismas preguntas que la tarjeta de Teams. `teams_enabled` dice si Teams también las muestra. Vacío si no hay ninguna |
+| `POST` | `/api/bandeja/{review_key}/decision` | `operador` | Responde una de esas preguntas. Cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` o, en una pausa de publicación, `{"batch": "blockers\|all\|none"}`. El actor es el de la sesión. Comparte el sello con Teams y con el detalle: la primera respuesta encola y el resto es `409`. `400` si el cuerpo no trae `items` ni `batch`, o trae los dos; `409` si no está pausada, no cubre los pendientes o el resultado no vale; `403` para `lector`; `503` si Redis no responde. Con Teams configurado, ganar encola `withdraw` y el bot borra la tarjeta |
+| `GET` | `/bandeja` | Sesión | La bandeja: tarjetas hasta que se responden, aviso en la página y, con permiso del navegador y la pestaña oculta, notificación del sistema |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global, con el formulario de lanzamiento, y detalle con el recorrido y la consola) |
 | `GET` | `/claude` | `operador` | Formulario de la sesión de Claude. El `lector` recibe `403` |
 | `POST` | `/api/claude/session` | `operador` | Cuerpo `{"token": "…"}`. Lo guarda en el fichero `0600` y devuelve `{"released": n}` sin el token. Misma defensa CSRF que el resto de comandos. Un formulario que no sea JSON del mismo origen recibe `403` |
@@ -370,7 +373,10 @@ para abortar también los jobs rezagados de la review; reintentar la retira. La 
 ofrece cada botón en el estado en que aplica y nunca ofrece «cancelar la review» si ya
 publicó (solo «cancelar lo pendiente»).
 
-Una pausa humana se **decide** desde el detalle de la review (022): el formulario muestra
+Una pausa humana se **decide** desde la bandeja (`/bandeja`) o desde el detalle de
+la review (022). Las dos pasan por el mismo sello que la tarjeta de Teams
+([ADR-0030](adr/0030-bandeja-web-de-la-decision.md)): vale la primera respuesta y
+la pregunta desaparece de los dos sitios. El formulario del detalle muestra
 cada hallazgo pendiente y envía la `HitlDecision` al endpoint de decisión, que la
 construye con `build_decision` y la encola; el worker reanuda el mismo hilo (ADR-0008).
 En una pausa de arreglo las opciones son Aprobar, Rechazar y Anotar, y aprobar solo
@@ -405,7 +411,10 @@ de llegar a los handlers.
 
 Las acciones de la tarjeta (`Action.Execute` / fallback `Action.Submit`) llegan a
 `/api/messages`, se traducen a marcas o a una `HitlDecision` con `build_decision` y
-se **encolan** en `reviews:jobs`. El bot no reanuda el grafo.
+se **encolan** en `reviews:jobs`. El bot no reanuda el grafo. Al encolar, borra
+el mensaje de la tarjeta. Un aviso `withdraw` (lo encola la bandeja o el propio
+bot cuando Teams está activo) hace lo mismo, y un barrido borra las tarjetas
+cuya pausa ya no está en el inbox.
 
 Solo se aceptan acciones que vengan del **canal capturado** (`reviews:teams:channel`)
 y, si `TEAMS_BOT_TENANT_ID` está fijado, de ese tenant. Las demás reciben «Esta

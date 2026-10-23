@@ -36,6 +36,7 @@ from agent_review.paused_store import PausedStore
 from agent_review.queue import ReviewQueue
 from agent_review.teams_bot.cards import PublishBatch, allowed_outcomes
 from agent_review.teams_bot.state import CardStore
+from agent_review.teams_bot.withdrawal import PauseWithdrawal
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,18 @@ class SubmitOutcome:
 class DecisionSubmitter:
     """Convierte las marcas de una tarjeta en la reanudacion de una review pausada."""
 
-    def __init__(self, *, paused: PausedStore, queue: ReviewQueue, cards: CardStore) -> None:
+    def __init__(
+        self,
+        *,
+        paused: PausedStore,
+        queue: ReviewQueue,
+        cards: CardStore,
+        withdrawal: PauseWithdrawal | None = None,
+    ) -> None:
         self._paused = paused
         self._queue = queue
         self._cards = cards
+        self._withdrawal = withdrawal
 
     def submit(self, review_key: str, *, user_id: str, actor: str) -> SubmitOutcome:
         """Encola la decision de `user_id` sobre `review_key`, o explica por que no.
@@ -110,9 +119,31 @@ class DecisionSubmitter:
             paused,
             actor=actor,
             items=_items_from_marks(marks, approval),
+            origin="Teams",
         )
 
-    def submit_batch(self, review_key: str, *, actor: str, batch: str) -> SubmitOutcome:
+    def submit_items(
+        self,
+        review_key: str,
+        *,
+        actor: str,
+        items: list[FindingDecision],
+        origin: str,
+    ) -> SubmitOutcome:
+        """Encola una decision ya armada (bandeja o formulario del panel).
+
+        Misma validacion y mismo sello que la tarjeta: quien llega segundo no
+        encola otra reanudacion.
+        """
+        paused, blocked = self._open(review_key)
+        if blocked is not None:
+            return blocked
+        assert paused is not None
+        return self._decide(paused, actor=actor, items=items, origin=origin)
+
+    def submit_batch(
+        self, review_key: str, *, actor: str, batch: str, origin: str = "Teams"
+    ) -> SubmitOutcome:
         """Traduce un lote a una `HitlDecision` que cubre todos los pendientes.
 
         El grafo no ve el botón: solo el resultado por hallazgo. Un lote sobre una
@@ -144,6 +175,7 @@ class DecisionSubmitter:
             paused,
             actor=actor,
             items=items_for_publish_batch(approval, kind),
+            origin=origin,
         )
 
     def _open(self, review_key: str) -> tuple[PausedReview | None, SubmitOutcome | None]:
@@ -170,6 +202,7 @@ class DecisionSubmitter:
         *,
         actor: str,
         items: list[FindingDecision],
+        origin: str,
     ) -> SubmitOutcome:
         review_key = paused.review_key
         try:
@@ -197,13 +230,34 @@ class DecisionSubmitter:
         except Exception:
             self._cards.release(review_key, pause=pause)
             raise
+        self._ask_withdrawal(paused)
         logger.info(
-            "Decision encolada desde Teams para %s: %d hallazgo(s), actor=%s",
+            "Decision encolada desde %s para %s: %d hallazgo(s), actor=%s",
+            origin,
             review_key,
             len(decision.items),
             decision.actor,
         )
         return SubmitOutcome(SubmitStatus.ENQUEUED, actor=actor, decision=decision)
+
+    def _ask_withdrawal(self, paused: PausedReview) -> None:
+        """Avisa al canal de que retire la tarjeta. Un fallo no deshace el sello.
+
+        La decision ya esta en la cola: perder el aviso solo deja la pregunta
+        visible hasta que el bot, en su barrido, vea la pausa cerrada.
+        """
+        if self._withdrawal is None:
+            return
+        try:
+            self._withdrawal.withdraw(
+                review_key=paused.review_key,
+                repo=paused.request.repo,
+                pr_id=paused.request.pr_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - retirar la tarjeta es cosmetico
+            logger.warning(
+                "No se pudo pedir la retirada de la tarjeta de %s: %s", paused.review_key, exc
+            )
 
 
 def items_for_publish_batch(

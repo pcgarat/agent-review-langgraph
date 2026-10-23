@@ -47,6 +47,7 @@ class FakeChannel:
         self.sends: list[Any] = []
         self.replies: list[Any] = []
         self.updates: list[Any] = []
+        self.deletes: list[tuple[str, str]] = []
         self._next = 500
 
     async def send(self, conversation_id: str, payload: Any, *, service_url: str = "") -> str:
@@ -68,6 +69,10 @@ class FakeChannel:
     ) -> None:
         del conversation_id, message_id, service_url
         self.updates.append(payload)
+
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        del service_url
+        self.deletes.append((conversation_id, message_id))
 
 
 class _BotHarness:
@@ -334,7 +339,7 @@ async def test_e2e_tarjeta_reanuda_y_avisa_sin_duplicar() -> None:
         actor="Paco Garat",
     )
     assert submitted is not None and submitted.notice == "Decision enviada"
-    assert len(bot.channel.updates) == 1, "la tarjeta del canal pasa a «decidido» (C11)"
+    assert len(bot.channel.deletes) == 1, "la tarjeta desaparece del canal al responder"
 
     # 4) El worker recoge el job, publica en el PR y deja el aviso de review.
     job = bot.queue.dequeue()
