@@ -10,6 +10,10 @@ arquitectura está en [`arquitectura.md`](arquitectura.md) y el vocabulario, en
 
 ## 1. Arranque
 
+La primera vez, con el mínimo para publicar una review, está en el
+[README](../README.md). Lo de aquí es el arranque de operación: los mismos
+comandos, más los perfiles y el mapa de servicios.
+
 ```bash
 scripts/bootstrap-env.sh          # crea .env desde .env.example (idempotente, permisos 600)
 $EDITOR .env                      # rellena los secretos (§3)
