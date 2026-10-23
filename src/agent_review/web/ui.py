@@ -93,6 +93,36 @@ def recent_reviews(
     return history.recent(limit=limit, repo=repo or None, pr_id=pr_id)
 
 
+@router.get("/bandeja", response_class=HTMLResponse)
+def bandeja_page(session: Annotated[Session, Depends(require_session)]) -> HTMLResponse:
+    """Preguntas abiertas, las mismas que irian a la tarjeta de Teams."""
+    if get_settings().teams_enabled:
+        mode = (
+            "Teams está configurado: la misma pregunta aparece allí y aquí. "
+            "Vale la primera respuesta y la tarjeta desaparece de los dos sitios."
+        )
+    else:
+        mode = "Teams no está configurado: las preguntas se responden solo aquí."
+    command = "1" if session.can_command() else "0"
+    body = (
+        "<section><h2>Bandeja de decisiones</h2>"
+        f'<p class="meta">{_esc(mode)}</p>'
+        '<p class="meta">Siguen visibles hasta que alguien responde.</p>'
+        '<button type="button" id="bandeja-notify">Activar notificaciones</button>'
+        f'<div id="bandeja" data-can-command="{command}"></div>'
+        "</section>"
+    )
+    return HTMLResponse(
+        _page(
+            title="Bandeja de decisiones",
+            meta="Las interrupciones que esperarían en Teams",
+            body=body,
+            session=session,
+            script=_BANDEJA_SCRIPT,
+        )
+    )
+
+
 @router.get("/history", response_class=HTMLResponse)
 def history_page(
     session: Annotated[Session, Depends(require_session)],
@@ -154,7 +184,10 @@ def review_detail(
 
 
 def _home_links(session: Session) -> str:
-    links = '<a href="/history">Histórico de reviews &rarr;</a>'
+    links = (
+        '<a href="/bandeja">Bandeja de decisiones</a>'
+        ' · <a href="/history">Histórico de reviews &rarr;</a>'
+    )
     if session.can_command():
         links += ' · <a href="/claude">Sesión de Claude</a>'
     return f'<p class="breadcrumb">{links}</p>'
@@ -589,13 +622,27 @@ def _page(*, title: str, meta: str, body: str, session: Session, script: str) ->
         f"<h1>{_esc(title)}</h1>\n"
         f'<p class="meta">{_esc(meta)}</p>\n'
         f'<p class="session">Sesión: {_esc(session.user)} ({_esc(session.role.value)})</p>\n'
+        f"{_nav(session)}\n"
         "</header>\n"
         '<p id="error" class="error" hidden></p>\n'
         f"<main>{body}</main>\n"
         f"{script}\n"
+        f"{_BANDEJA_WATCH_SCRIPT}\n"
         "</body>\n"
         "</html>\n"
     )
+
+
+def _nav(session: Session) -> str:
+    links = [
+        '<a id="bandeja-link" href="/bandeja">Bandeja</a>'
+        ' <span id="bandeja-count" class="badge" hidden></span>',
+        '<a href="/">Panel</a>',
+        '<a href="/history">Histórico</a>',
+    ]
+    if session.can_command():
+        links.append('<a href="/claude">Sesión de Claude</a>')
+    return f'<nav class="nav">{" · ".join(links)}</nav>'
 
 
 def _section(title: str, content: str) -> str:
@@ -682,6 +729,21 @@ ul.pending li { margin: 0 0 .5rem; }
 #reasoning details.live summary::after { content: " · en curso"; color: var(--accent); }
 #reasoning details.failed summary { color: var(--bad); }
 #reasoning pre { margin: .4rem 0; }
+nav.nav { margin: .4rem 0 0; }
+.badge { display: inline-block; min-width: 1.1rem; margin-left: .2rem;
+  padding: 0 .35rem; border-radius: 1rem; background: var(--bad); color: #fff;
+  font-size: .75rem; text-align: center; }
+#bandeja-toasts { position: fixed; right: 1rem; bottom: 1rem; z-index: 5;
+  display: flex; flex-direction: column; gap: .4rem; }
+a.toast { display: block; max-width: 22rem; padding: .6rem .8rem;
+  border: 1px solid var(--line); border-radius: .5rem; background: Canvas;
+  color: CanvasText; text-decoration: none; box-shadow: 0 8px 24px #0003; }
+article.card { border: 1px solid var(--line); border-radius: .5rem;
+  padding: .75rem 1rem; margin: .8rem 0; }
+button.mark { font: inherit; margin: 0 .3rem .3rem 0; padding: .2rem .55rem;
+  border: 1px solid var(--line); border-radius: .35rem; cursor: pointer; }
+button.mark[aria-pressed="true"] { border-color: var(--accent); font-weight: 650; }
+.finding { margin: .6rem 0; padding-top: .4rem; border-top: 1px solid var(--line); }
 """
 
 _CLAUDE_SCRIPT = """<script>
@@ -899,5 +961,327 @@ _CONSOLE_SCRIPT = """<script>
     output.scrollTop = output.scrollHeight;
   });
   source.addEventListener("end", () => source.close());
+})();
+</script>"""
+
+_BANDEJA_SCRIPT = """<script>
+(() => {
+  const root = document.getElementById("bandeja");
+  if (!root) {
+    return;
+  }
+  const can = root.dataset.canCommand === "1";
+  const marks = new Map();
+  // Un sondeo que salio antes de responder no debe volver a pintar la tarjeta.
+  const closed = new Set();
+  const keyOf = (pause, finding) => pause + "\\0" + finding;
+
+  const el = (tag, attrs, ...kids) => {
+    const node = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([key, value]) => {
+      if (value == null) {
+        return;
+      }
+      if (key === "class") {
+        node.className = value;
+      } else {
+        node.setAttribute(key, value);
+      }
+    });
+    kids.forEach((kid) => {
+      const child = kid instanceof Node
+        ? kid
+        : document.createTextNode(String(kid));
+      node.append(child);
+    });
+    return node;
+  };
+
+  const outcomesFor = (item) => (
+    item.pause_kind === "publication"
+      ? [["approved", "Publicar"], ["dropped", "No publicar"]]
+      : [["approved", "Aprobar"], ["rejected", "Rechazar"], ["noted", "Anotar"]]
+  );
+
+  const detailText = async (response) => {
+    const text = await response.text();
+    try {
+      const body = JSON.parse(text);
+      if (body && body.detail) {
+        return String(body.detail);
+      }
+    } catch (cause) {
+      return text || response.statusText;
+    }
+    return text || response.statusText;
+  };
+
+  const refresh = (article, item) => {
+    const button = article.querySelector("button.submit");
+    if (!button) {
+      return;
+    }
+    const done = item.pending.every((pending) => (
+      marks.has(keyOf(item.pause_id, pending.finding_id))
+    ));
+    button.disabled = !done;
+  };
+
+  const post = async (item, body, article) => {
+    article.querySelectorAll("button").forEach((button) => {
+      button.disabled = true;
+    });
+    const response = await fetch(
+      "/api/bandeja/" + item.review_key + "/decision",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      },
+    );
+    if (response.ok) {
+      closed.add(item.pause_id);
+      article.remove();
+      return;
+    }
+    const message = await detailText(response);
+    const error = article.querySelector(".error");
+    error.textContent = message;
+    error.hidden = false;
+    const gone = message.indexOf("ya la tomo") >= 0
+      || message.indexOf("ya no esta") >= 0;
+    if (gone) {
+      closed.add(item.pause_id);
+      article.remove();
+      return;
+    }
+    article.querySelectorAll("button").forEach((button) => {
+      button.disabled = false;
+    });
+    refresh(article, item);
+  };
+
+  const finding = (item, pending) => {
+    const block = el("div", { class: "finding" });
+    block.append(el(
+      "strong", null, "[" + pending.severity + "] " + pending.title,
+    ));
+    block.append(el("p", { class: "meta" }, pending.file + ":" + pending.line));
+    if (pending.code_url) {
+      block.append(el(
+        "a",
+        { href: pending.code_url, rel: "noreferrer noopener" },
+        "código",
+      ));
+    }
+    if (pending.why_it_matters) {
+      block.append(el("p", null, pending.why_it_matters));
+    }
+    if (item.pause_kind !== "publication") {
+      block.append(el(
+        "p", { class: "meta" }, "Acción propuesta: " + pending.proposed_action,
+      ));
+    }
+    if (!can) {
+      return block;
+    }
+    const chosen = marks.get(keyOf(item.pause_id, pending.finding_id));
+    outcomesFor(item).forEach(([outcome, label]) => {
+      const button = el("button", {
+        type: "button",
+        class: "mark",
+        "aria-pressed": chosen === outcome ? "true" : "false",
+      }, label);
+      button.addEventListener("click", () => {
+        marks.set(keyOf(item.pause_id, pending.finding_id), outcome);
+        block.querySelectorAll("button.mark").forEach((other) => {
+          other.setAttribute("aria-pressed", "false");
+        });
+        button.setAttribute("aria-pressed", "true");
+        const article = block.closest("article");
+        if (article) {
+          refresh(article, item);
+        }
+      });
+      block.append(button);
+    });
+    return block;
+  };
+
+  const card = (item) => {
+    const article = el("article", { class: "card" });
+    const title = item.pause_kind === "publication"
+      ? "Qué se publica · " + item.repo + "#" + item.pr_id
+      : "Decisión pendiente · " + item.repo + "#" + item.pr_id;
+    article.append(el("h3", null, title));
+    article.append(el(
+      "p", { class: "meta" }, item.pending.length + " hallazgo(s).",
+    ));
+    item.pending.forEach((pending) => article.append(finding(item, pending)));
+    article.append(el(
+      "p", null, el("a", { href: "/review/" + item.review_key }, "Ver la review"),
+    ));
+    const error = el("p", { class: "error" }, "");
+    error.hidden = true;
+    article.append(error);
+    if (!can) {
+      article.append(el(
+        "p", { class: "empty" }, "Solo el rol operador responde.",
+      ));
+      return article;
+    }
+    if (item.pause_kind === "publication") {
+      const batches = [
+        ["blockers", "Solo bloqueantes"],
+        ["all", "Publicar todos"],
+        ["none", "No publicar ninguno"],
+      ];
+      batches.forEach(([batch, label]) => {
+        const button = el("button", { type: "button", class: "decide" }, label);
+        button.addEventListener("click", () => post(item, { batch }, article));
+        article.append(button);
+      });
+    }
+    const submit = el("button", { type: "button", class: "decide submit" }, "Enviar");
+    submit.disabled = true;
+    submit.addEventListener("click", () => {
+      const items = item.pending.map((pending) => ({
+        finding_id: pending.finding_id,
+        outcome: marks.get(keyOf(item.pause_id, pending.finding_id)),
+      }));
+      post(item, { items }, article);
+    });
+    article.append(submit);
+    refresh(article, item);
+    return article;
+  };
+
+  const render = (view) => {
+    const present = new Set(view.items.map((item) => item.pause_id));
+    closed.forEach((pause) => {
+      if (!present.has(pause)) {
+        closed.delete(pause);
+      }
+    });
+    const visible = view.items.filter((item) => !closed.has(item.pause_id));
+    const alive = new Set(visible.map((item) => item.pause_id));
+    [...marks.keys()].forEach((key) => {
+      if (!alive.has(key.split("\\0")[0])) {
+        marks.delete(key);
+      }
+    });
+    root.replaceChildren();
+    if (!visible.length) {
+      root.append(el("p", { class: "empty" }, "No hay decisiones pendientes."));
+      return;
+    }
+    visible.forEach((item) => root.append(card(item)));
+  };
+
+  window.addEventListener("bandeja", (event) => render(event.detail));
+})();
+</script>"""
+
+_BANDEJA_WATCH_SCRIPT = """<script>
+(() => {
+  const storageKey = "bandeja-anunciadas";
+  let known = new Set();
+  try {
+    known = new Set(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+  } catch (cause) {
+    known = new Set();
+  }
+  const save = () => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify([...known]));
+    } catch (cause) {
+      /* sin almacenamiento el aviso en la pagina sigue */
+    }
+  };
+  const host = document.createElement("div");
+  host.id = "bandeja-toasts";
+  document.body.append(host);
+  const toast = (text) => {
+    const node = document.createElement("a");
+    node.className = "toast";
+    node.href = "/bandeja";
+    node.textContent = text;
+    host.append(node);
+    window.setTimeout(() => node.remove(), 8000);
+  };
+  const osNotify = (text, tag) => {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      return;
+    }
+    if (!document.hidden) {
+      return;
+    }
+    const note = new Notification("Decisión pendiente", { body: text, tag });
+    note.onclick = () => {
+      window.focus();
+      location.href = "/bandeja";
+    };
+  };
+  const announce = (items) => {
+    if (items.length === 1) {
+      const text = items[0].repo + "#" + items[0].pr_id;
+      toast("Decisión pendiente · " + text);
+      osNotify(text, items[0].pause_id);
+      return;
+    }
+    const text = items.length + " decisiones pendientes";
+    toast(text);
+    osNotify(text, "bandeja");
+  };
+  const permit = document.getElementById("bandeja-notify");
+  if (permit && "Notification" in window) {
+    if (Notification.permission === "granted") {
+      permit.hidden = true;
+    } else {
+      permit.addEventListener("click", async () => {
+        const choice = await Notification.requestPermission();
+        if (choice === "granted") {
+          permit.hidden = true;
+        }
+      });
+    }
+  } else if (permit) {
+    permit.hidden = true;
+  }
+  const count = document.getElementById("bandeja-count");
+  const tick = async () => {
+    try {
+      const response = await fetch("/api/bandeja", { credentials: "same-origin" });
+      if (response.status === 401) {
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(String(response.status));
+      }
+      const view = await response.json();
+      const ids = new Set(view.items.map((item) => item.pause_id));
+      const fresh = view.items.filter((item) => !known.has(item.pause_id));
+      fresh.forEach((item) => known.add(item.pause_id));
+      [...known].forEach((id) => {
+        if (!ids.has(id)) {
+          known.delete(id);
+        }
+      });
+      save();
+      if (count) {
+        count.hidden = view.items.length === 0;
+        count.textContent = String(view.items.length);
+      }
+      if (fresh.length) {
+        announce(fresh);
+      }
+      window.dispatchEvent(new CustomEvent("bandeja", { detail: view }));
+    } catch (cause) {
+      /* el siguiente ciclo reintenta */
+    }
+    window.setTimeout(tick, 4000);
+  };
+  tick();
 })();
 </script>"""

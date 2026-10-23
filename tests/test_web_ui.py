@@ -348,6 +348,24 @@ def test_el_texto_del_modelo_nunca_se_inserta_como_html(panel: Panel) -> None:
     assert "textContent += ev.text" in script
 
 
+# --- Bandeja (ADR-0030) ---
+
+
+def test_la_bandeja_explica_el_canal_y_no_pinta_html_del_aviso(panel: Panel) -> None:
+    from agent_review.settings import Settings
+
+    body = panel.client.get("/bandeja").text
+    assert "<h2>Bandeja de decisiones</h2>" in body
+    assert 'id="bandeja"' in body
+    assert "new Notification" in body
+    assert "innerHTML" not in body
+    if Settings().teams_enabled:
+        assert "Teams está configurado" in body
+    else:
+        assert "Teams no está configurado" in body
+    assert "Activar notificaciones" in body
+
+
 # --- Histórico (021 RZ11) ---
 
 

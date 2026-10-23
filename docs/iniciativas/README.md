@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 
 # Iniciativas
@@ -79,12 +79,13 @@ conservando sus IDs.
 | 021 | [Razonamiento del revisor visible en el panel](archivo/021-razonamiento-visible/spec.md) | implementada | RZ1–RZ14 · *streaming*, sink Redis, panel en vivo e histórico · *gold set* 0.375/0.375 (superado por la regrabación con herramientas: 0.30/0.375, ver 014 RH10) · [ADR-0023](../adr/0023-razonamiento-por-streaming-y-stream-de-redis.md) · [todo](archivo/021-razonamiento-visible/todo.md) |
 | 022 | [Decisión humana desde el panel](archivo/022-decision-humana-en-el-panel/spec.md) | implementada | DH1–DH14 · el detalle muestra cada pendiente y el formulario decide (`approved`/`rejected`/`noted`) con `build_decision`; la UI deja de ofrecer «Reanudar» en pausas humanas · [todo](archivo/022-decision-humana-en-el-panel/todo.md) |
 | 025 | [Review con Claude CLI](archivo/025-revisor-claude-cli/spec.md) | implementada | Motor `claude`: CLI fuera del worker, pausa de publicación en Teams y sesión en el panel. El modo `llm` no cambia · [ADR-0028](../adr/0028-cli-claude-fuera-del-worker.md) · [todo](archivo/025-revisor-claude-cli/todo.md) |
+| 026 | [Bandeja de decisiones en el panel](archivo/026-bandeja-de-decisiones/spec.md) | implementada | La misma pregunta que la tarjeta de Teams, respondible en `/bandeja`. Vale la primera respuesta y la tarjeta se borra de los dos sitios · [ADR-0030](../adr/0030-bandeja-web-de-la-decision.md) · [todo](archivo/026-bandeja-de-decisiones/todo.md) |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **026**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **027**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

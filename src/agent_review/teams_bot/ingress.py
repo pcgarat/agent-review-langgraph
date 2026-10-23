@@ -35,7 +35,6 @@ from agent_review.teams_bot.cards import (
     DECISION_ACTION,
     PUBLISH_BATCH_ACTION,
     SUBMIT_ACTION,
-    render_decided_card,
     render_decision_card,
 )
 from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitOutcome, SubmitStatus
@@ -152,16 +151,13 @@ class CardIngress:
         pause: str,
     ) -> CardUpdate:
         if outcome.status is SubmitStatus.ENQUEUED:
-            decided = render_decided_card(approval, actor=outcome.actor)
-            # C7/C11: la tarjeta del canal pasa a «decidido por X». Es cosmetico:
-            # la decision ya esta encolada, asi que un fallo de Teams no la pierde.
-            await self._edit_card(review_key, approval, decided)
-            return CardUpdate(card=decided, notice="Decision enviada")
+            # La pregunta desaparece del canal. Es cosmetico: la decision ya esta
+            # encolada, asi que un fallo de Teams no la pierde.
+            await self._drop_card(review_key)
+            return CardUpdate(notice="Decision enviada")
         if outcome.status is SubmitStatus.ALREADY_DECIDED:
-            return CardUpdate(
-                card=render_decided_card(approval, actor=outcome.actor),
-                notice=f"La decision ya la tomo {outcome.actor}",
-            )
+            await self._drop_card(review_key)
+            return CardUpdate(notice=f"La decision ya la tomo {outcome.actor}")
         if outcome.status is SubmitStatus.INCOMPLETE:
             # Vuelve la tarjeta con lo marcado y el aviso de que falta algo.
             return CardUpdate(
@@ -173,20 +169,12 @@ class CardIngress:
             notice=outcome.reason or "La review ya no esta pausada",
         )
 
-    async def _edit_card(
-        self, review_key: str, approval: ApprovalRequest, card: dict[str, Any]
-    ) -> None:
-        """Edita el mensaje de la tarjeta para el resto del canal (C7/C11).
-
-        Cosmetico a proposito: si Teams falla, la decision ya esta encolada y no se
-        pierde por no repintar el mensaje.
-        """
+    async def _drop_card(self, review_key: str) -> None:
+        """Borra el mensaje de la pregunta. Si Teams falla, el barrido lo reintenta."""
         try:
-            await self._transport.post_card(
-                review_key, repo=approval.repo, pr_id=approval.pr_id, card=card
-            )
-        except Exception as exc:  # noqa: BLE001 - repintar no puede tumbar la decision
-            logger.warning("No se pudo editar la tarjeta de %s: %s", review_key, exc)
+            await self._transport.delete_card(review_key)
+        except Exception as exc:  # noqa: BLE001 - borrar no puede tumbar la decision
+            logger.warning("No se pudo retirar la tarjeta de %s: %s", review_key, exc)
 
     def _human_pause(self, review_key: str) -> PausedReview | None:
         """La pausa humana vigente de `review_key`, o `None` si no la hay.

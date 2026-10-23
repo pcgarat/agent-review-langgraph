@@ -44,6 +44,7 @@ class FakeChannel:
         self.sends: list[Any] = []
         self.replies: list[Any] = []
         self.updates: list[Any] = []
+        self.deletes: list[tuple[str, str]] = []
         self.fail = fail
         self._next = 400
 
@@ -69,6 +70,12 @@ class FakeChannel:
         if self.fail:
             raise ConnectionError("Teams caido")
         self.updates.append(payload)
+
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        del service_url
+        if self.fail:
+            raise ConnectionError("Teams caido")
+        self.deletes.append((conversation_id, message_id))
 
 
 def _pending(finding_id: str = "f1") -> PendingDecision:
@@ -199,12 +206,13 @@ async def test_enviar_una_decision_completa_encola_y_repinta_la_tarjeta() -> Non
     )
 
     assert update is not None and update.notice == "Decision enviada"
+    assert update.card is None, "la pregunta desaparece; no se sustituye por otra tarjeta"
     enqueued = harness.queue.dequeue()
     assert enqueued is not None and enqueued.decision is not None
     assert enqueued.decision.actor == "Ana"
     assert harness.marks.final(review_key, pause=_pause_id(harness, review_key)) == "Ana"
-    # El canal ve la tarjeta cerrada (C7/C11), editando el mensaje que ya existia.
-    assert len(harness.channel.updates) == 1
+    assert len(harness.channel.deletes) == 1, "la tarjeta se borra del canal"
+    assert harness.channel.updates == []
     assert len(harness.channel.sends) == 1, "solo la publicacion inicial del aviso"
     assert harness.channel.replies == []
 
@@ -599,8 +607,9 @@ async def test_el_pipeline_real_del_sdk_encola_la_decision_de_la_tarjeta() -> No
     assert enqueued.decision.actor == "Ana <aad-1>"
     assert harness.store.context() is not None, "el invoke tambien captura el canal (C14)"
     body = response.json()
-    assert body["type"] == "application/vnd.microsoft.card.adaptive"
-    assert body["value"]["body"], "la tarjeta repintada viaja en la respuesta"
+    # La pregunta se retira: la respuesta del invoke es un aviso, no otra tarjeta.
+    assert body["type"] == "application/vnd.microsoft.activity.message"
+    assert "Decision enviada" in response.text
 
 
 @pytest.mark.parametrize("header", ["", "Basic abc", "Bearer"])

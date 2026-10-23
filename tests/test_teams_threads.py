@@ -30,6 +30,7 @@ class FakeChannel:
         self.sends: list[tuple[str, object, str]] = []
         self.replies: list[tuple[str, str, object, str]] = []
         self.updates: list[tuple[str, str, object, str]] = []
+        self.deletes: list[tuple[str, str, str]] = []
         self._next = 100
 
     async def send(self, conversation_id: str, payload: object, *, service_url: str = "") -> str:
@@ -53,6 +54,9 @@ class FakeChannel:
         self, conversation_id: str, message_id: str, payload: object, *, service_url: str = ""
     ) -> None:
         self.updates.append((conversation_id, message_id, payload, service_url))
+
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        self.deletes.append((conversation_id, message_id, service_url))
 
 
 def _transport(client: FakeChannel, store: InMemoryChannelStore) -> ChannelTransport:
@@ -224,6 +228,10 @@ def test_el_store_en_memoria_guarda_canal_hilo_y_tarjeta() -> None:
     assert store.context() == ChannelContext(conversation_id="c", service_url="s")
     assert store.thread(repo="r", pr_id=1) == ThreadRef("c", "9", "s")
     assert store.card("k") == CardRef("c", "9", "s")
+    assert store.open_card_keys() == ["k"]
+    store.forget_card("k")
+    assert store.card("k") is None
+    assert store.open_card_keys() == []
 
 
 # El protocolo del cliente falso cubre lo que exige el transporte.
