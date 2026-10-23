@@ -1215,6 +1215,37 @@ def _pr_url(vcs: VcsPort | None, request: ReviewRequest) -> str | None:
         return None
 
 
+def resolve_launch(
+    request: ReviewRequest,
+    vcs: VcsPort | None,
+    *,
+    expected_repo: str = "",
+) -> ReviewRequest:
+    """Lee el commit de un lanzamiento del panel antes de invocar el grafo.
+
+    El hilo se ata a ese SHA. Si el reintento llega ya con SHA, no se vuelve a
+    leer: un push nuevo no cambia la ejecucion que ya empezo. Un fallo del VCS
+    sube y el job se reencola; un repo distinto del configurado no llega a llamar.
+    """
+    if not request.launch or request.head_sha:
+        return request
+    expected = expected_repo.strip()
+    if expected and request.repo.casefold() != expected.casefold():
+        raise PermanentError(
+            f"Repo {request.repo!r} no admitido: este despliegue solo revisa {expected}"
+        )
+    if vcs is None:
+        raise PermanentError(
+            f"No hay VCS para resolver el commit de {request.repo}#{request.pr_id}"
+        )
+    info = vcs.get_pull_request(request.repo, request.pr_id)
+    if not info.head_sha:
+        raise PermanentError(f"El PR {request.repo}#{request.pr_id} no tiene commit")
+    return request.model_copy(
+        update={"head_sha": info.head_sha, "base_sha": request.base_sha or info.base_sha}
+    )
+
+
 def _with_base_sha(request: ReviewRequest, vcs: VcsPort | None) -> ReviewRequest:
     """Rellena `base_sha` desde el VCS si el webhook no lo mando (008 CX1).
 
@@ -1514,6 +1545,7 @@ def dispatch_job(
     claude_store: ClaudeArtifactStore | None = None,
     claude_session: Callable[[], bool] | None = None,
     park_link: str | None = None,
+    expected_repo: str = "",
 ) -> None:
     """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`.
 
@@ -1546,6 +1578,7 @@ def dispatch_job(
         claude_runner=claude_runner,
         claude_store=claude_store,
         park_link=park_link,
+        expected_repo=expected_repo,
     )
 
 
@@ -1567,6 +1600,7 @@ def _consume(
     claude_runner: ClaudeRunner | None = None,
     claude_store: ClaudeArtifactStore | None = None,
     park_link: str | None = None,
+    expected_repo: str = "",
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1582,19 +1616,26 @@ def _consume(
     *tombstone* que aborta aquí mismo cualquier job rezagado de la review (ver
     `worker.cancel`).
     """
-    # Cancelacion previa al trabajo: el worker bloqueado en `graph.invoke` no procesa
-    # un job de cancelacion, y una pausa no pasa por ninguna frontera de nodo.
-    if request.cancelled or (cancel is not None and cancel.is_cancelled(request.review_key)):
-        _on_cancelled(graph, request, paused=paused)
-        return
-    if _quota_on_cooldown(queue, request, claude_runner=claude_runner, claude_store=claude_store):
-        try:
-            park_claude_job(queue, request, reason="quota-wait", chat=chat, link=park_link)
-        except Exception:
-            logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
-        return
-    request = _with_base_sha(request, vcs)
     try:
+        # La cola aun muestra el job sin SHA. Cancelarlo marca esa clave; se
+        # mira antes de llamar al VCS para no resolver un lanzamiento ya abortado.
+        pending_key = request.review_key
+        if request.cancelled or (cancel is not None and cancel.is_cancelled(pending_key)):
+            _on_cancelled(graph, request, paused=paused)
+            return
+        request = resolve_launch(request, vcs, expected_repo=expected_repo)
+        if cancel is not None and cancel.is_cancelled(request.review_key):
+            _on_cancelled(graph, request, paused=paused)
+            return
+        if _quota_on_cooldown(
+            queue, request, claude_runner=claude_runner, claude_store=claude_store
+        ):
+            try:
+                park_claude_job(queue, request, reason="quota-wait", chat=chat, link=park_link)
+            except Exception:
+                logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
+            return
+        request = _with_base_sha(request, vcs)
         outcome = process_request(
             graph,
             request,
@@ -1851,6 +1892,7 @@ def run_forever(
                 claude_store=claude_store,
                 claude_session=claude_session,
                 park_link=park_link,
+                expected_repo=settings.configured_repo(),
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).

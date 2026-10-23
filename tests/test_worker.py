@@ -23,6 +23,7 @@ from agent_review.domain.models import (
     Severity,
 )
 from agent_review.domain.pending import InMemoryPendingStore
+from agent_review.errors import PermanentError
 from agent_review.graph.build import build_approval as graph_build_approval
 from agent_review.graph.build import build_graph, render_pause_notice
 from agent_review.models_config import ModelsConfig
@@ -40,6 +41,7 @@ from agent_review.worker.main import (
     build_runtime,
     build_verifier,
     process_request,
+    resolve_launch,
     start_heartbeat,
     sweep_expired,
     sweep_pending,
@@ -731,6 +733,104 @@ def test_with_base_sha_rellena_desde_el_vcs_si_falta() -> None:
     assert filled.base_sha == "base123"
     assert _with_base_sha(filled, _Vcs()).base_sha == "base123"
     assert _with_base_sha(request, None).base_sha == ""
+
+
+class _HeadVcs:
+    def __init__(self, *, head: str = "abc123", base: str = "base123") -> None:
+        self.calls = 0
+        self._head = head
+        self._base = base
+
+    def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
+        self.calls += 1
+        return PullRequestInfo(
+            repo=repo,
+            pr_id=pr_id,
+            title="t",
+            source_branch="f",
+            destination_branch="main",
+            author="a",
+            head_sha=self._head,
+            base_sha=self._base,
+        )
+
+
+def _launch(repo: str = "cqm/emotivoo-v2") -> ReviewRequest:
+    return ReviewRequest(repo=repo, pr_id=9, head_sha="", pipeline_id="panel", launch=True)
+
+
+def test_resolve_launch_lee_el_commit_y_no_repite_si_ya_lo_tiene() -> None:
+    vcs = _HeadVcs()
+    resolved = resolve_launch(_launch(), vcs, expected_repo="cqm/emotivoo-v2")
+    assert resolved.head_sha == "abc123"
+    assert resolved.base_sha == "base123"
+    assert resolved.review_key == "cqm/emotivoo-v2:9:abc123:panel"
+    assert resolve_launch(resolved, vcs).head_sha == "abc123"
+    assert vcs.calls == 1
+
+
+def test_resolve_launch_ignora_un_job_que_no_es_lanzamiento() -> None:
+    normal = ReviewRequest(repo="r", pr_id=1, head_sha="")
+    assert resolve_launch(normal, _HeadVcs()) is normal
+
+
+def test_resolve_launch_rechaza_otro_repo_sin_llamar_al_vcs() -> None:
+    vcs = _HeadVcs()
+    with pytest.raises(PermanentError, match="no admitido"):
+        resolve_launch(_launch("otro/repo"), vcs, expected_repo="cqm/emotivoo-v2")
+    assert vcs.calls == 0
+
+
+def test_resolve_launch_sin_vcs_o_sin_commit_es_permanente() -> None:
+    with pytest.raises(PermanentError, match="No hay VCS"):
+        resolve_launch(_launch(), None)
+    with pytest.raises(PermanentError, match="no tiene commit"):
+        resolve_launch(_launch(), _HeadVcs(head=""))
+
+
+def test_consume_resuelve_el_lanzamiento_y_reencola_ese_commit() -> None:
+    class _Stop:
+        def __init__(self) -> None:
+            self.request: ReviewRequest | None = None
+
+        def invoke(self, state: dict[str, object], config: object = None) -> None:
+            del config
+            self.request = state["request"]  # type: ignore[assignment]
+            raise RuntimeError("parar")
+
+    graph = _Stop()
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        graph,
+        _launch(),
+        max_attempts=3,
+        vcs=_HeadVcs(),
+        expected_repo="cqm/emotivoo-v2",
+    )
+    assert graph.request is not None
+    assert graph.request.head_sha == "abc123"
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.head_sha == "abc123"
+    assert retried.attempts == 1
+
+
+def test_consume_no_resuelve_un_lanzamiento_ya_cancelado() -> None:
+    class _Cancel:
+        def is_cancelled(self, key: str) -> bool:
+            return key.endswith("::panel")
+
+    class _Stop:
+        def invoke(self, state: object, config: object = None) -> None:
+            del state, config
+            raise AssertionError("no debe invocar el grafo")
+
+    vcs = _HeadVcs()
+    queue = InMemoryReviewQueue()
+    _consume(queue, _Stop(), _launch(), max_attempts=3, vcs=vcs, cancel=_Cancel())
+    assert vcs.calls == 0
+    assert queue.dequeue() is None
 
 
 def test_consume_reencola_con_intento_incremental_ante_excepcion() -> None:

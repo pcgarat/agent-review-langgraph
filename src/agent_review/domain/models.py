@@ -562,6 +562,11 @@ class ReviewRequest(BaseModel):
     # el hilo ya terminado y se quede en no-op.
     degraded: bool = False
 
+    # Lanzamiento desde el panel: el job viaja sin `head_sha` y el worker lo lee
+    # del VCS antes de invocar el grafo. Sin este flag, un SHA vacio es un job
+    # mal formado, no una orden de resolverlo.
+    launch: bool = False
+
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"

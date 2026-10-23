@@ -34,6 +34,7 @@ from agent_review.web.commands import (
     CommandService,
     build_command_service,
 )
+from agent_review.web.launch import LaunchError, LaunchService
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
@@ -83,6 +84,22 @@ def get_read_model(request: Request) -> PanelReadModel:
         model = build_panel_read_model(_settings())
         request.app.state.read_model = model
     return model
+
+
+def get_launcher(request: Request) -> LaunchService:
+    """Encola un lanzamiento. Los tests inyectan uno en `app.state.launcher`."""
+    launcher: LaunchService | None = getattr(request.app.state, "launcher", None)
+    if launcher is None:
+        settings = _settings()
+        queue = RedisReviewQueue(url=settings.redis_url)
+        if not queue.available():
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Lanzar una review necesita Redis, que no esta disponible",
+            )
+        launcher = LaunchService(queue, expected_repo=settings.configured_repo())
+        request.app.state.launcher = launcher
+    return launcher
 
 
 def get_commands(request: Request) -> CommandService:
@@ -218,6 +235,47 @@ async def _claude_token(request: Request) -> str:
     if not isinstance(token, str) or not token.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta el token")
     return token.strip()
+
+
+@app.post("/api/launch", status_code=status.HTTP_202_ACCEPTED)
+async def launch_review(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    launcher: Annotated[LaunchService, Depends(get_launcher)],
+) -> dict[str, object]:
+    """Encola una review a partir de la URL del pull request.
+
+    No resuelve el commit: el worker lo lee del VCS. La respuesta no lleva
+    `review_key` porque aun no hay SHA.
+    """
+    url = await _launch_url(request)
+    try:
+        launched = launcher.launch(url, actor=session.user)
+    except LaunchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("No se pudo encolar el lanzamiento")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {
+        "status": "encolada",
+        "repo": launched.repo,
+        "pr_id": launched.pr_id,
+        "pipeline_id": launched.pipeline_id,
+        "actor": session.user,
+    }
+
+
+async def _launch_url(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    url = body.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta la URL del pull request")
+    return url
 
 
 @app.post("/api/reviews/{review_key:path}/cancel")

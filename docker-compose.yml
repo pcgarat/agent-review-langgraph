@@ -221,7 +221,9 @@ services:
   # por el perfil `panel`: sin el perfil, `docker compose up` arranca lo de siempre
   # (R7). Como el `fix-worker` y el `teams-bot`, NO hereda el `.env` entero (nada de
   # `env_file`): el panel lee estado y encola comandos, asi que no recibe credencial
-  # de VCS ni clave del LLM (§5.8). Solo Redis, Postgres (lectura) y su sesion.
+  # de VCS ni clave del LLM (§5.8). Si recibe el nombre del repo (sin token) para
+  # rechazar la URL de otro repositorio al lanzar una review (ADR-0029). Solo Redis,
+  # Postgres (lectura) y su sesion.
   web:
     build: .
     restart: unless-stopped
@@ -244,6 +246,13 @@ services:
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
+      # Identidad del repo, sin el token: el panel rechaza la URL de otro repo
+      # y el worker es quien lee el commit (ADR-0029).
+      VCS_PROVIDER: ${VCS_PROVIDER:-twg}
+      BITBUCKET_WORKSPACE: ${BITBUCKET_WORKSPACE:-}
+      BITBUCKET_REPO: ${BITBUCKET_REPO:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
       # Misma ruta que claude-runner. El token no es una variable de entorno.
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
       CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}

@@ -61,7 +61,7 @@ panel; el worker no lo monta.
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura); volumen `claude_artifacts` en `/app/var/claude` | Necesita `twg` en la imagen si el proveedor es `twg`. `CLAUDE_GIT_TOKEN` llega vacío. No monta `claude_session` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
-| `web` (perfil `panel`) | `PANEL_PORT` publicado | volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis y el recorrido del checkpointer. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
+| `web` (perfil `panel`) | `PANEL_PORT` publicado | volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis y el recorrido del checkpointer. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Sí recibe el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo al lanzar una review ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `claude-runner` (perfil `claude`) | `8098` solo interno | `claude_checkout` en `/var/claude-checkout`; `claude_session` en `/var/claude-session` | Checkout de solo lectura y subproceso `claude`. **Sin** `env_file` ni el token de publicación. `CLAUDE_GIT_TOKEN` solo vive aquí; el worker lo recibe vacío. `GET /session` dice si el fichero sigue vigente y lo retira si caducó |
@@ -338,7 +338,9 @@ pendiente, un id es ajeno, se usó `expired` o el resultado no vale en esa pausa
 El panel es un proceso aparte (`python -m agent_review.web.main`), opt-in por el
 perfil de compose `panel`. Lee el estado operativo de Redis y el recorrido del
 checkpointer con un pool de **solo lectura**; no recibe credencial de VCS ni clave
-del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
+del LLM (solo lee estado y encola comandos). Recibe el nombre del repo, sin el
+token, para no lanzar la URL de otro repositorio
+([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). La sesión va en la cabecera
 `X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`) o en la cookie
 `panel_session` (el navegador no puede mandar cabeceras en una navegación normal);
 **no** es `REVIEWS_DECISION_TOKEN`.
@@ -355,7 +357,8 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
 | `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}`. En una pausa de arreglo, `approved`/`rejected`/`noted`; en una de publicación, `approved` (publicar) y `dropped` (no publicar). La construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana, no cubre **todos** los pendientes o el resultado no vale en esa pausa; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
-| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
+| `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
+| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global, con el formulario de lanzamiento, y detalle con el recorrido y la consola) |
 | `GET` | `/claude` | `operador` | Formulario de la sesión de Claude. El `lector` recibe `403` |
 | `POST` | `/api/claude/session` | `operador` | Cuerpo `{"token": "…"}`. Lo guarda en el fichero `0600` y devuelve `{"released": n}` sin el token. Misma defensa CSRF que el resto de comandos. Un formulario que no sea JSON del mismo origen recibe `403` |
 
