@@ -400,11 +400,24 @@ def test_build_reviewers_herramientas_opt_in_por_rol(tmp_path: Path) -> None:
         if isinstance(r, LlmReviewer)
     )
 
-    con = build_reviewers(Settings(**base, review_tools_roles="correctness"))
+    con = build_reviewers(
+        Settings(
+            **base,
+            review_tools_roles="correctness",
+            review_tools_calls_per_turn=5,
+            review_tools_strict_calls=True,
+        ),
+        vcs=FakeVcs(),
+    )
     by_name = {r.name: r for r in con if isinstance(r, LlmReviewer)}
     assert by_name["correctness"]._reader_factory is not None
     assert by_name["correctness"]._tool_limits is not None
     assert by_name["correctness"]._tool_limits.max_turns == 4
+    # 023 F1: los topes y las palancas llegan al reviewer desde `Settings`, no se
+    # leen dentro del bucle.
+    assert by_name["correctness"]._tool_limits.calls_per_turn == 5
+    assert by_name["correctness"]._tool_options.strict_calls is True
+    assert by_name["correctness"]._tool_options.grep_mode == "literal"
     assert by_name["security"]._reader_factory is None
 
 
@@ -1164,6 +1177,7 @@ def test_aviso_de_pausa_sin_marca_de_dedupe() -> None:
     config = {"configurable": {"thread_id": request.thread_id}}
     approval = graph_build_approval(graph.get_state(config).values)
     assert approval is not None
+    assert approval.pause_kind is None
     notice = render_pause_notice(approval)
     assert request.dedupe_token not in notice
     assert ":ok" not in notice and ":partial" not in notice
@@ -1212,6 +1226,43 @@ def test_sweep_expired_reencola_sin_decision() -> None:
     assert job.decision.actor == "system:ttl"
     assert job.decision.items[0].outcome is DecisionOutcome.EXPIRED
     assert paused.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
+
+
+def test_sweep_expired_en_publicacion_es_dropped() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused = InMemoryPausedStore(ttl_s=60.0)
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    approval = ApprovalRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pause_kind="publication",
+        pending=[
+            PendingDecision(
+                finding_id="w1",
+                proposed_action=FindingAction.PUBLISH,
+                reason="publicar",
+                matched_rule="claude",
+                policy_version="1",
+                title="T",
+                file="a.php",
+                line=1,
+                severity=Severity.P1,
+            )
+        ],
+    )
+    paused.pause(request, approval)
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    sweep_expired(paused, queue, now=future)
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.items[0].outcome is DecisionOutcome.DROPPED
 
 
 # ---------------------------------------------------------------------------

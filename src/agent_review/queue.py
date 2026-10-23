@@ -16,6 +16,13 @@ QUEUE_KEY = "reviews:jobs"
 # Cola de descartes: los jobs que agotan los reintentos no se pierden en el log,
 # quedan aqui para reinyectarlos a mano o inspeccionarlos.
 DEAD_LETTER_KEY = "reviews:jobs:dead"
+# Jobs del motor claude que no pueden correr (sin sesión o sin cupo). Fuera de
+# `reviews:jobs` para que el bucle no los vuelva a sacar en la misma vuelta.
+PARKED_KEY = "reviews:claude:parked"
+NOTICE_KEY_PREFIX = "reviews:claude:notice:"
+# `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
+# siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
+PARK_REASONS = frozenset({"session", "quota", "quota-wait"})
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve
 # el worker de fixes. Vive en su propia clave para no mezclarse con las reviews.
@@ -53,15 +60,52 @@ class ReviewQueue(Protocol):
         """
         ...
 
+    def park(self, request: ReviewRequest, *, reason: str) -> None:
+        """Saca el job de la cola principal a `reviews:claude:parked`."""
+        ...
+
+    def parked(self) -> list[ReviewRequest]:
+        """Jobs en parking, en el orden en que llegaron."""
+        ...
+
+    def release_parked(self, *, reason: str) -> list[ReviewRequest]:
+        """Devuelve a `reviews:jobs` los jobs parqueados por `reason`.
+
+        El cupo no sale con la sesión: volver a lanzarlos gastaría el límite.
+        """
+        ...
+
+    def claim_notice(self, kind: str, *, ttl_s: float | None = None) -> bool:
+        """True solo para quien envía el aviso. El segundo no vuelve a encolar.
+
+        `ttl_s` deja que el cupo se vuelva a intentar cuando pase el enfriamiento.
+        La falta de sesión no caduca sola: la borra el login.
+        """
+        ...
+
+    def notice_held(self, kind: str) -> bool:
+        """True si ese aviso sigue vigente."""
+        ...
+
+    def clear_notice(self, kind: str) -> None:
+        """Borra la clave del aviso. Una caducidad posterior puede avisar otra vez."""
+        ...
+
 
 class RedisReviewQueue:
     def __init__(
-        self, *, url: str, key: str = QUEUE_KEY, dead_letter_key: str = DEAD_LETTER_KEY
+        self,
+        *,
+        url: str,
+        key: str = QUEUE_KEY,
+        dead_letter_key: str = DEAD_LETTER_KEY,
+        parked_key: str = PARKED_KEY,
     ) -> None:
         # `blocking=True`: `BLPOP` bloquea y no debe llevar deadline de socket.
         self._client = build_redis_client(url, blocking=True)
         self._key = key
         self._dead_key = dead_letter_key
+        self._parked_key = parked_key
 
     def available(self) -> bool:
         try:
@@ -120,6 +164,50 @@ class RedisReviewQueue:
                 return entry
         return None
 
+    def park(self, request: ReviewRequest, *, reason: str) -> None:
+        _check_park_reason(reason)
+        self._client.rpush(self._parked_key, _park_payload(request, reason=reason))
+
+    def parked(self) -> list[ReviewRequest]:
+        return [
+            request
+            for item in self._client.lrange(self._parked_key, 0, -1)
+            if (request := _parked_request(item)) is not None
+        ]
+
+    def release_parked(self, *, reason: str) -> list[ReviewRequest]:
+        _check_park_reason(reason)
+        # Un solo script: entre LREM y RPUSH una caída perdía el job.
+        raw_items = self._client.eval(
+            _RELEASE_PARKED,
+            2,
+            self._parked_key,
+            self._key,
+            reason,
+        )
+        released: list[ReviewRequest] = []
+        for item in raw_items or []:
+            raw = item.decode() if isinstance(item, bytes) else str(item)
+            try:
+                released.append(ReviewRequest.model_validate_json(raw))
+            except ValueError:
+                logger.warning("Job ilegible al soltar el parking de Claude")
+        return released
+
+    def claim_notice(self, kind: str, *, ttl_s: float | None = None) -> bool:
+        _check_park_reason(kind)
+        if ttl_s is None:
+            return bool(self._client.set(_notice_key(kind), "1", nx=True))
+        return bool(self._client.set(_notice_key(kind), "1", nx=True, ex=max(1, int(ttl_s))))
+
+    def notice_held(self, kind: str) -> bool:
+        _check_park_reason(kind)
+        return bool(self._client.exists(_notice_key(kind)))
+
+    def clear_notice(self, kind: str) -> None:
+        _check_park_reason(kind)
+        self._client.delete(_notice_key(kind))
+
 
 class InMemoryReviewQueue:
     """Cola compartible en tests y fallback sin Redis."""
@@ -127,6 +215,8 @@ class InMemoryReviewQueue:
     def __init__(self) -> None:
         self._items: deque[str] = deque()
         self._dead: list[str] = []
+        self._parked: deque[str] = deque()
+        self._notices: dict[str, float | None] = {}
 
     def enqueue(self, request: ReviewRequest) -> None:
         self._items.append(request.model_dump_json())
@@ -153,6 +243,50 @@ class InMemoryReviewQueue:
                 return entry
         return None
 
+    def park(self, request: ReviewRequest, *, reason: str) -> None:
+        _check_park_reason(reason)
+        self._parked.append(_park_payload(request, reason=reason))
+
+    def parked(self) -> list[ReviewRequest]:
+        return [request for item in self._parked if (request := _parked_request(item)) is not None]
+
+    def release_parked(self, *, reason: str) -> list[ReviewRequest]:
+        _check_park_reason(reason)
+        kept: deque[str] = deque()
+        released: list[ReviewRequest] = []
+        while self._parked:
+            raw = self._parked.popleft()
+            parsed = _parse_park(raw)
+            if parsed is None or parsed[0] != reason:
+                kept.append(raw)
+                continue
+            self._items.append(parsed[1].model_dump_json())
+            released.append(parsed[1])
+        self._parked.extend(kept)
+        return released
+
+    def claim_notice(self, kind: str, *, ttl_s: float | None = None) -> bool:
+        _check_park_reason(kind)
+        if self.notice_held(kind):
+            return False
+        expires = None if ttl_s is None else time.time() + ttl_s
+        self._notices[kind] = expires
+        return True
+
+    def notice_held(self, kind: str) -> bool:
+        _check_park_reason(kind)
+        expires = self._notices.get(kind)
+        if kind not in self._notices:
+            return False
+        if expires is not None and expires <= time.time():
+            del self._notices[kind]
+            return False
+        return True
+
+    def clear_notice(self, kind: str) -> None:
+        _check_park_reason(kind)
+        self._notices.pop(kind, None)
+
     def __len__(self) -> int:
         return len(self._items)
 
@@ -170,6 +304,82 @@ def _parse_dead_letter(item: str | bytes) -> dict[str, object] | None:
     except ValueError:
         return None
     return entry if isinstance(entry, dict) else None
+
+
+# Mueve, en una operación, las entradas cuyo `reason` coincide. El payload es
+# `{"reason": "<motivo>", "request": <ReviewRequest>}` (json.dumps).
+_RELEASE_PARKED = """
+local reason = ARGV[1]
+local prefix = '{"reason": "' .. reason .. '"'
+local items = redis.call('LRANGE', KEYS[1], 0, -1)
+local kept = {}
+local released = {}
+for _, raw in ipairs(items) do
+  if string.sub(raw, 1, #prefix) == prefix then
+    local at = string.find(raw, '"request":', 1, true)
+    local brace = at and string.find(raw, '{', at, true) or nil
+    if brace then
+      table.insert(released, string.sub(raw, brace, #raw - 1))
+    else
+      table.insert(kept, raw)
+    end
+  else
+    table.insert(kept, raw)
+  end
+end
+redis.call('DEL', KEYS[1])
+if #kept > 0 then
+  redis.call('RPUSH', KEYS[1], unpack(kept))
+end
+if #released > 0 then
+  redis.call('RPUSH', KEYS[2], unpack(released))
+end
+return released
+"""
+
+
+def _check_park_reason(reason: str) -> None:
+    if reason not in PARK_REASONS:
+        raise ValueError(f"motivo de parking desconocido: {reason}")
+
+
+def _notice_key(kind: str) -> str:
+    return f"{NOTICE_KEY_PREFIX}{kind}"
+
+
+def _park_payload(request: ReviewRequest, *, reason: str) -> str:
+    import json
+
+    return json.dumps({"reason": reason, "request": request.model_dump(mode="json")})
+
+
+def _parse_park(item: str | bytes) -> tuple[str, ReviewRequest] | None:
+    import json
+
+    raw = item.decode() if isinstance(item, bytes) else item
+    try:
+        entry = json.loads(raw)
+    except ValueError:
+        logger.warning("Entrada ilegible en el parking de Claude")
+        return None
+    if not isinstance(entry, dict):
+        return None
+    reason = entry.get("reason")
+    payload = entry.get("request")
+    if not isinstance(reason, str) or reason not in PARK_REASONS or not isinstance(payload, dict):
+        return None
+    try:
+        return reason, ReviewRequest.model_validate(payload)
+    except ValueError:
+        logger.warning("Job ilegible en el parking de Claude")
+        return None
+
+
+def _parked_request(item: str | bytes) -> ReviewRequest | None:
+    parsed = _parse_park(item)
+    if parsed is None:
+        return None
+    return parsed[1]
 
 
 def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:

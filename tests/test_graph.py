@@ -319,7 +319,14 @@ def test_sin_verificador_no_hay_llamadas_y_todo_queda_sin_veredicto() -> None:
         calls = 0
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
             del finding, repo, head_sha, diff, review_key
             type(self).calls += 1
@@ -354,9 +361,16 @@ def test_hallazgo_refutado_sigue_en_merged() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.REFUTED,
@@ -402,9 +416,16 @@ def test_confirmed_sin_escenario_queda_unverified() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -443,9 +464,16 @@ def test_cita_no_servida_nunca_es_verified_grounded() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -488,9 +516,16 @@ def test_confirmed_estampa_escenario_del_verificador() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -537,9 +572,16 @@ def test_filtro_umbral_grounded_y_tope_no_llaman_al_verificador() -> None:
         calls: list[str] = []
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls.append(finding.id)
             return VerificationResult(
                 finding_id=finding.id,
@@ -602,9 +644,16 @@ def test_reintento_de_verify_no_reverifica_lo_existente() -> None:
         calls = 0
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls += 1
             return VerificationResult(
                 finding_id=finding.id,
@@ -651,9 +700,16 @@ def test_umbral_sale_del_severity_gate_de_la_politica() -> None:
         calls: list[str] = []
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls.append(finding.id)
             return VerificationResult(
                 finding_id=finding.id,

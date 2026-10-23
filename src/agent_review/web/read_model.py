@@ -25,7 +25,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from pydantic import BaseModel, Field
 
 from agent_review.checkpointer import build_reader_checkpointer
-from agent_review.domain.models import ReviewRequest
+from agent_review.domain.models import PendingDecision, ReviewRequest
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.trace import PauseKindName, ReviewTrace
 from agent_review.queue import DEAD_LETTER_KEY, QUEUE_KEY
@@ -98,9 +98,10 @@ class PausedItem(BaseModel):
     kind: PauseKindName
     created_at: datetime
     state: str
-    pending: list[dict[str, Any]] = Field(default_factory=list)
+    pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
+    publication: bool = False
 
 
 class PausedGroups(BaseModel):
@@ -386,8 +387,9 @@ def _paused_item(review: PausedReview) -> PausedItem:
         kind="human",
         created_at=review.created_at,
         state="PAUSED",
-        pending=[item.model_dump(mode="json") for item in approval.pending],
+        pending=list(approval.pending),
         command_hint=approval.command_hint,
+        publication=approval.pause_kind == "publication",
     )
 
 

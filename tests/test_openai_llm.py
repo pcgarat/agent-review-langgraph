@@ -58,6 +58,55 @@ def test_sin_usage_los_contadores_son_cero() -> None:
     llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(handler))
     reply = llm.complete(system="s", prompt="p", max_tokens=1)
     assert (reply.prompt_tokens, reply.completion_tokens, reply.reasoning_tokens) == (0, 0, 0)
+    # 024 E3: sin campo de cache no se inventa un 0; es «no medido».
+    assert reply.cached_tokens is None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"prompt_tokens_details": {"cached_tokens": 24}},
+        {"prompt_cache_hit_tokens": 24},
+        {"cache_read_input_tokens": 24},
+    ],
+    ids=["openai", "deepseek", "anthropic"],
+)
+def test_el_cache_del_proveedor_se_normaliza(extra: dict) -> None:
+    # 024 S2: tres dialectos del `usage`, una sola columna. Si el proveedor lo
+    # reporta, se lee; el orden solo decide cuando vienen varios.
+    usage = {"prompt_tokens": 30, "completion_tokens": 8, **extra}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": usage,
+            },
+        )
+
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(handler))
+
+    assert llm.complete(system="s", prompt="p", max_tokens=1).cached_tokens == 24
+
+
+def test_gana_el_dialecto_de_openai_cuando_vienen_varios() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 10},
+                    "prompt_cache_hit_tokens": 24,
+                },
+            },
+        )
+
+    llm = OpenAiCompatibleLlm(api_key="k", model="m", client=_client(handler))
+
+    assert llm.complete(system="s", prompt="p", max_tokens=1).cached_tokens == 10
 
 
 def test_adaptador_envia_system_y_prompt() -> None:

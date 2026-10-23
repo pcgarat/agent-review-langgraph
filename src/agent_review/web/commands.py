@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from agent_review.decision import DecisionError, build_decision
 from agent_review.domain.models import (
     DecisionOutcome,
     FindingDecision,
@@ -55,6 +56,7 @@ class CommandEffect(StrEnum):
     CANCELLED_PENDING = "cancelled_pending"  # ya habia publicado: solo lo pendiente
     RETRIED = "retried"
     RESUMED = "resumed"
+    DECIDED = "decided"  # decision humana explicita encolada (022)
 
 
 class CancellationMarker(Protocol):
@@ -70,13 +72,17 @@ class CancellationMarker(Protocol):
 
 
 class ReviewCommands(Protocol):
-    """Los tres comandos del panel, ya resueltos contra el estado (W6)."""
+    """Los comandos del panel, ya resueltos contra el estado (W6)."""
 
     def cancel(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
     def retry(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
     def resume(self, review_key: str, *, actor: str) -> CommandEffect: ...
+
+    def decide(
+        self, review_key: str, *, actor: str, items: list[FindingDecision]
+    ) -> CommandEffect: ...
 
 
 class CommandService:
@@ -170,6 +176,32 @@ class CommandService:
         self._queue.enqueue(paused.request.model_copy(update={"decision": decision}))
         logger.info("Reanudacion encolada para %s (actor=%s)", review_key, actor)
         return CommandEffect.RESUMED
+
+    def decide(self, review_key: str, *, actor: str, items: list[FindingDecision]) -> CommandEffect:
+        """Encola una decision humana explicita (022, H1).
+
+        La construye y valida con `build_decision`, la misma funcion que usan el CLI,
+        la API y el bot de Teams: el panel es un cliente mas del canal de decision, no
+        una segunda regla. `build_decision` exige que los `items` cubran **todos** los
+        pendientes y solo esos; si no, `CommandError` (`409`).
+        """
+        paused = self._paused.get(review_key)
+        if paused is None:
+            raise CommandError(f"{review_key} no esta pausada")
+        if paused.kind is not PauseKind.HUMAN:
+            raise CommandError(f"{review_key} no es una pausa humana")
+        try:
+            decision = build_decision(paused, actor=actor, items=items, reviewed_key=review_key)
+        except DecisionError as exc:
+            raise CommandError(str(exc)) from exc
+        self._queue.enqueue(paused.request.model_copy(update={"decision": decision}))
+        logger.info(
+            "Decision encolada desde el panel para %s: %d hallazgo(s), actor=%s",
+            review_key,
+            len(decision.items),
+            decision.actor,
+        )
+        return CommandEffect.DECIDED
 
 
 def _fix_cancellation(paused: PausedReview) -> ReviewRequest:

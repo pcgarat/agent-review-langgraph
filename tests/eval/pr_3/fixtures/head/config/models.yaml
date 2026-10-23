@@ -1,0 +1,84 @@
+# Registro declarativo de proveedores y modelos (iniciativa 005).
+#
+# El codigo no conoce ningun nombre de modelo: los roles (`bindings`) son lo unico
+# que el worker consulta. Editar este fichero y reiniciar el worker basta para
+# cambiar de modelo; no hay recarga en caliente (D2).
+#
+# Los secretos NUNCA van aqui: `api_key` es una referencia `${VAR}` que se resuelve
+# contra los campos de `Settings` (y por tanto contra el `.env`). Una referencia
+# sin resolver o vacia es un error de arranque, no una degradacion silenciosa.
+#
+# Las capacidades (`json_mode`, `context_window`) que se declaran aqui las consume
+# el adaptador; `tests/test_live_models.py` las comprueba contra la API real.
+
+version: 1
+
+providers:
+  nan:
+    protocol: openai
+    base_url: https://api.nan.builders/v1
+    # Referencia a un campo de `Settings` (y por tanto al `.env`). Un segundo
+    # proveedor anade su propio campo, igual que `TWG_BBC_TOKEN` o `GITHUB_TOKEN`.
+    api_key: ${LLM_API_KEY}
+    timeout_s: 60
+    # Se fusiona con cada modelo del proveedor. `reasoning_effort: none` evita el
+    # coste desbocado de un razonador y el `content: null` sin error (spec §3.2).
+    defaults:
+      temperature: 0
+      reasoning_effort: none
+
+models:
+  # Modelo por defecto: 1M de contexto y la cuota mensual mas holgada (3B tokens).
+  # No soporta `json_schema` (400 permanente); `json_object` exige que el prompt
+  # contenga la palabra JSON, cosa que el `LlmReviewer` ya hace.
+  deepseek-v4-flash:
+    provider: nan
+    kind: chat
+    context_window: 1048576
+    json_mode: json_object
+    # Con razonamiento activo la API sube `max_tokens` a 16384: declararlo evita
+    # que la estimacion de coste mienta.
+    reasoning_min_max_tokens: 16384
+
+  # Soporta `json_schema` estricto: candidato para el fixer, donde una respuesta
+  # con forma invalida cuesta un intento entero.
+  qwen3.6:
+    provider: nan
+    kind: chat
+    context_window: 262144
+    json_mode: json_schema
+
+  gemma4:
+    provider: nan
+    kind: chat
+    context_window: 262144
+    json_mode: json_schema
+
+  # Sin `json_mode` declarado: no se envia `response_format`. Es el valor seguro
+  # por defecto para un modelo cuya capacidad no se ha comprobado.
+  glm5.3-flash:
+    provider: nan
+    kind: chat
+    context_window: 1048576
+
+  qwen3.8-flash:
+    provider: nan
+    kind: chat
+    context_window: 1048576
+
+  mimo-v2.6-flash:
+    provider: nan
+    kind: chat
+    context_window: 1048576
+
+  glm5.3:
+    provider: nan
+    kind: chat
+    context_window: 1048576
+
+# Que modelo usa cada ROL. El rol es la unidad semantica (`correctness` es una
+# persona; `fixer` propone el parche), no el nodo del grafo: el nodo `persona` es
+# un fan-out y todas sus ramas comparten closure (D1).
+bindings:
+  correctness: deepseek-v4-flash
+  fixer: deepseek-v4-flash

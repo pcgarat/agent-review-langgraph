@@ -17,7 +17,16 @@ import httpx
 from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.context_vcs import VcsContextReader
 from agent_review.adapters.context_workspace import WorkspaceContextReader
-from agent_review.ports.context import DEFAULT_CONTEXT_DENYLIST, is_denied
+from agent_review.outline import outline_text
+from agent_review.ports.context import (
+    DEFAULT_CONTEXT_DENYLIST,
+    READER_CAPABILITIES,
+    ToolError,
+    is_denied,
+    line_matcher,
+    slice_lines,
+    truncate_bytes,
+)
 
 REPO = "cqm/x"
 HEAD = "head1"
@@ -114,29 +123,65 @@ def runner_handler(
     tree: dict[str, str] | None = None,
     *,
     extra_denied: Sequence[str] = (),
+    capabilities: Sequence[str] | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
     """Runner de lectura en memoria: sirve el mismo arbol que el resto de fakes.
 
     Aplica el `context_denylist` como el runner real (W7): una ruta vetada da `403`
-    en `file` y no aparece en `grep` ni en `tree`.
+    en `file` y no aparece en `grep` ni en `tree`. `capabilities=None` anuncia las
+    del runner actual; una lista vacia simula un runner anterior a 023.
     """
     files = TREE if tree is None else tree
     denied = tuple(path for path in files if is_denied(path, DEFAULT_CONTEXT_DENYLIST))
     denied += tuple(extra_denied)
+    advertised = list(READER_CAPABILITIES if capabilities is None else capabilities)
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = request.url
         if url.path == "/workspaces" and request.method == "POST":
-            return httpx.Response(200, json={"workspace_id": WORKSPACE_ID, "expires_at": 1.0})
+            return httpx.Response(
+                200,
+                json={
+                    "workspace_id": WORKSPACE_ID,
+                    "expires_at": 1.0,
+                    "capabilities": advertised,
+                },
+            )
         suffix = url.path.rsplit("/", 1)[-1]
         if suffix == "file":
-            return _file(url, files, denied)
+            try:
+                return _file(url, files, denied)
+            except ToolError as exc:
+                return httpx.Response(400, json={"detail": str(exc)})
         if suffix == "grep":
             payload: Any = _json(request)
-            return httpx.Response(200, json={"matches": _grep(files, payload, denied)})
+            try:
+                matches, total = _grep(files, payload, denied)
+            except ToolError as exc:
+                return httpx.Response(400, json={"detail": str(exc)})
+            return httpx.Response(
+                200,
+                json={
+                    "matches": matches,
+                    "total": total,
+                    "truncated": total > len(matches),
+                },
+            )
         if suffix == "tree":
-            entries = _names(files, url.params.get("path", ""), denied)
-            return httpx.Response(200, json={"entries": entries})
+            try:
+                entries = _names(
+                    files,
+                    url.params.get("path", ""),
+                    denied,
+                    glob=url.params.get("glob"),
+                    depth=_as_int(url.params.get("depth")) or 1,
+                )
+            except ToolError as exc:
+                return httpx.Response(400, json={"detail": str(exc)})
+            return httpx.Response(
+                200,
+                json={"entries": entries, "total": len(entries), "truncated": False},
+            )
         return httpx.Response(404, json={"detail": "endpoint desconocido"})
 
     return handler
@@ -148,9 +193,36 @@ def _file(url: httpx.URL, files: dict[str, str], denied: Sequence[str]) -> httpx
         return httpx.Response(403, json={"detail": f"la ruta {path} esta vetada"})
     if path not in files:
         return httpx.Response(404, json={"detail": f"no existe {path}"})
-    content = _slice(files[path], _as_int(url.params.get("start")), _as_int(url.params.get("end")))
+    text = files[path]
+    if url.params.get("mode") == "outline":
+        index = outline_text(path, text)
+        if index is None:
+            raise ToolError(f"no se puede indexar {path}; pide `start`/`end` tras un `grep`")
+        return httpx.Response(
+            200,
+            json={
+                "path": path,
+                "ref": url.params.get("ref", "head"),
+                "content": index,
+                "total_bytes": len(text.encode("utf-8")),
+                "truncated": False,
+                "served_range": None,
+            },
+        )
+    content, served_range = slice_lines(
+        text, _as_int(url.params.get("start")), _as_int(url.params.get("end"))
+    )
+    content, truncated = truncate_bytes(content, 200_000)
     return httpx.Response(
-        200, json={"path": path, "ref": url.params.get("ref", "head"), "content": content}
+        200,
+        json={
+            "path": path,
+            "ref": url.params.get("ref", "head"),
+            "content": content,
+            "total_bytes": len(text.encode("utf-8")),
+            "truncated": truncated,
+            "served_range": list(served_range) if served_range else None,
+        },
     )
 
 
@@ -161,17 +233,32 @@ def _json(request: httpx.Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _grep(files: dict[str, str], payload: dict[str, Any], denied: Sequence[str]) -> list[str]:
+def _grep(
+    files: dict[str, str], payload: dict[str, Any], denied: Sequence[str]
+) -> tuple[list[str], int]:
     pattern = str(payload.get("pattern", ""))
     glob = str(payload.get("glob") or "")
+    prefix = str(payload.get("path") or "").strip("/")
+    files_only = payload.get("files_only") is True
+    matches_line = line_matcher(pattern, str(payload.get("mode") or "literal"))  # type: ignore[arg-type]
     matches: list[str] = []
+    seen: set[str] = set()
+    total = 0
     for path, content in files.items():
-        if path in denied or not _glob_ok(path, glob):
+        if path in denied or not _glob_ok(_under(path, prefix), glob):
+            continue
+        if prefix and path != prefix and not path.startswith(f"{prefix}/"):
             continue
         for number, line in enumerate(content.splitlines(), start=1):
-            if pattern and pattern in line:
+            if pattern and matches_line(line):
+                if files_only:
+                    if path not in seen:
+                        seen.add(path)
+                        matches.append(path)
+                    continue
+                total += 1
                 matches.append(f"{path}:{number}: {line.strip()}")
-    return matches
+    return matches, len(seen) if files_only else total
 
 
 def _glob_ok(path: str, glob: str) -> bool:
@@ -182,23 +269,36 @@ def _glob_ok(path: str, glob: str) -> bool:
     return path_matches(path, glob)
 
 
-def _names(files: dict[str, str], prefix: str, denied: Sequence[str]) -> list[str]:
+def _under(path: str, prefix: str) -> str:
+    """Ruta vista desde `prefix`; el runner mide el glob ahi (ADR-0027)."""
+    return path[len(prefix) + 1 :] if prefix else path
+
+
+def _names(
+    files: dict[str, str],
+    prefix: str,
+    denied: Sequence[str],
+    *,
+    glob: str | None = None,
+    depth: int = 1,
+) -> list[str]:
     head = f"{prefix.rstrip('/')}/" if prefix else ""
+    if prefix and prefix in files:
+        raise ToolError(f"`{prefix}` es un fichero, no un directorio; usa `read_file`")
+    if prefix and not any(path.startswith(head) for path in files):
+        raise ToolError(f"no existe el directorio `{prefix}`")
     seen: set[str] = set()
     for path in files:
         if path in denied or (head and not path.startswith(head)):
             continue
-        seen.add(path[len(head) :].split("/", 1)[0])
+        rest = path[len(head) :]
+        parts = rest.split("/")
+        for level in range(1, min(depth, len(parts)) + 1):
+            name = "/".join(parts[:level])
+            if glob and not _glob_ok(name, glob):
+                continue
+            seen.add(name)
     return sorted(seen)
-
-
-def _slice(text: str, start: int | None, end: int | None) -> str:
-    if start is None and end is None:
-        return text
-    lines = text.splitlines()
-    first = max(0, (start or 1) - 1)
-    last = end if end is not None else len(lines)
-    return "\n".join(lines[first:last])
 
 
 def _as_int(value: str | None) -> int | None:

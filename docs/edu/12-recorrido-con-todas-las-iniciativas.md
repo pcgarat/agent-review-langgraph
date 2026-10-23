@@ -111,12 +111,12 @@ Preguntas abiertas de las specs, resueltas aquí con la propuesta de cada spec. 
 | [011 Q8](../iniciativas/archivo/011-gate-de-severidad/spec.md) · ¿`P2` exige verificación? | *Decidido (VF15):* No: `require_verified_for: [P0, P1]` |
 | [011 Q9](../iniciativas/archivo/011-gate-de-severidad/spec.md) · ¿qué se hace con un refutado? | *Decidido (VF15):* `on_refuted: drop` (no se publica) |
 | [008 Q1](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿de dónde sale el `base_sha`? | Lo trae el VCS en `PullRequestInfo` y viaja en el `request` |
-| [008 Q2](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿qué ADR se inyectan? | Los que declare el perfil en `context_docs:` |
+| [008 Q2](../iniciativas/archivo/008-contexto-del-revisor/spec.md) · ¿qué documentos se inyectan? | Los que declare el perfil en `context_docs:` (en este repo, `CONTEXT.md` y un índice curado de ADR; `emotivoo-v2` puede declarar otros o ninguno) |
 | [009 Q3](../iniciativas/archivo/009-verificador-adversarial/spec.md) · ¿verificar por lote o por hallazgo? | Por hallazgo, como dice el diseño de 009 §5.2 |
 | [009 Q7](../iniciativas/archivo/009-verificador-adversarial/spec.md) · `VERIFIER_MAX_FINDINGS` | 5 por review |
 | [010 Q1](../iniciativas/010-personas-de-wiring/spec.md) · ¿dónde vive el contrato de wiring? | En el perfil del repo revisado (bloque `wiring:`); la persona existe solo si el perfil lo declara |
 | [012 Q1](../iniciativas/archivo/012-cobertura-de-la-review/spec.md) · ¿se mantiene `max_files_per_pr`? | No: se elimina; el único tope es el presupuesto de 017 |
-| [014 H4](../iniciativas/014-revisor-con-herramientas/spec.md) · roles con herramientas | Solo `correctness`; con 017 ya entregada se podría activar otro |
+| [014 H4](../iniciativas/014-revisor-con-herramientas/spec.md) · roles **de revisión** con herramientas | Solo `correctness`; con 017 ya entregada se podría activar otro. El `verifier` de 009 **no** entra en este opt-in: tiene herramientas siempre que exista su binding (§7.4) |
 | [018 Q2/Q4](../iniciativas/018-trazas-de-la-review/spec.md) · cómo se instrumenta | Decorador `TracedLlm` sobre el puerto y envoltura de nodos en `build_graph` |
 | Nombre de los ADR nuevos | Sin número: 007, 011 y 018 piden ADR, pero el número se asigna al escribirlo |
 

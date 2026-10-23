@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fakeredis
 import pytest
 import redis
 from redis.connection import DEFAULT_SOCKET_TIMEOUT
@@ -70,6 +71,19 @@ def test_dequeue_devuelve_none_si_redis_falla(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(queue._client, "blpop", _boom)
     assert queue.dequeue() is None
+
+
+def test_release_parked_mueve_solo_el_motivo() -> None:
+    queue = RedisReviewQueue(url="redis://localhost:6379/0")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="sesion"), reason="session")
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="cupo"), reason="quota")
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="espera"), reason="quota-wait")
+    sueltos = queue.release_parked(reason="quota-wait")
+    assert [item.head_sha for item in sueltos] == ["espera"]
+    assert [item.head_sha for item in queue.parked()] == ["sesion", "cupo"]
+    job = queue.dequeue()
+    assert job is not None and job.head_sha == "espera"
 
 
 def test_dequeue_propaga_errores_no_transitorios(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,10 +25,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
 from agent_review.domain.history import ReviewSummary
+from agent_review.domain.models import PendingDecision
 from agent_review.domain.trace import ReviewTrace
 from agent_review.history_store import ReviewHistory
 from agent_review.settings import get_settings
-from agent_review.web.auth import Session, require_session
+from agent_review.web.auth import Session, require_operador, require_session
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -45,7 +46,6 @@ router = APIRouter()
 
 _CANCEL = "cancel"
 _RETRY = "retry"
-_RESUME = "resume"
 # Etiqueta del boton de cancelacion segun lo que de verdad detiene: detras de una
 # publicacion (kind `fix`) los comentarios del PR se quedan, asi que no se cancela
 # «la review» sino lo que aun corre (spec §5.4, W6/R2).
@@ -106,6 +106,28 @@ def history_page(
     return HTMLResponse(_history_page(items, session, repo=repo, pr_id=pr_id))
 
 
+@router.get("/claude", response_class=HTMLResponse)
+def claude_session_page(session: Annotated[Session, Depends(require_operador)]) -> HTMLResponse:
+    """Formulario del operador. El token viaja en el POST JSON, no en esta página."""
+    body = (
+        "<section><h2>Sesión de Claude</h2>"
+        '<p class="meta">Se guarda en un fichero del servidor. '
+        "La respuesta no lo devuelve y el canal no lo ve.</p>"
+        '<label>Token <input id="claude-token" type="password" autocomplete="off"></label> '
+        '<button type="button" class="decide" id="claude-save">Guardar</button>'
+        "</section>"
+    )
+    return HTMLResponse(
+        _page(
+            title="Sesión de Claude",
+            meta="Solo el rol operador",
+            body=body,
+            session=session,
+            script=_CLAUDE_SCRIPT,
+        )
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(
     session: Annotated[Session, Depends(require_session)],
@@ -131,6 +153,13 @@ def review_detail(
 # --- Paginas ---------------------------------------------------------------------
 
 
+def _home_links(session: Session) -> str:
+    links = '<a href="/history">Histórico de reviews &rarr;</a>'
+    if session.can_command():
+        links += ' · <a href="/claude">Sesión de Claude</a>'
+    return f'<p class="breadcrumb">{links}</p>'
+
+
 def _global_page(state: PanelState, session: Session) -> str:
     budgets = {item.review_key: item for item in state.budget}
     body = "".join(
@@ -146,7 +175,7 @@ def _global_page(state: PanelState, session: Session) -> str:
     return _page(
         title="Panel de operación",
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
-        body='<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a></p>' + body,
+        body=_home_links(session) + body,
         session=session,
         script=_COMMAND_SCRIPT,
     )
@@ -214,6 +243,7 @@ def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session
             '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
             _trace_section(trace),
             _detail_commands(trace, session),
+            _decision_section(trace, paused, session),
             _console_section(trace, paused),
             _reasoning_section(trace),
         )
@@ -223,7 +253,7 @@ def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session
         meta=f"Estado {trace.state} · actualizado el {_fmt_dt(trace.updated_at)}",
         body=body,
         session=session,
-        script=_COMMAND_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT,
+        script=_COMMAND_SCRIPT + _DECISION_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT,
     )
 
 
@@ -348,6 +378,60 @@ def _detail_commands(trace: ReviewTrace, session: Session) -> str:
     return f"<section><h2>Comandos</h2>{buttons}</section>"
 
 
+def _decision_section(trace: ReviewTrace, paused: PausedItem | None, session: Session) -> str:
+    """Formulario de decision de una pausa humana (022 H4/§5.5).
+
+    Un control por pendiente y una nota por hallazgo. La completitud la valida el
+    servidor (`build_decision`); el navegador no la reimplementa. Solo el rol
+    `operador` lo ve.
+    """
+    if not _trace_decision(trace, paused) or paused is None:
+        return ""
+    if not session.can_command():
+        return (
+            '<section><h2>Decisión</h2><p class="empty">Solo el rol operador decide.</p></section>'
+        )
+    endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/decision"
+    if paused.publication:
+        options = (
+            '<option value="approved">Publicar</option><option value="dropped">No publicar</option>'
+        )
+        hint = (
+            '<p class="meta">Publicar escribe el hallazgo en el PR. No publicar lo deja fuera.</p>'
+        )
+    else:
+        options = (
+            '<option value="approved">Aprobar</option>'
+            '<option value="rejected">Rechazar</option>'
+            '<option value="noted">Anotar</option>'
+        )
+        hint = (
+            '<p class="meta">Aprobar solo autoriza a <em>intentar</em> el arreglo: los '
+            "temas protegidos y las rutas nunca-auto siguen mandando (ADR-0009).</p>"
+        )
+    rows = [
+        "<tr>"
+        f"<td><strong>{_esc(item.title)}</strong><br>"
+        f'<span class="meta">{_esc(item.severity.value)} · '
+        f"{_esc(item.proposed_action.value)} · {_esc(item.file)}:{_esc(item.line)}</span><br>"
+        f"{_esc(item.why_it_matters)}</td>"
+        f'<td><select name="outcome" data-finding="{_esc(item.finding_id)}">'
+        f"{options}</select></td>"
+        f'<td><input name="note" data-finding="{_esc(item.finding_id)}" '
+        f'placeholder="nota opcional"></td>'
+        "</tr>"
+        for item in paused.pending
+    ]
+    table = _table(["Hallazgo", "Resultado", "Nota"], rows)
+    return (
+        "<section><h2>Decisión</h2>"
+        f"{hint}{table}"
+        '<p><button type="button" class="decide" id="decide" '
+        f'data-endpoint="{_esc(endpoint)}">Decidir</button></p>'
+        "</section>"
+    )
+
+
 def _console_section(trace: ReviewTrace, paused: PausedItem | None) -> str:
     if trace.pause_kind != "fix" and (paused is None or paused.kind != "fix"):
         return ""
@@ -373,20 +457,29 @@ def _reasoning_section(trace: ReviewTrace) -> str:
 
 
 def _trace_commands(trace: ReviewTrace) -> tuple[tuple[str, str], ...]:
-    """Comandos del detalle segun el estado del hilo (spec §5.4/§5.5)."""
+    """Comandos del detalle segun el estado del hilo (spec §5.4/§5.5).
+
+    Una pausa humana no ofrece «Reanudar»: decidir es la accion (022 §5.5, Q1); el
+    `expired` es del sistema (TTL).
+    """
     if trace.state == "completed":
         return ()
     if trace.pause_kind == "fix":
         return ((_CANCEL, _CANCEL_LABEL_PENDING),)
     if trace.pause_kind == "human":
-        return ((_CANCEL, "Cancelar la review"), (_RESUME, "Reanudar"))
+        return ((_CANCEL, "Cancelar la review"),)
     return ((_CANCEL, "Cancelar"),)
+
+
+def _trace_decision(trace: ReviewTrace, paused: PausedItem | None) -> bool:
+    """¿El detalle debe pintar el formulario de decision? (022)"""
+    return trace.pause_kind == "human" and paused is not None and paused.kind == "human"
 
 
 def _pause_commands(item: PausedItem) -> tuple[tuple[str, str], ...]:
     if item.kind == "fix":
         return ((_CANCEL, _CANCEL_LABEL_PENDING),)
-    return ((_CANCEL, "Cancelar la review"), (_RESUME, "Reanudar"))
+    return ((_CANCEL, "Cancelar la review"),)
 
 
 def _buttons(review_key: str, commands: tuple[tuple[str, str], ...], session: Session) -> str:
@@ -419,12 +512,36 @@ def _paused_item(state: PanelState, review_key: str) -> PausedItem | None:
 def _paused_detail(item: PausedItem) -> str:
     parts: list[str] = []
     if item.pending:
-        parts.append(_inline_list("Pendientes", (_json(value) for value in item.pending)))
+        parts.append(_pending_list(item.pending))
     if item.jobs:
         parts.append(_inline_list("Run keys", (_json(job.get("run_key", "")) for job in item.jobs)))
     if item.command_hint:
         parts.append(f"<code>{_esc(item.command_hint)}</code>")
     return "".join(parts) or "—"
+
+
+def _pending_list(pending: list[PendingDecision]) -> str:
+    """Pendientes de una pausa humana, legibles para decidir sin abrir el PR (022 H3).
+
+    Muestra lo que `PendingDecision` ya trae; no se inventa contexto. El enlace a
+    `code_url` solo aparece si el worker lo resolvio.
+    """
+    rows = []
+    for item in pending:
+        where = f"{_esc(item.file)}:{_esc(item.line)}"
+        link = (
+            f' <a href="{_esc(item.code_url)}" rel="noreferrer noopener">código</a>'
+            if item.code_url
+            else ""
+        )
+        meta = f"{_esc(item.severity.value)} · {_esc(item.proposed_action.value)} · {where}{link}"
+        rows.append(
+            f'<li data-finding="{_esc(item.finding_id)}">'
+            f"<strong>{_esc(item.title)}</strong><br>"
+            f'<span class="meta">{meta}</span><br>'
+            f"{_esc(item.why_it_matters)}</li>"
+        )
+    return f'<span class="tag">{_esc("Pendientes")}</span><ul class="pending">{"".join(rows)}</ul>'
 
 
 # --- Primicas de marcado ---------------------------------------------------------
@@ -514,9 +631,11 @@ pre { background: #8881; padding: .75rem; max-height: 22rem; overflow: auto;
 ul.inline { display: inline; margin: 0; padding: 0; list-style: none; }
 ul.inline li { display: inline-block; margin: 0 .4rem 0 0; }
 .commands { display: flex; gap: .4rem; }
-button.cmd { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line);
+button.cmd, button.decide { font: inherit; padding: .25rem .6rem; border: 1px solid var(--line);
   border-radius: .35rem; cursor: pointer; }
-button.cmd:disabled { opacity: .5; cursor: default; }
+button.cmd:disabled, button.decide:disabled { opacity: .5; cursor: default; }
+ul.pending { margin: .25rem 0 .25rem 1rem; padding: 0; }
+ul.pending li { margin: 0 0 .5rem; }
 .error { color: var(--bad); }
 .filters { display: flex; gap: .75rem; align-items: center; margin: 1rem 0 0; }
 .filters input { font: inherit; padding: .15rem .35rem; }
@@ -529,6 +648,38 @@ button.cmd:disabled { opacity: .5; cursor: default; }
 #reasoning details.failed summary { color: var(--bad); }
 #reasoning pre { margin: .4rem 0; }
 """
+
+_CLAUDE_SCRIPT = """<script>
+(() => {
+  const button = document.getElementById("claude-save");
+  const field = document.getElementById("claude-token");
+  if (!button || !field) {
+    return;
+  }
+  const error = document.getElementById("error");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const response = await fetch("/api/claude/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: field.value }),
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      field.value = "";
+      button.textContent = "Guardado";
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      button.disabled = false;
+    }
+  });
+})();
+</script>"""
 
 _COMMAND_SCRIPT = """<script>
 (() => {
@@ -555,6 +706,42 @@ _COMMAND_SCRIPT = """<script>
   };
   document.querySelectorAll("button.cmd").forEach((button) => {
     button.addEventListener("click", () => send(button));
+  });
+})();
+</script>"""
+
+_DECISION_SCRIPT = """<script>
+(() => {
+  const button = document.getElementById("decide");
+  if (!button) {
+    return;
+  }
+  const error = document.getElementById("error");
+  button.addEventListener("click", async () => {
+    const items = [...document.querySelectorAll("select[data-finding]")].map((select) => {
+      const sel = `input[data-finding="${CSS.escape(select.dataset.finding)}"]`;
+      const note = document.querySelector(sel);
+      return { finding_id: select.dataset.finding, outcome: select.value,
+               note: note ? note.value : "" };
+    });
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const response = await fetch(button.dataset.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      button.textContent = "Decidido";
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      button.disabled = false;
+    }
   });
 })();
 </script>"""

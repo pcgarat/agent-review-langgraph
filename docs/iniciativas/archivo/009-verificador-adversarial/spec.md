@@ -174,13 +174,31 @@ class VerificationResult(BaseModel):   # `Verification` es el enum de 007
 class VerifierPort(Protocol):
     name: str
 
-    def verify(self, finding: Finding, *, repo: str, head_sha: str) -> VerificationResult: ...
+    def verify(
+        self,
+        finding: Finding,
+        *,
+        repo: str,
+        head_sha: str,
+        base_sha: str = "",
+        diff: str = "",
+        review_key: str = "",
+    ) -> VerificationResult: ...
 ```
 
 El `VerifierPort` recibe **un** hallazgo y devuelve **un** veredicto: aislamiento por
 hallazgo, cita comprobable y una unidad que se puede cachear y medir. El nodo no lo
 construye: lo recibe en `build_graph` (igual que `reviewers` y `fixer`), de modo que
 `build_graph(..., verifier=None)` reproduce el comportamiento de hoy.
+
+> **Enmienda (2026-10-17).** El nodo pasa `base_sha` y el `diff` al puerto, además de
+> `repo`, `head_sha` y `review_key`. El `LlmVerifier` los reenvía a su fábrica de
+> lectores (`build_reader_factory`, [016](../016-lector-de-contexto/spec.md)): sin
+> ellos el lector degradado (`VcsContextReader`) no puede servir `ref="base"` ni
+> sembrar los ficheros del diff, de modo que el verificador perdía la comparación con
+> la base —justo la que necesita para un `pre_existing`— cuando el runner no estaba
+> disponible. Con runner el fallo era latente: `WorkspaceContextReader` abre el
+> workspace con `base_sha` vacío y el runner no sirve `ref=base`.
 
 ### 5.3 Rol `verifier` en el registro declarativo
 

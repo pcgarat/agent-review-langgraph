@@ -40,10 +40,19 @@ services:
       # Credencial de servicio de twg (Bitbucket/Jira). Llega por `env_file: .env`
       # como TWG_BBC_TOKEN/TWG_SITE/TWG_USER/TWG_TOKEN: no hay fichero de auth en
       # el contenedor ni montaje del ~/.config/twg del host.
+      # La credencial de clonado del motor claude vive en `claude-runner`.
+      # Vaciarla aquí gana a `env_file`: el proceso que publica no la tiene.
+      CLAUDE_GIT_TOKEN: ""
+      CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-http://claude-runner:8098}
+      # Enlace del aviso si falta la sesión. El worker no monta el fichero.
+      PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:-http://localhost:8090}
     volumes:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
+      # JSON ya validado del motor claude. Encima de `./var` (solo lectura)
+      # para que el worker pueda escribirlo sin abrir el resto del volumen.
+      - claude_artifacts:/app/var/claude
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +144,41 @@ services:
       - reviews
     # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
 
+  # Motor claude (025, ADR-0028). Opt-in: sin el perfil, `docker compose up`
+  # sigue siendo el motor llm. Checkout en un volumen propio, no el clon bare
+  # del sandbox-runner. Sin `env_file`: no hereda el token con el que el
+  # worker publica. El subproceso `claude` tampoco recibe la credencial de
+  # clonado (el proceso la usa para el fetch y luego quita el remoto).
+  claude-runner:
+    build: .
+    restart: unless-stopped
+    profiles: ["claude"]
+    command: python -m agent_review.claude_runner.main
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REVIEW_ENGINE: claude
+      CLAUDE_BIN: ${CLAUDE_BIN:-claude}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-30}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-900}
+      CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
+      CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
+      CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
+      CLAUDE_GIT_TOKEN: ${CLAUDE_GIT_TOKEN:-}
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+    volumes:
+      - claude_checkout:/var/claude-checkout
+      - claude_session:/var/claude-session
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('CLAUDE_RUNNER_PORT','8098'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: solo el worker, en la red interna.
+
   # Canal de Teams (iniciativa 013): el bot con hilo por PR. Consume la outbox
   # (`reviews:notices`) y sirve el *messaging endpoint* `POST /api/messages` del
   # Bot Framework. Vive aislado del worker: NO tiene credencial de VCS ni clave del
@@ -200,6 +244,9 @@ services:
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
+      # Misma ruta que claude-runner. El token no es una variable de entorno.
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+      CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
       - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"
@@ -214,6 +261,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    volumes:
+      - claude_session:/var/claude-session
     networks:
       - reviews
 
@@ -249,6 +298,9 @@ services:
 
 volumes:
   pg_data:
+  claude_artifacts:
+  claude_checkout:
+  claude_session:
 
 networks:
   reviews:

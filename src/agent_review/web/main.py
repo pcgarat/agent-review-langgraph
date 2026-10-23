@@ -12,17 +12,20 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from agent_review.claude_session import write_session
 from agent_review.domain.history import ReviewSummary
+from agent_review.domain.models import FindingDecision
 from agent_review.history_store import ReviewHistory
 from agent_review.paused_store import RedisPausedStore
 from agent_review.ports.reasoning import ReasoningReader
-from agent_review.queue import RedisReviewQueue
+from agent_review.queue import RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
 from agent_review.web.auth import Session, require_command_session, require_session
 from agent_review.web.commands import (
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.console = build_runner_client(settings)
     app.state.reasoning = build_reasoning_reader(settings)
+    app.state.claude_login = build_claude_login(settings)
     try:
         yield
     finally:
@@ -152,6 +156,70 @@ def get_trace(
     return trace.model_dump(mode="json")
 
 
+class ClaudeLogin:
+    """Guarda la sesión y suelta solo lo parqueado por falta de ella."""
+
+    def __init__(self, *, path: Path, queue: ReviewQueue, ttl_s: float) -> None:
+        self._path = path
+        self._queue = queue
+        self._ttl = ttl_s
+
+    def save(self, token: str) -> int:
+        write_session(self._path, token, ttl_s=self._ttl)
+        released = self._queue.release_parked(reason="session")
+        self._queue.clear_notice("session")
+        logger.info("sesion de claude guardada; %d reviews vuelven a la cola", len(released))
+        return len(released)
+
+
+def build_claude_login(settings: Settings) -> ClaudeLogin:
+    return ClaudeLogin(
+        path=Path(settings.claude_session_path),
+        queue=RedisReviewQueue(url=settings.redis_url),
+        ttl_s=settings.claude_session_ttl_s,
+    )
+
+
+def get_claude_login(request: Request) -> ClaudeLogin:
+    login: ClaudeLogin | None = getattr(request.app.state, "claude_login", None)
+    if login is None:
+        login = build_claude_login(_settings())
+        request.app.state.claude_login = login
+    return login
+
+
+@app.post("/api/claude/session")
+async def save_claude_session(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    login: Annotated[ClaudeLogin, Depends(get_claude_login)],
+) -> dict[str, int]:
+    """El operador deja el token en el fichero `0600`. La respuesta no lo devuelve."""
+    del session
+    token = await _claude_token(request)
+    try:
+        released = login.save(token)
+    except OSError as exc:
+        logger.exception("No se pudo guardar la sesion de Claude")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar la sesion"
+        ) from exc
+    return {"released": released}
+
+
+async def _claude_token(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    token = body.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta el token")
+    return token.strip()
+
+
 @app.post("/api/reviews/{review_key:path}/cancel")
 def cancel_review(
     review_key: str,
@@ -180,6 +248,45 @@ def resume_review(
 ) -> dict[str, object]:
     """Reencola la reanudacion de una pausa humana (OP32)."""
     return _run_command(commands.resume, review_key, session)
+
+
+@app.post("/api/reviews/{review_key:path}/decision")
+async def decide_review(
+    review_key: str,
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    commands: Annotated[CommandService, Depends(get_commands)],
+) -> dict[str, object]:
+    """Encola una decision humana explicita sobre una pausa (022, H1/H2).
+
+    A diferencia del resto de comandos, lleva cuerpo (`items`): la decision se
+    construye con `build_decision`, la misma que el CLI, la API y Teams. El `actor`
+    no viaja: es el de la sesion (OP51). Un cuerpo mal formado es `400`; una decision
+    que no cubre los pendientes es `409`.
+    """
+    items = await _decision_items(request)
+    return _run_command(
+        lambda key, *, actor: commands.decide(key, actor=actor, items=items), review_key, session
+    )
+
+
+async def _decision_items(request: Request) -> list[FindingDecision]:
+    """Parsea `{"items": [...]}`; un cuerpo que no encaja con el contrato es `400`."""
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta `items`")
+    try:
+        return [
+            FindingDecision.model_validate(item) if isinstance(item, dict) else item
+            for item in body["items"]
+        ]
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Item de decision invalido: {exc}"
+        ) from exc
 
 
 def _run_command(

@@ -117,16 +117,29 @@ class FindingAction(StrEnum):
     ESCALATE = "escalate"
     FIX_WITH_APPROVAL = "fix_with_approval"
     FIX_AUTO = "fix_auto"
+    # Motor claude (025): publicar el hallazgo. No es `fix_*`: el despacho de
+    # arreglos no la elige. La politica de autonomia no la emite.
+    PUBLISH = "publish"
 
     @property
     def pending(self) -> bool:
-        """¿La accion pide a una persona? Freno (escalate) o aprobacion (fix)."""
-        return self in (FindingAction.ESCALATE, FindingAction.FIX_WITH_APPROVAL)
+        """¿La accion pide a una persona? Freno, aprobacion de un fix, o publicar."""
+        return self in (
+            FindingAction.ESCALATE,
+            FindingAction.FIX_WITH_APPROVAL,
+            FindingAction.PUBLISH,
+        )
 
 
 # Acciones que dejan la review pendiente de una persona. Se mantiene como
 # frozenset de strings por compatibilidad.
-PENDING_ACTIONS = frozenset({FindingAction.ESCALATE.value, FindingAction.FIX_WITH_APPROVAL.value})
+PENDING_ACTIONS = frozenset(
+    {
+        FindingAction.ESCALATE.value,
+        FindingAction.FIX_WITH_APPROVAL.value,
+        FindingAction.PUBLISH.value,
+    }
+)
 
 
 class Finding(BaseModel):
@@ -337,10 +350,11 @@ class Decision(BaseModel):
 class DecisionOutcome(StrEnum):
     """Que decide una persona sobre un hallazgo pendiente."""
 
-    APPROVED = "approved"  # autoriza el arreglo (lo ejecuta la Fase 3)
+    APPROVED = "approved"  # en llm autoriza el arreglo; en claude, publicar
     REJECTED = "rejected"  # descarta el hallazgo (falso positivo o no aplica)
     NOTED = "noted"  # se atiende fuera del agente (deuda, ticket)
     EXPIRED = "expired"  # nadie decidio dentro del TTL
+    DROPPED = "dropped"  # motor claude: ni inline ni resumen. No es `rejected`
 
 
 class FindingDecision(BaseModel):
@@ -402,6 +416,10 @@ class ApprovalRequest(BaseModel):
     head_sha: str
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
+    # Motor claude (025). `publication` cambia la pregunta de la tarjeta (qué se
+    # publica). Ausente, la tarjeta del motor llm: Aprobar, Rechazar y Anotar.
+    # Lo copia `build_approval` desde el estado; el grafo llm no lo escribe.
+    pause_kind: Literal["publication"] | None = None
 
 
 class ChatNotice(BaseModel):

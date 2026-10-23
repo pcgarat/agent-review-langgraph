@@ -32,10 +32,11 @@ expected:
     severity: P2
     subset: correctness
     file: src/agent_review/fixworker/main.py
-    # 2026-10-17: `match` ampliado (la redaccion con razonamiento no nombra
-    # `_consume`). `must_mention` casa la direccion correcta («se marca ... antes de
-    # encolar la reanudacion») y no la invertida de la auditoria («reanuda la wave
-    # antes de `mark_done`»).
+    # 2026-10-17 (023 T2): ancla nueva al codigo de `008da57`, no a la grabacion.
+    # `_consume` empieza aqui; `mark_done` (120) y `enqueue` (125) caen dentro de
+    # la funcion, asi que el defecto se ancla en su entrada con un fragmento
+    # discriminante (ADR-0025) y no en la linea que el modelo eligio.
+    line: 95
     match: ["mark_done"]
     must_mention: ["antes de encolar la reanudacion"]
 
@@ -45,6 +46,8 @@ expected:
     severity: P3
     subset: correctness
     file: src/agent_review/fixworker/main.py
+    # 2026-10-17 (023 T2): el `except OSError` que se traga el fallo del latido.
+    line: 166
     match: ["_touch_heartbeat", "OSError"]
 
   # integracion-1..3: los 3 P1 reales de integracion/configuracion que SI estaban
@@ -53,20 +56,34 @@ expected:
   - id: integracion-1
     severity: P1
     subset: integracion
-    why: "El fix-worker recibe todos los secretos via env_file: .env"
-    # 2026-10-17: ampliado; «secreto» casa tambien «secretos».
-    match: ["secreto", "fix-worker"]
+    why: "El fix-worker recibe secretos de mas via env_file: .env y solo neutraliza TWG_*"
+    # 2026-10-17 (023 T2): reescrito y anclado al `env_file` del servicio. No es
+    # el mismo defecto que integracion-2: aqui sobran secretos (el `.env` entero
+    # llega al fix-worker y solo se neutralizan TWG_*), alli el worker no arranca
+    # porque el gate de secretos exige TWG_BBC_TOKEN y se queda vacio (linea 76).
+    file: docker-compose.yml
+    line: 72
+    match: ["fix-worker aisla solo twg_*", "github_token", "env_file"]
 
   - id: integracion-2
     severity: P1
     subset: integracion
     why: "El fix-worker no arranca en produccion (el gate de secretos exige TWG_BBC_TOKEN)"
+    # 2026-10-17 (023 T2): la linea que vacia TWG_BBC_TOKEN. Distinto de
+    # integracion-1 (fuga de secretos): este es un fallo de arranque.
+    file: docker-compose.yml
+    line: 76
     match: ["fixworker", "arranc"]
 
   - id: integracion-3
     severity: P1
     subset: integracion
     why: "MODELS_CONFIG pisa las variables LLM_* del entorno"
+    # 2026-10-17 (023 T2): el default no vacio de `models_config`, que desactiva
+    # la via LLM_* sin aviso. Anclado aqui para no casar el defecto de
+    # settings.py:230 (R6), que es otro.
+    file: src/agent_review/settings.py
+    line: 155
     match: ["MODELS_CONFIG", "LLM_"]
 
   # no_detectado-1..3: los 3 P2 reales de codigo que la review no vio. El #5 vivia
@@ -76,14 +93,22 @@ expected:
     severity: P2
     subset: no_detectado
     why: "El arranque fatal-vs-warning se decide casando el texto del mensaje de probe"
-    # 2026-10-17: ampliado; «probe» solo salia en el escenario, no en titulo ni motivo.
+    # 2026-10-17: reescrito. El `match` viejo «arranque fatal» describia el efecto y
+    # no casaba el hallazgo de la regrabacion con herramientas (#7), que senala la
+    # clasificacion por substring del mensaje.
     file: src/agent_review/worker/main.py
-    match: ["arranque fatal"]
+    # 2026-10-17 (023 T2): la linea que clasifica por substring del mensaje.
+    line: 152
+    match: ["clasifica fatales por substring del mensaje"]
 
   - id: no-detectado-2
     severity: P2
     subset: no_detectado
     why: "Se envia json_object aunque el modelo no declare json_mode"
+    # 2026-10-17 (023 T2): `_effective_json_mode` devuelve lo pedido aunque el
+    # modelo no declare la capacidad; el revisor pide json_object siempre.
+    file: src/agent_review/adapters/openai_llm.py
+    line: 122
     match: ["json_object", "json_mode"]
 
   - id: no-detectado-3
@@ -217,6 +242,43 @@ must_not_report:
     file: src/agent_review/worker/main.py
     match: ["_ensure_registered re-encola la wave"]
     why: "el set done vive en Redis (24 h) y sobrevive al reinicio; la reposicion es idempotente y documentada"
+
+  # R1-R5: FP de la regrabacion con herramientas (014 RH10, 2026-10-17). Con L1
+  # completo y el bucle de lectura el modelo ve el worker entero y reescribe (o
+  # duplica) fallos de orquestacion no alcanzables. Verificados contra 008da57.
+  - id: R1
+    file: src/agent_review/worker/main.py
+    match: ["build_fix_queue no se cablea"]
+    why: "run_forever:1070 lo construye (fix_queue = fix_queue or build_fix_queue) y lo pasa a _consume en 1097 y a reconcile_paused en 1121 (familia de Q4)"
+
+  - id: R2
+    file: src/agent_review/worker/main.py
+    match: ["no pasa fix_queue"]
+    why: "el mismo error por otra linea (621): _consume recibe fix_queue desde run_forever:1097; la pausa de fix si encola la wave"
+
+  - id: R3
+    file: src/agent_review/graph/build.py
+    match: ["tope de intentos distinto"]
+    why: "el router y el dispatcher leen el mismo guards.max_fix_attempts; state[fijo] no se escribe, asi que el default 2 coincide (familia de C y O)"
+
+  - id: R4
+    file: src/agent_review/domain/models.py
+    match: ["referencia reviewrequest definido despues"]
+    why: "con `from __future__ import annotations` pydantic difiere el forward ref y lo resuelve al construir el modelo (que construye FixJob)"
+
+  - id: R5
+    file: config/models.yaml
+    match: ["exige la palabra json en el prompt"]
+    why: "el system prompt del fixer (llm_fixer.py:16) ya dice «JSON valido» y el adaptador fuerza json_object (familia de P12)"
+
+  - id: R6
+    file: src/agent_review/settings.py
+    # 2026-10-17 (023 T2): ancla al `except Exception` que traga el registro
+    # ilegible (230). Separado de integracion-3 (155), que es el default de
+    # MODELS_CONFIG: son dos defectos distintos del mismo fichero.
+    line: 230
+    match: ["convierte el chequeo de secreto llm en no-op"]
+    why: "familia de P7: el `try/except` de insecure_secrets traga el YAML ilegible, pero un registro roto ya aborta el arranque en build_registry y el comentario lo documenta"
 
 acceptable:
   - id: H

@@ -27,6 +27,7 @@ class VerifierPort(Protocol):
         *,
         repo: str,
         head_sha: str,
+        base_sha: str = "",
         diff: str = "",
         review_key: str = "",
     ) -> VerificationResult: ...

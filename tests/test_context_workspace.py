@@ -29,6 +29,12 @@ from agent_review.adapters.context_workspace import (
 )
 
 
+def _text(reader: WorkspaceContextReader, path: str, **kwargs: Any) -> str:
+    reading = reader.read_file(path, **kwargs)
+    assert reading is not None
+    return reading.content
+
+
 def _counting(events: list[str], inner=None) -> Any:
     base = inner or runner_handler()
 
@@ -76,7 +82,7 @@ def test_se_reabre_una_vez_si_el_runner_lo_perdio() -> None:
         return inner(request)
 
     reader = build_workspace_reader(handler)
-    assert reader.read_file(APP) == APP_TEXT
+    assert _text(reader, APP) == APP_TEXT
     assert files["n"] == 2, "una reapertura, un reintento (W8)"
 
 
@@ -118,7 +124,7 @@ def test_un_fichero_ausente_no_gasta_la_reapertura_de_una_perdida_real() -> None
 
     reader = build_workspace_reader(handler)
     assert reader.read_file("src/inventado.py") is None
-    assert reader.read_file(APP) == APP_TEXT
+    assert _text(reader, APP) == APP_TEXT
     assert len(posts) == 2, "apertura inicial y una reapertura por la perdida real"
 
 
@@ -259,17 +265,42 @@ def test_envia_el_rango_y_la_ref() -> None:
 
 def test_grep_acota_por_glob() -> None:
     reader = build_workspace_reader()
-    assert reader.grep("needle", glob="**/*.py") == [
+    assert reader.grep("needle", glob="**/*.py").items == (
         f"{APP}:3: needle = 1",
         f"{APP}:4: print(needle)",
-    ]
-    assert reader.grep("needle", glob="**/*.md") == []
+    )
+    assert reader.grep("needle", glob="**/*.md").items == ()
+
+
+def test_lee_el_tamano_real_y_el_rango_del_runner() -> None:
+    reader = build_workspace_reader()
+    reading = reader.read_file(APP, start=3, end=3)
+    assert reading is not None
+    assert reading.content == "needle = 1"
+    assert reading.total_bytes == len(APP_TEXT.encode("utf-8"))
+    assert reading.truncated is False
+    assert reading.served_range == (3, 3)
+
+
+def test_un_runner_viejo_declara_el_tamano_desconocido() -> None:
+    # Compatibilidad honesta: si el runner no manda `total_bytes`, es `None`; el
+    # bucle dira «no medido» en vez de mentir con el tamaño ya recortado.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/file"):
+            return httpx.Response(200, json={"path": APP, "ref": "head", "content": "x"})
+        return runner_handler()(request)
+
+    reading = build_workspace_reader(handler).read_file(APP)
+    assert reading is not None
+    assert reading.total_bytes is None
+    assert reading.truncated is False
+    assert reading.served_range is None
 
 
 def test_sin_pattern_no_pide_nada() -> None:
     sent: list[str] = []
     reader = build_workspace_reader(_counting(sent))
-    assert reader.grep("") == []
+    assert reader.grep("").items == ()
     assert sent == []
 
 
@@ -279,7 +310,7 @@ def test_el_listado_del_runner_se_normaliza() -> None:
             return httpx.Response(200, json={"entries": ["b.py", "a.py", 7]})
         return runner_handler()(request)
 
-    assert build_workspace_reader(handler).list_dir("src") == ["b.py", "a.py"]
+    assert build_workspace_reader(handler).list_dir("src").items == ("b.py", "a.py")
 
 
 def test_grep_ignora_coincidencias_no_textuales() -> None:
@@ -288,4 +319,6 @@ def test_grep_ignora_coincidencias_no_textuales() -> None:
             return httpx.Response(200, json={"matches": ["a.py:1: x", 5]})
         return runner_handler()(request)
 
-    assert build_workspace_reader(handler).grep("x") == ["a.py:1: x"]
+    found = build_workspace_reader(handler).grep("x")
+    assert found.items == ("a.py:1: x",)
+    assert found.total is None, "sin `total` en la respuesta no se inventa"

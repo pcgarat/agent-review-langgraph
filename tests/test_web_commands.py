@@ -20,7 +20,9 @@ from fastapi.testclient import TestClient
 
 from agent_review.domain.models import (
     ApprovalRequest,
+    DecisionOutcome,
     FindingAction,
+    FindingDecision,
     FixWaitRequest,
     PendingDecision,
     ReviewRequest,
@@ -250,6 +252,110 @@ def test_reanudar_una_pausa_de_fix_falla() -> None:
         service.resume(_REVIEW_KEY, actor="ana")
 
 
+# --- 022: decidir desde el panel --------------------------------------------------
+
+
+def test_decidir_cubre_los_pendientes_y_encola_la_decision() -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    effect = service.decide(
+        _REVIEW_KEY,
+        actor="ana",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.REJECTED, note="falso")],
+    )
+
+    assert effect is CommandEffect.DECIDED
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+    assert [(i.finding_id, i.outcome) for i in queued.decision.items] == [
+        ("f1", DecisionOutcome.REJECTED)
+    ]
+    assert queued.decision.items[0].note == "falso"
+
+
+def test_decidir_sin_items_falla_y_no_encola() -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="ninguna decision"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
+    assert queue.dequeue() is None
+
+
+def test_decidir_sin_cubrir_todos_los_pendientes_falla() -> None:
+    service, queue, paused, _marker = _service()
+    approval = ApprovalRequest(
+        review_key=_REVIEW_KEY,
+        repo="cqm/emotivoo-v2",
+        pr_id=42,
+        head_sha="abc",
+        pending=[
+            PendingDecision(
+                finding_id=fid,
+                proposed_action=FindingAction.ESCALATE,
+                reason="r",
+                matched_rule="rule",
+                policy_version="1",
+                title="t",
+                file="f.php",
+                line=1,
+                severity=Severity.P1,
+            )
+            for fid in ("f1", "f2")
+        ],
+    )
+    paused.pause(_request(), approval, kind=PauseKind.HUMAN)
+
+    with pytest.raises(CommandError, match="Faltan"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+        )
+    assert queue.dequeue() is None
+
+
+def test_decidir_con_finding_ajeno_falla() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="ajeno"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="otro", outcome=DecisionOutcome.APPROVED)],
+        )
+
+
+def test_decidir_no_acepta_expired_como_decision_humana() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="expired"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.EXPIRED)],
+        )
+
+
+def test_decidir_una_pausa_de_fix_falla() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_fix(paused, _request())
+
+    with pytest.raises(CommandError, match="humana"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
+
+
+def test_decidir_una_review_que_no_esta_pausada_falla() -> None:
+    service, _queue, _paused, _marker = _service()
+
+    with pytest.raises(CommandError, match="pausada"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
+
+
 # --- OP34: endpoints -------------------------------------------------------------
 
 
@@ -348,3 +454,94 @@ def test_la_ui_del_mismo_origen_ejecuta_comandos_por_cookie(client: TestClient) 
         json={"actor": "ana"},
     )
     assert status_code == 200
+
+
+# --- 022: endpoint de decision ----------------------------------------------------
+
+
+def test_decidir_por_http_encola_la_decision_y_audita_al_actor(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": [{"finding_id": "f1", "outcome": "approved", "note": "adelante"}]},
+        )
+    assert response.status_code == 200
+    assert response.json()["effect"] == "decided"
+    assert response.json()["actor"] == "ana"
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+
+
+def test_el_actor_del_cuerpo_no_suplanta_al_de_la_sesion_al_decidir(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={
+                "actor": "jefe",
+                "items": [{"finding_id": "f1", "outcome": "approved"}],
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["actor"] == "ana"
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+
+
+def test_decidir_una_decision_incompleta_por_http_da_409(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": []},
+        )
+    assert response.status_code == 409
+    assert queue.dequeue() is None
+
+
+def test_decidir_con_un_cuerpo_sin_items_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"outcome": "approved"},
+        )
+    assert response.status_code == 400
+
+
+def test_decidir_con_un_item_invalido_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": [{"finding_id": "f1", "outcome": "inventado"}]},
+        )
+    assert response.status_code == 400
+
+
+def test_el_lector_no_decide(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:lector"},
+            json={"items": [{"finding_id": "f1", "outcome": "approved"}]},
+        )
+    assert response.status_code == 403

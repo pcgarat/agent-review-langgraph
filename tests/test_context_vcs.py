@@ -14,6 +14,13 @@ from context_fakes import APP, BASE, HEAD, README, FakeVcs
 
 from agent_review.adapters.context_vcs import VcsContextReader
 from agent_review.domain.models import AutofixClass, Finding, Owner, Severity
+from agent_review.ports.context import ToolError
+
+
+def _text(reader: VcsContextReader, path: str, **kwargs: object) -> str:
+    reading = reader.read_file(path, **kwargs)  # type: ignore[arg-type]
+    assert reading is not None
+    return reading.content
 
 
 def _reader(vcs: FakeVcs | None = None, **kwargs) -> VcsContextReader:
@@ -32,13 +39,35 @@ def _reader(vcs: FakeVcs | None = None, **kwargs) -> VcsContextReader:
 
 def test_sin_diff_no_puede_listar_nada() -> None:
     reader = _reader(diff="")
-    assert reader.list_dir("") == []
-    assert reader.list_dir("src") == []
+    assert reader.list_dir("").items == ()
+    with pytest.raises(ToolError):
+        reader.list_dir("src")
+
+
+def test_list_dir_no_afirma_que_un_directorio_inexistente_este_vacio() -> None:
+    reader = _reader()
+    with pytest.raises(ToolError, match="no aparece en los ficheros del cambio"):
+        reader.list_dir("docs")
+
+
+def test_list_dir_de_una_ruta_del_diff_que_es_fichero_sugiere_read_file() -> None:
+    reader = _reader()
+    with pytest.raises(ToolError, match="es un fichero"):
+        reader.list_dir(APP)
+
+
+def test_list_dir_acota_con_depth_y_glob() -> None:
+    reader = _reader()
+    assert reader.list_dir("src", depth=2).items == ("app.py",)
+    assert reader.list_dir("src", glob="*.py").items == ("app.py",)
+    assert reader.list_dir("src", glob="*.md").items == ()
 
 
 def test_list_dir_es_estable_entre_llamadas() -> None:
     reader = _reader(diff="diff --git a/src/b.py b/src/b.py\ndiff --git a/src/a.py b/src/a.py\n")
-    assert reader.list_dir("src") == ["a.py", "b.py"], "ordenado y determinista (ADR-0017)"
+    listing = reader.list_dir("src")
+    assert listing.items == ("a.py", "b.py"), "ordenado y determinista (ADR-0017)"
+    assert listing.total == 2
 
 
 def test_seed_precarga_los_ficheros_del_diff() -> None:
@@ -46,14 +75,14 @@ def test_seed_precarga_los_ficheros_del_diff() -> None:
     reader = _reader(vcs)
     reader.seed()
     assert (APP, HEAD) in {(path, ref) for _, path, ref in vcs.calls}
-    assert reader.grep("needle") == [f"{APP}:3: needle = 1", f"{APP}:4: print(needle)"]
+    assert reader.grep("needle").items == (f"{APP}:3: needle = 1", f"{APP}:4: print(needle)")
 
 
 def test_seed_con_rutas_explicitas_solo_precarga_esas() -> None:
     reader = _reader()
     reader.seed([README])
-    assert reader.grep("repo") == [f"{README}:1: # repo"]
-    assert reader.grep("needle") == []
+    assert reader.grep("repo").items == (f"{README}:1: # repo",)
+    assert reader.grep("needle").items == ()
 
 
 def test_seed_findings_precarga_los_ficheros_de_los_hallazgos() -> None:
@@ -72,23 +101,23 @@ def test_seed_findings_precarga_los_ficheros_de_los_hallazgos() -> None:
         evidence=[f"{README}:1 # repo"],
     )
     reader.seed_findings([finding])
-    assert reader.grep("repo") == [f"{README}:1: # repo"]
+    assert reader.grep("repo").items == (f"{README}:1: # repo",)
 
 
 def test_grep_respeta_el_glob() -> None:
     reader = _reader()
     reader.seed()
-    assert reader.grep("needle", glob="**/*.py") == [
+    assert reader.grep("needle", glob="**/*.py").items == (
         f"{APP}:3: needle = 1",
         f"{APP}:4: print(needle)",
-    ]
-    assert reader.grep("needle", glob="**/*.md") == []
+    )
+    assert reader.grep("needle", glob="**/*.md").items == ()
 
 
 def test_grep_con_patron_vacio_no_devuelve_nada() -> None:
     reader = _reader()
     reader.seed()
-    assert reader.grep("") == []
+    assert reader.grep("").items == ()
 
 
 def test_las_rutas_vetadas_no_se_sirven_ni_aparecen_en_grep(caplog) -> None:
@@ -97,14 +126,14 @@ def test_las_rutas_vetadas_no_se_sirven_ni_aparecen_en_grep(caplog) -> None:
     with caplog.at_level(logging.DEBUG):
         assert reader.read_file("config/.env") is None
     assert vcs.calls == [], "una ruta vetada no llega al VCS"
-    assert reader.grep("SECRET") == []
+    assert reader.grep("SECRET").items == ()
 
 
 def test_el_cache_clave_por_ref_no_mezcla_head_y_base() -> None:
     vcs = FakeVcs()
     reader = _reader(vcs)
-    assert reader.read_file(APP) == "import os\n\nneedle = 1\nprint(needle)\n"
-    assert reader.read_file(APP, ref="base") == "import os\n"
+    assert _text(reader, APP) == "import os\n\nneedle = 1\nprint(needle)\n"
+    assert _text(reader, APP, ref="base") == "import os\n"
     assert len(vcs.calls) == 2, "head y base son lecturas distintas"
     reader.read_file(APP)
     assert len(vcs.calls) == 2, "repetir la misma ref sale de cache"
@@ -113,7 +142,7 @@ def test_el_cache_clave_por_ref_no_mezcla_head_y_base() -> None:
 def test_una_ref_desconocida_devuelve_none() -> None:
     reader = _reader()
     assert reader.read_file("src/otro.py") is None
-    assert reader.read_file(APP, ref="base") == "import os\n"
+    assert _text(reader, APP, ref="base") == "import os\n"
 
 
 def test_una_excepcion_del_vcs_no_tumba_la_review(caplog) -> None:
@@ -136,7 +165,10 @@ def test_el_tope_de_coincidencias_corta_el_grep() -> None:
     content = "".join(f"linea needle {index}\n" for index in range(20))
     reader = _reader(FakeVcs(files={("a.py", HEAD): content}), diff="", max_grep_matches=5)
     reader.read_file("a.py")
-    assert len(reader.grep("needle")) == 5
+    found = reader.grep("needle")
+    assert len(found.items) == 5
+    assert found.total == 20, "el total cuenta todas, no solo las servidas"
+    assert found.truncated is True
 
 
 @pytest.mark.parametrize(
@@ -145,4 +177,4 @@ def test_el_tope_de_coincidencias_corta_el_grep() -> None:
 )
 def test_el_rango_de_read_file_es_inclusivo(start, end, expected) -> None:
     reader = _reader(FakeVcs(files={("a.txt", HEAD): "uno\ndos\ntres"}), diff="")
-    assert reader.read_file("a.txt", start=start, end=end) == expected
+    assert _text(reader, "a.txt", start=start, end=end) == expected

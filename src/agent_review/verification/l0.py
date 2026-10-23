@@ -162,3 +162,16 @@ def evaluate_l0(
         disposition=L0Disposition.DROP,
         reason="sin cita ni hint anclable a una linea del diff",
     )
+
+
+def cite_text(evidence: list[str]) -> str | None:
+    """Texto de la cita, sin el prefijo `file:line`."""
+    for item in evidence:
+        head, _, rest = item.partition(" ")
+        if rest and ":" in head:
+            return rest.strip()
+        if rest:
+            return rest.strip()
+        if item.strip():
+            return item.strip()
+    return None
