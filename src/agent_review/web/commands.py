@@ -142,7 +142,9 @@ class CommandService:
         request = ReviewRequest.model_validate(entry["request"])
         try:
             self._cancellation.clear(review_key)
-            self._queue.enqueue(request.model_copy(update={"attempts": 0, "cancelled": False}))
+            self._queue.enqueue(
+                request.model_copy(update={"attempts": 0, "cancelled": False, "repin_dials": True})
+            )
         except Exception:
             self._queue.dead_letter(request, reason=str(entry.get("reason", "reintento fallido")))
             raise

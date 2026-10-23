@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Operación
 
@@ -134,6 +134,25 @@ ficheros versionados:
 | Revisor con herramientas (014/023) | `REVIEW_TOOLS_ROLES` (vacío: roles LLM que pueden leer ficheros y hacer `grep` mientras revisan; vacío = una llamada por lote como en 008). Topes y palancas del bucle: tabla siguiente |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
+| Panel, diales (026) | `PANEL_CONFIG_LOCK` (vacío: el operador puede publicar el catálogo). La página es `/config` |
+
+### Configuración desde el panel (026)
+
+El rol `operador` publica, en `/config`, los diales del catálogo de
+[026](iniciativas/026-configuracion-desde-el-panel/spec.md). El `lector` ve la
+página y no guarda. Cada control nace con el valor que `Settings` ya resolvió
+(el entorno si la variable está puesta) y **Restaurar** lo devuelve a ese valor
+sin escribir. **Guardar** publica el documento entero en Postgres
+(`panel_config`); solo se guardan las claves que se apartan del valor inicial.
+
+`PANEL_CONFIG_LOCK` es una lista de nombres de campo separada por comas. Esos
+controles se ven y no se cambian. Un nombre que no esté en el catálogo aborta
+el arranque del `web` y del worker. Vacío por defecto.
+
+La review que ya empezó sigue con la foto que fijó. La página nombra esa
+revisión junto a la publicada. La siguiente, y un **Reintentar** del panel,
+leen lo publicado. Secretos, arranque y los YAML de
+`config/` no están en la página ([ADR-0029](adr/0029-configuracion-desde-el-panel.md)).
 
 ### Revisor con herramientas (023)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -202,7 +203,12 @@ def build_registry(settings: Settings) -> ModelRegistry:
     return registry
 
 
-def build_budget(settings: Settings, *, key_prefix: str | None = None) -> BudgetPort:
+def build_budget(
+    settings: Settings,
+    *,
+    key_prefix: str | None = None,
+    client: Any = None,
+) -> BudgetPort:
     """Contador de presupuesto por review (017 B2/B6).
 
     Con URL de Redis configurada se usa el adaptador atomico; sin ella (o sin Redis),
@@ -219,6 +225,7 @@ def build_budget(settings: Settings, *, key_prefix: str | None = None) -> Budget
         url=settings.redis_url,
         total=total,
         key_prefix=key_prefix or KEY_PREFIX,
+        client=client,
     )
 
 
@@ -524,6 +531,10 @@ def build_delivery(settings: Settings) -> DeliveryFormatter:
     return DiffFormatter()
 
 
+# Distingue «no me pasaron la cancelación» de «este proceso no tiene».
+_MISSING: Any = object()
+
+
 def build_runtime(
     settings: Settings,
     *,
@@ -535,20 +546,25 @@ def build_runtime(
     fixer: FixerPort | None = None,
     verifier: VerifierPort | None = None,
     progress: ProgressPort | None = None,
+    registry: ModelRegistry | None = None,
+    cancellation: Any = _MISSING,
+    budget_client: Any = None,
+    probe_models: bool = True,
 ) -> Any:
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
     if chat is None:
         chat = build_chat(settings)
-    registry = build_registry(settings)
+    registry = registry if registry is not None else build_registry(settings)
     # Un unico contador de review para todo el fan-out (017 B1/B10); su tope viaja
     # al grafo para poder derivar el saldo del `ReviewOutcome` sin consultar al
     # puerto durante el `replay`. L2 (009) comparte el mismo contador.
-    review_budget = build_budget(settings)
+    review_budget = build_budget(settings, client=budget_client)
     if reviewers is None:
         reviewers = build_reviewers(settings, registry=registry, budget=review_budget, vcs=vcs)
-    validate_models(registry)
+    if probe_models:
+        validate_models(registry)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
     )
@@ -559,7 +575,9 @@ def build_runtime(
     # La cancelacion (019 W4) viaja como el progreso: `build_graph` no conoce Redis,
     # asi que el composition root le pasa el chequeo ya construido. Sin Redis,
     # `build_cancellation` es `None` y la frontera no consulta nada (W2).
-    cancellation = build_cancellation(settings)
+    # Un montaje por review reutiliza la del proceso (`cancellation` ya resuelto).
+    if cancellation is _MISSING:
+        cancellation = build_cancellation(settings)
     if verifier is None:
         verifier = build_verifier(settings, registry=registry, vcs=vcs, budget=review_budget)
     graph = build_graph(
@@ -603,6 +621,7 @@ def process_request(
     vcs: VcsPort | None = None,
     fix_queue: FixQueue | None = None,
     fix_ttl_s: float | None = None,
+    dial_snapshot: Mapping[str, object] | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -665,6 +684,10 @@ def process_request(
             request.review_key,
             ", ".join(snapshot.next),
         )
+        if dial_snapshot is not None and request.repin_dials:
+            update_state = getattr(graph, "update_state", None)
+            if update_state is not None:
+                update_state(config, {"dial_snapshot": dict(dial_snapshot)})
         result = cast("ReviewState", graph.invoke(None, config=config))
     else:
         if request.decision is not None:
@@ -675,9 +698,10 @@ def process_request(
                 request.decision.actor,
                 request.review_key,
             )
-        result = cast(
-            "ReviewState", graph.invoke({"request": request, "findings": []}, config=config)
-        )
+        state: ReviewState = {"request": request, "findings": []}
+        if dial_snapshot is not None:
+            state["dial_snapshot"] = dict(dial_snapshot)
+        result = cast("ReviewState", graph.invoke(state, config=config))
     outcome = _log_outcome(result)
     if outcome.paused:
         _on_paused(
@@ -1310,6 +1334,7 @@ def _consume(
     cancel: CancellationPort | None = None,
     history: ReviewHistory | None = None,
     reasoning: bool = False,
+    dial_snapshot: Mapping[str, object] | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1340,6 +1365,7 @@ def _consume(
             vcs=vcs,
             fix_queue=fix_queue,
             fix_ttl_s=fix_ttl_s,
+            dial_snapshot=dial_snapshot,
         )
         # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
         # Una reentrega del mismo job actualiza su entrada, no la duplica.
@@ -1458,6 +1484,47 @@ def sweep_pending(
     return enqueued
 
 
+def _checkpoint_values(saver: Any, thread_id: str) -> dict[str, object] | None:
+    """Valores del hilo, o `None` si todavía no existe."""
+    if saver is None:
+        return None
+    tup = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    if tup is None:
+        return None
+    checkpoint = getattr(tup, "checkpoint", None)
+    if not isinstance(checkpoint, dict):
+        return {}
+    values = checkpoint.get("channel_values")
+    if not isinstance(values, dict):
+        return {}
+    return values
+
+
+def prepare_review(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    request: ReviewRequest,
+) -> tuple[Settings, dict[str, object]]:
+    """Settings con los que montar esta review, y la foto que viaja en el estado."""
+    from agent_review.config_store import ConfigReadError, Publication
+    from agent_review.panel_config import apply_document, pinned_snapshot
+
+    try:
+        published = store.read()
+    except ConfigReadError:
+        published = Publication(0, {}, "", None)
+    snapshot = pinned_snapshot(
+        published_revision=published.revision,
+        published=published.overrides,
+        checkpoint=_checkpoint_values(saver, request.thread_id),
+        repin=request.repin_dials,
+    )
+    overrides = snapshot.get("overrides")
+    document = overrides if isinstance(overrides, dict) else {}
+    return apply_document(settings, document), snapshot
+
+
 def run_forever(
     *,
     settings: Settings | None = None,
@@ -1485,13 +1552,44 @@ def run_forever(
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.
     vcs: VcsPort | None = None
-    if graph is None:
+    owns_runtime = graph is None
+    saver: Any = None
+    registry: ModelRegistry | None = None
+    budget_client: Any = None
+    config_store: Any = None
+    if owns_runtime:
+        from agent_review.config_store import build_config_store
+        from agent_review.panel_config import lock_names
+        from agent_review.redis_utils import build_redis_client
+
+        lock_names(settings)
         vcs = build_vcs(settings)
-        graph = build_runtime(settings, chat=chat, vcs=vcs, progress=progress)
+        registry = build_registry(settings)
+        validate_models(registry)
+        config_store = build_config_store(settings)
+        if settings.redis_url.strip():
+            budget_client = build_redis_client(settings.redis_url)
+        # Cola, checkpointer y registro: una vez. El grafo de cada review se monta
+        # abajo. Este sirve para reconciliar hilos: `get_state` no usa los diales.
+        saver = build_checkpointer(settings.database_url, required=is_production(settings))
+        graph = build_runtime(
+            settings,
+            vcs=vcs,
+            chat=chat,
+            progress=progress,
+            checkpointer=saver,
+            registry=registry,
+            cancellation=cancellation,
+            budget_client=budget_client,
+            probe_models=False,
+        )
+    else:
+        saver = getattr(graph, "checkpointer", None)
+    if graph is None:
+        raise RuntimeError("el worker no tiene grafo")
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     history = build_history(settings)
-    saver = getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
@@ -1500,11 +1598,27 @@ def run_forever(
     while True:
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
+            active = graph
+            dial_snapshot = None
+            if owns_runtime:
+                effective, dial_snapshot = prepare_review(settings, config_store, saver, request)
+                active = build_runtime(
+                    effective,
+                    vcs=vcs,
+                    chat=chat,
+                    progress=progress,
+                    checkpointer=saver,
+                    registry=registry,
+                    cancellation=cancellation,
+                    budget_client=budget_client,
+                    probe_models=False,
+                )
             _consume(
                 queue,
-                graph,
+                active,
                 request,
                 max_attempts=settings.max_review_attempts,
+                dial_snapshot=dial_snapshot,
                 paused=paused_store,
                 chat=chat,
                 vcs=vcs,

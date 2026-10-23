@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 
 # Iniciativas
@@ -18,6 +18,7 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 018 | [Trazas de la review](018-trazas-de-la-review/spec.md) | borrador | 🟠 Recorrido visible de una petición (D14); Langfuse v3 self-hosted | Sin dependencias · 5 preguntas abiertas · comparte la lectura del `usage` con 017 |
 | 023 | [Eficacia del bucle de lectura](023-eficacia-del-bucle-de-lectura/spec.md) | aprobada | 🟠 Que `grep`, `read_file` y `list_dir` de 014 sirvan de verdad: dialecto portable único, contrato de lectura con metadatos, `forwarding` a las cuatro superficies, corte con tamaño real, `outline`, estado y `Reading` por review · [plan](023-eficacia-del-bucle-de-lectura/plan.md) · [todo](023-eficacia-del-bucle-de-lectura/todo.md) | 014 (medida) · 024 (S y colocación del bloque) · K1 y K2 cerrados (G1, R1, L1, P1, S1 y C1 hechas); K0 pendiente de T2/C0c (regrabación *live*) y K3 de M1 (informe por configuración) |
 | 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | aprobada | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) · [plan](024-contexto-conversacional-del-bucle/plan.md) · [todo](024-contexto-conversacional-del-bucle/todo.md) | 023 (K0 y K3) · S1–S5 (medida) van antes de las corridas *live* de 023 · A tras K3 · B solo con número · S–D pendientes |
+| 026 | [Configuración desde el panel](026-configuracion-desde-el-panel/spec.md) | aprobada | 🟠 El operador publica diales; cada control restaura su valor inicial; la review fija esa foto al empezar · [plan](026-configuracion-desde-el-panel/plan.md) · [todo](026-configuracion-desde-el-panel/todo.md) | 019 · C1–D1 hechas · [ADR-0029](../adr/0029-configuracion-desde-el-panel.md) |
 
 ### Orden
 
@@ -85,6 +86,7 @@ conservando sus IDs.
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **025**. La Fase 4 (autonomía por política, Jira, memoria,
-métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
-aún no tiene iniciativa.
+Siguiente número libre: **027**. El **025** está reservado por
+`feat/025-revisor-claude-cli` y no se reutiliza. La Fase 4 (autonomía por política,
+Jira, memoria, métricas) está esbozada en la
+[spec de 001 §13](archivo/001-diseno-base/spec.md) y aún no tiene iniciativa.

@@ -80,6 +80,18 @@ class Secret:
             raise ValueError("un campo `inventory_only` no declara proceso ni condicion")
 
 
+@dataclass(frozen=True)
+class Dial:
+    """Dial que el panel puede publicar (026, ADR-0029).
+
+    Vive en el `metadata` del campo, junto al default. La ayuda es el texto del
+    control. Un `Secret` no puede llevar `Dial`: el panel no publica secretos.
+    """
+
+    section: str
+    help: str
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -189,6 +201,9 @@ class Settings(BaseSettings):
     panel_enabled: bool = False
     # Puerto del panel dentro del contenedor; lo publica el perfil `panel`.
     panel_port: int = 8090
+    # Nombres de dial, separados por comas, que el panel muestra y no deja cambiar
+    # (026 CFG3). Vacio: el operador puede publicar cualquiera del catalogo.
+    panel_config_lock: str = ""
     # Sesion del panel: NO es el bearer de decision. Identifica a la persona y su
     # rol en la forma `<usuario>:<lector|operador>`; un `lector` puede mirar pero
     # no ejecutar comandos. Un secreto real por despliegue. Lo exige el `web`
@@ -251,7 +266,14 @@ class Settings(BaseSettings):
     repo_profile_config: str = "config/repo_profile.emotivoo-v2.yaml"
     # Override del techo de autonomia (D1): solo puede BAJAR el `max_autonomy` del
     # YAML, nunca subirlo. Vacio = manda el YAML versionado.
-    max_autonomy_override: str = ""
+    max_autonomy_override: Annotated[
+        str,
+        Dial(
+            "Política",
+            "Techo de autonomía por debajo del YAML. Vacío: manda config/autonomy.yaml. "
+            "No puede subirlo.",
+        ),
+    ] = ""
     # Plantilla del artefacto con la salida de la herramienta estatica por review.
     # Placeholders: {tool}, {pr_id}, {head_sha}. Debe coincidir con la ruta que
     # publica el CI (emotivoo-v2: var/tooling/<pr_id>/<commit>/phpstan.json).
@@ -299,7 +321,14 @@ class Settings(BaseSettings):
     expected_tools: str = "phpstan"
     # Patrones extra (coma-separados) de ficheros que el scope ignora, ademas de
     # los por defecto (lockfiles, generados, vendor...).
-    scope_ignore: str = ""
+    scope_ignore: Annotated[
+        str,
+        Dial(
+            "Política",
+            "Patrones extra, separados por comas, de ficheros que el alcance ignora "
+            "además de lockfiles, generados y vendor.",
+        ),
+    ] = ""
     # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
     # el job se descarta con el `review_key` en el log para reencolarlo a mano.
     max_review_attempts: int = 3
@@ -335,63 +364,179 @@ class Settings(BaseSettings):
     llm_api_key: Annotated[
         str, Secret(required_in=frozenset({"api", "worker"}), feature="llm_legacy")
     ] = ""
-    llm_max_findings: int = 10
-    llm_budget_tokens_per_pr: int = 2000000
+    llm_max_findings: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope de hallazgos que una persona LLM puede emitir en la review.",
+        ),
+    ] = 10
+    llm_budget_tokens_per_pr: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope de tokens de esa review, compartido por personas, fixer y verificador. "
+            "Al llegar, lo que falte queda budget_exhausted.",
+        ),
+    ] = 2000000
     # Tamano maximo de un lote del `LlmReviewer`, en caracteres de diff (012 C2): se
     # revisan ficheros enteros por lotes; uno que solo no cabe se declara `too_large`.
     # 20 000 con razonamiento (021 R12/R15): con 60 000 el proveedor corta antes de
     # que el modelo responda, y con 30 000 una llamada puede pasar del tope de
     # duracion del stream (~3 min). Un fichero mayor se trocea por hunks (R16).
-    llm_batch_max_chars: int = 20000
+    llm_batch_max_chars: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tamaño de un lote, en caracteres de diff. Un fichero que no cabe se trocea por hunks.",
+        ),
+    ] = 20000
     # Reintentos de un lote ante un fallo transitorio (021 R14): se repite ese lote,
     # no la persona entera; agotados, el lote sale `failed` y se sigue.
-    llm_batch_retries: int = 2
+    llm_batch_retries: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Reintentos de un lote si el proveedor corta, cierra vacío o cierra sin JSON. "
+            "Agotados, el lote sale failed y la review sigue.",
+        ),
+    ] = 2
     # Tope de caracteres del bloque L1 (fichero completo + docs del perfil) por
     # lote (008 CX8 / D12). El diff del lote no se recorta; lo que no cabe se omite.
-    llm_context_max_chars: int = 40000
+    llm_context_max_chars: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope del bloque de contexto (fichero completo y documentos del perfil) por lote. "
+            "El diff no se recorta.",
+        ),
+    ] = 40000
 
     # Verificador adversarial L2 (009 V8/V11): topes por review y por bucle.
     # Sin binding `verifier` el nodo es paso directo y estos ajustes no se usan.
-    verifier_max_findings: int = 5
-    verifier_max_tool_calls: int = 8
-    verifier_max_context_bytes: int = 60_000
+    verifier_max_findings: Annotated[
+        int,
+        Dial(
+            "Verificador",
+            "Cuántos hallazgos de la review pasa el verificador, los más graves primero. "
+            "El resto queda unverified.",
+        ),
+    ] = 5
+    verifier_max_tool_calls: Annotated[
+        int,
+        Dial("Verificador", "Llamadas a herramientas del verificador por hallazgo."),
+    ] = 8
+    verifier_max_context_bytes: Annotated[
+        int,
+        Dial("Verificador", "Bytes de contexto que el verificador puede pedir por hallazgo."),
+    ] = 60_000
     # Umbral de candidatos mientras 011 no declare `severity_gate` (Q10). Lista
     # separada por comas; el nodo prefiere la clave de la política si existe.
-    verifier_require_verified_for: str = "P0,P1"
+    verifier_require_verified_for: Annotated[
+        str,
+        Dial(
+            "Verificador",
+            "Severidades que exigen veredicto positivo. Si autonomy.yaml declara "
+            "severity_gate.require_verified_for, manda el YAML.",
+        ),
+    ] = "P0,P1"
 
     # Revisor con herramientas de lectura (014 H4/H5): opt-in por rol. Vacío =
     # una llamada por lote como en 008 (cero cambio de coste). Topes por lote del
     # bucle *ReAct*; el primero que se activa al medir es `correctness` (Q1).
-    review_tools_roles: str = ""
-    review_tools_max_turns: int = 4
-    review_tools_max_calls: int = 8
-    review_tools_max_bytes: int = 60_000
+    review_tools_roles: Annotated[
+        str,
+        Dial(
+            "Bucle de lectura",
+            "Roles LLM que pueden leer y hacer grep mientras revisan. "
+            "Vacío: una llamada por lote, sin herramientas.",
+        ),
+    ] = ""
+    review_tools_max_turns: Annotated[
+        int,
+        Dial(
+            "Bucle de lectura",
+            "Turnos con herramientas por lote, sin contar el turno final forzado.",
+        ),
+    ] = 4
+    review_tools_max_calls: Annotated[
+        int, Dial("Bucle de lectura", "Peticiones de herramientas por lote.")
+    ] = 8
+    review_tools_max_bytes: Annotated[int, Dial("Bucle de lectura", "Bytes servidos por lote.")] = (
+        60_000
+    )
     # Palancas del bucle de lectura (023 F1). Ninguna cambia lo que el *prompt*
     # anuncia que existe (E11): deciden coste y forma de servir. Con todas en su
     # default, el comportamiento servido es el de hoy.
     # Modo por defecto de `grep`: `literal` sirve lo de hoy; `regex` interpreta el
     # patrón (con el subconjunto portable de G1).
-    review_tools_grep_mode: Literal["literal", "regex"] = "literal"
+    review_tools_grep_mode: Annotated[
+        Literal["literal", "regex"],
+        Dial(
+            "Bucle de lectura",
+            "Modo por defecto de grep: literal o regex. Un regex pedido explícito "
+            "se atiende igual con el default literal.",
+        ),
+    ] = "literal"
     # Habilita `mode="outline"` en `read_file` (R1). Apagado, pedirlo se sirve como
     # `full` y se avisa: el modelo no gasta una llamada en balde sin saberlo.
-    review_tools_read_outline: bool = False
+    review_tools_read_outline: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Permite mode=outline en read_file. Apagado, ese modo se sirve como full y se avisa.",
+        ),
+    ] = False
     # Bloque de lecturas de la review en el bucle (S1). Apagado, no viaja al prompt;
     # las citas se siguen validando con el registro.
-    review_tools_read_state: bool = False
+    review_tools_read_state: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Incluye en el prompt el bloque de lecturas ya hechas en la review.",
+        ),
+    ] = False
     # Aviso de corte con el tamaño real (R1). Apagado, el corte se aplica igual pero
     # no se anuncia: solo válido para reproducir el *prompt* viejo.
-    review_tools_truncation_notice: bool = True
+    review_tools_truncation_notice: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Al cortar un fichero, el aviso incluye el tamaño real.",
+        ),
+    ] = True
     # S1: una petición no atendida recibe un error explícito. Apagado, el excedente
     # se descarta con un AVISO (comportamiento de hoy).
-    review_tools_strict_calls: bool = False
+    review_tools_strict_calls: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Una petición no atendida es un error. Apagado, se descarta con un aviso.",
+        ),
+    ] = False
     # Peticiones por turno (P1/E14). Se sube junto con `review_tools_max_calls`: con 5
     # por turno y 8 totales el lote se agota en dos turnos.
-    review_tools_calls_per_turn: int = 3
+    review_tools_calls_per_turn: Annotated[
+        int, Dial("Bucle de lectura", "Peticiones atendidas en un mismo turno.")
+    ] = 3
     # Precarga L1 en el bucle (C1/E8). Apagada, el *prompt* base del lote baja y el
     # modelo debe leer lo que necesite (cuesta turnos).
-    review_tools_precache_context: bool = True
+    review_tools_precache_context: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Precarga el contexto L1 en el bucle. "
+            "Apagado, el modelo tiene que leerlo y gasta turnos.",
+        ),
+    ] = True
     # Caché de E/S por review (C1/E13). Ahorra E/S, no *prompt*.
-    review_tools_io_cache: bool = False
+    review_tools_io_cache: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Reutiliza lecturas de la misma review. Ahorra lectura del repo, no tokens del prompt.",
+        ),
+    ] = False
 
     @property
     def fix_recipes_list(self) -> list[str]:

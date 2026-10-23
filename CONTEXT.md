@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Contexto y lenguaje del dominio
 
@@ -225,6 +225,7 @@ Teams. **Nunca escribe en el repositorio revisado.**
 | **Descriptor de secreto** (`Secret`) | La declaración de un campo de `Settings` en su `metadata` (iniciativa 020, [ADR-0022](docs/adr/0022-contrato-de-secretos-declarado.md)): en qué procesos aplica (`required_in`), qué condición lo activa (`feature`), qué se espera del valor (`expect`: `secret` o `plain`) y, si solo entra en el inventario, el motivo (`inventory_only`). Vive junto al campo, así que el inventario del modelo y el contrato de seguridad no pueden desincronizarse. |
 | **Contrato derivado** (`secrets_for`) | La lista de secretos sin configurar que un proceso exige, derivada del recorrido de `Settings.model_fields`. Es la **única** vía de lectura del descriptor; las funciones de arranque (`require_*_secrets`) delegan en ella. Un `process` fuera de `PROCESSES` es un error, no un contrato vacío. |
 | **Placeholder** (`PLACEHOLDER_VALUES`) | Valor de ejemplo de `.env.example` (`change-me`, `changeme`). Es una sola definición en `settings.py`; API, web y el `sandbox-runner` comparten el predicado `is_missing`, que la encapsula: con él el proceso se relaja a propósito en desarrollo. |
+| **Dial** | Campo de `Settings` que el panel puede publicar entre reviews (026, [ADR-0029](docs/adr/0029-configuracion-desde-el-panel.md)): presupuesto, lotes, bucle de lectura, techo de autonomía y patrones de alcance. Declara sección y ayuda en su `metadata`. El valor inicial es el que `Settings` ya resolvió. Un secreto no es un dial. |
 
 ---
 

@@ -24,12 +24,13 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
+from agent_review.config_store import ConfigStore, Publication
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import PendingDecision
 from agent_review.domain.trace import ReviewTrace
 from agent_review.history_store import ReviewHistory
-from agent_review.settings import get_settings
-from agent_review.web.auth import Session, require_session
+from agent_review.settings import Settings, get_settings
+from agent_review.web.auth import Session, require_command_session, require_session
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -115,6 +116,44 @@ def index(
     return HTMLResponse(_global_page(model.state(), session))
 
 
+@router.get("/config", response_class=HTMLResponse)
+def config_page(
+    session: Annotated[Session, Depends(require_session)],
+    request: Request,
+    model: Annotated[PanelReadModel, Depends(get_read_model)],
+) -> HTMLResponse:
+    """Diales que el operador puede publicar (026)."""
+    settings = get_settings()
+    store = _config_store(request, settings)
+    return HTMLResponse(_config_page(settings, store.read(), session, pins=_dial_pins(model)))
+
+
+@router.post("/config")
+def save_config(
+    payload: dict[str, object],
+    session: Annotated[Session, Depends(require_command_session)],
+    request: Request,
+) -> dict[str, int]:
+    """Publica el formulario entero. Una revisión vieja no escribe."""
+    from agent_review.panel_config import ConfigError, RevisionConflict, document_for
+
+    revision = payload.get("revision")
+    values = payload.get("values")
+    if not isinstance(revision, int) or isinstance(revision, bool) or not isinstance(values, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    settings = get_settings()
+    try:
+        document = document_for(settings, values, autonomy_ceiling=_autonomy_ceiling(settings))
+        published = _config_store(request, settings).publish(
+            expected=revision, overrides=document, actor=session.user
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ConfigError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"revision": published.revision}
+
+
 @router.get("/review/{review_key:path}", response_class=HTMLResponse)
 def review_detail(
     review_key: str,
@@ -129,6 +168,194 @@ def review_detail(
 
 
 # --- Paginas ---------------------------------------------------------------------
+
+
+def _config_store(request: Request, settings: Settings) -> ConfigStore:
+    store = getattr(request.app.state, "config_store", None)
+    if store is None:
+        from agent_review.config_store import build_config_store
+        from agent_review.panel_config import lock_names
+
+        lock_names(settings)
+        store = build_config_store(settings)
+        request.app.state.config_store = store
+    return store
+
+
+def _autonomy_ceiling(settings: Settings) -> str:
+    from pathlib import Path
+
+    import yaml
+
+    from agent_review.panel_config import ConfigError
+
+    path = Path(settings.autonomy_config)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise ConfigError("max_autonomy_override", f"no se pudo leer {path}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError("max_autonomy_override", "autonomy.yaml no es un mapa")
+    return str(data.get("max_autonomy", "report"))
+
+
+def _dial_pins(model: object) -> list[tuple[str, int]]:
+    reader = getattr(model, "dial_pins", None)
+    if not callable(reader):
+        return []
+    found = reader()
+    if not isinstance(found, list):
+        return []
+    pins: list[tuple[str, int]] = []
+    for item in found:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and isinstance(item[1], int)
+            and not isinstance(item[1], bool)
+        ):
+            pins.append((item[0], item[1]))
+    return pins
+
+
+def _config_page(
+    settings: Settings,
+    publication: Publication,
+    session: Session,
+    *,
+    pins: list[tuple[str, int]] | None = None,
+) -> str:
+    from agent_review.panel_config import SECTIONS, catalog, initial_values, lock_names
+
+    initial = initial_values(settings)
+    shown = dict(initial)
+    shown.update(publication.overrides)
+    locked = lock_names(settings)
+    by_section: dict[str, list[str]] = {section: [] for section in SECTIONS}
+    for field in catalog():
+        by_section[field.section].append(
+            _dial_control(field, shown[field.name], initial[field.name], field.name in locked)
+        )
+    sections = "".join(
+        _section(section, "".join(controls)) for section, controls in by_section.items() if controls
+    )
+    save = ""
+    if session.can_command():
+        save = '<button id="save-config" type="button">Guardar</button>'
+    inflight = "".join(
+        f"<li>{_esc(key)} fijó la revisión {revision}.</li>" for key, revision in pins or []
+    )
+    inflight_html = f"<ul>{inflight}</ul>" if inflight else ""
+    note = f"<p>Revisión publicada: {publication.revision}.</p>{inflight_html}"
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
+        f"{note}"
+        f'<form id="config" data-revision="{publication.revision}">{sections}{save}</form>'
+    )
+    return _page(
+        title="Configuración",
+        meta="Cada control vuelve a su valor inicial con Restaurar. Guardar publica la revisión.",
+        body=body,
+        session=session,
+        script=_CONFIG_SCRIPT,
+    )
+
+
+def _dial_control(field: object, shown: object, initial: object, locked: bool) -> str:
+    from agent_review.panel_config import DialField
+
+    if not isinstance(field, DialField):
+        raise TypeError("field")
+    kind = "bool" if isinstance(initial, bool) else "int" if isinstance(initial, int) else "text"
+    disabled = " disabled" if locked else ""
+    control_id = f"dial-{field.name}"
+    same = shown == initial
+    restore_disabled = " disabled" if locked or same else ""
+    if kind == "bool":
+        checked = " checked" if shown else ""
+        control = (
+            f'<input id="{control_id}" type="checkbox" data-kind="bool" '
+            f'data-name="{_esc(field.name)}"'
+            f' data-initial="{"true" if initial else "false"}"{checked}{disabled}>'
+        )
+    else:
+        control = (
+            f'<input id="{control_id}" data-kind="{kind}" data-name="{_esc(field.name)}"'
+            f' data-initial="{_esc(initial)}" value="{_esc(shown)}"{disabled}>'
+        )
+    reason = " Lo fija el despliegue." if locked else ""
+    return (
+        f'<p><label for="{control_id}">{_esc(field.name)}</label> {control} '
+        f'<button type="button" class="restore" data-for="{control_id}"{restore_disabled}>'
+        f'Restaurar</button><br><span class="meta">{_esc(field.help)}{reason}</span></p>'
+    )
+
+
+_CONFIG_SCRIPT = """<script>
+(() => {
+  const form = document.getElementById("config");
+  if (!form) return;
+  const error = document.getElementById("error");
+  const controls = [...form.querySelectorAll("[data-kind]")];
+  const current = (control) => (
+    control.dataset.kind === "bool" ? String(control.checked) : control.value
+  );
+  const sync = (control) => {
+    const button = form.querySelector(`button.restore[data-for="${control.id}"]`);
+    if (!button || control.disabled) return;
+    button.disabled = current(control) === control.dataset.initial;
+  };
+  controls.forEach((control) => {
+    control.addEventListener("input", () => sync(control));
+    const button = form.querySelector(`button.restore[data-for="${control.id}"]`);
+    if (!button) return;
+    button.addEventListener("click", () => {
+      if (control.dataset.kind === "bool") control.checked = control.dataset.initial === "true";
+      else control.value = control.dataset.initial;
+      sync(control);
+    });
+  });
+  const save = document.getElementById("save-config");
+  if (!save) return;
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    error.hidden = true;
+    const values = {};
+    controls.forEach((control) => {
+      const name = control.dataset.name;
+      if (control.dataset.kind === "bool") values[name] = control.checked;
+      else if (control.dataset.kind === "int") values[name] = Number(control.value);
+      else values[name] = control.value;
+    });
+    try {
+      const response = await fetch("/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ revision: Number(form.dataset.revision), values }),
+      });
+      if (response.status === 409) {
+        error.textContent = "Alguien guardó antes. Recarga la página.";
+        error.hidden = false;
+        save.disabled = false;
+        return;
+      }
+      if (!response.ok) {
+        error.textContent = await response.text();
+        error.hidden = false;
+        save.disabled = false;
+        return;
+      }
+      window.location.reload();
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      save.disabled = false;
+    }
+  });
+})();
+</script>"""
 
 
 def _global_page(state: PanelState, session: Session) -> str:
@@ -146,7 +373,10 @@ def _global_page(state: PanelState, session: Session) -> str:
     return _page(
         title="Panel de operación",
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
-        body='<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a></p>' + body,
+        body=(
+            '<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a>'
+            ' · <a href="/config">Configuración &rarr;</a></p>' + body
+        ),
         session=session,
         script=_COMMAND_SCRIPT,
     )
