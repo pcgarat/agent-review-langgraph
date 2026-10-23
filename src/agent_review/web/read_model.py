@@ -55,6 +55,7 @@ class QueueItem(BaseModel):
     head_sha: str = ""
     pipeline_id: str = ""
     attempts: int = 0
+    launch: bool = False
 
 
 class ActiveNode(BaseModel):
@@ -192,6 +193,7 @@ class RedisPanelReadModel:
                     head_sha=request.head_sha,
                     pipeline_id=request.pipeline_id,
                     attempts=request.attempts,
+                    launch=request.launch,
                 )
             )
         return items

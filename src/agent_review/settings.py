@@ -490,6 +490,24 @@ class Settings(BaseSettings):
             return normalized
         return value
 
+    def configured_repo(self) -> str:
+        """Identidad `owner/repo` de este despliegue, o "" si no esta configurada.
+
+        El formato es el mismo en los dos proveedores (`workspace/repo` en
+        Bitbucket, `owner/repo` en GitHub). El panel la usa para rechazar la URL
+        de otro repo sin tener el token; el worker, para no revisar el PR con el
+        mismo numero del repo configurado.
+        """
+        if self.vcs_provider == "github":
+            owner = self.github_owner.strip()
+            name = self.github_repo.strip()
+        else:
+            owner = self.bitbucket_workspace.strip()
+            name = self.bitbucket_repo.strip()
+        if not (owner and name):
+            return ""
+        return f"{owner}/{name}"
+
 
 @lru_cache
 def get_settings() -> Settings:

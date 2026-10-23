@@ -107,7 +107,7 @@ omitido hasta que exista su baseline.
 | L0 / L1 (008) | `test_verification_l0` (anclaje estricto, cita, `pre_existing`), `test_diff_parser` (lado viejo del diff), `test_llm_reviewer` (L0 en `_to_finding`, L1 por lote y humildad), `test_profile` (`context_docs`) |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
-| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, formulario de decisión y escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`); `test_compose` cubre el perfil `panel` |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, formulario de decisión y escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`), `test_pr_url` y `test_web_launch` (lanzar una review con la URL del PR, ADR-0029) y `test_worker` (el worker resuelve el commit antes del grafo); `test_compose` cubre el perfil `panel` |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
@@ -331,6 +331,10 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
 3. **La sesión viaja por cabecera o cookie**: `require_session` acepta
    `X-Panel-Session` (CLI, tests) y la cookie `panel_session` (navegador). Un endpoint
    nuevo que ejecute algo usa `require_operador`, nunca `require_session` a secas.
+4. **Lanzar una review no llama al VCS.** `POST /api/launch` (`web/launch.py`)
+   parsea la URL y encola `launch=True`. El commit lo lee `resolve_launch` en el
+   worker, antes de `graph.invoke`
+   ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
@@ -466,6 +470,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   lleva marca.
 - **`hitl` no lleva `RetryPolicy`.**
 - **La identidad de ejecución, el hilo y el token de dedupe no divergen.**
+- **El panel no resuelve el commit de un lanzamiento.** Encola la URL ya parseada;
+  el worker lee el SHA antes de invocar el grafo y no lo vuelve a leer en un
+  reintento ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
 - **La protección manda sobre la aprobación.**
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como

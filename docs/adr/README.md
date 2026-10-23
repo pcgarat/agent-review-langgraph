@@ -37,6 +37,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0026](0026-contrato-de-lectura-con-tamano-real.md) | La lectura devuelve un value object con el tamaño real, no un `str` | Aceptado |
 | [0027](0027-dialecto-portable-de-grep.md) | `grep` habla un dialecto portable y rechaza lo que cada motor lee distinto | Aceptado |
 | [0028](0028-cli-claude-fuera-del-worker.md) | El CLI de Claude corre fuera del worker; el núcleo solo ve hallazgos ya validados | Aceptado |
+| [0029](0029-lanzamiento-desde-el-panel.md) | Una review se lanza desde el panel con la URL del pull request; el worker lee el commit | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

@@ -164,6 +164,7 @@ def _global_page(state: PanelState, session: Session) -> str:
     budgets = {item.review_key: item for item in state.budget}
     body = "".join(
         (
+            _launch_section(session),
             _queue_section(state.queue, session),
             _active_section(state.active, budgets, session),
             _paused_section("Pausas humanas (esperan decisión)", state.paused.human, session),
@@ -177,7 +178,7 @@ def _global_page(state: PanelState, session: Session) -> str:
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
         body=_home_links(session) + body,
         session=session,
-        script=_COMMAND_SCRIPT,
+        script=_COMMAND_SCRIPT + _LAUNCH_SCRIPT,
     )
 
 
@@ -260,13 +261,39 @@ def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session
 # --- Secciones de la vista global (OP15) -----------------------------------------
 
 
+def _launch_section(session: Session) -> str:
+    """Formulario para encolar una review pegando la URL del pull request.
+
+    Solo el rol `operador` lo envia. El navegador no resuelve el commit: el
+    POST encola y el worker lee el SHA.
+    """
+    if not session.can_command():
+        return (
+            "<section><h2>Lanzar review</h2>"
+            '<p class="empty">Solo el rol operador lanza reviews.</p></section>'
+        )
+    return (
+        "<section><h2>Lanzar review</h2>"
+        '<p class="meta">Pega la URL del pull request de este repositorio. '
+        "El worker lee el commit de ahora y encola la review. "
+        "Repetir el mismo commit no publica otra vez. "
+        "No espera al CI: si el artefacto de la herramienta aún no ha llegado, "
+        "esa parte queda incompleta.</p>"
+        '<p class="filters">'
+        '<label>URL <input id="launch-url" type="text" size="64" '
+        'placeholder="https://github.com/org/repo/pull/123" autocomplete="off"></label> '
+        '<button type="button" class="decide" id="launch-review">Lanzar</button>'
+        "</p></section>"
+    )
+
+
 def _queue_section(items: list[QueueItem], session: Session) -> str:
     rows = [
         "<tr>"
         f"<td>{_review_link(item.review_key)}</td>"
         f"<td>{_esc(item.repo)}</td>"
         f"<td>{_esc(item.pr_id)}</td>"
-        f"<td>{_esc(item.head_sha)}</td>"
+        f"<td>{_sha_cell(item)}</td>"
         f"<td>{_esc(item.pipeline_id)}</td>"
         f"<td>{_esc(item.attempts)}</td>"
         f"<td>{_buttons(item.review_key, ((_CANCEL, 'Cancelar'),), session)}</td>"
@@ -587,6 +614,14 @@ def _inline_list(label: str, values: Iterable[str]) -> str:
     return f'<span class="tag">{_esc(label)}</span><ul class="inline">{items}</ul>'
 
 
+def _sha_cell(item: QueueItem) -> str:
+    if item.head_sha:
+        return _esc(item.head_sha)
+    if item.launch:
+        return "pendiente"
+    return "—"
+
+
 def _review_link(review_key: str) -> str:
     href = quote(review_key, safe="/:")
     return f'<a href="/review/{_esc(href)}">{_esc(review_key)}</a>'
@@ -672,6 +707,39 @@ _CLAUDE_SCRIPT = """<script>
       }
       field.value = "";
       button.textContent = "Guardado";
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      button.disabled = false;
+    }
+  });
+})();
+</script>"""
+
+_LAUNCH_SCRIPT = """<script>
+(() => {
+  const button = document.getElementById("launch-review");
+  const field = document.getElementById("launch-url");
+  if (!button || !field) {
+    return;
+  }
+  const error = document.getElementById("error");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      const response = await fetch("/api/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: field.value }),
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error((await response.text()) || response.statusText);
+      }
+      field.value = "";
+      button.textContent = "Encolada";
+      location.reload();
     } catch (cause) {
       error.textContent = String(cause);
       error.hidden = false;

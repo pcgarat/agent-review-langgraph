@@ -171,8 +171,11 @@ def test_la_vista_global_pinta_las_secciones(panel: Panel) -> None:
         "Pausas de fix",
         "Descartes",
         "Presupuesto",
+        "Lanzar review",
     ):
         assert title in body, f"falta la seccion {title}"
+    assert 'id="launch-review"' in body
+    assert "/api/launch" in body
     assert _REVIEW_KEY in body
     assert _HUMAN_KEY in body
     assert _FIX_KEY in body
@@ -310,6 +313,8 @@ def test_el_lector_no_ve_botones(monkeypatch: pytest.MonkeyPatch) -> None:
     response = client.get("/", headers={"X-Panel-Session": "ana:lector"})
     assert response.status_code == 200
     assert "data-command" not in response.text
+    assert "Solo el rol operador lanza reviews." in response.text
+    assert 'id="launch-review"' not in response.text
 
 
 # --- Escapado de datos de terceros -----------------------------------------------
