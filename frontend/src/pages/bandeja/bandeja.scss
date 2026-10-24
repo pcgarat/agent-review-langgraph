@@ -1,0 +1,28 @@
+// Solo lo que CoreUI no da. `.eyebrow`, `.num` y los overrides del tema viven en
+// `styles/panel.scss`; aquí, únicamente la tarjeta de una pausa.
+
+// La tarjeta es la unidad de trabajo de la pantalla: un borde izquierdo de color
+// avisa de que hay algo esperando aunque el título quede fuera de vista al hacer
+// scroll en una lista larga.
+.pause-card {
+  border-left: 3px solid var(--cui-warning);
+}
+
+// El hallazgo se separa del siguiente con una línea: sin ella, dos hallazgos
+// seguidos se leen como un párrafo con botones sueltos.
+.finding {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--cui-border-color);
+
+  &:last-of-type {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+}
+
+// El fallo de una respuesta se queda en su tarjeta: es de esa pausa, no de la
+// pantalla, y el toast se va a los cuatro segundos.
+.decision-error {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--cui-border-color);
+}

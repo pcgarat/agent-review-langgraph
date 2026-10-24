@@ -55,10 +55,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque B — Bandeja e histórico (checkpoint B-K)
 
-- [ ] **B1** Bandeja con tarjetas por pausa y respuesta por hallazgo o lote
-- [ ] **B2** Aviso de pendientes en el sidebar
-- [ ] **B3** Histórico con filtros `repo` / `pr_id`
-- [ ] **B4** Paginación en cliente (Q5)
+- [x] **B1** Bandeja con tarjetas por pausa y respuesta por hallazgo o lote
+- [x] **B2** Aviso de pendientes en el sidebar
+- [x] **B3** Histórico con filtros `repo` / `pr_id`
+- [x] **B4** Paginación en cliente (Q5)
 
 ## Bloque C — Configuración (checkpoint C-K)
 
