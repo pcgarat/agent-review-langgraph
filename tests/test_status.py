@@ -65,7 +65,9 @@ class Scripted:
         self.calls.append(("twg", workspace, repo, bool(token)))
         return self.twg_result
 
-    def git_ls_remote(self, url: str, token: str) -> status.ProbeResult:
+    def git_ls_remote(
+        self, url: str, token: str, *, username: str = "x-token-auth"
+    ) -> status.ProbeResult:
         self.calls.append(("git", url, bool(token)))
         return self.git_result
 

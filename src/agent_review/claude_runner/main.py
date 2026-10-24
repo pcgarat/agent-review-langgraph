@@ -21,7 +21,13 @@ from agent_review.adapters.claude_cli import SubprocessClaudeRunner, redact_text
 from agent_review.claude_runner.checkout import CheckoutError, checkout_directory, prepare_checkout
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
 from agent_review.ports.claude import ClaudeProcessCrashed, ClaudeQuotaExceeded, ClaudeTimeout
-from agent_review.settings import Settings, get_settings, is_missing, require_claude_runner_secrets
+from agent_review.settings import (
+    Settings,
+    clone_token,
+    get_settings,
+    is_missing,
+    require_claude_runner_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +76,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         _verify_token(current, authorization)
         logger.info("claude %s#%s @ %s", body.repo, body.pr_id, body.head_sha)
         token = load_token(_session_path(current))
-        secrets = [current.claude_git_token, current.claude_runner_token, token or ""]
+        credential = clone_token(current)
+        secrets = [credential, current.claude_runner_token, token or ""]
         try:
             directory = checkout_directory(
                 _workspace_root(current), repo=body.repo, head_sha=body.head_sha
@@ -80,7 +87,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                     directory,
                     repo=body.repo,
                     head_sha=body.head_sha,
-                    git_token=current.claude_git_token,
+                    git_token=credential,
+                    provider=current.vcs_provider,
                     timeout_s=current.claude_timeout_s,
                 )
                 extra = {CHILD_TOKEN_ENV: token} if token else {}

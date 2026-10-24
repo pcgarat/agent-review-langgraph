@@ -5,7 +5,8 @@ COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
 .PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
-	eval eval-live eval-record bootstrap twg-credentials up panel down logs ps status smoke clean
+	eval eval-live eval-record bootstrap twg-credentials ensure-dev-secrets \
+	up panel claude panel-claude down logs ps status smoke clean
 
 ##@ Dependencias
 
@@ -88,11 +89,20 @@ bootstrap: ## Crea .env desde .env.example y resume lo que falta
 twg-credentials: ## Copia tu sesion twg al .env (solo desarrollo)
 	scripts/sync-twg-credentials.sh
 
-up: ## Levanta el stack (build incluido)
+ensure-dev-secrets: ## Rellena URL y secretos locales si siguen en blanco
+	$(UV) run --extra $(EXTRAS) python scripts/ensure_dev_secrets.py
+
+up: ensure-dev-secrets ## Levanta el stack (build incluido)
 	$(COMPOSE) up --build -d
 
-panel: ## Levanta el stack con el panel de operacion (perfil `panel`)
+panel: ensure-dev-secrets ## Levanta el stack con el panel de operacion (perfil `panel`)
 	$(COMPOSE) --profile panel up --build -d
+
+claude: ensure-dev-secrets ## Levanta el stack con el runner de Claude (perfil `claude`)
+	$(COMPOSE) --profile claude up --build -d
+
+panel-claude: ensure-dev-secrets ## Panel y runner de Claude (perfiles `panel` y `claude`)
+	$(COMPOSE) --profile panel --profile claude up --build -d
 
 down: ## Para el stack
 	$(COMPOSE) down

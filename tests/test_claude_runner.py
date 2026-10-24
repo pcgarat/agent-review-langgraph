@@ -492,8 +492,6 @@ def test_el_compose_no_pasa_el_token_de_publicacion_al_runner() -> None:
     assert "env_file" not in service
     env = service["environment"]
     for secreto in (
-        "GITHUB_TOKEN",
-        "TWG_BBC_TOKEN",
         "TWG_TOKEN",
         "TEAMS_BOT_TOKEN",
         "TEAMS_BOT_SHARED_SECRET",
@@ -501,6 +499,9 @@ def test_el_compose_no_pasa_el_token_de_publicacion_al_runner() -> None:
         "REVIEWS_DECISION_TOKEN",
     ):
         assert secreto not in env, secreto
+    assert "GITHUB_TOKEN" in env
+    assert "TWG_BBC_TOKEN" in env
+    assert "VCS_PROVIDER" in env
     assert "CLAUDE_GIT_TOKEN" in env
     assert "CLAUDE_RUNNER_TOKEN" in env
     assert "CLAUDE_MAX_TURNS" in env
@@ -521,7 +522,17 @@ def test_el_worker_no_exige_la_credencial_de_clonado() -> None:
     assert "CLAUDE_RUNNER_TOKEN" in worker
     assert "CLAUDE_GIT_TOKEN" not in worker
     runner = secrets_for(settings, "claude-runner")
-    assert "CLAUDE_GIT_TOKEN" in runner
+    assert "CLAUDE_GIT_TOKEN" not in runner
+    assert "TWG_BBC_TOKEN" in runner
     assert "CLAUDE_RUNNER_TOKEN" in runner
-    assert "TWG_BBC_TOKEN" not in runner
     assert "GITHUB_TOKEN" not in runner
+    con_github = Settings(
+        _env_file=None,
+        environment="production",
+        review_engine="claude",
+        vcs_provider="github",
+        github_token="ghp-real",
+    )
+    runner_github = secrets_for(con_github, "claude-runner")
+    assert "GITHUB_TOKEN" not in runner_github
+    assert "CLAUDE_GIT_TOKEN" not in runner_github

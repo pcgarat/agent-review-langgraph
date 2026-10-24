@@ -88,12 +88,14 @@ def _old_fix_worker_insecure_secrets(settings: Settings) -> list[str]:
 
 
 def _old_claude_runner_insecure_secrets(settings: Settings) -> list[str]:
-    """El servicio que clona exige bearer y credencial de clonado, no el token del PR."""
+    """Bearer siempre. El clon usa el token de VCS salvo override `CLAUDE_GIT_TOKEN`."""
     insecure: list[str] = []
     if is_missing(settings.claude_runner_token):
         insecure.append("CLAUDE_RUNNER_TOKEN")
-    if is_missing(settings.claude_git_token):
-        insecure.append("CLAUDE_GIT_TOKEN")
+    provider = settings.github_token if settings.vcs_provider == "github" else settings.twg_bbc_token
+    if is_missing(settings.claude_git_token) and is_missing(provider):
+        name = "GITHUB_TOKEN" if settings.vcs_provider == "github" else "TWG_BBC_TOKEN"
+        insecure.append(name)
     return insecure
 
 

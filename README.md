@@ -211,6 +211,7 @@ lee, en la práctica `docker compose up -d`.
 | Que una persona decida antes de publicar o de arreglar | Sube `max_autonomy` en [`config/autonomy.yaml`](config/autonomy.yaml) al menos a `fix_with_approval` y reinicia el worker. La decisión entra por Teams, `agent_review decide` o `POST /reviews/{review_key}/decision`. |
 | Avisos y tarjeta en Teams | `TEAMS_ENABLED=true` y la identidad del bot (`TEAMS_BOT_ID`, `TEAMS_BOT_TENANT_ID`, `TEAMS_BOT_TOKEN`). El alta en el tenant sigue pendiente. |
 | Ver la cola y decidir desde el navegador | `make panel` y abre `http://localhost:8090`. Con `PANEL_SESSION_SECRET=change-me` la sesión no se exige; en producción el secreto es un token opaco y el actor es `PANEL_SESSION_USER`. |
+| Revisar con el CLI de Claude | `REVIEW_ENGINE=claude` en `.env` y `make claude` (o `make panel-claude` si también quieres el panel). El arranque rellena `CLAUDE_RUNNER_URL`, `CLAUDE_RUNNER_TOKEN` y `PANEL_SESSION_SECRET` si seguían en blanco. El checkout reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN`. |
 | Verificar un arreglo en el sandbox | Las cinco condiciones de [`docs/operacion.md`](docs/operacion.md) §2 («Para activar la Fase 3»). Si falta una, el arreglo queda `not_verifiable` y se publica igual. |
 
 ---

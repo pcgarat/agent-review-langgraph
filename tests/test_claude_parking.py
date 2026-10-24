@@ -172,6 +172,7 @@ def test_el_operador_guarda_sin_devolver_el_token(
     assert _TOKEN not in operador.text
     assert _TOKEN not in caplog.text
     assert _TOKEN not in formulario_ok.text
+    assert "https://claude.ai/settings/claude-code" in formulario_ok.text
     path = tmp_path / "session.json"
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600

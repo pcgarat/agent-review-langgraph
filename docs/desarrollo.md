@@ -27,6 +27,9 @@ make fix                          # arregla lint y formato
 make bootstrap                    # crea .env desde .env.example (idempotente, permisos 600)
 make up                           # levanta el stack (docker compose up --build -d)
 make panel                        # ídem con el perfil `panel` (panel de operación)
+make claude                       # ídem con el perfil `claude` (claude-runner)
+make panel-claude                 # perfiles `panel` y `claude` a la vez
+make ensure-dev-secrets           # rellena URL y secretos locales vacíos; no toca `CLAUDE_GIT_TOKEN`
 make logs S=api                   # sigue los logs de un servicio (por defecto worker)
 make smoke PR=417                 # smoke Nivel 2 real contra un PR (docs/operacion.md §6)
 make status                       # contenedores, URLs y prueba de credenciales
@@ -121,7 +124,7 @@ omitido hasta que exista su baseline.
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
 | Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio), `test_claude_parking` (parking, aviso único, login del operador y cupo) |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
-| Operación | `test_status` (`make status`: puertos, credencial aceptada o rechazada, módulo apagado sin prueba; sin red ni Docker) |
+| Operación | `test_status` (`make status`: puertos, credencial aceptada o rechazada, módulo apagado sin prueba; sin red ni Docker), `test_ensure_dev_secrets` (rellena una vez los secretos locales y no inventa `CLAUDE_GIT_TOKEN`) |
 | Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
 
 Regla de estilo: ningún test depende de red, de `twg` real ni de Docker. Los puertos

@@ -260,13 +260,19 @@ def history_page(
     return HTMLResponse(_history_page(items, session, repo=repo, pr_id=pr_id))
 
 
+_CLAUDE_TOKEN_URL = "https://claude.ai/settings/claude-code"
+
+
 @router.get("/claude", response_class=HTMLResponse)
 def claude_session_page(session: Annotated[Session, Depends(require_operador)]) -> HTMLResponse:
     """Formulario del operador. El token viaja en el POST JSON, no en esta página."""
     body = (
         "<section><h2>Sesión de Claude</h2>"
         '<p class="meta">Se guarda en un fichero del servidor. '
-        "La respuesta no lo devuelve y el canal no lo ve.</p>"
+        "La respuesta no lo devuelve y el canal no lo ve. "
+        "El token se genera en "
+        f'<a href="{_CLAUDE_TOKEN_URL}" target="_blank" rel="noopener noreferrer">'
+        f"{_CLAUDE_TOKEN_URL}</a>.</p>"
         '<label>Token <input id="claude-token" type="password" autocomplete="off"></label> '
         '<button type="button" class="decide" id="claude-save">Guardar</button>'
         "</section>"

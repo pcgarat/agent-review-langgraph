@@ -166,7 +166,13 @@ services:
       CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
       CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
       CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
+      # Vacio: el fetch reutiliza el token de VCS (ADR-0032). Un valor propio
+      # es el override de solo lectura y es lo unico que ve este proceso con
+      # ese nombre. El worker lo recibe vacio.
       CLAUDE_GIT_TOKEN: ${CLAUDE_GIT_TOKEN:-}
+      VCS_PROVIDER: ${VCS_PROVIDER:-twg}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      TWG_BBC_TOKEN: ${TWG_BBC_TOKEN:-}
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
     volumes:
       - claude_checkout:/var/claude-checkout

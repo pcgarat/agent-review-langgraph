@@ -55,9 +55,23 @@ El servicio del CLI de Claude es otro perfil
 ([ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)):
 
 ```bash
-docker compose --profile claude up -d   # añade `claude-runner`
+make claude                             # stack + claude-runner
+make panel-claude                       # lo anterior y el panel
+docker compose --profile claude up -d   # lo mismo que `make claude`, sin rebuild
 ```
 
+`make up`, `make panel`, `make claude` y `make panel-claude` rellenan antes
+`.env` si siguen vacíos o en `change-me`: `CLAUDE_RUNNER_URL` (el DNS interno
+`http://claude-runner:8098`), `CLAUDE_RUNNER_TOKEN` y `PANEL_SESSION_SECRET`.
+Un valor ya puesto no se rota. La primera vez que crea el secreto del panel lo
+imprime: a partir de ahí la cookie `panel_session` tiene que llevarlo, porque
+no hay formulario de login. `CLAUDE_GIT_TOKEN` se deja vacío: el checkout
+reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN`
+([ADR-0032](adr/0032-clonado-claude-con-el-token-de-vcs.md)).
+
+`REVIEW_ENGINE=claude` no crea el servicio: sin el perfil, Compose ni lo
+construye. `make panel` tampoco lo incluye. Con el panel hace falta
+`make panel-claude`, porque la sesión la escribe el panel y la lee el runner.
 Sin ese perfil el arranque sigue siendo el motor `llm`. El servicio no hereda
 el `.env`: no recibe el token con el que el worker publica. Su volumen de
 checkout no es el clon *bare* del `sandbox-runner`. La sesión de Claude es un
@@ -74,7 +88,7 @@ panel; el worker no lo monta.
 | `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) y volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis, el recorrido del checkpointer, publica los diales (027) y lanza reviews con la URL del PR ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM, pero sí el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
-| `claude-runner` (perfil `claude`) | `8098` solo interno | `claude_checkout` en `/var/claude-checkout`; `claude_session` en `/var/claude-session` | Checkout de solo lectura y subproceso `claude`. **Sin** `env_file` ni el token de publicación. `CLAUDE_GIT_TOKEN` solo vive aquí; el worker lo recibe vacío. `GET /session` dice si el fichero sigue vigente y lo retira si caducó |
+| `claude-runner` (perfil `claude`) | `8098` solo interno | `claude_checkout` en `/var/claude-checkout`; `claude_session` en `/var/claude-session` | Checkout de solo lectura y subproceso `claude`. **Sin** `env_file`. Recibe el token de VCS solo para el `fetch` y lo retira del entorno antes de servir; el subproceso `claude` no lo hereda. `CLAUDE_GIT_TOKEN` es un override de solo lectura; vacío, usa `GITHUB_TOKEN` o `TWG_BBC_TOKEN`. El worker recibe `CLAUDE_GIT_TOKEN` vacío. `GET /session` dice si el fichero sigue vigente y lo retira si caducó |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
 | `redis` | — | — | Sin auth; solo red interna |
 
@@ -300,7 +314,7 @@ encapsula la lista `settings.PLACEHOLDER_VALUES`.
 | `SANDBOX_CONSOLE_TOKEN` | Bearer de **solo lectura** de la consola del runner: lo usa el `web` y solo abre `GET /verify/{run_key}/console`, no `POST /verify` | Para la consola en vivo del panel | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
 | `CLAUDE_RUNNER_TOKEN` | Bearer entre el worker y `claude-runner` | Si `REVIEW_ENGINE=claude` | Agente |
-| `CLAUDE_GIT_TOKEN` | Token de solo lectura para el checkout de Claude. No lo exige el worker; el subproceso `claude` no lo hereda | El servicio `claude-runner` en producción | Agente |
+| `CLAUDE_GIT_TOKEN` | Override de solo lectura para el checkout. Vacío: el runner reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN` ([ADR-0032](adr/0032-clonado-claude-con-el-token-de-vcs.md)). El subproceso `claude` no lo hereda | No, si el token de VCS ya está | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Fase 4 | Agente |
 | `POSTGRES_PASSWORD` | Credencial de Postgres | En producción | Infra |
@@ -440,7 +454,7 @@ token, para no lanzar la URL de otro repositorio
 | `POST` | `/config` | `operador` | Publica el formulario entero (027): cuerpo `{"revision", "values", "initial"}`, con `initial` opcional. `400` con `{"detail": {"field"}}` si un valor no encaja o un dial está bloqueado; `409` con la revisión vigente si otro guardó antes o si `initial` ya no coincide con este proceso; `503` si Postgres no responde |
 | `GET` | `/config` | Sesión | Página HTML de diales (027): una sección por grupo, ayuda por control y un **Restaurar** por control |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global, con el formulario de lanzamiento, y detalle con el recorrido y la consola) |
-| `GET` | `/claude` | `operador` | Formulario de la sesión de Claude. El `lector` recibe `403` |
+| `GET` | `/claude` | `operador` | Formulario de la sesión de Claude, con el enlace a [claude.ai/settings/claude-code](https://claude.ai/settings/claude-code) donde se genera el token. El `lector` recibe `403` |
 | `POST` | `/api/claude/session` | `operador` | Cuerpo `{"token": "…"}`. Lo guarda en el fichero `0600` y devuelve `{"released": n}` sin el token. Misma defensa CSRF que el resto de comandos. Un formulario que no sea JSON del mismo origen recibe `403` |
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review

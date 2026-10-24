@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 from agent_review.adapters.tooling_source import safe_segment
 from agent_review.errors import TransientError
@@ -42,12 +43,14 @@ def prepare_checkout(
     git_bin: str = "git",
     timeout_s: float = 120,
     remote_url: str | None = None,
+    provider: str = "twg",
 ) -> None:
     """Deja `directory` en `head_sha` y sin remotos.
 
     El token solo viaja en el `remote add` de este proceso. Si no se puede
     quitar, el checkout falla y el CLI no arranca: la URL seguiría en
-    `.git/config`. `remote_url` sustituye la URL de Bitbucket (tests locales).
+    `.git/config`. `remote_url` sustituye la URL del hosting (tests locales).
+    `provider` elige GitHub o Bitbucket cuando la URL no viene dada.
     """
     directory.mkdir(parents=True, exist_ok=True)
     if not (directory / ".git").exists():
@@ -55,7 +58,7 @@ def prepare_checkout(
         if init.returncode != 0:
             raise CheckoutError(_redact(init.stderr, git_token) or "git init fallo")
     _require_no_remote(directory, git_bin=git_bin, timeout_s=timeout_s)
-    origin = remote_url if remote_url is not None else _auth_url(repo, git_token)
+    origin = remote_url if remote_url is not None else _auth_url(repo, git_token, provider=provider)
     added = _git(
         directory,
         ["remote", "add", "origin", origin],
@@ -131,8 +134,12 @@ def _segment(value: str) -> str:
     return cleaned
 
 
-def _auth_url(repo: str, token: str) -> str:
-    token = token.strip()
+def _auth_url(repo: str, token: str, *, provider: str = "twg") -> str:
+    token = quote(token.strip(), safe="")
+    if provider == "github":
+        if not token:
+            return f"https://github.com/{repo}.git"
+        return f"https://x-access-token:{token}@github.com/{repo}.git"
     if not token:
         return f"https://bitbucket.org/{repo}.git"
     return f"https://x-token-auth:{token}@bitbucket.org/{repo}.git"

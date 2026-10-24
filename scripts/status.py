@@ -35,7 +35,7 @@ from agent_review.models_config import (
     resolved_api_key,
     unresolved_secrets,
 )
-from agent_review.settings import Settings, is_missing
+from agent_review.settings import Settings, clone_token, is_missing
 
 ROOT = Path(__file__).resolve().parents[1]
 _TIMEOUT_S = 8.0
@@ -237,14 +237,14 @@ class LiveIO:
         ]
         return _run(argv, env, redact=[token], timeout=20.0)
 
-    def git_ls_remote(self, url: str, token: str) -> ProbeResult:
+    def git_ls_remote(self, url: str, token: str, *, username: str = "x-token-auth") -> ProbeResult:
         # Askpass evita el token en la URL, que git repetiria en el error.
         with tempfile.TemporaryDirectory() as tmp:
             askpass = Path(tmp) / "askpass"
             askpass.write_text(
                 "#!/bin/sh\n"
                 'case "$1" in\n'
-                "  Username*) printf '%s\\n' 'x-token-auth' ;;\n"
+                "  Username*) printf '%s\\n' \"$STATUS_GIT_USER\" ;;\n"
                 "  *) printf '%s\\n' \"$STATUS_GIT_TOKEN\" ;;\n"
                 "esac\n",
                 encoding="utf-8",
@@ -252,6 +252,7 @@ class LiveIO:
             askpass.chmod(0o700)
             env = os.environ.copy()
             env["STATUS_GIT_TOKEN"] = token
+            env["STATUS_GIT_USER"] = username
             env["GIT_ASKPASS"] = str(askpass)
             env["GIT_TERMINAL_PROMPT"] = "0"
             return _run(["git", "ls-remote", url, "HEAD"], env, redact=[token], timeout=20.0)
@@ -829,21 +830,21 @@ def _git_token_rows(
 ) -> list[Row]:
     if not _configured_secret(token):
         return [Row(section, "falta", name, "sin configurar")]
-    repo = ""
-    if settings.bitbucket_workspace.strip() and settings.bitbucket_repo.strip():
-        repo = f"{settings.bitbucket_workspace.strip()}/{settings.bitbucket_repo.strip()}"
-    elif settings.vcs_provider != "github":
+    if settings.vcs_provider == "github":
         repo = settings.configured_repo()
+        host = "https://github.com"
+        username = "x-access-token"
+    else:
+        repo = ""
+        if settings.bitbucket_workspace.strip() and settings.bitbucket_repo.strip():
+            repo = f"{settings.bitbucket_workspace.strip()}/{settings.bitbucket_repo.strip()}"
+        else:
+            repo = settings.configured_repo()
+        host = "https://bitbucket.org"
+        username = "x-token-auth"
     if not repo:
-        return [
-            Row(
-                section,
-                "aviso",
-                name,
-                "configurado; el clon es de Bitbucket y no hay workspace/repo",
-            )
-        ]
-    result = io.git_ls_remote(f"https://bitbucket.org/{repo}.git", token)
+        return [Row(section, "aviso", name, "configurado; falta owner/repo para probar el clon")]
+    result = io.git_ls_remote(f"{host}/{repo}.git", token, username=username)
     if result.status == 0:
         return [Row(section, "ok", name, "ls-remote acepto el token")]
     if result.status is None:
@@ -1009,9 +1010,21 @@ def _claude_rows(settings: Settings, services: list[ServiceInfo], io: LiveIO) ->
                 ok_detail="el bearer coincide",
             )
         )
-    rows.extend(
-        _git_token_rows(section, "CLAUDE_GIT_TOKEN", settings.claude_git_token, settings, io)
-    )
+    rows.extend(_clone_credential_rows(section, settings, io))
+    return rows
+
+
+def _clone_credential_rows(section: str, settings: Settings, io: LiveIO) -> list[Row]:
+    """`CLAUDE_GIT_TOKEN` si está puesto; si no, el token de VCS que ya publica."""
+    if _configured_secret(settings.claude_git_token):
+        return _git_token_rows(section, "CLAUDE_GIT_TOKEN", settings.claude_git_token, settings, io)
+    name = "GITHUB_TOKEN" if settings.vcs_provider == "github" else "TWG_BBC_TOKEN"
+    token = clone_token(settings)
+    if not _configured_secret(token):
+        return [Row(section, "falta", name, "sin configurar; el checkout de Claude lo reutiliza")]
+    rows = _git_token_rows(section, name, token, settings, io)
+    if rows and rows[0].level == "ok":
+        return [Row(section, "ok", name, "el checkout de Claude lo reutiliza; " + rows[0].detail)]
     return rows
 
 

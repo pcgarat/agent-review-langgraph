@@ -133,9 +133,11 @@ class Settings(BaseSettings):
         str,
         Secret(required_in=frozenset({"worker", "claude-runner"}), feature="claude_engine"),
     ] = ""
-    # Solo el servicio que clona. El worker que publica no lo exige.
+    # Solo el servicio que clona. Vacio: reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN`
+    # (ADR-0032). Un valor propio sigue siendo el override de solo lectura.
     claude_git_token: Annotated[
-        str, Secret(required_in=frozenset({"claude-runner"}), feature="claude_engine")
+        str,
+        Secret(inventory_only="vacio: el runner clona con el token de VCS ya configurado"),
     ] = ""
     # Fichero 0600 de la sesión. Lo escriben el panel y lo lee el runner.
     # El worker no lo abre: pregunta GET /session.
@@ -736,7 +738,35 @@ def secrets_for(settings: Settings, process: str) -> list[str]:
     for feature in _EXTRA_BY_PROCESS.get(process, ()):
         if _FEATURES[feature](settings, process):
             insecure.extend(_unresolved_registry_secrets(settings))
+    missing_clone = _missing_clone_credential(settings, process)
+    if missing_clone:
+        insecure.append(missing_clone)
     return insecure
+
+
+def clone_token(settings: Settings) -> str:
+    """Credencial con la que el runner hace el fetch.
+
+    `CLAUDE_GIT_TOKEN` gana si está puesto: es el override de solo lectura.
+    Si no, vale el token con el que el worker ya publica (`GITHUB_TOKEN` o
+    `TWG_BBC_TOKEN`). El subproceso `claude` no lo hereda.
+    """
+    if not is_missing(settings.claude_git_token):
+        return settings.claude_git_token.strip()
+    if settings.vcs_provider == "github":
+        return settings.github_token.strip()
+    return settings.twg_bbc_token.strip()
+
+
+def _missing_clone_credential(settings: Settings, process: str) -> str | None:
+    """Nombre del token que falta para clonar, o `None` si el runner puede hacerlo."""
+    if process != "claude-runner":
+        return None
+    if not is_missing(clone_token(settings)):
+        return None
+    if settings.vcs_provider == "github":
+        return "GITHUB_TOKEN"
+    return "TWG_BBC_TOKEN"
 
 
 def _unresolved_registry_secrets(settings: Settings) -> list[str]:
