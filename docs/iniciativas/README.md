@@ -27,6 +27,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **029**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **030**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.
