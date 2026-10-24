@@ -26,6 +26,7 @@ flowchart LR
         FIXW["fix-worker<br/>verifica · nunca publica"]
         BOT["teams-bot<br/>outbox · POST /api/messages"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
+        WEB["web :8090 · perfil panel<br/>SPA + API JSON"]
         REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
@@ -36,6 +37,9 @@ flowchart LR
     API --> VAR
     API --> REDIS
     HUMAN -->|"CLI agent_review / POST decision"| API
+    HUMAN -->|"navegador · SPA"| WEB
+    WEB -->|"lee estado y encola comandos"| REDIS
+    WEB -->|"recorrido (solo lectura)"| PG
     REDIS -->|BLMOVE| WORKER
     WORKER --> VAR
     WORKER --> CFG
@@ -75,6 +79,7 @@ flowchart LR
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
+| `web` (`web/main.py`) | `python -m agent_review.web.main` | Panel de operación. Sirve la **SPA** (`frontend/dist`, en la imagen `web/static`) y la API JSON: lee el estado de Redis y el recorrido del checkpointer con un pool de solo lectura, y **encola** comandos, decisiones y lanzamientos. No escribe el estado del grafo ni habla con el VCS (`launch` lo resuelve el worker). El *fallback* de `index.html` no captura `/api/*` ni `/healthz` ([029](iniciativas/029-panel-en-react/spec.md), P5). Opt-in por el perfil `panel`. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. La **bandeja** ([026](iniciativas/archivo/026-bandeja-de-decisiones/spec.md)) es la lista de esas preguntas y comparte el sello con Teams y con el detalle. |
 
 ---
@@ -103,10 +108,17 @@ src/agent_review/
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
 ├── sandbox_runner/ Servicio de verificación y workspace de lectura (verifier, workspace,
 │                  read_workspace, runtime, recipes)
+├── web/           Panel de operación: `main` (app y API), `spa` (build de la SPA y su
+│                  *fallback*), `review_detail`/`config_api`/`bandeja`/`commands`,
+│                  `read_model` (Redis + checkpointer) y `deps` (inyección)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
     paused_store.py checkpointer.py scope.py decision.py trace.py
 ```
+
+La interfaz no vive en Python: es una SPA en `frontend/` (Vite, React y TypeScript
+estricto sobre CoreUI) cuyo build se sirve desde `web` y que consume la misma API
+JSON. El servidor no sabe cómo se pinta una review.
 
 Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
 (`autonomy.yaml` y `models.yaml`), **Strategy** (`FixerPort`, `DeliveryFormatter`,
@@ -191,7 +203,7 @@ compila otro grafo ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md),
 flowchart TD
     START([START]) --> scope
     scope["scope<br/>diff para anclar"] -->|"Send"| persona
-    persona["persona<br/>cargador claude + estática si el perfil declara typecheck"] --> merge
+    persona["persona<br/>cargador del artefacto de Claude"] --> merge
     merge --> stamp
     stamp["stamp<br/>acción publish, sin política"] --> hitl
     hitl{"hitl<br/>¿cuáles se publican?"} -->|no| publish
@@ -405,7 +417,9 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:processing:<host>` | Job en vuelo de ese worker, hasta el `ack`. Un proceso nuevo con el mismo host lo devuelve a `reviews:jobs`; otro host, si el latido (`…:hb`) supera 6 h | latido 6 h |
-| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request. Un payload ilegible llega en crudo (`raw`) | — |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, `error` (log de los intentos) y request. Un payload ilegible llega en crudo (`raw`). El enlace del panel abre ese log cuando no hay recorrido | — |
+| Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
+| Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
 | Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota` o `quota-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` no | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
@@ -484,6 +498,9 @@ El estado vivo de cada iniciativa y sus tareas están en
 [`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
 [025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
 tarjeta de lote, `claude-runner` y sesión en el panel.
+[028](iniciativas/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
+fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
 
 ---
 

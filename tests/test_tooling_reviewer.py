@@ -112,7 +112,7 @@ def test_persona_no_lee_herramientas_no_permitidas() -> None:
     reviewer = ToolingReviewer(source=_ExplodingSource(), allowed_tools=("php-cs-fixer",))
     result = reviewer.review(repo="r", pr_id=1, diff=DIFF)
     assert result.findings == []
-    assert result.tooling_status is ToolingSourceStatus.MISSING
+    assert result.tooling_status is None
 
 
 _SCOPE_DIFF = """\

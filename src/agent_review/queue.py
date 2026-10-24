@@ -18,13 +18,26 @@ QUEUE_KEY = "reviews:jobs"
 # Cola de descartes: los jobs que agotan los reintentos no se pierden en el log,
 # quedan aqui para reinyectarlos a mano o inspeccionarlos.
 DEAD_LETTER_KEY = "reviews:jobs:dead"
+# Log de los intentos que aún no han llegado a la DLQ. Al descartar, el texto
+# viaja en la entrada (`error`) y esta clave se borra. Si el job termina bien,
+# también. El TTL cubre un worker que muere entre el fallo y el descarte.
+FAILURE_LOG_PREFIX = "reviews:failure:"
+# Anotaciones que sobreviven al cierre de la review. El log de intentos se borra
+# al terminar; este se queda para la ficha del panel.
+JOURNAL_PREFIX = "reviews:journal:"
+GENERATION_PREFIX = "reviews:generation:"
+_FAILURE_LOG_TTL_S = 7 * 24 * 3600
+_FAILURE_LOG_KEEP = 8
+_FAILURE_LOG_LIMIT = 12_000
+_JOURNAL_TTL_S = 10 * 24 * 3600
+_JOURNAL_KEEP = 100
 # Jobs del motor claude que no pueden correr (sin sesión o sin cupo). Fuera de
 # `reviews:jobs` para que el bucle no los vuelva a sacar en la misma vuelta.
 PARKED_KEY = "reviews:claude:parked"
 NOTICE_KEY_PREFIX = "reviews:claude:notice:"
 # `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
 # siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
-PARK_REASONS = frozenset({"session", "quota", "quota-wait"})
+PARK_REASONS = frozenset({"session", "quota", "quota-wait", "ceiling"})
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve
 # el worker de fixes. Vive en su propia clave para no mezclarse con las reviews.
@@ -59,8 +72,32 @@ class ReviewQueue(Protocol):
         """Devuelve a la cola los jobs cuyo dueno ya no vive. `0` si no hay."""
         ...
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        """Registra un job descartado tras agotar los intentos."""
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        """Registra un job descartado tras agotar los intentos.
+
+        `error` es el log de los intentos (traceback incluido). Vacío en un
+        descarte que no llegó a registrar el fallo.
+        """
+        ...
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        """Añade un intento fallido al log de esa review, hasta que se descarte o acabe."""
+        ...
+
+    def failure_log(self, review_key: str) -> str:
+        """Log acumulado de los intentos, o vacío si no hay."""
+        ...
+
+    def clear_failure(self, review_key: str) -> None:
+        """Borra el log acumulado. El descarte ya lo copió, o el job terminó."""
+        ...
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        """Añade una línea al log de la review. No se borra al terminar."""
+        ...
+
+    def journal(self, review_key: str) -> list[str]:
+        """Líneas del log, en orden. Vacío si no hay."""
         ...
 
     def dead_letters(self) -> list[dict[str, object]]:
@@ -104,6 +141,22 @@ class ReviewQueue(Protocol):
 
     def clear_notice(self, kind: str) -> None:
         """Borra la clave del aviso. Una caducidad posterior puede avisar otra vez."""
+        ...
+
+    def generation(self, review_key: str) -> int:
+        """Generacion actual de esa ejecucion. `0` si nadie la ha subido."""
+        ...
+
+    def bump_generation(self, review_key: str) -> int:
+        """Sube la generacion y devuelve el valor nuevo."""
+        ...
+
+    def withdraw(self, review_key: str) -> int:
+        """Saca de la cola, el parking y la DLQ los jobs de esa ejecucion.
+
+        No toca el que el worker ya tiene en la lista de procesamiento: ese
+        termina, y el job de borrado que va detras limpia lo que haya escrito.
+        """
         ...
 
 
@@ -265,8 +318,44 @@ class RedisReviewQueue:
     def reclaim_inflight(self) -> int:
         return self._flight.reclaim()
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        self._client.rpush(self._dead_key, _dead_letter_payload(request, reason=reason))
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        self._client.rpush(
+            self._dead_key, _dead_letter_payload(request, reason=reason, error=error)
+        )
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        note = text.strip()
+        if not note:
+            return
+        key = _failure_key(review_key)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, note[-4000:])
+        pipe.ltrim(key, -_FAILURE_LOG_KEEP, -1)
+        pipe.expire(key, _FAILURE_LOG_TTL_S)
+        pipe.execute()
+
+    def failure_log(self, review_key: str) -> str:
+        raw = self._client.lrange(_failure_key(review_key), 0, -1)
+        parts = [_as_text(item).strip() for item in raw]
+        return _clip_log("\n\n".join(part for part in parts if part))
+
+    def clear_failure(self, review_key: str) -> None:
+        self._client.delete(_failure_key(review_key))
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        line = text.strip()
+        if not line:
+            return
+        key = _journal_key(review_key)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, line[-4000:])
+        pipe.ltrim(key, -_JOURNAL_KEEP, -1)
+        pipe.expire(key, _JOURNAL_TTL_S)
+        pipe.execute()
+
+    def journal(self, review_key: str) -> list[str]:
+        raw = self._client.lrange(_journal_key(review_key), 0, -1)
+        return [text for item in raw if (text := _as_text(item).strip())]
 
     def dead_letters(self) -> list[dict[str, object]]:
         import json
@@ -338,6 +427,29 @@ class RedisReviewQueue:
         _check_park_reason(kind)
         self._client.delete(_notice_key(kind))
 
+    def generation(self, review_key: str) -> int:
+        raw = self._client.get(_generation_key(review_key))
+        return _generation_value(raw)
+
+    def bump_generation(self, review_key: str) -> int:
+        bumped = self._client.incr(_generation_key(review_key))
+        return bumped if isinstance(bumped, int) else int(str(bumped))
+
+    def withdraw(self, review_key: str) -> int:
+        removed = _drop_matching(self._client, self._key, review_key)
+        removed += _drop_matching(self._client, self._parked_key, review_key)
+        removed += _drop_matching(self._client, self._dead_key, review_key)
+        self._client.delete(
+            _failure_key(review_key),
+            _journal_key(review_key),
+            f"reviews:reasoning:{review_key}",
+            f"reviews:active:{review_key}",
+            f"reviews:teams:card:{review_key}",
+        )
+        for extra in self._client.scan_iter(match=f"reviews:teams:card:{review_key}:final*"):
+            self._client.delete(extra)
+        return removed
+
 
 class InMemoryReviewQueue:
     """Cola compartible en tests y fallback sin Redis."""
@@ -347,6 +459,9 @@ class InMemoryReviewQueue:
         self._dead: list[str] = []
         self._parked: deque[str] = deque()
         self._notices: dict[str, float | None] = {}
+        self._failures: dict[str, list[str]] = {}
+        self._journal: dict[str, list[str]] = {}
+        self._generation: dict[str, int] = {}
 
     def enqueue(self, request: ReviewRequest) -> None:
         self._items.append(request.model_dump_json())
@@ -368,8 +483,33 @@ class InMemoryReviewQueue:
     def reclaim_inflight(self) -> int:
         return 0
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        self._dead.append(_dead_letter_payload(request, reason=reason))
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        self._dead.append(_dead_letter_payload(request, reason=reason, error=error))
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        note = text.strip()
+        if not note:
+            return
+        notes = self._failures.setdefault(review_key, [])
+        notes.append(note[-4000:])
+        del notes[:-_FAILURE_LOG_KEEP]
+
+    def failure_log(self, review_key: str) -> str:
+        return _clip_log("\n\n".join(self._failures.get(review_key, [])))
+
+    def clear_failure(self, review_key: str) -> None:
+        self._failures.pop(review_key, None)
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        line = text.strip()
+        if not line:
+            return
+        lines = self._journal.setdefault(review_key, [])
+        lines.append(line[-4000:])
+        del lines[:-_JOURNAL_KEEP]
+
+    def journal(self, review_key: str) -> list[str]:
+        return list(self._journal.get(review_key, []))
 
     def dead_letters(self) -> list[dict[str, object]]:
         import json
@@ -427,6 +567,22 @@ class InMemoryReviewQueue:
     def clear_notice(self, kind: str) -> None:
         _check_park_reason(kind)
         self._notices.pop(kind, None)
+
+    def generation(self, review_key: str) -> int:
+        return self._generation.get(review_key, 0)
+
+    def bump_generation(self, review_key: str) -> int:
+        value = self._generation.get(review_key, 0) + 1
+        self._generation[review_key] = value
+        return value
+
+    def withdraw(self, review_key: str) -> int:
+        removed = _drop_memory(self._items, review_key)
+        removed += _drop_memory(self._parked, review_key)
+        removed += _drop_memory_list(self._dead, review_key)
+        self._failures.pop(review_key, None)
+        self._journal.pop(review_key, None)
+        return removed
 
     def __len__(self) -> int:
         return len(self._items)
@@ -529,20 +685,111 @@ def _raw_dead_letter_payload(payload: str, *, reason: str) -> str:
     return json.dumps({"reason": reason, "discarded_at": time.time(), "raw": payload})
 
 
-def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:
+def _failure_key(review_key: str) -> str:
+    return f"{FAILURE_LOG_PREFIX}{review_key}"
+
+
+def _journal_key(review_key: str) -> str:
+    return f"{JOURNAL_PREFIX}{review_key}"
+
+
+def _generation_key(review_key: str) -> str:
+    return f"{GENERATION_PREFIX}{review_key}"
+
+
+def _generation_value(raw: object) -> int:
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if not isinstance(raw, str):
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _review_key_of(raw: str | bytes) -> str | None:
     import json
 
-    return json.dumps(
-        {
-            "review_key": request.review_key,
-            "attempts": request.attempts,
-            "reason": reason,
-            "discarded_at": time.time(),
-            # `mode="json"`: una reanudacion lleva `HitlDecision.decided_at`
-            # (`datetime`), que `json.dumps` no serializa.
-            "request": request.model_dump(mode="json"),
-        }
-    )
+    text = raw.decode() if isinstance(raw, bytes) else raw
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    key = data.get("review_key")
+    if isinstance(key, str) and key:
+        return key
+    payload = data.get("request", data)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ReviewRequest.model_validate(payload).review_key
+    except ValueError:
+        return None
+
+
+def _drop_matching(client: redis.Redis, key: str, review_key: str) -> int:
+    removed = 0
+    for raw in client.lrange(key, 0, -1):
+        text = raw.decode() if isinstance(raw, bytes) else str(raw)
+        if _review_key_of(text) != review_key:
+            continue
+        removed += int(client.lrem(key, 1, text))
+    return removed
+
+
+def _drop_memory(items: deque[str], review_key: str) -> int:
+    kept: deque[str] = deque()
+    removed = 0
+    while items:
+        raw = items.popleft()
+        if _review_key_of(raw) == review_key:
+            removed += 1
+        else:
+            kept.append(raw)
+    items.extend(kept)
+    return removed
+
+
+def _drop_memory_list(items: list[str], review_key: str) -> int:
+    kept = [raw for raw in items if _review_key_of(raw) != review_key]
+    removed = len(items) - len(kept)
+    items[:] = kept
+    return removed
+
+
+def _as_text(item: object) -> str:
+    if isinstance(item, bytes):
+        return item.decode(errors="replace")
+    return str(item)
+
+
+def _clip_log(text: str) -> str:
+    if len(text) <= _FAILURE_LOG_LIMIT:
+        return text
+    return "…\n" + text[-_FAILURE_LOG_LIMIT:]
+
+
+def _dead_letter_payload(request: ReviewRequest, *, reason: str, error: str = "") -> str:
+    import json
+
+    payload: dict[str, object] = {
+        "review_key": request.review_key,
+        "attempts": request.attempts,
+        "reason": reason,
+        "discarded_at": time.time(),
+        # `mode="json"`: una reanudacion lleva `HitlDecision.decided_at`
+        # (`datetime`), que `json.dumps` no serializa.
+        "request": request.model_dump(mode="json"),
+    }
+    clipped = _clip_log(error.strip())
+    if clipped:
+        payload["error"] = clipped
+    return json.dumps(payload)
 
 
 @runtime_checkable

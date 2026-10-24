@@ -10,3 +10,7 @@ __pycache__
 *.egg-info
 .env
 docs
+# Frontend del panel (029): el build se hace en su propia etapa con el codigo
+# fuente. Copiar `node_modules` o `dist` del host solo hace la imagen impredecible.
+frontend/node_modules
+frontend/dist

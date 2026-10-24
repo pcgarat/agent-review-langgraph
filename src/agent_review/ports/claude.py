@@ -14,7 +14,11 @@ from agent_review.errors import PermanentError, TransientError
 
 
 class ClaudeTimeout(TransientError):
-    """El CLI no terminó dentro del tiempo de pared."""
+    """El cliente HTTP no obtuvo respuesta. No es el techo del subproceso."""
+
+
+class ClaudeCeiling(PermanentError):
+    """Se agotaron los turnos o el tiempo de pared. No se reintenta."""
 
 
 class ClaudeProcessCrashed(TransientError):
@@ -37,4 +41,13 @@ class ClaudeRunner(Protocol):
     guardó un artefacto válido para esa clave.
     """
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str: ...
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str: ...

@@ -37,6 +37,84 @@ _INTERRUPT_CHANNEL = "__interrupt__"
 _ERROR_CHANNEL = "__error__"
 
 
+def read_review_notes(saver: BaseCheckpointSaver[Any] | None, thread_id: str) -> list[str]:
+    """Hechos del estado final que el recorrido de nodos no cuenta.
+
+    Una review incompleta deja el motivo en `source_status`, no en el nombre del
+    nodo. Sin esto la ficha dice «incompleta» y no dice por qué.
+    """
+    if saver is None or not thread_id:
+        return []
+    try:
+        tup = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    except Exception:  # pragma: no cover - base caida
+        logger.exception("No se pudo leer el estado del hilo %s", thread_id)
+        return []
+    if tup is None:
+        return []
+    checkpoint = getattr(tup, "checkpoint", None)
+    values = checkpoint.get("channel_values") if isinstance(checkpoint, dict) else None
+    if not isinstance(values, dict):
+        return []
+    return notes_from_values(values)
+
+
+def notes_from_values(values: dict[str, Any]) -> list[str]:
+    """Líneas del log a partir de los canales del último checkpoint."""
+    lines: list[str] = []
+    sources = values.get("source_status") or {}
+    if isinstance(sources, dict):
+        for name, status in sorted(sources.items(), key=lambda item: str(item[0])):
+            label = _label(status)
+            if label == "present":
+                continue
+            note = _SOURCE_NOTES.get(label, "la salida no está disponible")
+            lines.append(f"Fuente estática {name}: {label}. {note}")
+    coverage = values.get("coverage")
+    skipped = getattr(coverage, "skipped", None)
+    if isinstance(coverage, dict):
+        skipped = coverage.get("skipped")
+    if isinstance(skipped, dict):
+        for path, reason in sorted(skipped.items(), key=lambda item: str(item[0])):
+            label = _label(reason)
+            if label == "ignored":
+                continue
+            lines.append(f"Sin revisar {path}: {label}.")
+    exhausted = values.get("budget_exhausted") or []
+    if exhausted:
+        names = ", ".join(sorted(str(item) for item in exhausted))
+        lines.append(f"Presupuesto agotado en: {names}.")
+    if values.get("published") and lines:
+        lines.append("Se escribió el aviso en el pull request.")
+    if values.get("silence_without_choice") and not values.get("published"):
+        merged = values.get("merged")
+        if not isinstance(merged, list):
+            merged = values.get("findings") if isinstance(values.get("findings"), list) else []
+        if not merged:
+            lines.append(
+                "Terminó sin hallazgos. El motor claude no escribe un comentario vacío "
+                "en el pull request."
+            )
+    return lines
+
+
+def _label(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+_SOURCE_NOTES = {
+    "missing": (
+        "No se encontró la salida de la herramienta. "
+        "La review no cubre ese análisis y cero hallazgos no significa un PR limpio."
+    ),
+    "unreadable": (
+        "La salida de la herramienta no se pudo leer. "
+        "La review no cubre ese análisis y cero hallazgos no significa un PR limpio."
+    ),
+}
+
+
 def read_trace(saver: BaseCheckpointSaver[Any] | None, thread_id: str) -> ReviewTrace | None:
     """Recorrido del hilo `thread_id`, o `None` si no existe (OP1).
 

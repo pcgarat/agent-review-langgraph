@@ -26,7 +26,7 @@ from agent_review.domain.models import (
     HitlDecision,
     ReviewRequest,
 )
-from agent_review.ports.claude import ClaudeQuotaExceeded
+from agent_review.ports.claude import ClaudeCeiling, ClaudeProcessCrashed, ClaudeQuotaExceeded
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.web.main import ClaudeLogin, app
@@ -52,8 +52,17 @@ class _Runner:
         self.error = error
         self.calls: list[str] = []
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-        del repo, pr_id
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, base_sha, max_turns, timeout_s
         self.calls.append(head_sha)
         raise self.error
 
@@ -138,8 +147,17 @@ def test_con_sesion_se_suelta_solo_lo_parado_por_ella() -> None:
 
 
 def test_el_operador_guarda_sin_devolver_el_token(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # El `dist` no se versiona: el armazón de la SPA se inyecta para que la prueba
+    # no dependa de haber construido `frontend/` (029, R4).
+    from agent_review.web import spa
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>", encoding="utf-8")
+    monkeypatch.setattr(spa, "spa_directory", lambda: dist)
+
     queue = InMemoryReviewQueue()
     queue.park(_request("sesion"), reason="session")
     queue.park(_request("cupo"), reason="quota")
@@ -156,23 +174,24 @@ def test_el_operador_guarda_sin_devolver_el_token(
         )
         client.cookies.set("panel_session", "ana:operador")
         formulario = client.post("/api/claude/session", data={"token": _TOKEN})
+        # La pagina es de la SPA (029): el armazon se sirve a cualquier sesion y es
+        # el cliente quien no pinta el formulario al `lector`. Quien manda es la
+        # API, que sigue devolviendo `403` al POST.
         pagina = client.get("/claude", headers={"X-Panel-Session": "ana:lector"})
         operador = client.post(
             "/api/claude/session",
             headers={"X-Panel-Session": "ana:operador"},
             json={"token": _TOKEN},
         )
-        formulario_ok = client.get("/claude", headers={"X-Panel-Session": "ana:operador"})
 
     assert lector.status_code == 403
     assert formulario.status_code == 403
-    assert pagina.status_code == 403
+    assert pagina.status_code == 200
     assert operador.status_code == 200
     assert operador.json() == {"released": 1}
     assert _TOKEN not in operador.text
     assert _TOKEN not in caplog.text
-    assert _TOKEN not in formulario_ok.text
-    assert "https://claude.ai/settings/claude-code" in formulario_ok.text
+    assert _TOKEN not in pagina.text
     path = tmp_path / "session.json"
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600
@@ -265,6 +284,63 @@ def test_el_cupo_parkea_avisa_y_no_entra_al_grafo(tmp_path: Path) -> None:
     assert _LINK in avisos[0]
 
 
+def test_el_techo_parkea_una_vez_y_el_login_no_lo_suelta(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeCeiling("techo"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+    _consume(
+        queue,
+        graph,
+        _request("dos"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+
+    assert graph.calls == 0
+    assert queue.dequeue() is None
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+    assert len(_notices(outbox)) == 1
+    assert claude_session_ready(queue, lambda: True) is True
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+
+
+def test_una_caida_sigue_reintentandose(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("502"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    retried = queue.dequeue()
+    assert graph.calls == 0
+    assert retried is not None
+    assert retried.attempts == 1
+    assert queue.parked() == []
+
+
 def test_get_session_es_un_booleano(tmp_path: Path) -> None:
     path = tmp_path / "session.json"
     write_session(path, _TOKEN, ttl_s=3600)
@@ -339,8 +415,17 @@ def test_el_enfriamiento_no_cubre_un_artefacto_ya_valido(tmp_path: Path) -> None
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-            del repo, pr_id
+        def run(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            head_sha: str,
+            base_sha: str,
+            max_turns: int | None = None,
+            timeout_s: float | None = None,
+        ) -> str:
+            del repo, pr_id, base_sha, max_turns, timeout_s
             self.calls.append(head_sha)
             return "[]"
 
