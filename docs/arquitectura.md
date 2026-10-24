@@ -36,7 +36,7 @@ flowchart LR
     API --> VAR
     API --> REDIS
     HUMAN -->|"CLI agent_review / POST decision"| API
-    REDIS -->|BLPOP| WORKER
+    REDIS -->|BLMOVE| WORKER
     WORKER --> VAR
     WORKER --> CFG
     WORKER <-->|checkpoint| PG
@@ -305,10 +305,13 @@ repo y deja en `reviews:jobs` un `ReviewRequest` con `launch=True`,
 
 ```
 loop:
-  job = BLPOP reviews:jobs (5 s)
+  reclaim de reviews:jobs:processing:*  (un arranque distinto recupera lo suyo ya;
+                         otro host, solo si el latido supera 6 h)
+  job = BLMOVE reviews:jobs → reviews:jobs:processing:<host> (5 s)
   si hay job → _consume: si es un lanzamiento sin SHA, lee el commit en el VCS
                 (ADR-0029) y luego process_request (según el estado del hilo, ADR-0007)
                 fallo → reencolar con attempts+1, o DLQ al agotar
+                al terminar → LREM (ack). Sin ack, el reclaim devuelve el job
   si la cola está vacía:
     cada 30 s  → sweep_pending  (TTL de ingesta → pasada degradada :partial)
                  sweep_expired  (TTL de decisión → reanudación expired)
@@ -401,12 +404,14 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `<repo:pr:sha:tool>` / `<review_key>` | Claim de idempotencia | 7 días |
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
-| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
+| Redis | `reviews:jobs:processing:<host>` | Job en vuelo de ese worker, hasta el `ack`. Un proceso nuevo con el mismo host lo devuelve a `reviews:jobs`; otro host, si el latido (`…:hb`) supera 6 h | latido 6 h |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request. Un payload ilegible llega en crudo (`raw`) | — |
 | Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota` o `quota-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` no | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
 | Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |
-| Redis | `reviews:fixes:dead` | DLQ de fixes | — |
+| Redis | `reviews:fixes:processing:<host>` | Fix en vuelo, misma regla que `reviews:jobs:processing` | latido 6 h |
+| Redis | `reviews:fixes:dead` | DLQ de fixes. Un payload ilegible llega en crudo (`raw`) | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
 | Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí «qué corre ahora y desde cuándo» (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |

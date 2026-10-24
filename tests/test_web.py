@@ -265,12 +265,25 @@ def test_lector_no_ejecuta_comandos(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_operador_si_ejecuta_comandos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "token-opaco")
+    monkeypatch.setattr(get_settings(), "panel_session_user", "bob")
+    monkeypatch.setattr(get_settings(), "panel_session_role", "operador")
+    cmd = TestClient(_command_app())
+
+    response = cmd.post("/command", headers={"X-Panel-Session": "token-opaco"})
+    assert response.status_code == 200
+    assert response.json()["user"] == "bob"
+    guessed = cmd.post("/command", headers={"X-Panel-Session": "bob:operador"})
+    assert guessed.status_code == 401
+
+
+def test_el_usuario_publicado_no_sale_del_secreto(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "panel_session_secret", "bob:operador")
     cmd = TestClient(_command_app())
 
     response = cmd.post("/command", headers={"X-Panel-Session": "bob:operador"})
     assert response.status_code == 200
-    assert response.json()["user"] == "bob"
+    assert response.json()["user"] == "panel"
 
 
 # --- Contrato fail-closed del secreto (OP18) -------------------------------------

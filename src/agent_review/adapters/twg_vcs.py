@@ -4,7 +4,8 @@ import json
 import subprocess
 from collections.abc import Sequence
 
-from agent_review.errors import TransientError
+from agent_review.errors import PermanentError, TransientError
+from agent_review.ports.context import unsafe_repo_path
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 
@@ -130,6 +131,8 @@ class TwgVcsAdapter:
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
+        if unsafe_repo_path(path):
+            raise PermanentError(f"ruta no permitida: {path}")
         return self._run(["repo", "file", path, "--ref", ref], json_output=False)
 
     def file_url(self, repo: str, path: str, *, ref: str, line: int) -> str | None:

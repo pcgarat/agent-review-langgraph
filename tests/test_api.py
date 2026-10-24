@@ -16,7 +16,7 @@ from agent_review.domain.models import (
     ReviewRequest,
     Severity,
 )
-from agent_review.domain.pending import InMemoryPendingStore
+from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
 from agent_review.idempotency import InMemoryIdempotencyStore
 from agent_review.paused_store import InMemoryPausedStore
 from agent_review.queue import InMemoryReviewQueue
@@ -89,7 +89,8 @@ def test_tooling_idempotente_por_artefacto_y_por_review() -> None:
     assert len(main._fallback_queue) == 1
 
 
-def test_tooling_barrera_de_dos_espera_al_segundo() -> None:
+def test_tooling_barrera_de_dos_espera_al_segundo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main._settings(), "expected_tools", "phpstan,php-cs-fixer")
     _reset_fallbacks(expected_tools=["phpstan", "php-cs-fixer"])
     first = client.post("/webhook/tooling", json=_payload())
     assert first.status_code == 202
@@ -103,6 +104,83 @@ def test_tooling_barrera_de_dos_espera_al_segundo() -> None:
     assert second.status_code == 202
     assert second.json()["status"] == "aceptado"
     assert len(main._fallback_queue) == 1
+
+
+def test_tooling_rechaza_json_mal_formado_pr_id_y_tool_ajena() -> None:
+    _reset_fallbacks()
+    assert (
+        client.post(
+            "/webhook/tooling", content=b"no-json", headers={"content-type": "application/json"}
+        ).status_code
+        == 400
+    )
+    assert client.post("/webhook/tooling", json=_payload(pr_id="abc")).status_code == 400
+    assert client.post("/webhook/tooling", json=_payload(tool="phpstna")).status_code == 400
+    assert main._fallback_queue is not None and len(main._fallback_queue) == 0
+
+
+def test_get_pending_no_aplica_el_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    store = InMemoryPendingStore(expected_tools=["phpstan", "php-cs-fixer"])
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc", pipeline_id="7")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    store.observe(request, "phpstan", "{}", ttl_ready_s=60)
+    review = store.get(request.idempotency_key)
+    assert review is not None
+    review.created_at = start
+    monkeypatch.setattr(main, "build_pending", lambda _settings: store)
+
+    response = client.get("/pending")
+    assert response.status_code == 200
+    assert response.json()["expired"] == [review.key]
+    assert response.json()["degraded"] == []
+    assert review.status is PendingStatus.PENDING
+    assert store.sweep(now=start + timedelta(seconds=61))
+    assert review.status is PendingStatus.DEGRADED
+
+
+def test_decision_sobre_pausa_de_fix_es_409() -> None:
+    from agent_review.domain.models import FixWaitRequest, VerifyJob
+    from agent_review.domain.paused import PauseKind
+
+    _reset_fallbacks()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc123", pipeline_id="7")
+    wave = FixWaitRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        jobs=[
+            VerifyJob(
+                run_key=f"{request.review_key}:f1:1",
+                finding_id="f1",
+                attempt=1,
+                repo=request.repo,
+                head_sha=request.head_sha,
+                patch="diff",
+            )
+        ],
+    )
+    assert main._fallback_paused is not None
+    main._fallback_paused.pause(request, wave, kind=PauseKind.FIX)
+    response = client.post(
+        f"/reviews/{request.review_key}/decision",
+        json={"actor": "alice", "items": [{"finding_id": "f1", "outcome": "approved"}]},
+    )
+    assert response.status_code == 409
+    assert "fix" in response.json()["detail"]
+
+
+def test_decision_con_json_mal_formado_es_400() -> None:
+    _reset_fallbacks()
+    _pause()
+    response = client.post(
+        "/reviews/cqm/emotivoo-v2:42:abc123:7/decision",
+        content=b"no-json",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 400
 
 
 def test_tooling_rechaza_payload_sin_campos() -> None:

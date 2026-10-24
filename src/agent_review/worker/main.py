@@ -2098,48 +2098,52 @@ def run_forever(
     last_prune = time.monotonic()
     start_heartbeat()
     while True:
+        queue.reclaim_inflight()
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
-            active = graph
-            dial_snapshot: Mapping[str, object] | None = None
-            if owns_runtime:
-                mounted = _mount_or_requeue(
-                    settings,
-                    config_store,
-                    saver,
+            try:
+                active = graph
+                dial_snapshot: Mapping[str, object] | None = None
+                if owns_runtime:
+                    mounted = _mount_or_requeue(
+                        settings,
+                        config_store,
+                        saver,
+                        queue,
+                        request,
+                        vcs=vcs,
+                        chat=chat,
+                        progress=progress,
+                        registry=registry,
+                        cancellation=cancellation,
+                        budget_client=budget_client,
+                    )
+                    if mounted is None:
+                        continue
+                    active, dial_snapshot = mounted
+                dispatch_job(
                     queue,
+                    active,
                     request,
-                    vcs=vcs,
+                    max_attempts=settings.max_review_attempts,
+                    paused=paused_store,
                     chat=chat,
+                    vcs=vcs,
+                    fix_queue=fix_queue,
+                    fix_ttl_s=settings.fix_verify_ttl_s,
                     progress=progress,
-                    registry=registry,
-                    cancellation=cancellation,
-                    budget_client=budget_client,
+                    cancel=cancellation,
+                    history=history,
+                    reasoning=settings.reasoning_stream_enabled,
+                    claude_runner=claude_runner,
+                    claude_store=claude_store,
+                    claude_session=claude_session,
+                    park_link=park_link,
+                    expected_repo=settings.configured_repo(),
+                    dial_snapshot=dial_snapshot,
                 )
-                if mounted is None:
-                    continue
-                active, dial_snapshot = mounted
-            dispatch_job(
-                queue,
-                active,
-                request,
-                max_attempts=settings.max_review_attempts,
-                paused=paused_store,
-                chat=chat,
-                vcs=vcs,
-                fix_queue=fix_queue,
-                fix_ttl_s=settings.fix_verify_ttl_s,
-                progress=progress,
-                cancel=cancellation,
-                history=history,
-                reasoning=settings.reasoning_stream_enabled,
-                claude_runner=claude_runner,
-                claude_store=claude_store,
-                claude_session=claude_session,
-                park_link=park_link,
-                expected_repo=settings.configured_repo(),
-                dial_snapshot=dial_snapshot,
-            )
+            finally:
+                queue.ack()
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).
         now = time.monotonic()

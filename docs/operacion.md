@@ -146,7 +146,7 @@ ficheros versionados:
 | Handoff E7 | `FIX_VERIFY_TTL_S` (7200: una wave sin resolver vence → `NOT_VERIFIABLE`), `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30), `FIX_WAIT_MAX_AGE_S` (259200: poda de hilos `fix_wait` vencidos, nunca `human`) |
 | Reintentos | `MAX_REVIEW_ATTEMPTS` (3), `NODE_RETRY_MAX_ATTEMPTS` (3; `1` lo desactiva), `NODE_RETRY_INITIAL_INTERVAL_S` (0.5), `NODE_RETRY_BACKOFF_FACTOR` (2.0), `NODE_RETRY_MAX_INTERVAL_S` (8.0) |
 | Progreso y panel (019) | `PROGRESS_ENABLED` (`false`: activa el progreso del worker en Redis, cierra D16), `PROGRESS_TTL_S` (3600), `PROGRESS_KEY` (`reviews:active`; el panel de operación lee de aquí el nodo en curso), `CANCEL_TTL_S` (604800: vida de la marca de cancelación, que queda como *tombstone* tras abortar; debe superar `DECISION_TTL_S`) |
-| Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (sesión `<usuario>:<lector\|operador>`; **no** es `REVIEWS_DECISION_TOKEN`; fail-closed en producción), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4), `SANDBOX_RUNNER_URL` y `SANDBOX_CONSOLE_TOKEN` (proxy de la consola en vivo; sin ellos la consola da `404`) |
+| Panel (019) | `PANEL_ENABLED` (`false`: declara el panel y exige su sesión en producción), `PANEL_PORT` (8090), `PANEL_SESSION_SECRET` (token opaco de `X-Panel-Session`; **no** es `REVIEWS_DECISION_TOKEN` ni el nombre publicado; fail-closed en producción), `PANEL_SESSION_USER` (actor que se publica; vacío = `panel`), `PANEL_SESSION_ROLE` (`lector` \| `operador`; vacío y secreto legado `<usuario>:<rol>` = ese rol, sin publicar el usuario), `SANDBOX_CONSOLE_BUFFER_LINES` (2000: líneas del buffer de la consola del sandbox, bloque 4), `SANDBOX_RUNNER_URL` y `SANDBOX_CONSOLE_TOKEN` (proxy de la consola en vivo; sin ellos la consola da `404`) |
 | Razonamiento (021) | `REASONING_STREAM_ENABLED` (`false`: el worker escribe en Redis lo que razonan los revisores en cada lote y el panel lo muestra en vivo en el detalle de la review), `REASONING_TTL_S` (864000: 10 días), `REASONING_MAX_BYTES` (10485760: tope aproximado por review) |
 | LLM | `LLM_REVIEWER_ENABLED` (`false`; sin él no se construye ninguna persona LLM ni el fixer), `MODELS_CONFIG` (vacío = vía `LLM_*`; `config/models.yaml` en `.env.example`: registro de modelos por rol), `LLM_MODEL` (vía de compatibilidad sin registro), `LLM_BASE_URL` (vacío = OpenAI), `LLM_API_KEY` (la referencia del YAML y la credencial de la vía implícita), `LLM_MAX_FINDINGS` (10), `LLM_BUDGET_TOKENS_PER_PR` (2000000: tope de tokens **por review**, compartido por todas las personas, el fixer y el verificador L2; al agotarse, lo que falte se registra como `budget_exhausted` en vez de gastar de más, §2), `LLM_BATCH_MAX_CHARS` (20000: tamaño de un lote de la persona LLM en caracteres de diff; un fichero que no cabe se trocea por hunks y solo un hunk que no cabe sale `too_large`), `LLM_BATCH_RETRIES` (2: reintentos de un lote ante un corte del proveedor, un cierre **sin contenido** —un razonador que devuelve solo espacios— o un cierre **sin JSON** de hallazgos; cada reintento repite el lote con un aviso añadido al final del *prompt*, porque con razonamiento una repetición idéntica puede devolver el mismo vacío; agotados, el lote sale `failed` y la review sigue), `LLM_CONTEXT_MAX_CHARS` (40000: tope del bloque L1 —fichero completo + `context_docs` del perfil— por lote; el diff no se recorta; lo que no cabe se omite) |
 | Verificador L2 (009) | `VERIFIER_MAX_FINDINGS` (5: tope de hallazgos por review, los más graves primero; el resto queda `unverified` sin llamada), `VERIFIER_MAX_TOOL_CALLS` (8) y `VERIFIER_MAX_CONTEXT_BYTES` (60000: topes del bucle *ReAct* por hallazgo), `VERIFIER_REQUIRE_VERIFIED_FOR` (`P0,P1`: respaldo si `autonomy.yaml` no declara `severity_gate.require_verified_for`; hoy el umbral vive en `severity_gate` —011/VF15— y L2 lo lee de ahí) |
@@ -375,10 +375,10 @@ curl -sS -X POST "$REVIEWS_URL/webhook/tooling" \
 |---|---|---|---|
 | `GET` | `/healthz` | — | `200` |
 | `POST` | `/webhook/tooling` | HMAC | `202 aceptado` (encolada), `202 pendiente` (faltan artefactos), `200 duplicado`, `400`, `401`, `413` |
-| `GET` | `/pending` | — | Aplica los TTL de ingesta y devuelve las reviews degradadas |
-| `GET` | `/reviews/paused` | — | Inbox: pendientes y orden para decidir |
-| `GET` | `/reviews/{review_key}` | — | `PAUSED` o `404` (la API no consulta el checkpointer) |
-| `POST` | `/reviews/{review_key}/decision` | Bearer | `202`; `409` si no está pausada o si la decisión no cubre exactamente los pendientes |
+| `GET` | `/pending` | — | Lista la ingesta vencida (`expired`) o ya degradada (`degraded`), sin aplicar el TTL. Quien degrada y encola es el barrido del worker |
+| `GET` | `/reviews/paused` | — | Inbox. Cada entrada trae `kind`: `human` (`state=PAUSED`, `pending`, `command_hint`) o `fix` (`state=VERIFYING`, `jobs`) |
+| `GET` | `/reviews/{review_key}` | — | La misma forma que una entrada del inbox, o `404` si no consta pausada (la API no consulta el checkpointer) |
+| `POST` | `/reviews/{review_key}/decision` | Bearer | `202`; `400` si el JSON o un item no es válido; `409` si no está pausada, si la pausa es de fix o si la decisión no cubre exactamente los pendientes |
 | `GET` | `/profile/{repo}` | — | Ruta del perfil cargado (ignora `{repo}`) |
 
 Cuerpo de una decisión:
@@ -460,10 +460,12 @@ formulario que dispare otra web. Con la cabecera `X-Panel-Session` no se exige.
 El **actor** auditado de un comando (logs y `HitlDecision.actor` de una reanudación)
 es siempre el usuario de la sesión; el cuerpo de la petición no puede cambiarlo.
 
-Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja; con uno real,
-la cabecera es obligatoria (`401` sin ella) y un rol `lector` recibe `403` en
-cualquier comando (bloque 5). La `review_key` lleva `/`: el endpoint de recorrido la
-acepta entera.
+Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja y, si llega
+cabecera, se lee como `<usuario>:<rol>`. Con un secreto real la cabecera es el token
+opaco (`401` si no coincide). El actor de un comando es `PANEL_SESSION_USER` (o
+`panel`) y el rol es `PANEL_SESSION_ROLE`; un `lector` recibe `403` en cualquier
+comando (bloque 5). La `review_key` lleva `/`: el endpoint de recorrido la acepta
+entera.
 
 ### Messaging endpoint del bot (`teams-bot`)
 
@@ -566,7 +568,7 @@ firma inválida o ausente da `401`.
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| El POST del CI devuelve `202 pendiente` y no pasa nada más | Faltan herramientas esperadas | `GET /pending` tras el TTL; revisar `expected_tools` del perfil |
+| El POST del CI devuelve `202 pendiente` y no pasa nada más | Faltan herramientas esperadas | Tras el TTL, `GET /pending` lista la clave en `expired`; el worker la degrada y la encola. Revisar `expected_tools` del perfil |
 | La review se publica como «incompleta» | El artefacto no llegó a tiempo o no se pudo leer | Revisar el `POST` del CI y la plantilla `TOOLING_OUTPUT_TEMPLATE` |
 | «0 hallazgos» sospechoso | La review está incompleta o es parcial (código o configuración sin leer por presupuesto, tamaño o fallo del modelo) | El resumen lleva la cabecera «Review parcial» con cada fichero y su motivo; en los logs, `Review INCOMPLETA` o `review parcial`. Si el motivo es `too_large`, subir `LLM_BATCH_MAX_CHARS`; si es `budget`, `LLM_BUDGET_TOKENS_PER_PR` |
 | `200 duplicado` en un reintento legítimo | La clave se reclamó en un intento anterior que terminó bien | Usar un `pipeline_id` nuevo; las claves caducan a los 7 días |
@@ -579,7 +581,7 @@ firma inválida o ausente da `401`.
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
 | «¿En qué nodo está ahora?» | El progreso del worker (019) | Con `PROGRESS_ENABLED=true`: `redis-cli HGETALL reviews:active:<review_key>` da el nodo en curso, su `started_at` y cuántas ramas del fan-out siguen. Sin marca y con el latido fresco, el worker vive pero no está ejecutando ningún nodo (entre reviews). Un `started_at` muy antiguo con la marca viva delata un nodo colgado, no un worker muerto |
 | «¿Qué está pensando el revisor?» | El razonamiento de los revisores (021) | Con `REASONING_STREAM_ENABLED=true`: pestaña «Razonamiento» del detalle en el panel, o `redis-cli XRANGE reviews:reasoning:<review_key> - +`. Un lote con `fallo` lleva el motivo (sin presupuesto, error del modelo) |
-| El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es obligatoria (`X-Panel-Session: <usuario>:<rol>` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
+| El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es el token (`X-Panel-Session` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
 | El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
 | Cancelar no surte efecto | La marca no llegó, o la review no pasa por una frontera | `redis-cli EXISTS reviews:cancel:<review_key>`; si está, la review corre: la cancelación se aplica al empezar el **siguiente nodo** (un nodo entero de latencia). Si estaba pausada, el comando encola el `request` marcado y el worker lo aborta al desencolar |
 | Un reintento termina cancelado, o un job de la review se descarta solo | Queda la marca de cancelación (*tombstone*, `CANCEL_TTL_S`) | Es esperado: aborta los rezagados de una review cancelada. «Reintentar» desde el panel la retira; a mano, `redis-cli DEL reviews:cancel:<review_key>` |

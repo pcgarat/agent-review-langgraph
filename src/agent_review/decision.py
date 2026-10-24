@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from typing import Literal
 
 from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.paused import PausedReview, PauseKind
 
 
 def outcomes_for_pause(
@@ -19,6 +19,13 @@ def outcomes_for_pause(
     if pause_kind == "publication":
         return frozenset({DecisionOutcome.APPROVED, DecisionOutcome.DROPPED})
     return frozenset({DecisionOutcome.APPROVED, DecisionOutcome.REJECTED, DecisionOutcome.NOTED})
+
+
+def require_decision_item(item: object) -> FindingDecision:
+    """Un elemento de `items` que no es objeto no es una decision: es un 400."""
+    if not isinstance(item, dict):
+        raise ValueError("Item de decision invalido")
+    return FindingDecision.model_validate(item)
 
 
 class DecisionError(ValueError):
@@ -56,6 +63,8 @@ def build_decision(
 
     if paused.review_key != reviewed_key:
         raise DecisionError(f"La review pausada es {paused.review_key}, no {reviewed_key}")
+    if paused.kind is not PauseKind.HUMAN:
+        raise DecisionError("La review espera la verificacion de un fix, no una decision")
 
     pending_ids = {pending.finding_id for pending in paused.human_request.pending}
     unknown = [item.finding_id for item in collected if item.finding_id not in pending_ids]

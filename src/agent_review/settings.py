@@ -247,13 +247,17 @@ class Settings(BaseSettings):
     # Nombres de dial, separados por comas, que el panel muestra y no deja cambiar
     # (027 CFG3). Vacio: el operador puede publicar cualquiera del catalogo.
     panel_config_lock: str = ""
-    # Sesion del panel: NO es el bearer de decision. Identifica a la persona y su
-    # rol en la forma `<usuario>:<lector|operador>`; un `lector` puede mirar pero
-    # no ejecutar comandos. Un secreto real por despliegue. Lo exige el `web`
-    # siempre (`panel_always`) y el `api`/`worker` con el panel desplegado.
+    # Token opaco de la sesion del panel: NO es el bearer de decision ni el nombre
+    # de quien actua. La cabecera `X-Panel-Session` debe coincidir con el. Quien
+    # actua es `panel_session_user` y el rol, `panel_session_role` (si el rol esta
+    # vacio y el token legado tiene forma `<usuario>:<rol>`, se usa solo el rol).
+    # Un `lector` puede mirar pero no ejecutar comandos. Lo exige el `web` siempre
+    # (`panel_always`) y el `api`/`worker` con el panel desplegado.
     panel_session_secret: Annotated[
         str, Secret(required_in=frozenset({"api", "worker", "web"}), feature="panel")
     ] = ""
+    panel_session_user: str = ""
+    panel_session_role: str = ""
     # Tope de la consola en vivo por verificacion (lineas del buffer del runner).
     sandbox_console_buffer_lines: int = 2000
 

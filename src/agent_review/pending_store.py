@@ -24,6 +24,8 @@ class PendingStore(Protocol):
 
     def get(self, key: str) -> PendingReview | None: ...
 
+    def due(self, *, now: datetime | None = None) -> list[PendingReview]: ...
+
     def sweep(self, *, now: datetime | None = None) -> list[PendingReview]: ...
 
 
@@ -90,6 +92,24 @@ class RedisPendingStore:
         except ValueError:
             logger.error("Registro pending corrupto para %s", key)
             return None
+
+    def due(self, *, now: datetime | None = None) -> list[PendingReview]:
+        """Vencidas o ya degradadas. No escribe: quien degrada es el barrido del worker."""
+        if not self.available():
+            return self._fallback.due(now=now)
+        found: list[PendingReview] = []
+        for key in self._client.scan_iter(match=f"{self._key}:*"):
+            raw = self._client.get(key)
+            if raw is None:
+                continue
+            try:
+                review = PendingReview.model_validate_json(raw)
+            except ValueError:
+                logger.error("Registro pending corrupto al listar")
+                continue
+            if review.status is PendingStatus.DEGRADED or review.is_expired(now=now):
+                found.append(review)
+        return found
 
     def sweep(self, *, now: datetime | None = None) -> list[PendingReview]:
         if not self.available():

@@ -492,13 +492,24 @@ def _merge_findings(
         representative = max(group, key=lambda f: len(f.evidence))
         # 011 §5.3: el gate debe ver el veredicto mas fuerte del grupo.
         strongest = max(group, key=lambda f: _VERIFICATION_RANK[f.verification])
+        update: dict[str, Any] = {}
         if strongest.verification is not representative.verification:
-            update: dict[str, Any] = {
-                "verification": strongest.verification,
-                "verification_evidence": list(strongest.verification_evidence),
-            }
+            update["verification"] = strongest.verification
+            update["verification_evidence"] = list(strongest.verification_evidence)
             if strongest.failure_scenario:
                 update["failure_scenario"] = strongest.failure_scenario
+        # La copia con mas evidencia no puede tapar un tema protegido ni una
+        # severidad mas grave: la politica y el bloqueo del fix leen el merge.
+        severe = min(group, key=lambda f: _SEVERITY_ORDER[f.severity])
+        if severe.severity is not representative.severity:
+            update["severity"] = severe.severity
+        protected = next(
+            (member.protected_subject for member in group if member.protected_subject is not None),
+            None,
+        )
+        if protected is not None and protected is not representative.protected_subject:
+            update["protected_subject"] = protected
+        if update:
             representative = representative.model_copy(update=update)
         merged.append(representative)
         if any(source_of(member) in grounded_personas for member in group):

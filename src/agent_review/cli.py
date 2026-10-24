@@ -5,7 +5,7 @@ import sys
 
 from agent_review.decision import DecisionError, build_decision
 from agent_review.domain.models import DecisionOutcome, FindingDecision
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.paused_store import InMemoryPausedStore, RedisPausedStore
 from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings
@@ -31,10 +31,12 @@ def _fmt_created(paused: PausedReview) -> str:
 
 def _cmd_list(settings: Settings) -> int:
     paused = build_paused(settings).all()
-    if not paused:
+    humans = [review for review in paused if review.kind is PauseKind.HUMAN]
+    fixes = [review for review in paused if review.kind is not PauseKind.HUMAN]
+    if not humans and not fixes:
         print("No hay reviews pausadas.")
         return 0
-    for review in sorted(paused, key=lambda r: r.created_at):
+    for review in sorted(humans, key=lambda r: r.created_at):
         print(f"{review.review_key}  (pausada {_fmt_created(review)})")
         for pending in review.human_request.pending:
             print(
@@ -42,6 +44,8 @@ def _cmd_list(settings: Settings) -> int:
                 f"{pending.proposed_action.value}: {pending.title} ({pending.file}:{pending.line})"
             )
         print(f"  decide: {review.human_request.command_hint}")
+    for review in sorted(fixes, key=lambda r: r.created_at):
+        print(f"{review.review_key}  (verificacion de fix, {_fmt_created(review)})")
     return 0
 
 

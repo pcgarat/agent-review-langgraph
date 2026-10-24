@@ -269,6 +269,18 @@ def test_responder_cuando_otro_ya_gano_es_409(client: TestClient) -> None:
     assert "Ana" in response.json()["detail"]
 
 
+def test_un_item_que_no_es_objeto_es_400(client: TestClient) -> None:
+    world = _World()
+    with client as http:
+        web_main.app.state.bandeja = world.bandeja
+        response = http.post(
+            f"/api/bandeja/{world.key}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": ["x"]},
+        )
+    assert response.status_code == 400
+
+
 def test_un_cuerpo_sin_items_ni_lote_es_400(client: TestClient) -> None:
     world = _World()
     with client as http:

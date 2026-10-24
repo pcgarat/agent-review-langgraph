@@ -210,7 +210,7 @@ lee, en la práctica `docker compose up -d`.
 | Revisores de modelo y arreglos propuestos | `LLM_REVIEWER_ENABLED=true`, `LLM_API_KEY` y un binding en [`config/models.yaml`](config/models.yaml). Reinicia el worker. |
 | Que una persona decida antes de publicar o de arreglar | Sube `max_autonomy` en [`config/autonomy.yaml`](config/autonomy.yaml) al menos a `fix_with_approval` y reinicia el worker. La decisión entra por Teams, `agent_review decide` o `POST /reviews/{review_key}/decision`. |
 | Avisos y tarjeta en Teams | `TEAMS_ENABLED=true` y la identidad del bot (`TEAMS_BOT_ID`, `TEAMS_BOT_TENANT_ID`, `TEAMS_BOT_TOKEN`). El alta en el tenant sigue pendiente. |
-| Ver la cola y decidir desde el navegador | `make panel` y abre `http://localhost:8090`. Con `PANEL_SESSION_SECRET=change-me` la sesión no se exige; en producción sí, con la forma `<usuario>:<lector\|operador>`. |
+| Ver la cola y decidir desde el navegador | `make panel` y abre `http://localhost:8090`. Con `PANEL_SESSION_SECRET=change-me` la sesión no se exige; en producción el secreto es un token opaco y el actor es `PANEL_SESSION_USER`. |
 | Verificar un arreglo en el sandbox | Las cinco condiciones de [`docs/operacion.md`](docs/operacion.md) §2 («Para activar la Fase 3»). Si falta una, el arreglo queda `not_verifiable` y se publica igual. |
 
 ---

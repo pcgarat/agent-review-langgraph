@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import socket
 import time
 from collections import deque
 from typing import Protocol, runtime_checkable
+from uuid import uuid4
 
 import redis
 
@@ -34,6 +36,11 @@ FIX_DONE_KEY = "reviews:fixes:done"
 # TTL del set de resueltas: debe superar con holgura la ventana en que se puede
 # reentregar un job (una caida y su recuperacion), sin ser eterno.
 DEFAULT_FIX_DONE_TTL_S = 24 * 3600
+# Un job en la lista de procesamiento vuelve a la cola si su dueno no lo confirma
+# en esta ventana. Cubre el worker que murio en otra maquina; el reinicio del
+# mismo proceso lo reclama al momento porque el identificador de arranque no
+# coincide. Seis horas superan una review larga sin reentregar una que sigue viva.
+JOB_VISIBILITY_S = 6 * 3600
 
 
 @runtime_checkable
@@ -42,6 +49,14 @@ class ReviewQueue(Protocol):
 
     def dequeue(self, *, timeout_s: float = 5.0) -> ReviewRequest | None:
         """Saca el siguiente trabajo o None si no hay nada en el timeout."""
+        ...
+
+    def ack(self) -> None:
+        """Confirma el job que `dequeue` dejo en la lista de procesamiento."""
+        ...
+
+    def reclaim_inflight(self) -> int:
+        """Devuelve a la cola los jobs cuyo dueno ya no vive. `0` si no hay."""
         ...
 
     def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
@@ -92,6 +107,114 @@ class ReviewQueue(Protocol):
         ...
 
 
+class _Inflight:
+    """Saca un job a una lista propia y lo devuelve a la cola si nadie lo confirma.
+
+    `BLMOVE` (equivalente fiable de `BLPOP` + `RPUSH`) deja el payload en
+    `{cola}:processing:{worker}` hasta `ack`. El latido guarda el arranque de
+    este proceso: un reinicio, con otro arranque, reclama su lista al momento.
+    Otra maquina solo reclama un latido mas viejo que `JOB_VISIBILITY_S`.
+    """
+
+    def __init__(
+        self,
+        owner: RedisReviewQueue | RedisFixQueue,
+        *,
+        source: str,
+        dead_key: str,
+        worker_id: str | None,
+    ) -> None:
+        self._owner = owner
+        self._source = source
+        self._dead = dead_key
+        self._worker_id = worker_id or socket.gethostname()
+        self._boot = uuid4().hex
+        self._processing = f"{source}:processing:{self._worker_id}"
+        self._hb = f"{self._processing}:hb"
+        self._inflight: str | None = None
+
+    def pop(self, timeout_s: float) -> str | None:
+        client = self._owner._client
+        try:
+            client.set(self._hb, f"{self._boot}:{time.time()}", ex=JOB_VISIBILITY_S)
+            item = client.blmove(
+                self._source,
+                self._processing,
+                max(1, int(timeout_s)),
+                "LEFT",
+                "RIGHT",
+            )
+        except Exception as exc:  # noqa: BLE001 - el poll no debe tumbar el worker
+            if not is_transient_redis_error(exc):
+                raise
+            logger.warning("Cola no disponible al leer; se reintenta en el proximo poll: %s", exc)
+            return None
+        if item is None:
+            self._clear_hb_if_idle()
+            return None
+        self._inflight = item if isinstance(item, str) else item.decode()
+        return self._inflight
+
+    def ack(self) -> None:
+        if self._inflight is None:
+            return
+        self._owner._client.lrem(self._processing, 1, self._inflight)
+        self._inflight = None
+        self._clear_hb_if_idle()
+
+    def discard(self, payload: str, *, reason: str) -> None:
+        self._owner._client.rpush(self._dead, _raw_dead_letter_payload(payload, reason=reason))
+        if self._inflight == payload:
+            self.ack()
+            return
+        self._owner._client.lrem(self._processing, 1, payload)
+
+    def reclaim(self) -> int:
+        client = self._owner._client
+        moved = 0
+        prefix = f"{self._source}:processing:"
+        keys = [self._processing]
+        for key in client.scan_iter(match=f"{prefix}*"):
+            if key == self._processing or str(key).endswith(":hb"):
+                continue
+            keys.append(str(key))
+        for key in keys:
+            if self._should_reclaim(key, own=key == self._processing):
+                moved += self._move_back(key)
+        return moved
+
+    def _should_reclaim(self, key: str, *, own: bool) -> bool:
+        client = self._owner._client
+        if not client.llen(key):
+            return False
+        hb = client.get(f"{key}:hb")
+        if not hb:
+            return True
+        boot, _, ts = str(hb).partition(":")
+        if own:
+            return boot != self._boot
+        try:
+            return time.time() - float(ts) >= JOB_VISIBILITY_S
+        except ValueError:
+            return True
+
+    def _move_back(self, key: str) -> int:
+        client = self._owner._client
+        moved = 0
+        while True:
+            item = client.lmove(key, self._source, "LEFT", "RIGHT")
+            if item is None:
+                break
+            moved += 1
+        client.delete(f"{key}:hb")
+        return moved
+
+    def _clear_hb_if_idle(self) -> None:
+        client = self._owner._client
+        if not client.llen(self._processing):
+            client.delete(self._hb)
+
+
 class RedisReviewQueue:
     def __init__(
         self,
@@ -100,12 +223,14 @@ class RedisReviewQueue:
         key: str = QUEUE_KEY,
         dead_letter_key: str = DEAD_LETTER_KEY,
         parked_key: str = PARKED_KEY,
+        worker_id: str | None = None,
     ) -> None:
-        # `blocking=True`: `BLPOP` bloquea y no debe llevar deadline de socket.
+        # `blocking=True`: el pop bloquea y no debe llevar deadline de socket.
         self._client = build_redis_client(url, blocking=True)
         self._key = key
         self._dead_key = dead_letter_key
         self._parked_key = parked_key
+        self._flight = _Inflight(self, source=key, dead_key=dead_letter_key, worker_id=worker_id)
 
     def available(self) -> bool:
         try:
@@ -119,21 +244,26 @@ class RedisReviewQueue:
     def dequeue(self, *, timeout_s: float = 5.0) -> ReviewRequest | None:
         """Siguiente trabajo, o `None` en el timeout. No deja morir al worker.
 
-        La espera venida, un Redis que cae a mitad y un servidor que se reinicia
-        son rutinas de un consumidor de cola: se registran y se devuelve `None`
-        para reintentar en la siguiente vuelta, no se propaga una excepcion.
+        Mueve el job a la lista de procesamiento (`BLMOVE`) y solo lo quita
+        `ack`. Una caida del proceso lo deja ahi para que el arranque lo
+        devuelva a la cola. Un payload ilegible va a la DLQ en crudo: no tumba
+        el proceso ni se pierde.
         """
+        payload = self._flight.pop(timeout_s)
+        if payload is None:
+            return None
         try:
-            item = self._client.blpop(self._key, timeout=max(1, int(timeout_s)))
-        except Exception as exc:  # noqa: BLE001 - el poll no debe tumbar el worker
-            if not is_transient_redis_error(exc):
-                raise
-            logger.warning("Cola no disponible al leer; se reintenta en el proximo poll: %s", exc)
+            return ReviewRequest.model_validate_json(payload)
+        except ValueError:
+            logger.error("Job ilegible en %s; se manda a la DLQ", self._key)
+            self._flight.discard(payload, reason="Job ilegible")
             return None
-        if item is None:
-            return None
-        _, payload = item
-        return ReviewRequest.model_validate_json(payload)
+
+    def ack(self) -> None:
+        self._flight.ack()
+
+    def reclaim_inflight(self) -> int:
+        return self._flight.reclaim()
 
     def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
         self._client.rpush(self._dead_key, _dead_letter_payload(request, reason=reason))
@@ -225,7 +355,18 @@ class InMemoryReviewQueue:
         del timeout_s  # sin espera en memoria
         if not self._items:
             return None
-        return ReviewRequest.model_validate_json(self._items.popleft())
+        payload = self._items.popleft()
+        try:
+            return ReviewRequest.model_validate_json(payload)
+        except ValueError:
+            self._dead.append(_raw_dead_letter_payload(payload, reason="Job ilegible"))
+            return None
+
+    def ack(self) -> None:
+        return None
+
+    def reclaim_inflight(self) -> int:
+        return 0
 
     def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
         self._dead.append(_dead_letter_payload(request, reason=reason))
@@ -382,6 +523,12 @@ def _parked_request(item: str | bytes) -> ReviewRequest | None:
     return parsed[1]
 
 
+def _raw_dead_letter_payload(payload: str, *, reason: str) -> str:
+    import json
+
+    return json.dumps({"reason": reason, "discarded_at": time.time(), "raw": payload})
+
+
 def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:
     import json
 
@@ -412,6 +559,14 @@ class FixQueue(Protocol):
 
     def dequeue(self, *, timeout_s: float = 5.0) -> FixJob | None: ...
 
+    def ack(self) -> None:
+        """Confirma el job que `dequeue` dejo en la lista de procesamiento."""
+        ...
+
+    def reclaim_inflight(self) -> int:
+        """Devuelve a la cola los jobs cuyo dueno ya no vive. `0` si no hay."""
+        ...
+
     def dead_letter(self, job: FixJob, *, reason: str) -> None: ...
 
     def dead_letters(self) -> list[dict[str, object]]: ...
@@ -432,12 +587,14 @@ class RedisFixQueue:
         dead_letter_key: str = FIX_DEAD_LETTER_KEY,
         done_key: str = FIX_DONE_KEY,
         done_ttl_s: int = DEFAULT_FIX_DONE_TTL_S,
+        worker_id: str | None = None,
     ) -> None:
         self._client = build_redis_client(url, blocking=True)
         self._key = key
         self._dead_key = dead_letter_key
         self._done_key = done_key
         self._done_ttl_s = done_ttl_s
+        self._flight = _Inflight(self, source=key, dead_key=dead_letter_key, worker_id=worker_id)
 
     def available(self) -> bool:
         try:
@@ -449,17 +606,21 @@ class RedisFixQueue:
         self._client.rpush(self._key, job.model_dump_json())
 
     def dequeue(self, *, timeout_s: float = 5.0) -> FixJob | None:
+        payload = self._flight.pop(timeout_s)
+        if payload is None:
+            return None
         try:
-            item = self._client.blpop(self._key, timeout=max(1, int(timeout_s)))
-        except Exception as exc:  # noqa: BLE001 - el poll no debe tumbar al worker
-            if not is_transient_redis_error(exc):
-                raise
-            logger.warning("Cola de fixes no disponible al leer; se reintenta: %s", exc)
+            return FixJob.model_validate_json(payload)
+        except ValueError:
+            logger.error("Job de fix ilegible en %s; se manda a la DLQ", self._key)
+            self._flight.discard(payload, reason="Job de fix ilegible")
             return None
-        if item is None:
-            return None
-        _, payload = item
-        return FixJob.model_validate_json(payload)
+
+    def ack(self) -> None:
+        self._flight.ack()
+
+    def reclaim_inflight(self) -> int:
+        return self._flight.reclaim()
 
     def dead_letter(self, job: FixJob, *, reason: str) -> None:
         self._client.rpush(self._dead_key, _fix_dead_letter_payload(job, reason=reason))
@@ -501,7 +662,18 @@ class InMemoryFixQueue:
         del timeout_s  # sin espera en memoria
         if not self._items:
             return None
-        return FixJob.model_validate_json(self._items.popleft())
+        payload = self._items.popleft()
+        try:
+            return FixJob.model_validate_json(payload)
+        except ValueError:
+            self._dead.append(_raw_dead_letter_payload(payload, reason="Job de fix ilegible"))
+            return None
+
+    def ack(self) -> None:
+        return None
+
+    def reclaim_inflight(self) -> int:
+        return 0
 
     def dead_letter(self, job: FixJob, *, reason: str) -> None:
         self._dead.append(_fix_dead_letter_payload(job, reason=reason))

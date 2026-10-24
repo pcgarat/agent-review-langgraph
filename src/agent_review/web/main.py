@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from agent_review.claude_session import write_session
+from agent_review.decision import require_decision_item
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import FindingDecision
 from agent_review.history_store import ReviewHistory
@@ -352,10 +353,7 @@ async def _decision_items(request: Request) -> list[FindingDecision]:
     if not isinstance(body, dict) or not isinstance(body.get("items"), list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta `items`")
     try:
-        return [
-            FindingDecision.model_validate(item) if isinstance(item, dict) else item
-            for item in body["items"]
-        ]
+        return [require_decision_item(item) for item in body["items"]]
     except ValueError as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"Item de decision invalido: {exc}"

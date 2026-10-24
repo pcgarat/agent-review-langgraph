@@ -82,6 +82,22 @@ def test_store_en_memoria_degrada_por_ttl() -> None:
     assert [r.status for r in resolved] == [PendingStatus.DEGRADED]
 
 
+def test_due_lista_la_vencida_sin_degradarla() -> None:
+    store = InMemoryPendingStore(expected_tools=["phpstan", "otro"])
+    request = _request()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    store.observe(request, "phpstan", "{}", ttl_ready_s=60)
+    review = store.get(request.idempotency_key)
+    assert review is not None
+    review.created_at = start
+    later = start + timedelta(seconds=61)
+    assert [item.key for item in store.due(now=later)] == [review.key]
+    assert review.status is PendingStatus.PENDING
+    assert store.sweep(now=later)
+    assert review.status is PendingStatus.DEGRADED
+    assert [item.key for item in store.due(now=later)] == [review.key]
+
+
 def test_los_tools_esperados_son_por_review_no_globales() -> None:
     # Contrato de la barrera: el conjunto esperado lo declara el perfil del repo.
     review = PendingReview(request=_request(), expected_tools=["phpstan"])

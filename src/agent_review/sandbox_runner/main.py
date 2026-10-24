@@ -29,8 +29,12 @@ from agent_review.sandbox_runner.read_workspace import (
     ReadWorkspaceManager,
     ReadWorkspaceUnavailable,
 )
-from agent_review.sandbox_runner.runtime import ContainerError, DockerCliRuntime
-from agent_review.sandbox_runner.verifier import RunnerError, Verifier
+from agent_review.sandbox_runner.runtime import (
+    ContainerError,
+    ContainerUnavailable,
+    DockerCliRuntime,
+)
+from agent_review.sandbox_runner.verifier import RunnerBusy, RunnerError, Verifier
 from agent_review.sandbox_runner.workspace import GitWorkspace, WorkspaceError
 from agent_review.settings import Settings, get_settings, is_missing
 
@@ -94,6 +98,13 @@ def verify(
     _verify_token(settings, authorization)
     try:
         return build_verifier(settings).verify(request)
+    except RunnerBusy as exc:
+        # La reentrega de un `run_key` que aun corre no es un rechazo del parche.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+            headers={"Retry-After": "30"},
+        ) from exc
     except RunnerError as exc:
         # 4xx: la peticion no es atendible (perfil sin digest, targets invalidos,
         # recipe desconocida). El worker la marca `NOT_VERIFIABLE` con el detalle.
@@ -103,6 +114,12 @@ def verify(
         # runner sino de esta peticion concreta. `WorkspaceUnavailable` es
         # transitorio y no entra aqui (sube para que el worker reintente).
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ContainerUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+            headers={"Retry-After": "30"},
+        ) from exc
     except ContainerError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 

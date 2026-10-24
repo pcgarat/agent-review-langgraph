@@ -524,6 +524,18 @@ def test_decidir_con_un_cuerpo_sin_items_da_400(client: TestClient) -> None:
     assert response.status_code == 400
 
 
+def test_decidir_con_un_item_que_no_es_objeto_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": ["x"]},
+        )
+    assert response.status_code == 400
+
+
 def test_decidir_con_un_item_invalido_da_400(client: TestClient) -> None:
     service, _queue, _paused, _marker = _service()
     with client as c:
