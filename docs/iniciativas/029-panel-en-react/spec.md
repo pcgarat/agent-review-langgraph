@@ -25,10 +25,10 @@ login (la cookie `panel_session` se pega en la consola del navegador, como expli
 
 Se quiere:
 
-1. **Una aplicación React** con el sistema visual de
-   [`corona-react-free-admin-template`](https://github.com/BootstrapDash/corona-react-free-admin-template)
-   (tema oscuro, tipografía Rubik, tarjetas, iconos MDI), servida por el mismo
-   proceso `web`.
+1. **Una aplicación React** construida sobre
+   [`coreui-free-react-admin-template`](https://github.com/coreui/coreui-free-react-admin-template)
+   5.7 —Vite 8, React 19 y `sass` de dart—, recortada a lo que el panel usa, servida
+   por el mismo proceso `web`.
 2. **Login de verdad.** Una página que valida `PANEL_SESSION_SECRET` y deja una
    cookie `HttpOnly`. Quien no entra, no ve nada.
 3. **Un cuadro de mando** que responda «¿qué pasa ahora?» en la primera pantalla:
@@ -57,31 +57,52 @@ Se quiere:
   HTML y no están expuestas en JSON (§5.3).
 - **Realtime por WebSocket.** El flujo sigue siendo unidireccional y SSE ya
   resuelve consola, razonamiento y transcripción de Claude.
-- **Un sistema de diseño propio desde cero.** Se parte de la plantilla citada
-  (§5.1) y se recorta, no se reinventa.
-- **PWA, offline ni modo claro.** El panel es una herramienta de operación; el
-  tema oscuro es el único que se entrega.
+- **Un sistema de diseño propio desde cero.** Se parte de CoreUI (§3.1), se recorta
+  su demo y se ajusta el tema; no se reinventa.
+- **PWA, offline ni modo claro.** El panel es una herramienta de operación: se
+  sirve en tema oscuro y no se ofrece selector de tema.
 
 ## 3. Contexto y evidencia
 
-### 3.1 Por qué no se copia la plantilla tal cual
+### 3.1 Elección de la plantilla
 
-La plantilla es de 2019. Medido en este entorno (Node 22.23.3, npm 10.9.9):
+Se evaluaron dos plantillas y se midieron en este entorno (Node 22.23.3, npm 10.9.9),
+no de memoria:
 
-| Intento | Resultado |
+| | Corona 1.1.0 (2019) | CoreUI 5.7.0 |
+|---|---|---|
+| React | 16 | **19.3** |
+| Build | `react-scripts` 3 | **Vite 8** |
+| Sass | `node-sass` 4 (libsass, Python 2) | **`sass` 1.105 (dart-sass)** |
+| `npm install` | `ERESOLVE` (`react-dnd@9.5.1` contra `react-dnd-multi-backend@3.2.2`, que exige `< 9`) | **304 paquetes en 4 s, sin flags** |
+| `npm install --legacy-peer-deps` | `node-sass` → `node-gyp@3.8.0` invoca `python` con sintaxis de Python 2: `SyntaxError` | — |
+| `npm run build` | no se alcanza | **3,2 s, verde** |
+
+Corona no es instalable sin reparar su cadena de build: no es una plantilla, es un
+ejercicio de arqueología. **Se descarta**, y la medición queda aquí para que nadie
+lo reintente.
+
+CoreUI se adopta porque compila hoy, trae layout, sidebar colapsable, navbar y una
+página de login, y expone el tema oscuro como modo de primera clase
+(`useColorModes`). Su CSS completo ocupa 309 KB (41,8 KB gzip).
+
+### 3.2 Qué se recorta de CoreUI
+
+La plantilla es una demo de componentes; el panel usa una parte.
+
+| Pieza | Destino |
 |---|---|
-| `npm install` | `ERESOLVE`: `react-dnd@9.5.1` contra `react-dnd-multi-backend@3.2.2`, que exige `< 9` |
-| `npm install --legacy-peer-deps` | `node-sass@4.13.1` → `node-gyp@3.8.0` invoca `python` (aquí Python 3) con sintaxis de Python 2: `SyntaxError` al configurar libsass |
+| `DefaultLayout`, `AppSidebar`, `AppHeader`, `AppFooter`, `_nav` | Se conservan como armazón |
+| `views/authentication/login` | Se conserva como base del login (un solo campo: el token) |
+| `views/dashboard`, `widgets`, `charts`, `forms`, `components`, `icons`, `error-pages` y sus assets (808 KB) | Fuera: son demos. Se usan como referencia visual |
+| `@coreui/react-chartjs`, `chart.js`, `@coreui/chartjs` | Fuera: el panel no dibuja gráficos de líneas |
+| Redux (`store.js`) con `sidebarShow` | Se conserva: el sidebar lo necesita y ya está montado |
+| `HashRouter` | **Se sustituye por `BrowserRouter`**: las rutas publicadas son `/review/…` (§3.5) |
+| `base: './'` del `vite.config.mjs` | Se cambia a `/`: el panel no se sirve desde un subdirectorio |
+| JavaScript sin tipos | Se convierte a **TypeScript estricto** en lo que se conserva |
+| Selector de tema (claro / oscuro / auto) | Fuera: el panel es oscuro |
 
-Además arrastra 59 dependencias de runtime, de las que el panel usaría seis
-(`react`, `react-dom`, `react-router-dom`, `react-bootstrap`, `chart.js`, `mdi`), y
-`react-scripts@3.1.1`, que no es compatible con las versiones actuales de Node ni
-con React 19.
-
-**Conclusión:** lo que se porta es el **sistema visual** (paleta, tipografía,
-tarjetas, sidebar, navbar, iconografía), no el árbol de dependencias.
-
-### 3.2 Lo que hay que conservar: inventario de pantallas
+### 3.3 Lo que hay que conservar: inventario de pantallas
 
 | Ruta | Hoy | Qué pinta |
 |---|---|---|
@@ -91,8 +112,9 @@ tarjetas, sidebar, navbar, iconografía), no el árbol de dependencias.
 | `/history` | `_history_page` | Reviews terminadas con filtros `repo` / `pr_id` |
 | `/config` | `_config_page` | 26 diales en 5 secciones, ayuda, **Restaurar** por control, **Guardar** con revisión, candado, revisiones fijadas |
 | `/claude` | `claude_session_page` | Formulario del token de Claude (`operador`) |
+| `/login` | no existe | Nueva: valida el secreto y deja la cookie |
 
-### 3.3 Lo que la API no expone y la SPA necesita
+### 3.4 Lo que la API no expone y la SPA necesita
 
 | Dato | Dónde vive hoy | Consecuencia |
 |---|---|---|
@@ -101,18 +123,18 @@ tarjetas, sidebar, navbar, iconografía), no el árbol de dependencias.
 | Usuario y rol de la sesión | Se pinta en el HTML; `ROLE_COOKIE` no se emite nunca | La SPA no sabe si enseñar botones |
 | Aviso de la bandeja (tarjetas, Teams) | Se sondea en JS embebido | Ya existe `GET /api/bandeja`; se reutiliza |
 
-### 3.4 Rutas ya publicadas
+### 3.5 Rutas ya publicadas
 
 `PANEL_PUBLIC_URL` viaja en los avisos de Teams y el enlace de la ficha se publica
 en la tarjeta y en los logs de operación. Hay enlaces en comentarios de pull
 requests vivos. **Cambiar una sola ruta rompe esos enlaces**, así que las rutas de
-§3.2 son parte del contrato, no un detalle de la SPA.
+§3.3 son parte del contrato, no un detalle de la SPA.
 
 `review_key` contiene `/` y `:` (`cqm/emotivoo-v2:42:<sha>:<pipeline>`). Hoy lo
 resuelve `:path` de FastAPI; en el cliente es un splat (`/review/*`), no un
 segmento.
 
-### 3.5 Cómo se sirve hoy
+### 3.6 Cómo se sirve hoy
 
 `web/main.py` monta dos routers que devuelven `HTMLResponse`, con el CSS y el JS
 embebidos en constantes de Python. No hay `StaticFiles`, ni build, ni `package.json`.
@@ -121,33 +143,36 @@ embebidos en constantes de Python. No hay `StaticFiles`, ni build, ni `package.j
 
 | # | Decisión | Motivo |
 |---|---|---|
-| P1 | **Vite + React 19 + TypeScript estricto** en `frontend/` | La plantilla no compila en Node 22 (§3.1). Vite compila en segundos, no añade servidor en producción (el build son ficheros) y es el estándar de facto |
-| P2 | Se portan los **tokens visuales** de Corona (paleta, Rubik, tarjetas, sidebar, MDI), no su árbol de dependencias | Se hereda la identidad sin heredar React 16, `node-sass` ni CRA 3. La licencia es MIT: el aviso se conserva en `frontend/NOTICE` |
-| P3 | **CSS propio con variables**; ni Bootstrap 4 ni `react-bootstrap` | El panel usa seis componentes (tarjeta, tabla, botón, campo, badge, modal). Meter Bootstrap 4 para eso es deuda de 2019 arrastrada al build nuevo |
-| P4 | **Las seis rutas de §3.2 no cambian** | Hay enlaces publicados (§3.4). La SPA usa un catch-all que sirve `index.html` y resuelve `review_key` con splat |
+| P1 | **CoreUI 5.7 + Vite 8 + React 19 + TypeScript estricto** en `frontend/` | Es la plantilla medida que instala y compila hoy (§3.1). Corona se descarta con la medición delante |
+| P2 | Se conserva el **armazón de CoreUI** (layout, sidebar, navbar, login, Bootstrap 5 vía `--cui-*`) y se recorta su demo (§3.2) | Se hereda un sistema visual mantenido en lugar de reparar uno de 2019. La licencia es MIT: el aviso se conserva en `frontend/NOTICE` |
+| P3 | **Bootstrap 5 a través de CoreUI** (`@coreui/coreui` + `@coreui/react`); sin CSS propio más allá de los overrides del panel | Tablas, formularios, modales y toasts ya existen y están probados; escribirlos a mano sería código que nadie mantiene |
+| P4 | **Las seis rutas de §3.3 no cambian** | Hay enlaces publicados (§3.5). La SPA usa `BrowserRouter` —**no** el `HashRouter` de la plantilla— y un catch-all que sirve `index.html`, con `review_key` capturada por splat |
 | P5 | El proceso `web` sirve el build con `StaticFiles` + *fallback* de `index.html`, **sin** capturar `/api/*` ni `/healthz` | Un `GET /api/inexistente` tiene que seguir siendo `404`, no un HTML con `200` |
 | P6 | **Login con cookie `HttpOnly`**: `POST /api/session` valida el secreto y responde `200` con la cookie; `DELETE /api/session` la borra | Quita el pegado manual de cookie, que es hoy el peor escalón de entrada. `SameSite=Lax` porque el panel no se embebe |
 | P7 | La SPA no lee la cookie: pregunta `GET /api/session` → `{user, role}` | `HttpOnly` impide leerla desde JS y así el rol no se duplica en dos sitios. `ROLE_COOKIE`, que nunca se emitió, desaparece |
 | P8 | **Un solo endpoint de ficha**: `GET /api/reviews/{review_key}` devuelve traza, pausa, `notes`, `journal`, si hay consola y si hay razonamiento | La ficha hace hoy seis peticiones para pintarse. Un recurso agregado evita cascadas y deja el contrato en un sitio |
 | P9 | `GET /api/config` añade `pins` (revisiones fijadas por review en curso) | Cierra la única lectura que hoy solo existe dentro del HTML |
-| P10 | **TanStack Query** para el estado de servidor; sin store global (Redux/Zustand) | El estado es del servidor: caché, invalidación tras un comando y reintentos son exactamente el problema. Un store global sería una segunda copia de la verdad |
+| P10 | **TanStack Query** para el estado de servidor; Redux queda solo con `sidebarShow`, como ya lo trae la plantilla | El estado es del servidor: caché, invalidación tras un comando y reintentos son exactamente el problema. Redux ahí sería una segunda copia de la verdad, pero el sidebar ya está montado con él |
 | P11 | Los comandos se ejecutan con `fetch` JSON y `credentials: "same-origin"`, y se confirman con un *toast* + invalidación de la caché | Es lo que ya exige `require_command_session` (cookie ⇒ JSON del mismo origen). No se relaja la defensa CSRF |
 | P12 | **Strangler con interruptor temporal**: `PANEL_UI` (`react` \| `ssr`, por defecto `react` al cerrar la migración) durante los bloques de trabajo; `ui.py` se borra en el último | Permite migrar pantalla a pantalla sin big-bang y volver atrás si una ruta falla. Un interruptor permanente serían dos implementaciones: por eso tiene fecha de borrado |
 | P13 | Cero `dangerouslySetInnerHTML`. Los logs y transcripciones se pintan como texto | React escapa por defecto; el panel enseña datos de terceros (§2) |
 | P14 | El build de la SPA entra en la imagen `web` con una etapa de Node; en local, `make panel-dev` levanta Vite con proxy a `web` | El despliegue no gana un servicio: el `web` sigue siendo el único proceso |
 | P15 | Tests de UI con **Vitest + Testing Library**; los tests de HTML de `tests/test_web_ui.py` se retiran al retirar el SSR | Los tests actuales afirman sobre cadenas HTML; con la SPA, el contrato que se prueba es la API más el componente |
+| P16 | **Tema oscuro fijo**, sin selector `light`/`auto` | Es una herramienta de operación que se mira de noche; un selector es una opción que nadie cambia y una combinación visual que habría que probar |
 
-### 4.1 Qué se recorta de Corona (y qué se conserva)
+### 4.1 Riesgo de la plantilla: el arnés de CoreUI no es el del panel
 
-| Pieza | Destino |
+CoreUI trae decisiones que en un panel publicado no valen tal cual. Se cambian al
+adoptarla, no después:
+
+| Lo que trae | Qué se hace |
 |---|---|
-| Paleta (`#000` de fondo, `#0d0d0d` de superficie, `#0090e7`, `#00d25b`, `#ffab00`, `#fc424a`, borde `#2c2e33`), Rubik, radios y sombras | Se conserva como tokens |
-| `container-scroller` + sidebar + navbar + `main-panel` | Se conserva como layout |
-| Tarjetas `card`, `stretch-card`, `grid-margin` | Se conserva |
-| Gráficos de demo (`chart.js`, `canvasjs`, `chartist`, mapas, kanban, editores) | Fuera: el panel no los usa |
-| Banner «Check Pro Version», carrusel, `proBanner` | Fuera: es publicidad de la plantilla |
-| Selector de idioma (`i18next`) | Fuera: el panel es solo español |
-| `dashboard/`, `apps/`, `basic-ui/`, `tables/`, `icons/` de demo | Fuera: se usan como referencia visual, no se copian |
+| `HashRouter` | `BrowserRouter` (§4, P4) |
+| `base: './'` | `base: '/'` |
+| `eslint` + `prettier` con su configuración | Se alinea con el repo; no se añade un segundo estilo |
+| Demo de componentes, gráficos y assets (808 KB) | Se borra en el primer bloque de trabajo |
+| `useColorModes` y su selector | Fuera: tema oscuro fijo (P16) |
+| Textos en inglés | Todo en español, como el resto del panel |
 
 ## 5. Diseño o contrato
 
@@ -155,18 +180,20 @@ embebidos en constantes de Python. No hay `StaticFiles`, ni build, ni `package.j
 
 ```
 frontend/
-  package.json            # vite, react 19, react-router, @tanstack/react-query, vitest
+  package.json            # coreui 5.7, vite 8, react 19, @tanstack/react-query, vitest
   vite.config.ts          # base "/", proxy a web en dev
+  tsconfig.json           # strict
   index.html
-  NOTICE                  # MIT de Corona
+  NOTICE                  # MIT de CoreUI
   src/
     main.tsx
-    router.tsx            # las seis rutas de §3.2
+    App.tsx               # router + sesión
+    router.tsx            # las seis rutas de §3.3 más /login
     api/                  # cliente tipado de la API JSON
     session/              # login, logout, rol
-    components/           # Card, Table, Badge, Button, Field, Toast, Layout
+    components/           # armazón de CoreUI recortado + los del panel
     pages/                # Dashboard, ReviewDetail, Bandeja, History, Config, Login
-    styles/tokens.css     # paleta y tipografía portadas de Corona
+    scss/                 # overrides del tema oscuro sobre CoreUI
 ```
 
 El build (`frontend/dist`) se sirve desde `src/agent_review/web/static/` dentro de
@@ -209,7 +236,7 @@ devuelve el token ni lo registra en el log.
 
 | Pantalla | Firma visual |
 |---|---|
-| **Login** | Una sola tarjeta centrada sobre el fondo negro, con el nombre del panel y un campo de token. Sin menú, sin sidebar: no hay nada que navegar sin sesión |
+| **Login** | Una sola tarjeta centrada, sin sidebar ni menú: no hay nada que navegar sin sesión. Un campo de token y un botón |
 | **Cuadro de mando** | Cuatro cifras arriba que responden «¿qué pasa ahora?» (en cola, en vuelo, esperando persona, descartes) y debajo el trabajo: lanzar, cola, en vuelo, pausas, descartes. Cada fila lleva su acción a la derecha |
 | **Ficha de review** | Dos columnas: a la izquierda el recorrido (línea de nodos con su duración) o los pasos del CLI; a la derecha log, comandos y consola. En móvil, una columna y el recorrido primero |
 | **Bandeja** | Tarjetas, una por pausa; cada hallazgo con su acción y su nota. La tarjeta aparece en la lista de pendientes del sidebar |
@@ -217,7 +244,9 @@ devuelve el token ni lo registra en el log.
 | **Configuración** | Una sección por grupo; cada control con su ayuda y su **Restaurar**; la barra de guardado se queda pegada abajo mientras haya cambios |
 
 El elemento firma es el **recorrido**: la secuencia real de nodos con su duración,
-dibujada con la paleta del tema. Es lo que distingue este panel de un CRUD.
+dibujada con la paleta del tema. Es lo que distingue este panel de un CRUD, y por
+eso **no** se resuelve con un gráfico de la plantilla: es una lista ordenada con
+marca de tiempo, no una serie temporal.
 
 ### 5.5 Sesión y CSRF
 
@@ -243,7 +272,7 @@ dibujada con la paleta del tema. Es lo que distingue este panel de un CRUD.
 ### 5.7 Límites de implementación
 
 - **Siempre:** cada endpoint nuevo con su test en el mismo cambio; `make docs-check`
-  al tocar documentación; el inventario de §3.2 como lista de paridad.
+  al tocar documentación; el inventario de §3.3 como lista de paridad.
 - **Preguntar antes:** una dependencia de runtime nueva que no esté en P1/P10;
   añadir un servicio a compose; cambiar una ruta pública.
 - **Nunca:** `dangerouslySetInnerHTML`; cargar un asset de otro origen; relajar
@@ -263,18 +292,18 @@ make ci                   # incluye frontend-check cuando existe frontend/
 
 | # | Riesgo | Qué lo contiene |
 |---|---|---|
-| R1 | Un enlace ya publicado deja de abrir la ficha | P4: las rutas son contrato; un test comprueba que cada ruta de §3.2 devuelve el `index.html` y que la ficha resuelve una `review_key` con `/` y `:` |
+| R1 | Un enlace ya publicado deja de abrir la ficha | P4: las rutas son contrato; un test comprueba que cada ruta de §3.3 devuelve el `index.html` y que la ficha resuelve una `review_key` con `/` y `:` |
 | R2 | Durante la migración, dos UIs divergen y una miente | P12: el interruptor es temporal y el cierre exige borrar la vieja. El `todo.md` tiene una tarea de borrado como última condición |
 | R3 | El *fallback* de la SPA se come un `404` de la API | P5: el catch-all no captura `/api/*` ni `/healthz`, con test |
 | R4 | El login se convierte en un oráculo de fuerza bruta del secreto | El secreto es de alta entropía (`token_hex(32)`); se registra el fallo sin el valor. Si se quiere límite de intentos, va en una tarea aparte (§8) |
-| R5 | El bundle arrastra código de demo de la plantilla | §4.1 fija qué se recorta; el build falla si `chart.js`, `i18next` o `react-bootstrap` aparecen en `package.json` |
+| R5 | El bundle arrastra código de demo de la plantilla | §3.2 fija qué se recorta; el build falla si `@coreui/react-chartjs`, `chart.js` o `@coreui/icons` de demo vuelven a entrar |
 | R6 | La CSP del panel se rompe con el bundle | Los assets son del mismo origen y no hay `eval` en el build de producción |
-| R7 | Los tests de UI se pierden en la mudanza y quedan zonas sin cubrir | El inventario de §3.2 es la lista de paridad: cada fila tiene al menos un test |
+| R7 | Los tests de UI se pierden en la mudanza y quedan zonas sin cubrir | El inventario de §3.3 es la lista de paridad: cada fila tiene al menos un test |
 | R8 | El `web` deja de arrancar en quien no tenga Node | La etapa de Node es solo de build: la imagen final no lleva Node. En local, `make panel` sigue funcionando sin `frontend/` construido solo si existe `dist`; si no, `make panel-dev` |
 
 ## 7. Criterios de hecho
 
-1. Las seis rutas de §3.2 responden y hacen lo mismo que hoy: cada fila del
+1. Las seis rutas de §3.3 responden y hacen lo mismo que hoy: cada fila del
    inventario tiene su prueba.
 2. Sin sesión, cualquier ruta devuelve la pantalla de login; `GET /api/session` da
    `401` y ningún endpoint de datos filtra información.
@@ -295,17 +324,21 @@ make ci                   # incluye frontend-check cuando existe frontend/
 
 ## 8. Preguntas abiertas
 
-- **Q1 — ¿Se aprueba TanStack Query como dependencia de runtime (P10)?** La
+- **Q1 — ¿Se aprueba TypeScript estricto?** CoreUI viene en JavaScript sin tipos. Se
+  propone convertirlo en lo que se conserva (layout, sidebar, login y los componentes
+  del panel). La alternativa es JS + JSDoc, más rápido de arrancar y más débil justo
+  donde el panel trata contratos: `review_key`, revisiones y roles.
+- **Q2 — ¿Se aprueba TanStack Query como dependencia de runtime (P10)?** La
   alternativa es un `useEffect` + `fetch` propio, que reimplementa caché,
   invalidación y carreras en cada pantalla.
-- **Q2 — ¿Entra Playwright en CI?** Hoy no hay e2e. Un e2e contra el `web` real
+- **Q3 — ¿Entra Playwright en CI?** Hoy no hay e2e. Un e2e contra el `web` real
   probaría de verdad la sesión con cookie y el SSE; cuesta un navegador en CI. Se
   propone una tarea posterior, no el primer bloque.
-- **Q3 — Límite de intentos en el login (R4).** Se propone dejarlo fuera de esta
+- **Q4 — Límite de intentos en el login (R4).** Se propone dejarlo fuera de esta
   entrega y abrir tarea si el panel se expone fuera de la red interna, que es el
   caso hoy.
-- **Q4 — ¿El histórico paginado?** Hoy `GET /api/history` tiene `limit` hasta 500 y
+- **Q5 — ¿El histórico paginado?** Hoy `GET /api/history` tiene `limit` hasta 500 y
   la tabla pinta lo que llega. La SPA puede paginar en cliente sin cambiar la API;
   si se quiere paginación real, es un cambio de contrato.
-- **Q5 — ¿Se mantiene `GET /config` como página HTML en algún caso?** El plan es
+- **Q6 — ¿Se mantiene `GET /config` como página HTML en algún caso?** El plan es
   no: la página desaparece y `GET /api/config` es el contrato.
