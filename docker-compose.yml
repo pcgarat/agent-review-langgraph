@@ -46,13 +46,15 @@ services:
       CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-http://claude-runner:8098}
       # Enlace del aviso si falta la sesión. El worker no monta el fichero.
       PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:-http://localhost:8090}
+      # Fuera de `./var`: ese bind es :ro y runc no puede crear un punto de
+      # montaje dentro. El default `var/claude` vale fuera de compose.
+      CLAUDE_ARTIFACT_ROOT: /var/claude-artifacts
     volumes:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
-      # JSON ya validado del motor claude. Encima de `./var` (solo lectura)
-      # para que el worker pueda escribirlo sin abrir el resto del volumen.
-      - claude_artifacts:/app/var/claude
+      # JSON ya validado del motor claude. Volumen propio, no anidado en `./var`.
+      - claude_artifacts:/var/claude-artifacts
     depends_on:
       postgres:
         condition: service_healthy

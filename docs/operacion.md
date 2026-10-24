@@ -20,6 +20,7 @@ $EDITOR .env                      # rellena los secretos (§3)
 cp ~/.local/bin/twg bin/twg       # solo con VCS_PROVIDER=twg; la imagen lo enlaza
 docker compose up --build -d
 docker compose logs -f worker
+make status                       # contenedores, URLs y prueba de credenciales
 ```
 
 - `bootstrap-env.sh` no sobrescribe un `.env` existente y resume qué secretos faltan
@@ -29,6 +30,15 @@ docker compose logs -f worker
 - `api` y `worker` llevan `restart: unless-stopped` y healthcheck. El del worker es
   el latido `/tmp/reviews-worker-heartbeat`: si tiene más de 60 s, el contenedor se
   considera enfermo.
+- `make status` lista cada servicio (también los de un perfil que no está levantado),
+  la URL si publica puerto y, si no, la dirección de la red interna. Después recorre
+  las variables con las que el agente habla con otros sistemas y marca cuáles están
+  configuradas. Un secreto configurado se prueba con una lectura (`GET`, `SELECT 1`,
+  `git ls-remote` o `twg bb repo get`): no imprime el valor ni encola una review. Un
+  secreto compartido (webhook, decisión, sesión, bearer interno) vale cuando el
+  servicio responde 401 sin él y deja pasar con él. Sale con código 1 si falta una
+  credencial de un módulo activo o si la prueba la rechaza. Un módulo apagado
+  (`LLM`, Teams, Claude, panel, clon del sandbox) no cuenta como fallo.
 - `scripts/sync-twg-credentials.sh` copia al `.env` la sesión `twg` de **tu**
   usuario. Es un atajo de desarrollo y **no** sirve para producción
   ([ADR-0012](adr/0012-vcs-tras-un-puerto.md)).
@@ -59,7 +69,7 @@ panel; el worker no lo monta.
 | Servicio | Puerto | Monta | Notas |
 |---|---|---|---|
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
-| `worker` | — | `./var` y `./config` (solo lectura); volumen `claude_artifacts` en `/app/var/claude` | Necesita `twg` en la imagen si el proveedor es `twg`. `CLAUDE_GIT_TOKEN` llega vacío. No monta `claude_session` |
+| `worker` | — | `./var` y `./config` (solo lectura); volumen `claude_artifacts` en `/var/claude-artifacts` | Necesita `twg` en la imagen si el proveedor es `twg`. `CLAUDE_GIT_TOKEN` llega vacío. No monta `claude_session`. `CLAUDE_ARTIFACT_ROOT` apunta al volumen: `./var` es `:ro` y no admite un montaje anidado |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
 | `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) y volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis, el recorrido del checkpointer, publica los diales (027) y lanza reviews con la URL del PR ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM, pero sí el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
