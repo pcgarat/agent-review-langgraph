@@ -147,8 +147,17 @@ def test_con_sesion_se_suelta_solo_lo_parado_por_ella() -> None:
 
 
 def test_el_operador_guarda_sin_devolver_el_token(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # El `dist` no se versiona: el armazón de la SPA se inyecta para que la prueba
+    # no dependa de haber construido `frontend/` (029, R4).
+    from agent_review.web import spa
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>", encoding="utf-8")
+    monkeypatch.setattr(spa, "spa_directory", lambda: dist)
+
     queue = InMemoryReviewQueue()
     queue.park(_request("sesion"), reason="session")
     queue.park(_request("cupo"), reason="quota")
@@ -165,23 +174,24 @@ def test_el_operador_guarda_sin_devolver_el_token(
         )
         client.cookies.set("panel_session", "ana:operador")
         formulario = client.post("/api/claude/session", data={"token": _TOKEN})
+        # La pagina es de la SPA (029): el armazon se sirve a cualquier sesion y es
+        # el cliente quien no pinta el formulario al `lector`. Quien manda es la
+        # API, que sigue devolviendo `403` al POST.
         pagina = client.get("/claude", headers={"X-Panel-Session": "ana:lector"})
         operador = client.post(
             "/api/claude/session",
             headers={"X-Panel-Session": "ana:operador"},
             json={"token": _TOKEN},
         )
-        formulario_ok = client.get("/claude", headers={"X-Panel-Session": "ana:operador"})
 
     assert lector.status_code == 403
     assert formulario.status_code == 403
-    assert pagina.status_code == 403
+    assert pagina.status_code == 200
     assert operador.status_code == 200
     assert operador.json() == {"released": 1}
     assert _TOKEN not in operador.text
     assert _TOKEN not in caplog.text
-    assert _TOKEN not in formulario_ok.text
-    assert "https://claude.ai/settings/claude-code" in formulario_ok.text
+    assert _TOKEN not in pagina.text
     path = tmp_path / "session.json"
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600

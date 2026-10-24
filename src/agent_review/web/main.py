@@ -62,8 +62,8 @@ from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
 from agent_review.web.review_detail import router as review_detail_router
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
+from agent_review.web.spa import mount_spa
 from agent_review.web.ui import get_history, recent_reviews
-from agent_review.web.ui import router as ui_router
 from agent_review.worker.cancel import build_cancellation
 
 logger = logging.getLogger(__name__)
@@ -600,12 +600,14 @@ def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:
     return None
 
 
-# La UI (OP15/OP33) vive en su propio router para no engordar este modulo; la app
-# la monta aqui para que el panel sea un unico proceso con una unica sesion.
-app.include_router(ui_router)
 app.include_router(bandeja_router)
 app.include_router(config_router)
 app.include_router(review_detail_router)
+
+# La SPA del panel (029, P4/P5) sirve las rutas publicadas. Su comodin va al final:
+# asi no tapa ni un endpoint de `/api` ni el `healthz`, y un 404 de la API sigue
+# siendo un 404. En desarrollo, `make panel-dev` sirve Vite y hace proxy aqui.
+mount_spa(app)
 
 
 def main() -> None:
