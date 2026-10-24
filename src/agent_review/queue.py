@@ -18,6 +18,18 @@ QUEUE_KEY = "reviews:jobs"
 # Cola de descartes: los jobs que agotan los reintentos no se pierden en el log,
 # quedan aqui para reinyectarlos a mano o inspeccionarlos.
 DEAD_LETTER_KEY = "reviews:jobs:dead"
+# Log de los intentos que aún no han llegado a la DLQ. Al descartar, el texto
+# viaja en la entrada (`error`) y esta clave se borra. Si el job termina bien,
+# también. El TTL cubre un worker que muere entre el fallo y el descarte.
+FAILURE_LOG_PREFIX = "reviews:failure:"
+# Anotaciones que sobreviven al cierre de la review. El log de intentos se borra
+# al terminar; este se queda para la ficha del panel.
+JOURNAL_PREFIX = "reviews:journal:"
+_FAILURE_LOG_TTL_S = 7 * 24 * 3600
+_FAILURE_LOG_KEEP = 8
+_FAILURE_LOG_LIMIT = 12_000
+_JOURNAL_TTL_S = 10 * 24 * 3600
+_JOURNAL_KEEP = 100
 # Jobs del motor claude que no pueden correr (sin sesión o sin cupo). Fuera de
 # `reviews:jobs` para que el bucle no los vuelva a sacar en la misma vuelta.
 PARKED_KEY = "reviews:claude:parked"
@@ -59,8 +71,32 @@ class ReviewQueue(Protocol):
         """Devuelve a la cola los jobs cuyo dueno ya no vive. `0` si no hay."""
         ...
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        """Registra un job descartado tras agotar los intentos."""
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        """Registra un job descartado tras agotar los intentos.
+
+        `error` es el log de los intentos (traceback incluido). Vacío en un
+        descarte que no llegó a registrar el fallo.
+        """
+        ...
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        """Añade un intento fallido al log de esa review, hasta que se descarte o acabe."""
+        ...
+
+    def failure_log(self, review_key: str) -> str:
+        """Log acumulado de los intentos, o vacío si no hay."""
+        ...
+
+    def clear_failure(self, review_key: str) -> None:
+        """Borra el log acumulado. El descarte ya lo copió, o el job terminó."""
+        ...
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        """Añade una línea al log de la review. No se borra al terminar."""
+        ...
+
+    def journal(self, review_key: str) -> list[str]:
+        """Líneas del log, en orden. Vacío si no hay."""
         ...
 
     def dead_letters(self) -> list[dict[str, object]]:
@@ -265,8 +301,44 @@ class RedisReviewQueue:
     def reclaim_inflight(self) -> int:
         return self._flight.reclaim()
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        self._client.rpush(self._dead_key, _dead_letter_payload(request, reason=reason))
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        self._client.rpush(
+            self._dead_key, _dead_letter_payload(request, reason=reason, error=error)
+        )
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        note = text.strip()
+        if not note:
+            return
+        key = _failure_key(review_key)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, note[-4000:])
+        pipe.ltrim(key, -_FAILURE_LOG_KEEP, -1)
+        pipe.expire(key, _FAILURE_LOG_TTL_S)
+        pipe.execute()
+
+    def failure_log(self, review_key: str) -> str:
+        raw = self._client.lrange(_failure_key(review_key), 0, -1)
+        parts = [_as_text(item).strip() for item in raw]
+        return _clip_log("\n\n".join(part for part in parts if part))
+
+    def clear_failure(self, review_key: str) -> None:
+        self._client.delete(_failure_key(review_key))
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        line = text.strip()
+        if not line:
+            return
+        key = _journal_key(review_key)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, line[-4000:])
+        pipe.ltrim(key, -_JOURNAL_KEEP, -1)
+        pipe.expire(key, _JOURNAL_TTL_S)
+        pipe.execute()
+
+    def journal(self, review_key: str) -> list[str]:
+        raw = self._client.lrange(_journal_key(review_key), 0, -1)
+        return [text for item in raw if (text := _as_text(item).strip())]
 
     def dead_letters(self) -> list[dict[str, object]]:
         import json
@@ -347,6 +419,8 @@ class InMemoryReviewQueue:
         self._dead: list[str] = []
         self._parked: deque[str] = deque()
         self._notices: dict[str, float | None] = {}
+        self._failures: dict[str, list[str]] = {}
+        self._journal: dict[str, list[str]] = {}
 
     def enqueue(self, request: ReviewRequest) -> None:
         self._items.append(request.model_dump_json())
@@ -368,8 +442,33 @@ class InMemoryReviewQueue:
     def reclaim_inflight(self) -> int:
         return 0
 
-    def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
-        self._dead.append(_dead_letter_payload(request, reason=reason))
+    def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
+        self._dead.append(_dead_letter_payload(request, reason=reason, error=error))
+
+    def note_failure(self, review_key: str, text: str) -> None:
+        note = text.strip()
+        if not note:
+            return
+        notes = self._failures.setdefault(review_key, [])
+        notes.append(note[-4000:])
+        del notes[:-_FAILURE_LOG_KEEP]
+
+    def failure_log(self, review_key: str) -> str:
+        return _clip_log("\n\n".join(self._failures.get(review_key, [])))
+
+    def clear_failure(self, review_key: str) -> None:
+        self._failures.pop(review_key, None)
+
+    def append_journal(self, review_key: str, text: str) -> None:
+        line = text.strip()
+        if not line:
+            return
+        lines = self._journal.setdefault(review_key, [])
+        lines.append(line[-4000:])
+        del lines[:-_JOURNAL_KEEP]
+
+    def journal(self, review_key: str) -> list[str]:
+        return list(self._journal.get(review_key, []))
 
     def dead_letters(self) -> list[dict[str, object]]:
         import json
@@ -529,20 +628,42 @@ def _raw_dead_letter_payload(payload: str, *, reason: str) -> str:
     return json.dumps({"reason": reason, "discarded_at": time.time(), "raw": payload})
 
 
-def _dead_letter_payload(request: ReviewRequest, *, reason: str) -> str:
+def _failure_key(review_key: str) -> str:
+    return f"{FAILURE_LOG_PREFIX}{review_key}"
+
+
+def _journal_key(review_key: str) -> str:
+    return f"{JOURNAL_PREFIX}{review_key}"
+
+
+def _as_text(item: object) -> str:
+    if isinstance(item, bytes):
+        return item.decode(errors="replace")
+    return str(item)
+
+
+def _clip_log(text: str) -> str:
+    if len(text) <= _FAILURE_LOG_LIMIT:
+        return text
+    return "…\n" + text[-_FAILURE_LOG_LIMIT:]
+
+
+def _dead_letter_payload(request: ReviewRequest, *, reason: str, error: str = "") -> str:
     import json
 
-    return json.dumps(
-        {
-            "review_key": request.review_key,
-            "attempts": request.attempts,
-            "reason": reason,
-            "discarded_at": time.time(),
-            # `mode="json"`: una reanudacion lleva `HitlDecision.decided_at`
-            # (`datetime`), que `json.dumps` no serializa.
-            "request": request.model_dump(mode="json"),
-        }
-    )
+    payload: dict[str, object] = {
+        "review_key": request.review_key,
+        "attempts": request.attempts,
+        "reason": reason,
+        "discarded_at": time.time(),
+        # `mode="json"`: una reanudacion lleva `HitlDecision.decided_at`
+        # (`datetime`), que `json.dumps` no serializa.
+        "request": request.model_dump(mode="json"),
+    }
+    clipped = _clip_log(error.strip())
+    if clipped:
+        payload["error"] = clipped
+    return json.dumps(payload)
 
 
 @runtime_checkable

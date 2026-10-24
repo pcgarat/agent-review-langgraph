@@ -303,11 +303,31 @@ def review_detail(
     session: Annotated[Session, Depends(require_session)],
     model: Annotated[PanelReadModel, Depends(get_read_model)],
 ) -> HTMLResponse:
-    """Detalle de una review: recorrido y, si es pausa de fix, consola en vivo (OP15)."""
+    """Detalle de una review: recorrido y, si es pausa de fix, consola en vivo (OP15).
+
+    Un descarte que no llegó a arrancar el grafo no tiene recorrido. El enlace de
+    la DLQ abre el log de los intentos en vez de un 404.
+    """
     trace = model.trace(review_key)
+    state = model.state()
+    dead = _dead_item(state, review_key)
+    log = _review_log(model, review_key, dead)
     if trace is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sin recorrido para {review_key}")
-    return HTMLResponse(_detail_page(trace, _paused_item(model.state(), review_key), session))
+        if dead is None and not log.strip():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sin recorrido para {review_key}")
+        if dead is None:
+            return HTMLResponse(_log_page(review_key, log, session))
+        return HTMLResponse(_discard_page(dead, session, log=log))
+    engine = get_settings().review_engine
+    return HTMLResponse(
+        _detail_page(
+            trace,
+            _paused_item(state, review_key),
+            session,
+            log=log,
+            engine=engine,
+        )
+    )
 
 
 # --- Paginas ---------------------------------------------------------------------
@@ -402,23 +422,88 @@ def _severities(by_severity: dict[str, int]) -> str:
     return "(" + ", ".join(f"{_esc(k)}: {_esc(v)}" for k, v in by_severity.items()) + ")"
 
 
-def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session) -> str:
+def _review_log(model: PanelReadModel, review_key: str, dead: DeadLetterItem | None) -> str:
+    """Notas del estado, anotaciones del worker y, si sigue en la DLQ, su error."""
+    parts: list[str] = []
+    parts.extend(line.strip() for line in model.notes(review_key) if line.strip())
+    parts.extend(line.strip() for line in model.journal(review_key) if line.strip())
+    if dead is not None and dead.error.strip():
+        parts.append(dead.error.strip())
+    return "\n\n".join(parts)
+
+
+def _log_section(log: str) -> str:
+    text = log.strip() or "No hay anotaciones de esta review."
+    return f"<section><h2>Log</h2><pre>{_esc(text)}</pre></section>"
+
+
+def _log_page(review_key: str, log: str, session: Session) -> str:
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>' + _log_section(log)
+    )
+    return _page(
+        title=f"Review {review_key}",
+        meta="Sin recorrido de nodos",
+        body=body,
+        session=session,
+    )
+
+
+def _discard_page(item: DeadLetterItem, session: Session, *, log: str = "") -> str:
+    """Ficha de un descarte sin recorrido: motivo y log de los intentos."""
+    log = log.strip() or item.error.strip() or "No hay log guardado para este descarte."
+    commands = _buttons(item.review_key, ((_RETRY, "Reintentar"),), session)
     body = "".join(
         (
             '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
-            _trace_section(trace),
-            _detail_commands(trace, session),
-            _decision_section(trace, paused, session),
-            _console_section(trace, paused),
-            _reasoning_section(trace),
+            "<section><h2>Descarte</h2>"
+            f"<p>Motivo <strong>{_esc(item.reason) or '—'}</strong> · "
+            f"intentos {_esc(item.attempts)} · {_fmt_dt(item.discarded_at)}</p>"
+            f"{commands}</section>",
+            f"<section><h2>Log</h2><pre>{_esc(log)}</pre></section>",
         )
     )
+    return _page(
+        title=f"Review {item.review_key}",
+        meta="Descartada antes de dejar recorrido",
+        body=body,
+        session=session,
+        script=_COMMAND_SCRIPT,
+    )
+
+
+def _detail_page(
+    trace: ReviewTrace,
+    paused: PausedItem | None,
+    session: Session,
+    *,
+    log: str = "",
+    engine: str = "llm",
+) -> str:
+    claude = engine == "claude"
+    body = "".join(
+        (
+            '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
+            _claude_section(trace) if claude else "",
+            _claude_steps(trace) if claude else _trace_section(trace),
+            _log_section(log),
+            _detail_commands(trace, session),
+            _decision_section(trace, paused, session),
+            "" if claude else _console_section(trace, paused),
+            "" if claude else _reasoning_section(trace),
+        )
+    )
+    script = _COMMAND_SCRIPT + _DECISION_SCRIPT
+    if claude:
+        script += _CLAUDE_LIVE_SCRIPT
+    else:
+        script += _CONSOLE_SCRIPT + _REASONING_SCRIPT
     return _page(
         title=f"Review {trace.review_key}",
         meta=f"Estado {trace.state} · actualizado el {_fmt_dt(trace.updated_at)}",
         body=body,
         session=session,
-        script=_COMMAND_SCRIPT + _DECISION_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT,
+        script=script,
     )
 
 
@@ -441,8 +526,8 @@ def _launch_section(session: Session) -> str:
         '<p class="meta">Pega la URL del pull request de este repositorio. '
         "El worker lee el commit de ahora y encola la review. "
         "Repetir el mismo commit no publica otra vez. "
-        "No espera al CI: si el artefacto de la herramienta aún no ha llegado, "
-        "esa parte queda incompleta.</p>"
+        "No espera a phpstan ni a otro artefacto del CI: si no ha llegado, "
+        "esa persona no entra y la review sigue.</p>"
         '<p class="filters">'
         '<label>URL <input id="launch-url" type="text" size="64" '
         'placeholder="https://github.com/org/repo/pull/123" autocomplete="off"></label> '
@@ -560,6 +645,48 @@ def _trace_section(trace: ReviewTrace) -> str:
     )
     table = _table(["#", "Nodo", "Iniciado", "Escribe"], rows)
     return f"<section><h2>Recorrido</h2>{summary}{table}</section>"
+
+
+_CLAUDE_STEP = {
+    "scope": "Preparar el diff",
+    "persona": "Leer los hallazgos de Claude",
+    "merge": "Juntar hallazgos",
+    "stamp": "Marcar para publicar",
+    "hitl": "Esperar decisión",
+    "publish": "Publicar en el pull request",
+    "notify": "Avisar",
+}
+
+
+def _claude_steps(trace: ReviewTrace) -> str:
+    """Pasos del motor claude, sin los canales internos del grafo de personas."""
+    rows = []
+    for node in trace.nodes:
+        label = _CLAUDE_STEP.get(node.name, node.name)
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(node.index)}</td>"
+            f"<td>{_esc(label)}</td>"
+            f"<td>{_fmt_dt(node.started_at)}</td>"
+            "</tr>"
+        )
+    pending = ", ".join(_CLAUDE_STEP.get(name, name) for name in trace.next) or "—"
+    summary = (
+        f'<p class="trace-state">Estado <strong>{_esc(trace.state)}</strong> · '
+        f"siguiente {_esc(pending)}</p>"
+    )
+    table = _table(["#", "Paso", "Inicio"], rows)
+    return f"<section><h2>Pasos</h2>{summary}{table}</section>"
+
+
+def _claude_section(trace: ReviewTrace) -> str:
+    endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/claude"
+    return (
+        "<section><h2>Claude</h2>"
+        '<p class="meta" id="claude-status">Cargando la ejecución del CLI…</p>'
+        f'<pre id="claude-log" data-endpoint="{_esc(endpoint)}"></pre>'
+        "</section>"
+    )
 
 
 def _detail_commands(trace: ReviewTrace, session: Session) -> str:
@@ -841,6 +968,13 @@ def _buttons(review_key: str, commands: tuple[tuple[str, str], ...], session: Se
             f'data-endpoint="{endpoint}">{_esc(label)}</button>'
         )
     return f'<span class="commands">{"".join(buttons)}</span>'
+
+
+def _dead_item(state: PanelState, review_key: str) -> DeadLetterItem | None:
+    for item in state.dead:
+        if item.review_key == review_key:
+            return item
+    return None
 
 
 def _paused_item(state: PanelState, review_key: str) -> PausedItem | None:
@@ -1133,6 +1267,47 @@ _CLAUDE_SCRIPT = """<script>
       button.disabled = false;
     }
   });
+})();
+</script>"""
+
+_CLAUDE_LIVE_SCRIPT = """<script>
+(() => {
+  const output = document.getElementById("claude-log");
+  const status = document.getElementById("claude-status");
+  if (!output || !status) {
+    return;
+  }
+  const paint = (body) => {
+    output.textContent = body.text || "El CLI todavía no ha escrito nada.";
+    if (!body.started_at) {
+      status.textContent = "Este commit no tiene una ejecución del CLI registrada.";
+      return false;
+    }
+    const start = new Date(body.started_at);
+    const end = body.finished_at ? new Date(body.finished_at) : new Date();
+    const seconds = Math.max(0, Math.round((end - start) / 1000));
+    const when = start.toLocaleString();
+    status.textContent = body.running
+      ? `Claude CLI en marcha desde ${when}. Lleva ${seconds} s.`
+      : `Claude CLI empezó ${when} y terminó en ${seconds} s.`;
+    return body.running;
+  };
+  const tick = async () => {
+    try {
+      const response = await fetch(output.dataset.endpoint, { credentials: "same-origin" });
+      if (!response.ok) {
+        status.textContent = "No se pudo leer la ejecución del CLI.";
+        return;
+      }
+      const running = paint(await response.json());
+      if (running) {
+        setTimeout(tick, 2000);
+      }
+    } catch (cause) {
+      status.textContent = String(cause);
+    }
+  };
+  tick();
 })();
 </script>"""
 

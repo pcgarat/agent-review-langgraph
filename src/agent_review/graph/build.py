@@ -1389,11 +1389,18 @@ def _publish_review(
     # Solo el grafo claude escribe el campo. Sin eleccion y sin fuente
     # estatica sin cubrir, no se comenta el PR aunque la cobertura sea parcial.
     if state.get("silence_without_choice") and not publishable and not unavailable:
-        logger.info(
-            "PR %s#%s: sin eleccion de publicacion; no se escribe en el PR",
-            request.repo,
-            request.pr_id,
-        )
+        if not findings:
+            logger.info(
+                "PR %s#%s: sin hallazgos; no se escribe en el PR",
+                request.repo,
+                request.pr_id,
+            )
+        else:
+            logger.info(
+                "PR %s#%s: sin eleccion de publicacion; no se escribe en el PR",
+                request.repo,
+                request.pr_id,
+            )
         return {}
     if not publishable and not unavailable and not partial:
         logger.info(

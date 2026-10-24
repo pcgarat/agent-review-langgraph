@@ -152,7 +152,9 @@ services:
   # worker publica. El subproceso `claude` tampoco recibe la credencial de
   # clonado (el proceso la usa para el fetch y luego quita el remoto).
   claude-runner:
-    build: .
+    build:
+      context: .
+      target: claude-runner
     restart: unless-stopped
     profiles: ["claude"]
     command: python -m agent_review.claude_runner.main
@@ -241,6 +243,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PANEL_ENABLED: ${PANEL_ENABLED:-true}
+      REVIEW_ENGINE: ${REVIEW_ENGINE:-llm}
       PANEL_PORT: ${PANEL_PORT:-8090}
       PANEL_SESSION_SECRET: ${PANEL_SESSION_SECRET:-}
       REDIS_URL: redis://redis:6379/0

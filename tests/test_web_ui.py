@@ -62,12 +62,20 @@ class FakeReadModel:
         self.panel_state = state
         self.traces = traces or {}
         self.pins: list[tuple[str, int]] = []
+        self.extra_notes: dict[str, list[str]] = {}
+        self.journal_lines: dict[str, list[str]] = {}
 
     def state(self) -> PanelState:
         return self.panel_state
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self.traces.get(review_key)
+
+    def notes(self, review_key: str) -> list[str]:
+        return self.extra_notes.get(review_key, [])
+
+    def journal(self, review_key: str) -> list[str]:
+        return self.journal_lines.get(review_key, [])
 
     def dial_pins(self) -> list[tuple[str, int]]:
         return self.pins
@@ -211,10 +219,43 @@ def test_el_detalle_pinta_el_recorrido(panel: Panel) -> None:
     assert "scope" in body
     assert "persona" in body
     assert "Siguiente" in body or "siguiente" in body
+    assert "<h2>Log</h2>" in body
+
+
+def test_el_detalle_explica_una_review_incompleta(panel: Panel) -> None:
+    panel.model.traces[_REVIEW_KEY] = _trace(state="completed")
+    panel.model.extra_notes[_REVIEW_KEY] = [
+        "Fuente estática standards: missing. No se encontró la salida de la herramienta."
+    ]
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert "standards" in body
+    assert "missing" in body
+    assert "<h2>Log</h2>" in body
 
 
 def test_el_detalle_sin_recorrido_es_404(panel: Panel) -> None:
     assert panel.client.get("/review/no:existe").status_code == 404
+
+
+def test_el_enlace_de_la_dlq_muestra_el_log(panel: Panel) -> None:
+    log = "intento 3\nClaudeProcessCrashed: no se encontro el ejecutable de claude\n" + _XSS
+    panel.model.panel_state.dead[0] = panel.model.panel_state.dead[0].model_copy(
+        update={"error": log}
+    )
+    response = panel.client.get(f"/review/{_DEAD_KEY}")
+    assert response.status_code == 200
+    body = response.text
+    assert "no se encontro el ejecutable de claude" in body
+    assert "<h2>Log</h2>" in body
+    assert _XSS not in body
+    assert "&lt;script&gt;" in body
+
+
+def test_un_descarte_sin_log_sigue_abriendo_la_ficha(panel: Panel) -> None:
+    response = panel.client.get(f"/review/{_DEAD_KEY}")
+    assert response.status_code == 200
+    assert "No hay log guardado para este descarte." in response.text
+    assert _XSS not in response.text
 
 
 # --- Botones segun estado y rol (OP33) -------------------------------------------

@@ -28,10 +28,10 @@ from agent_review.checkpointer import build_reader_checkpointer
 from agent_review.domain.models import PendingDecision, ReviewRequest
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.trace import PauseKindName, ReviewTrace
-from agent_review.queue import DEAD_LETTER_KEY, QUEUE_KEY
+from agent_review.queue import DEAD_LETTER_KEY, JOURNAL_PREFIX, QUEUE_KEY
 from agent_review.redis_utils import build_redis_client
 from agent_review.settings import Settings
-from agent_review.trace import read_trace
+from agent_review.trace import read_review_notes, read_trace
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ class DeadLetterItem(BaseModel):
     attempts: int = 0
     reason: str = ""
     discarded_at: datetime | None = None
+    error: str = ""
 
 
 class BudgetItem(BaseModel):
@@ -133,6 +134,14 @@ class PanelReadModel(Protocol):
         """Recorrido del hilo, o `None` si no existe (o no hay fuente de datos)."""
         ...
 
+    def notes(self, review_key: str) -> list[str]:
+        """Motivo de un cierre incompleto o parcial, leído del estado final."""
+        ...
+
+    def journal(self, review_key: str) -> list[str]:
+        """Líneas que el worker fue anotando para esta review."""
+        ...
+
 
 class RedisPanelReadModel:
     """Estado operativo desde Redis (cola, en vuelo, pausas, descartes, presupuesto).
@@ -161,6 +170,14 @@ class RedisPanelReadModel:
         self._progress_key = progress_key
         self._budget_key = budget_key
         self._budget_total = max(0, budget_total)
+
+    def journal(self, review_key: str) -> list[str]:
+        try:
+            raw = self._client.lrange(f"{JOURNAL_PREFIX}{review_key}", 0, -1)
+        except redis.exceptions.RedisError as exc:
+            logger.warning("panel: Redis no respondio en el log de %s (%s)", review_key, exc)
+            return []
+        return [text for item in raw if (text := _as_text(item).strip())]
 
     def state(self) -> PanelState:
         return PanelState(
@@ -233,6 +250,7 @@ class RedisPanelReadModel:
                     attempts=_as_int(entry.get("attempts")),
                     reason=str(entry.get("reason", "")),
                     discarded_at=_dt_from_epoch(entry.get("discarded_at")),
+                    error=_as_text(entry.get("error")),
                 )
             )
         return items
@@ -297,6 +315,9 @@ class PgTraceReader:
     def trace(self, review_key: str) -> ReviewTrace | None:
         return read_trace(self._reader(), review_key)
 
+    def notes(self, review_key: str) -> list[str]:
+        return read_review_notes(self._reader(), review_key)
+
     def dial_revision(self, review_key: str) -> int | None:
         """Revisión de diales que fijó el hilo, o `None` si no hay foto."""
         from agent_review.panel_config import snapshot_revision
@@ -346,6 +367,16 @@ class CompositePanelReadModel:
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._trace_reader.trace(review_key)
+
+    def notes(self, review_key: str) -> list[str]:
+        try:
+            return self._trace_reader.notes(review_key)
+        except Exception:
+            logger.exception("panel: no se pudo leer el motivo de %s", review_key)
+            return []
+
+    def journal(self, review_key: str) -> list[str]:
+        return self._state_model.journal(review_key)
 
     def dial_pins(self) -> list[tuple[str, int]] | None:
         """Reviews en curso y la revisión de diales que cada una fijó.
@@ -438,6 +469,12 @@ def _paused_item(review: PausedReview) -> PausedItem:
         command_hint=approval.command_hint,
         publication=approval.pause_kind == "publication",
     )
+
+
+def _as_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _as_int(value: object) -> int:

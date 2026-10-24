@@ -191,7 +191,7 @@ compila otro grafo ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md),
 flowchart TD
     START([START]) --> scope
     scope["scope<br/>diff para anclar"] -->|"Send"| persona
-    persona["persona<br/>cargador claude + estática si el perfil declara typecheck"] --> merge
+    persona["persona<br/>cargador del artefacto de Claude"] --> merge
     merge --> stamp
     stamp["stamp<br/>acción publish, sin política"] --> hitl
     hitl{"hitl<br/>¿cuáles se publican?"} -->|no| publish
@@ -405,7 +405,9 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:processing:<host>` | Job en vuelo de ese worker, hasta el `ack`. Un proceso nuevo con el mismo host lo devuelve a `reviews:jobs`; otro host, si el latido (`…:hb`) supera 6 h | latido 6 h |
-| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request. Un payload ilegible llega en crudo (`raw`) | — |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, `error` (log de los intentos) y request. Un payload ilegible llega en crudo (`raw`). El enlace del panel abre ese log cuando no hay recorrido | — |
+| Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
+| Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
 | Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota` o `quota-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` no | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |

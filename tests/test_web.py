@@ -92,6 +92,14 @@ class FakeReadModel:
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._traces.get(review_key)
 
+    def notes(self, review_key: str) -> list[str]:
+        del review_key
+        return []
+
+    def journal(self, review_key: str) -> list[str]:
+        del review_key
+        return []
+
 
 def _fake_state() -> PanelState:
     return PanelState(
@@ -377,6 +385,7 @@ def _seed_redis() -> fakeredis.FakeRedis:
                 "review_key": "r:3:c:3",
                 "attempts": 3,
                 "reason": "twg caido",
+                "error": "intento 3\nRuntimeError: twg caido",
                 "discarded_at": 1760620000.0,
             }
         ),
@@ -402,6 +411,7 @@ def test_read_model_lee_el_estado_de_redis() -> None:
     assert [item.review_key for item in state.paused.fix] == ["r:2:def:2"]
     assert state.paused.fix[0].jobs[0]["run_key"] == "r:2:def:2:f1:1"
     assert state.dead[0].reason == "twg caido"
+    assert "twg caido" in state.dead[0].error
     assert [item.review_key for item in state.budget] == ["r:1:abc:1"], "el fix no es la review"
     assert state.budget[0].committed == 1200
     assert state.budget[0].reserved == 300

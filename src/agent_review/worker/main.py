@@ -4,6 +4,7 @@ import fcntl
 import logging
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -252,8 +253,9 @@ def build_reviewers(
     Fase 1: la persona estatica arranca por defecto; las personas LLM son opt-in
     para no gastar tokens hasta validar el publish E2E. Cada persona LLM usa el
     modelo que su **rol** tenga bindeado en el registro: `correctness` y `security`
-    pueden correr en modelos distintos. El artefacto de la herramienta estatica lo
-    deposita el CI; el worker no ejecuta PHPStan (eso es el sandbox de Fase 3).
+    pueden correr en modelos distintos. Si el CI dejó la salida de la herramienta
+    estática, entra en la review. Si no está, esa persona no participa: empezar
+    no la exige. El worker no ejecuta PHPStan.
 
     Cada persona LLM recibe el presupuesto **compartido** y su tope blando: el total
     repartido con holgura (el doble del reparto justo) acota lo que una persona con
@@ -627,8 +629,8 @@ def _build_claude_runtime(
     """Compila el grafo claude. No construye personas LLM, verificador ni politica.
 
     `reviewers`, `fixer` y `verifier` de `build_runtime` no aplican: un doble
-    inyectado por esa via no se llama. La persona estatica entra solo si el
-    perfil declara `checks.typecheck`.
+    inyectado por esa via no se llama. No entra la persona estática: phpstan y
+    el resto de artefactos del CI son del motor `llm`. Aquí revisa el CLI.
     """
     validate_tooling_template(settings)
     vcs = vcs or build_vcs(settings)
@@ -643,16 +645,6 @@ def _build_claude_runtime(
     reviewers: list[ReviewerPort] = [
         ClaudeArtifactReviewer(ClaudeArtifactStore(root=settings.claude_artifact_root))
     ]
-    checks = profile.get("checks") or {}
-    if isinstance(checks, dict) and checks.get("typecheck"):
-        reviewers.append(
-            ToolingReviewer(
-                source=FileToolingOutputSource(
-                    template=settings.tooling_output_template,
-                    root=settings.tooling_output_root,
-                )
-            )
-        )
     graph = build_claude_graph(
         vcs=vcs,
         reviewers=reviewers,
@@ -692,6 +684,7 @@ def ensure_claude_artifact(
     *,
     runner: ClaudeRunner,
     store: ClaudeArtifactStore,
+    note: Callable[[str], None] | None = None,
 ) -> None:
     """Una llamada al CLI por `head_sha`, antes del grafo.
 
@@ -705,9 +698,15 @@ def ensure_claude_artifact(
     with path.with_suffix(".lock").open("a") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         loaded = store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        short = request.head_sha[:12]
         if loaded is not None:
+            _say(note, f"Claude: artefacto ya válido para {short}. No se llama al CLI.")
             return
+        _say(note, f"Claude: empieza el CLI para {short}.")
+        started = time.monotonic()
         stdout = runner.run(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        elapsed = time.monotonic() - started
+        _say(note, f"Claude: el CLI terminó en {elapsed:.0f}s.")
         if not store.save(
             stdout, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha
         ):
@@ -728,6 +727,7 @@ def process_request(
     claude_runner: ClaudeRunner | None = None,
     claude_store: ClaudeArtifactStore | None = None,
     dial_snapshot: Mapping[str, object] | None = None,
+    note: Callable[[str], None] | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -768,22 +768,44 @@ def process_request(
             fix_ttl_s=fix_ttl_s,
         )
     if snapshot is not None and not snapshot.next:
-        logger.info(
-            "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
-            request.review_key,
-        )
-        if request.decision is not None:
-            # Carrera habitual: el `expired` del TTL y la decision humana estaban
-            # ambos en cola y gano el primero. No se pierde en silencio.
-            logger.warning(
-                "Decision de %s sobre %s descartada: el hilo ya estaba completado",
-                request.decision.actor,
+        finished = outcome_from_state(cast("ReviewState", snapshot.values))
+        if _rerun_incomplete(finished, request):
+            # Una review incompleta no es un cierre: el siguiente intento (otro
+            # lanzamiento o un reintento) tiene que volver a ejecutar. Una completa
+            # sigue reutilizando el hilo para no duplicar comentarios.
+            logger.info(
+                "Review %s termino incompleta; se borra el hilo y se vuelve a ejecutar",
                 request.review_key,
             )
-        # Si el worker murio entre el resume y la limpieza, la entrada seguiria en
-        # el inbox y el barrido la reencolaria en bucle.
-        _clear_paused(paused, request)
-        return outcome_from_state(cast("ReviewState", snapshot.values))
+            saver = getattr(graph, "checkpointer", None)
+            if saver is None:
+                snapshot = None
+            else:
+                try:
+                    saver.delete_thread(request.thread_id)
+                except Exception:
+                    logger.exception(
+                        "No se pudo borrar el hilo incompleto %s", request.review_key
+                    )
+                    return finished
+                snapshot = None
+        else:
+            logger.info(
+                "Review %s ya completada en su hilo; no se re-ejecuta ni re-publica",
+                request.review_key,
+            )
+            if request.decision is not None:
+                # Carrera habitual: el `expired` del TTL y la decision humana estaban
+                # ambos en cola y gano el primero. No se pierde en silencio.
+                logger.warning(
+                    "Decision de %s sobre %s descartada: el hilo ya estaba completado",
+                    request.decision.actor,
+                    request.review_key,
+                )
+            # Si el worker murio entre el resume y la limpieza, la entrada seguiria en
+            # el inbox y el barrido la reencolaria en bucle.
+            _clear_paused(paused, request)
+            return finished
     if snapshot is not None:
         logger.info(
             "Review %s a medias en su hilo (siguiente: %s); se continua desde el checkpoint",
@@ -805,7 +827,9 @@ def process_request(
                 request.review_key,
             )
         if claude_runner is not None and claude_store is not None:
-            ensure_claude_artifact(request, runner=claude_runner, store=claude_store)
+            ensure_claude_artifact(
+                request, runner=claude_runner, store=claude_store, note=note
+            )
         state: ReviewState = {"request": request, "findings": []}
         if dial_snapshot is not None:
             state["dial_snapshot"] = dict(dial_snapshot)
@@ -826,6 +850,17 @@ def process_request(
         # debe salir del inbox.
         _clear_paused(paused, request)
     return outcome
+
+
+def _rerun_incomplete(outcome: ReviewOutcome, request: ReviewRequest) -> bool:
+    """Una review que no cubrió lo declarado se puede volver a lanzar.
+
+    Una completa no: repetir la misma ejecución reutiliza el hilo. Una reanudación
+    (decisión o fix) tampoco borra el hilo para empezar de cero.
+    """
+    if outcome.complete or outcome.paused:
+        return False
+    return request.decision is None and request.fix_resolution is None
 
 
 def _resume_paused(
@@ -1642,10 +1677,11 @@ def _consume(
     *tombstone* que aborta aquí mismo cualquier job rezagado de la review (ver
     `worker.cancel`).
     """
+    requeued = False
+    pending_key = request.review_key
     try:
         # La cola aun muestra el job sin SHA. Cancelarlo marca esa clave; se
         # mira antes de llamar al VCS para no resolver un lanzamiento ya abortado.
-        pending_key = request.review_key
         if request.cancelled or (cancel is not None and cancel.is_cancelled(pending_key)):
             _on_cancelled(graph, request, paused=paused)
             return
@@ -1662,6 +1698,7 @@ def _consume(
                 logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
             return
         request = _with_base_sha(request, vcs)
+        _journal(queue, request.review_key, f"Intento {request.attempts + 1}")
         outcome = process_request(
             graph,
             request,
@@ -1673,6 +1710,7 @@ def _consume(
             claude_runner=claude_runner,
             claude_store=claude_store,
             dial_snapshot=dial_snapshot,
+            note=lambda text: _journal(queue, request.review_key, text),
         )
         # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
         # Una reentrega del mismo job actualiza su entrada, no la duplica.
@@ -1682,7 +1720,8 @@ def _consume(
                     outcome, finished_at=datetime.now(UTC), reasoning=reasoning
                 )
             )
-    except ClaudeInvalidOutput:
+        _journal(queue, request.review_key, _outcome_line(outcome))
+    except ClaudeInvalidOutput as exc:
         logger.warning("Stdout de Claude invalido en %s; se reintenta", request.review_key)
         if request.attempts == 0 and chat is not None:
             try:
@@ -1697,8 +1736,9 @@ def _consume(
                 )
             except Exception:
                 logger.exception("No se pudo avisar la salida invalida de %s", request.review_key)
+        log = _remember_failure(queue, request, exc)
         try:
-            _requeue_or_drop(queue, request, max_attempts=max_attempts)
+            requeued = _requeue_or_drop(queue, request, max_attempts=max_attempts, error=log)
         except Exception:
             logger.exception(
                 "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
@@ -1730,9 +1770,14 @@ def _consume(
             # el job entero, pero la clasificacion de job es mas laxa que la de
             # nodo: se registra para poder distinguirlo en la DLQ.
             logger.exception("Fallo no clasificado como transitorio en %s", request.review_key)
-        _requeue_quietly(queue, request, max_attempts=max_attempts)
+        log = _remember_failure(queue, request, exc)
+        requeued = _requeue_quietly(queue, request, max_attempts=max_attempts, error=log)
     finally:
         clear_progress(progress, request.review_key)
+        if not requeued:
+            _forget_failure(queue, pending_key)
+            if request.review_key != pending_key:
+                _forget_failure(queue, request.review_key)
 
 
 def _quota_on_cooldown(
@@ -1795,23 +1840,105 @@ def _on_cancelled(
     logger.info("Review %s cancelada; hilo borrado y fuera del inbox", request.review_key)
 
 
+def _remember_failure(queue: ReviewQueue, request: ReviewRequest, exc: BaseException) -> str:
+    """Acumula el traceback de este intento y devuelve el log que verá la DLQ."""
+    text = _format_failure(request, exc)
+    _journal(queue, request.review_key, text)
+    try:
+        queue.note_failure(request.review_key, text)
+        logged = queue.failure_log(request.review_key)
+    except Exception:
+        logger.exception("No se pudo guardar el log de %s", request.review_key)
+        return text
+    return logged or text
+
+
+def _say(note: Callable[[str], None] | None, text: str) -> None:
+    logger.info("%s", text)
+    if note is None:
+        return
+    try:
+        note(text)
+    except Exception:
+        logger.exception("No se pudo anotar %s", text)
+
+
+def _journal(queue: ReviewQueue, review_key: str, text: str) -> None:
+    """Anota el log de la ficha. Un fallo de Redis no tumba el job."""
+    line = text.strip()
+    if not line:
+        return
+    record = getattr(queue, "append_journal", None)
+    if record is None:
+        return
+    try:
+        record(review_key, line)
+    except Exception:
+        logger.exception("No se pudo anotar el log de %s", review_key)
+
+
+def _outcome_line(outcome: ReviewOutcome) -> str:
+    count = len(outcome.findings)
+    if outcome.paused:
+        return (
+            f"Pausa: {count} hallazgo(s) esperan una decisión "
+            "antes de escribir en el pull request."
+        )
+    if outcome.complete and count == 0:
+        return (
+            "Terminó sin hallazgos. El motor claude no escribe un comentario vacío "
+            "en el pull request."
+        )
+    if outcome.complete:
+        return f"Terminó con {count} hallazgo(s)."
+    unread = (
+        [
+            f"{path}={reason.value}"
+            for path, reason in outcome.coverage.skipped.items()
+            if reason is not SkipReason.IGNORED
+        ]
+        if outcome.coverage is not None
+        else []
+    )
+    missing = [f"{name}={status.value}" for name, status in outcome.unavailable_sources.items()]
+    detail = ", ".join([*missing, *unread]) or "sin detalle"
+    return f"Review incompleta {outcome.request.review_key}; sin cobertura de: {detail}"
+
+
+def _forget_failure(queue: ReviewQueue, review_key: str) -> None:
+    try:
+        queue.clear_failure(review_key)
+    except Exception:
+        logger.exception("No se pudo borrar el log de %s", review_key)
+
+
+def _format_failure(request: ReviewRequest, exc: BaseException) -> str:
+    trace = "".join(traceback.format_exception(exc)).strip()
+    if len(trace) > 4000:
+        trace = "…\n" + trace[-4000:]
+    return f"intento {request.attempts + 1}\n{trace}"
+
+
 def _requeue_or_drop(
     queue: ReviewQueue,
     request: ReviewRequest,
     *,
     max_attempts: int,
     keep_repin: bool = False,
-) -> None:
+    error: str = "",
+) -> bool:
+    """Reencola o descarta. True si el job sigue en la cola."""
     if request.attempts + 1 >= max_attempts:
         # Job descartado a proposito tras fallos persistentes: no desaparece en el
-        # log, va a la DLQ para poder reinyectarlo o inspeccionarlo (B2).
+        # log, va a la DLQ para poder reinyectarlo o inspeccionarlo (B2). El log
+        # de los intentos viaja en la entrada: el panel lo pinta al abrir el enlace.
         logger.error(
             "Review %s agoto los %d intentos; se manda a la DLQ",
             request.review_key,
             max_attempts,
         )
-        queue.dead_letter(request, reason=f"intentos agotados ({max_attempts})")
-        return
+        queue.dead_letter(request, reason=f"intentos agotados ({max_attempts})", error=error)
+        return False
     # `repin_dials` es la orden de un reintento del panel de releer lo publicado.
     # Conservarla en un reencolado interno re-fijaria la foto a mitad del hilo: el
     # job arrancaria con la revision N y el `update_state` la sellaria como N+1.
@@ -1826,6 +1953,7 @@ def _requeue_or_drop(
         retry.attempts + 1,
         max_attempts,
     )
+    return True
 
 
 def _checkpoint_values(saver: Any, thread_id: str) -> dict[str, object] | None:
@@ -1881,16 +2009,20 @@ def _requeue_quietly(
     *,
     max_attempts: int,
     keep_repin: bool = False,
-) -> None:
-    """Reencola o descarta sin poder tumbar el bucle: ya salio de la cola."""
+    error: str = "",
+) -> bool:
+    """Reencola o descarta sin poder tumbar el bucle. True si el job sigue en la cola."""
     try:
-        _requeue_or_drop(queue, request, max_attempts=max_attempts, keep_repin=keep_repin)
+        return _requeue_or_drop(
+            queue, request, max_attempts=max_attempts, keep_repin=keep_repin, error=error
+        )
     except Exception:
         logger.exception(
             "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
             request.review_key,
             request.model_dump_json(),
         )
+        return False
 
 
 def _on_mount_failure(
@@ -1914,7 +2046,16 @@ def _on_mount_failure(
         )
     else:
         logger.exception("Fallo montando la review %s", request.review_key)
-    _requeue_quietly(queue, request, max_attempts=settings.max_review_attempts, keep_repin=True)
+    log = _remember_failure(queue, request, exc)
+    kept = _requeue_quietly(
+        queue,
+        request,
+        max_attempts=settings.max_review_attempts,
+        keep_repin=True,
+        error=log,
+    )
+    if not kept:
+        _forget_failure(queue, request.review_key)
 
 
 def _mount_or_requeue(

@@ -28,6 +28,7 @@ from agent_review.claude_runner.checkout import (
     drop_push_remotes,
     prepare_checkout,
 )
+from agent_review.claude_runner.main import require_claude_binary
 from agent_review.domain.models import ReviewRequest
 from agent_review.errors import PermanentError, TransientError
 from agent_review.ports.claude import (
@@ -260,6 +261,26 @@ def test_stdout_invalido_avisa_una_vez_y_no_en_el_reintento(tmp_path: Path) -> N
     assert "No se ha publicado" in str(chat.avisos[0]["body"])
 
 
+def test_el_descarte_guarda_el_log_de_los_intentos(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("no se encontro el ejecutable de claude"))
+    queue = InMemoryReviewQueue()
+    request = _request()
+
+    _consume(queue, _Graph(), request, max_attempts=2, claude_runner=runner, claude_store=store)
+    retried = queue.dequeue()
+    assert retried is not None
+    _consume(queue, _Graph(), retried, max_attempts=2, claude_runner=runner, claude_store=store)
+
+    dead = queue.dead_letters()
+    assert len(dead) == 1
+    error = str(dead[0]["error"])
+    assert "intento 1" in error
+    assert "intento 2" in error
+    assert "no se encontro el ejecutable de claude" in error
+    assert queue.failure_log(request.review_key) == ""
+
+
 def test_un_proceso_caido_no_invoca_el_grafo(tmp_path: Path) -> None:
     store = ClaudeArtifactStore(root=tmp_path)
     runner = _Runner(error=ClaudeProcessCrashed("murio"))
@@ -324,6 +345,32 @@ def test_el_cliente_http_traduce_el_cupo_y_devuelve_stdout_sin_validar() -> None
         client=httpx.Client(transport=httpx.MockTransport(roto)),
     )
     with pytest.raises(ClaudeProcessCrashed, match="JSON"):
+        runner.run(repo="r", pr_id=1, head_sha="abc")
+
+    def caido(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(502, json={"detail": "Invalid bearer token"})
+
+    runner = HttpClaudeRunner(
+        url="http://claude-runner",
+        token="",
+        timeout_s=1,
+        client=httpx.Client(transport=httpx.MockTransport(caido)),
+    )
+    with pytest.raises(ClaudeProcessCrashed, match="Invalid bearer token"):
+        runner.run(repo="r", pr_id=1, head_sha="abc")
+
+    def caido(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(502, json={"detail": "no se encontro el ejecutable de claude"})
+
+    runner = HttpClaudeRunner(
+        url="http://claude-runner",
+        token="",
+        timeout_s=1,
+        client=httpx.Client(transport=httpx.MockTransport(caido)),
+    )
+    with pytest.raises(ClaudeProcessCrashed, match="no se encontro el ejecutable de claude"):
         runner.run(repo="r", pr_id=1, head_sha="abc")
 
 
@@ -544,3 +591,25 @@ def test_el_worker_no_exige_la_credencial_de_clonado() -> None:
     runner_github = secrets_for(con_github, "claude-runner")
     assert "GITHUB_TOKEN" not in runner_github
     assert "CLAUDE_GIT_TOKEN" not in runner_github
+
+
+def test_solo_la_imagen_del_runner_instala_el_cli() -> None:
+    services = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"]
+    build = services["claude-runner"]["build"]
+    assert build["target"] == "claude-runner"
+    assert "INSTALL_CLAUDE" not in build.get("args", {})
+    dockerfile = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM app AS claude-runner" in dockerfile
+    assert "INSTALL_CLAUDE" not in dockerfile
+    for name, service in services.items():
+        if name == "claude-runner":
+            continue
+        other = service.get("build")
+        target = other.get("target") if isinstance(other, dict) else None
+        assert target != "claude-runner"
+
+
+def test_el_runner_no_arranca_sin_el_ejecutable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("agent_review.claude_runner.main.shutil.which", lambda _binary: None)
+    with pytest.raises(RuntimeError, match="claude-code"):
+        require_claude_binary("claude")

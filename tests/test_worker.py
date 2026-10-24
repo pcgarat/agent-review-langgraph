@@ -1781,3 +1781,47 @@ def test_un_reencolado_por_fallo_de_trabajo_quita_repin() -> None:
     retried = queue.dequeue()
     assert retried is not None
     assert retried.repin_dials is False
+
+
+def test_una_review_incompleta_se_vuelve_a_ejecutar() -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from agent_review.domain.models import ToolingSourceStatus
+    from agent_review.graph.build import build_graph
+
+    class _UnaVezIncompleta:
+        name = "standards"
+        calls = 0
+
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+            context=None,
+        ) -> ReviewerResult:
+            del repo, pr_id, diff, head_sha, review_key, context
+            self.calls += 1
+            status = ToolingSourceStatus.MISSING if self.calls == 1 else None
+            return ReviewerResult(findings=[], tooling_status=status)
+
+    reviewer = _UnaVezIncompleta()
+    graph = build_graph(
+        vcs=FakeVcs(),
+        reviewers=[reviewer],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile(checkpointer=InMemorySaver())
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="panel")
+
+    first = process_request(graph, request)
+    second = process_request(graph, request)
+    third = process_request(graph, request)
+
+    assert first.complete is False
+    assert reviewer.calls == 2
+    assert second.complete is True
+    assert third.complete is True
+    assert reviewer.calls == 2

@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS app
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -35,3 +35,29 @@ COPY contracts ./contracts
 RUN pip install --upgrade pip && pip install .
 
 CMD ["python", "-m", "agent_review.worker.main"]
+
+# El paquete apt se llama claude-code; el ejecutable del PATH es `claude`.
+# Esta etapa es la imagen de claude-runner y siempre lo instala: un runner sin
+# el CLI no revisa. No es la etapa por defecto: el worker publica con otro
+# token y no debe llevar el binario (ADR-0028).
+FROM app AS claude-runner
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl gnupg \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
+         -o /etc/apt/keyrings/claude-code.asc \
+    && fp="$(gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc \
+         | awk -F: '$1 == "fpr" { print $10; exit }')" \
+    && test "$fp" = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE" \
+    && printf '%s\n' \
+         'deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main' \
+         > /etc/apt/sources.list.d/claude-code.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends claude-code \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v claude \
+    && claude --version
+
+# `docker build` sin --target construye la ultima etapa. Tiene que ser la de
+# la aplicacion, sin el CLI.
+FROM app
