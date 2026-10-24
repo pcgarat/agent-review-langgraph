@@ -25,6 +25,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - [x] **S5** Pantalla de login con un solo campo
 - [x] **S6** El rol del cliente sale de `GET /api/session`; `ROLE_COOKIE` se borra
 - [x] **S7** Tests de S1–S3 en Python, con `TestClient`
+- [ ] **S8** `/claude`: formulario del token del CLI, solo `operador`
 
 ## Bloque A — API de la ficha (checkpoint A-K)
 
@@ -35,11 +36,11 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque D — Cuadro de mando (checkpoint D-K)
 
-- [ ] **D1** Las cuatro cifras: en cola, en vuelo, esperando persona, descartes
-- [ ] **D2** Secciones de cola, en vuelo, pausas, descartes y presupuesto
-- [ ] **D3** Lanzar review contra `POST /api/launch`
-- [ ] **D4** Cancelar, reintentar y olvidar con confirmación y *toast*
-- [ ] **D5** Invalidación de la caché tras cada comando
+- [x] **D1** Las cuatro cifras: en cola, en vuelo, esperando persona, descartes
+- [x] **D2** Secciones de cola, en vuelo, pausas, descartes y presupuesto
+- [x] **D3** Lanzar review contra `POST /api/launch`
+- [x] **D4** Cancelar, reintentar y olvidar con confirmación y *toast*
+- [x] **D5** Invalidación de la caché tras cada comando
 
 ## Bloque F — Ficha (checkpoint F-K)
 

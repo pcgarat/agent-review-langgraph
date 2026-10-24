@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 
 import { SessionContext, type SessionContextValue } from '@/session/session'
+import { ToastProvider } from '@/components/ToastProvider'
 import { AppRoutes } from './router'
 
 const KEY = 'cqm/emotivoo-v2:42:abc123:7'
@@ -27,7 +28,9 @@ function renderAt(path: string, session: SessionContextValue) {
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={[path]}>
         <SessionContext.Provider value={session}>
-          <AppRoutes />
+          <ToastProvider>
+            <AppRoutes />
+          </ToastProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -48,12 +51,32 @@ describe('rutas', () => {
     expect(screen.queryByText('Cuadro de mando')).not.toBeInTheDocument()
   })
 
-  it('con sesión, la raíz es el cuadro de mando', () => {
+  it('con sesión, la raíz es el cuadro de mando', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            generated_at: '2026-10-24T11:00:00+00:00',
+            queue: [],
+            active: [],
+            paused: { human: [], fix: [] },
+            dead: [],
+            budget: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
     renderAt('/', OPERADOR)
     // El título vive en la cabecera como texto, no como encabezado de documento;
     // el sidebar lo repite como enlace. No debe haber un `h1` por pantalla.
     expect(screen.queryByRole('heading', { name: 'Cuadro de mando' })).not.toBeInTheDocument()
-    expect(screen.getByText('Pendiente · bloque D')).toBeInTheDocument()
+    // La raíz ya no es un aviso de bloque pendiente: pide el estado y pinta el
+    // cuadro de mando.
+    expect(await screen.findByTestId('figure-queue')).toBeInTheDocument()
+    expect(screen.queryByText('Pendiente · bloque D')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Cuadro de mando' })).toBeInTheDocument()
+    vi.unstubAllGlobals()
   })
 })
