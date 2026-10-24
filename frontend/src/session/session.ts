@@ -12,9 +12,9 @@
 import { createContext, useContext } from 'react'
 
 import { api, ApiError } from '@/api/client'
-import type { SessionUser } from '@/api/types'
+import type { Role, SessionUser } from '@/api/types/session'
 
-export type Role = 'lector' | 'operador'
+export type { Role }
 
 export interface SessionState {
   status: 'loading' | 'anonymous' | 'authenticated'

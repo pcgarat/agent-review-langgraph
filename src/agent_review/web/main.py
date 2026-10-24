@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent_review.claude_activity import (
     activity_paths,
@@ -33,7 +33,15 @@ from agent_review.history_store import ReviewHistory
 from agent_review.ports.reasoning import ReasoningReader
 from agent_review.queue import RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
-from agent_review.web.auth import Session, require_command_session, require_session
+from agent_review.web.auth import (
+    Session,
+    clear_session_cookie,
+    require_command_session,
+    require_session,
+    session_payload,
+    set_session_cookie,
+    verify_session,
+)
 from agent_review.web.bandeja import build_bandeja
 from agent_review.web.bandeja import router as bandeja_router
 from agent_review.web.commands import (
@@ -164,6 +172,62 @@ def get_reasoning(request: Request) -> ReasoningReader | None:
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# --- Sesion del panel (029, P6/P7) -----------------------------------------------
+
+
+@app.get("/api/session")
+def read_session(session: Annotated[Session, Depends(require_session)]) -> dict[str, str]:
+    """Quien ha entrado y que rol tiene (029, P7).
+
+    La SPA no puede leer la cookie (`HttpOnly`), asi que pregunta. Es la unica
+    fuente del rol en el cliente: no hay una segunda copia que se desincronice.
+    """
+    return session_payload(session)
+
+
+@app.post("/api/session")
+async def open_session(request: Request) -> Response:
+    """Valida el token del despliegue y deja la cookie de sesion (029, P6).
+
+    Es la unica ruta que acepta la credencial en el cuerpo. Ni el token ni la
+    cookie vuelven en la respuesta: la cookie la pone `Set-Cookie` y el cuerpo solo
+    lleva la identidad.
+    """
+    settings = _settings()
+    token = await _session_token(request)
+    try:
+        session = verify_session(settings, token)
+    except HTTPException as exc:
+        # Sin `WWW-Authenticate`: el navegador no debe abrir su dialogo nativo de
+        # credenciales por un token de panel mal escrito.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Ese token no vale") from exc
+    payload = session_payload(session)
+    response = JSONResponse(payload)
+    set_session_cookie(response, settings)
+    return response
+
+
+@app.delete("/api/session", status_code=status.HTTP_204_NO_CONTENT)
+def close_session() -> Response:
+    """Borra la cookie. Idempotente: sin cookie tambien es `204`."""
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_session_cookie(response)
+    return response
+
+
+async def _session_token(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    token = body.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta el token")
+    return token.strip()
 
 
 @app.get("/api/state")

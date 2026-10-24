@@ -19,9 +19,13 @@ export default defineConfig({
     port: 5173,
     // La cookie de sesion es del mismo origen tambien en desarrollo: Vite
     // reenvia `/api` al proceso `web` y el navegador no ve dos origenes.
+    // `PANEL_WEB_URL` permite apuntar a otro puerto sin editar el fichero.
     proxy: {
-      '/api': { target: 'http://localhost:8090', changeOrigin: false },
-      '/healthz': { target: 'http://localhost:8090', changeOrigin: false },
+      '/api': { target: process.env.PANEL_WEB_URL ?? 'http://localhost:8090', changeOrigin: false },
+      '/healthz': {
+        target: process.env.PANEL_WEB_URL ?? 'http://localhost:8090',
+        changeOrigin: false,
+      },
     },
   },
   test: {

@@ -50,9 +50,10 @@ describe('rutas', () => {
 
   it('con sesión, la raíz es el cuadro de mando', () => {
     renderAt('/', OPERADOR)
-    // El nombre de la pantalla aparece una sola vez, en la cabecera: repetirlo en
-    // el cuerpo es ruido para quien lee.
-    expect(screen.getByRole('heading', { name: 'Cuadro de mando' })).toBeInTheDocument()
-    expect(screen.getAllByText('Cuadro de mando')).toHaveLength(2) // sidebar + cabecera
+    // El título vive en la cabecera como texto, no como encabezado de documento;
+    // el sidebar lo repite como enlace. No debe haber un `h1` por pantalla.
+    expect(screen.queryByRole('heading', { name: 'Cuadro de mando' })).not.toBeInTheDocument()
+    expect(screen.getByText('Pendiente · bloque D')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Cuadro de mando' })).toBeInTheDocument()
   })
 })

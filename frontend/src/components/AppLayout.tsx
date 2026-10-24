@@ -51,12 +51,12 @@ export function AppLayout({ title, children }: AppLayoutProps) {
       </CSidebar>
 
       <div className="wrapper d-flex flex-column min-vh-100">
-        <CHeader position="sticky" className="p-0">
+        <CHeader position="sticky" className="p-0 header-slim">
           <CContainer className="border-bottom px-4" fluid>
             <CHeaderToggler onClick={() => setSidebarVisible(!sidebarVisible)}>
               <CIcon icon={cilMenu} size="lg" />
             </CHeaderToggler>
-            <h1 className="h6 mb-0 ms-2 text-truncate">{title}</h1>
+            <span className="header-title text-truncate">{title}</span>
             <CHeaderNav className="ms-auto align-items-center">
               <CNavItem className="text-body-secondary small d-none d-sm-block">
                 {session.user?.user ?? '—'}

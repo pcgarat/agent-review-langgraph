@@ -19,7 +19,7 @@ from enum import StrEnum
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from agent_review.settings import Settings, get_settings, is_missing
@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 # aceptan las dos vias (cabecera y cookie) porque `curl` y los tests mandan cabecera
 # y una navegacion normal, solo cookie.
 SESSION_COOKIE = "panel_session"
-# Cookie de rol legible por el servidor para pintar los botones sin repetir el
-# secreto en el HTML. No autoriza nada por si sola: la sesion se valida aparte.
-ROLE_COOKIE = "panel_role"
 # Usuario que se asume cuando no hay secreto ni cabecera (dev/test).
 _DEV_USER = "dev"
 # Valores de `Sec-Fetch-Site` que no delatan una peticion cruzada: el propio origen,
@@ -122,6 +119,49 @@ def require_session(
     `panel_session` (navegador: una navegacion normal no puede mandar cabeceras).
     """
     return verify_session(get_settings(), x_panel_session or panel_session)
+
+
+# --- La cookie de sesion (029, P6/P7) --------------------------------------------
+
+
+def cookie_secure(settings: Settings) -> bool:
+    """`Secure` cuando el panel se sirve por HTTPS.
+
+    Se mira `PANEL_PUBLIC_URL` y no el esquema de la peticion: detras de un proxy
+    TLS el `web` ve `http` y marcaria la cookie como insegura, con lo que el
+    navegador la aceptaria y el despliegue creeria estar protegido.
+    """
+    return settings.panel_public_url.strip().lower().startswith("https://")
+
+
+def set_session_cookie(response: Response, settings: Settings) -> None:
+    """Deja la cookie de sesion en la respuesta.
+
+    `HttpOnly` para que el JavaScript del panel no pueda leerla (el rol se
+    pregunta por `GET /api/session`), `SameSite=Lax` porque el panel no se embebe
+    en otro sitio, y `Secure` si el despliegue es HTTPS. Sin `Max-Age`: es una
+    cookie de sesion del navegador.
+    """
+    response.set_cookie(
+        SESSION_COOKIE,
+        settings.panel_session_secret.strip(),
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure(settings),
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+
+
+def session_payload(session: Session) -> dict[str, str]:
+    """Lo que la SPA necesita para saber quién es y qué puede.
+
+    Nunca lleva el token: es la identidad, no la credencial.
+    """
+    return {"user": session.user, "role": session.role.value}
 
 
 def require_operador(session: Annotated[Session, Depends(require_session)]) -> Session:

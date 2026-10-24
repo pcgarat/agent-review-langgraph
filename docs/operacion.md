@@ -449,6 +449,9 @@ token, para no lanzar la URL de otro repositorio
 | Método | Ruta | Auth | Respuestas |
 |---|---|---|---|
 | `GET` | `/healthz` | — | `200` |
+| `GET` | `/api/session` | Sesión | Quién ha entrado y su rol (029): `{"user", "role"}`. `401` sin sesión. La SPA no puede leer la cookie (`HttpOnly`) y pregunta aquí: es la única fuente del rol en el cliente |
+| `POST` | `/api/session` | — | Entra (029): cuerpo `{"token": "…"}`, validado con el mismo `verify_session` de la cabecera. `200` con la identidad y `Set-Cookie: panel_session=…; HttpOnly; SameSite=Lax; Path=/` (`Secure` si `PANEL_PUBLIC_URL` es https). `401` si el token no vale, `400` si el cuerpo no encaja. Ni el token ni la cookie vuelven en el cuerpo |
+| `DELETE` | `/api/session` | — | Sale (029): `204` y borra la cookie. Idempotente |
 | `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
 | `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
 | `GET` | `/api/history` | Sesión | Reviews terminadas, la más reciente primero (021): resultado (completa, parcial o incompleta), hallazgos por severidad, tokens, ficheros revisados y si hubo razonamiento. Filtros `repo`, `pr_id` y `limit`; la página HTML es `/history` |

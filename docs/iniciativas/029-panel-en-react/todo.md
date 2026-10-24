@@ -18,13 +18,13 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque S — Sesión (checkpoint S-K)
 
-- [ ] **S1** `GET /api/session` con `{user, role}`
-- [ ] **S2** `POST /api/session`: valida el secreto y deja la cookie `HttpOnly`
-- [ ] **S3** `DELETE /api/session`: borra la cookie
-- [ ] **S4** Guardia de rutas: sin sesión, `/login`
-- [ ] **S5** Pantalla de login con un solo campo
-- [ ] **S6** El rol del cliente sale de `GET /api/session`; `ROLE_COOKIE` se borra
-- [ ] **S7** Tests de S1–S3 en Python, con `TestClient`
+- [x] **S1** `GET /api/session` con `{user, role}`
+- [x] **S2** `POST /api/session`: valida el secreto y deja la cookie `HttpOnly`
+- [x] **S3** `DELETE /api/session`: borra la cookie
+- [x] **S4** Guardia de rutas: sin sesión, `/login`
+- [x] **S5** Pantalla de login con un solo campo
+- [x] **S6** El rol del cliente sale de `GET /api/session`; `ROLE_COOKIE` se borra
+- [x] **S7** Tests de S1–S3 en Python, con `TestClient`
 
 ## Bloque A — API de la ficha (checkpoint A-K)
 
