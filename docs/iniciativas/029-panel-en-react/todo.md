@@ -62,10 +62,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque C — Configuración (checkpoint C-K)
 
-- [ ] **C1** Secciones y control por dial con su ayuda
-- [ ] **C2** **Restaurar** por control, deshabilitado cuando no hay cambio
-- [ ] **C3** Guardar con revisión y conflicto `409` legible
-- [ ] **C4** Candado `PANEL_CONFIG_LOCK` y revisión fijada por review en curso
+- [x] **C1** Secciones y control por dial con su ayuda
+- [x] **C2** **Restaurar** por control, deshabilitado cuando no hay cambio
+- [x] **C3** Guardar con revisión y conflicto `409` legible
+- [x] **C4** Candado `PANEL_CONFIG_LOCK` y revisión fijada por review en curso
 
 ## Bloque R — Retirada (checkpoint R-K)
 

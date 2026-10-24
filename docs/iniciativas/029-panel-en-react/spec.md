@@ -113,7 +113,7 @@ La plantilla es una demo de componentes; el panel usa una parte.
 | `/review/{review_key}` | `_detail_page`, `_log_page`, `_discard_page` | Recorrido de nodos o pasos del CLI de Claude; log (`notes` + journal); comandos; formulario de decisión; consola del sandbox por SSE; razonamiento por SSE; actividad de Claude por SSE y descarga |
 | `/bandeja` | `bandeja_page` | Preguntas abiertas, respuesta por hallazgo o en lote, aviso del sistema |
 | `/history` | `_history_page` | Reviews terminadas con filtros `repo` / `pr_id` |
-| `/config` | `_config_page` | 26 diales en 5 secciones, ayuda, **Restaurar** por control, **Guardar** con revisión, candado, revisiones fijadas |
+| `/config` | `_config_page` | 25 diales en 5 secciones, ayuda, **Restaurar** por control, **Guardar** con revisión, candado, revisiones fijadas |
 | `/claude` | `claude_session_page` | Formulario del token de Claude (`operador`) |
 | `/login` | no existe | Nueva: valida el secreto y deja la cookie |
 
