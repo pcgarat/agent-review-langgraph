@@ -61,7 +61,7 @@ panel; el worker no lo monta.
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura); volumen `claude_artifacts` en `/app/var/claude` | Necesita `twg` en la imagen si el proveedor es `twg`. `CLAUDE_GIT_TOKEN` llega vacío. No monta `claude_session` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
-| `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) y volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis, el recorrido del checkpointer, publica los diales (027) y lanza reviews con la URL del PR ([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM, pero sí el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
+| `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) y volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis, el recorrido del checkpointer, publica los diales (027) y lanza reviews con la URL del PR ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM, pero sí el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `claude-runner` (perfil `claude`) | `8098` solo interno | `claude_checkout` en `/var/claude-checkout`; `claude_session` en `/var/claude-session` | Checkout de solo lectura y subproceso `claude`. **Sin** `env_file` ni el token de publicación. `CLAUDE_GIT_TOKEN` solo vive aquí; el worker lo recibe vacío. `GET /session` dice si el fichero sigue vigente y lo retira si caducó |
@@ -169,19 +169,26 @@ controles se ven, se pintan con su valor inicial y no se cambian: el navegador n
 los envía y el servidor descarta un valor distinto con `400`. Un nombre que no
 esté en el catálogo aborta el arranque del `web` y del worker. Vacío por defecto.
 
+El `web` no hereda el `.env` entero, pero compose le interpola del mismo `.env`
+cada dial del catálogo, `PANEL_CONFIG_LOCK` y `AUTONOMY_CONFIG`: así resuelve el
+mismo valor inicial y el mismo candado que el worker. Un dial nuevo tiene que
+entrar también en el `environment` del `web` (`tests/test_compose.py` lo exige).
+
 El `web` monta `config/` en solo lectura: `MAX_AUTONOMY_OVERRIDE` se valida
 contra el `max_autonomy` de `autonomy.yaml` con el mismo motor de política,
 solo cuando el formulario pide un valor distinto del inicial. Sin el montaje, un
 guardado que cambie ese dial responde `400`; el resto de la página funciona.
 Los valores iniciales viajan con el formulario, así que un cambio de default en
-el despliegue con la página abierta responde `409` en vez de publicar el viejo.
+el despliegue con la página abierta responde `409` en vez de publicar el viejo;
+un dial que el despliegue añade o retira con la página abierta, también.
 Un candado que llega después de un override publicado gana: la página pinta el
 valor del despliegue y el siguiente guardado descarta ese override, que
 `apply_document` ya ignoraba.
 
 La review que ya empezó sigue con la foto que fijó. La página nombra esa
 revisión junto a la publicada. La siguiente, y un **Reintentar** del panel,
-leen lo publicado. Secretos, arranque y los YAML de
+leen lo publicado; si montar ese reintento falla y se reencola, sigue leyendo lo
+publicado. Secretos, arranque y los YAML de
 `config/` no están en la página ([ADR-0031](adr/0031-configuracion-desde-el-panel.md)).
 
 ### Revisor con herramientas (023)
@@ -398,7 +405,7 @@ perfil de compose `panel`. Lee el estado operativo de Redis y el recorrido del
 checkpointer con un pool de **solo lectura**; no recibe credencial de VCS ni clave
 del LLM (solo lee estado y encola comandos). Recibe el nombre del repo, sin el
 token, para no lanzar la URL de otro repositorio
-([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). La sesión va en la cabecera
+([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). La sesión va en la cabecera
 `X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`) o en la cookie
 `panel_session` (el navegador no puede mandar cabeceras en una navegación normal);
 **no** es `REVIEWS_DECISION_TOKEN`.
@@ -415,7 +422,7 @@ token, para no lanzar la URL de otro repositorio
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
 | `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}`. En una pausa de arreglo, `approved`/`rejected`/`noted`; en una de publicación, `approved` (publicar) y `dropped` (no publicar). La construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana, no cubre **todos** los pendientes o el resultado no vale en esa pausa; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
-| `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
+| `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
 | `GET` | `/api/bandeja` | Sesión | Pausas humanas abiertas (sin sello): las mismas preguntas que la tarjeta de Teams. `teams_enabled` dice si Teams también las muestra. Vacío si no hay ninguna |
 | `POST` | `/api/bandeja/{review_key}/decision` | `operador` | Responde una de esas preguntas. Cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` o, en una pausa de publicación, `{"batch": "blockers\|all\|none"}`. El actor es el de la sesión. Comparte el sello con Teams y con el detalle: la primera respuesta encola y el resto es `409`. `400` si el cuerpo no trae `items` ni `batch`, o trae los dos; `409` si no está pausada, no cubre los pendientes o el resultado no vale; `403` para `lector`; `503` si Redis no responde. Con Teams configurado, ganar encola `withdraw` y el bot borra la tarjeta |
 | `GET` | `/bandeja` | Sesión | La bandeja: tarjetas hasta que se responden, aviso en la página y, con permiso del navegador y la pestaña oculta, notificación del sistema |

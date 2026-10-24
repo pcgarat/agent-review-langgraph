@@ -184,6 +184,32 @@ Hallazgos de la revisión de `feat/configuracion-desde-el-panel` (024).
   - Verifica: `tests/test_worker.py`, `tests/test_panel_config.py`.
   - Ficheros: `src/agent_review/worker/main.py`.
 
+- [x] **R6** El `web` resuelve los mismos diales que el worker
+  - Compose interpola al `web`, del mismo `.env`, cada dial del catálogo,
+    `PANEL_CONFIG_LOCK` y `AUTONOMY_CONFIG`; antes solo recibía dos diales y el
+    candado no le llegaba.
+  - Verifica: `tests/test_compose.py` recorre `catalog()`.
+  - Ficheros: `docker-compose.yml`, `tests/test_compose.py`, `docs/operacion.md`.
+
+- [x] **R7** Reintento del panel que no monta
+  - Un fallo al montar reencola conservando `repin_dials`: montar no toca el hilo.
+    Un reencolado tras invocar lo sigue quitando.
+  - `run_forever` delega en `_mount_or_requeue`, que se prueba con un
+    checkpointer caído.
+  - Verifica: `tests/test_worker.py`.
+  - Ficheros: `src/agent_review/worker/main.py`, `tests/test_worker.py`.
+
+- [x] **R8** Formulario de otra versión
+  - Un dial añadido o retirado con la página abierta es `409` (recargar), no
+    `400` «falta en el formulario».
+  - Verifica: `tests/test_panel_config.py`.
+  - Ficheros: `src/agent_review/panel_config.py`.
+
+- [x] **R9** Etiquetas de ADR tras renumerar
+  - Las referencias al lanzamiento desde el panel vuelven a decir ADR-0029.
+  - Ficheros: `CONTEXT.md`, `docs/arquitectura.md`, `docs/operacion.md`,
+    `docker-compose.yml`.
+
 ### Checkpoint R-K
 
 - [x] `make ci` en verde.

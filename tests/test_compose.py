@@ -149,9 +149,15 @@ def test_el_panel_monta_config_y_recibe_los_diales_que_pinta() -> None:
     assert config, "el panel necesita autonomy.yaml para validar MAX_AUTONOMY_OVERRIDE"
     assert all(str(volume).endswith(":ro") for volume in config), "solo lectura"
 
+    from agent_review.panel_config import catalog
+
     worker_env = _compose()["services"]["worker"]
     web_env = web.get("environment", {})
-    for key in ("LLM_BUDGET_TOKENS_PER_PR", "LLM_MAX_FINDINGS"):
-        assert key in web_env, f"el panel tiene que pintar el mismo {key} que el worker"
+    # El catalogo entero, no una lista a mano: un dial nuevo sin su variable en el
+    # `web` pintaria el default del codigo mientras el worker usa el del `.env`.
+    keys = [item.name.upper() for item in catalog()]
+    keys += ["PANEL_CONFIG_LOCK", "AUTONOMY_CONFIG"]
+    for key in keys:
+        assert key in web_env, f"el panel tiene que resolver el mismo {key} que el worker"
     # El worker los toma del `.env` completo; el panel los interpola del host.
     assert "env_file" in worker_env

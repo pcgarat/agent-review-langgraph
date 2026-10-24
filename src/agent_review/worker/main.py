@@ -1795,7 +1795,13 @@ def _on_cancelled(
     logger.info("Review %s cancelada; hilo borrado y fuera del inbox", request.review_key)
 
 
-def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
+def _requeue_or_drop(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    keep_repin: bool = False,
+) -> None:
     if request.attempts + 1 >= max_attempts:
         # Job descartado a proposito tras fallos persistentes: no desaparece en el
         # log, va a la DLQ para poder reinyectarlo o inspeccionarlo (B2).
@@ -1809,7 +1815,10 @@ def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts
     # `repin_dials` es la orden de un reintento del panel de releer lo publicado.
     # Conservarla en un reencolado interno re-fijaria la foto a mitad del hilo: el
     # job arrancaria con la revision N y el `update_state` la sellaria como N+1.
-    retry = request.model_copy(update={"attempts": request.attempts + 1, "repin_dials": False})
+    # Solo se conserva (`keep_repin`) si el fallo fue antes de tocar el hilo: ahi
+    # la foto nueva aun no se escribio y quitarla dejaria el reintento con la vieja.
+    repin = request.repin_dials and keep_repin
+    retry = request.model_copy(update={"attempts": request.attempts + 1, "repin_dials": repin})
     queue.enqueue(retry)
     logger.warning(
         "Review %s reencolada para el intento %d/%d",
@@ -1866,10 +1875,16 @@ def prepare_review(
     return apply_document(settings, document), snapshot
 
 
-def _requeue_quietly(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
+def _requeue_quietly(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    keep_repin: bool = False,
+) -> None:
     """Reencola o descarta sin poder tumbar el bucle: ya salio de la cola."""
     try:
-        _requeue_or_drop(queue, request, max_attempts=max_attempts)
+        _requeue_or_drop(queue, request, max_attempts=max_attempts, keep_repin=keep_repin)
     except Exception:
         logger.exception(
             "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
@@ -1887,6 +1902,9 @@ def _on_mount_failure(
     perfil y el YAML: cualquiera puede fallar por la misma causa por la que
     fallaría la review. El job ya salió de la cola, así que el camino es el mismo
     que el de un fallo de trabajo: reencolar o, agotados los intentos, la DLQ.
+
+    Montar no escribe en el hilo, así que un reintento del panel conserva
+    `repin_dials`: el siguiente intento tiene que releer lo publicado.
     """
     if is_transient(exc):
         logger.warning(
@@ -1896,7 +1914,45 @@ def _on_mount_failure(
         )
     else:
         logger.exception("Fallo montando la review %s", request.review_key)
-    _requeue_quietly(queue, request, max_attempts=settings.max_review_attempts)
+    _requeue_quietly(queue, request, max_attempts=settings.max_review_attempts, keep_repin=True)
+
+
+def _mount_or_requeue(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    vcs: VcsPort | None,
+    chat: ChatPort | None,
+    progress: ProgressPort | None,
+    registry: ModelRegistry | None,
+    cancellation: Any,
+    budget_client: Any,
+) -> tuple[ReviewGraph, dict[str, object] | None] | None:
+    """Grafo y foto de esta review, o `None` si no se pudo montar y ya se reencoló.
+
+    Montar (leer la foto, releer perfil y YAML, compilar) puede fallar igual que
+    el trabajo. El job ya salió de la cola, así que un fallo pasa por el mismo
+    camino de error y el bucle sigue con el siguiente.
+    """
+    try:
+        return _review_runtime(
+            settings,
+            store,
+            saver,
+            request,
+            vcs=vcs,
+            chat=chat,
+            progress=progress,
+            registry=registry,
+            cancellation=cancellation,
+            budget_client=budget_client,
+        )
+    except Exception as exc:
+        _on_mount_failure(queue, request, exc, settings=settings)
+        return None
 
 
 def _review_runtime(
@@ -2047,25 +2103,22 @@ def run_forever(
             active = graph
             dial_snapshot: Mapping[str, object] | None = None
             if owns_runtime:
-                # Montar el grafo de esta review (leer la foto, releer perfil y YAML,
-                # compilar) puede fallar igual que el trabajo. Tiene que pasar por el
-                # mismo camino de error: el job ya salio de la cola.
-                try:
-                    active, dial_snapshot = _review_runtime(
-                        settings,
-                        config_store,
-                        saver,
-                        request,
-                        vcs=vcs,
-                        chat=chat,
-                        progress=progress,
-                        registry=registry,
-                        cancellation=cancellation,
-                        budget_client=budget_client,
-                    )
-                except Exception as exc:
-                    _on_mount_failure(queue, request, exc, settings=settings)
+                mounted = _mount_or_requeue(
+                    settings,
+                    config_store,
+                    saver,
+                    queue,
+                    request,
+                    vcs=vcs,
+                    chat=chat,
+                    progress=progress,
+                    registry=registry,
+                    cancellation=cancellation,
+                    budget_client=budget_client,
+                )
+                if mounted is None:
                     continue
+                active, dial_snapshot = mounted
             dispatch_job(
                 queue,
                 active,

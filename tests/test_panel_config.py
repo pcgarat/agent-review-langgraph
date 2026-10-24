@@ -292,6 +292,20 @@ def test_un_formulario_de_otra_version_no_publica() -> None:
     assert stale.value.field == "llm_max_findings"
 
 
+def test_un_dial_nuevo_con_la_pagina_abierta_pide_recargar() -> None:
+    """La página no lo pintó ni lo envía: es un 409 (recargar), no «falta» (400)."""
+    from agent_review.panel_config import StaleForm
+
+    settings = _settings()
+    painted = initial_values(settings)
+    del painted["review_tools_io_cache"]
+    form = _form(settings)
+    del form["review_tools_io_cache"]
+    with pytest.raises(StaleForm) as stale:
+        document_for(settings, form, autonomy_ceiling="report", painted=painted)
+    assert stale.value.field == "review_tools_io_cache"
+
+
 def test_el_valor_pintado_se_compara_por_tipo_no_por_texto() -> None:
     """El formulario manda texto: `"10"` y `10` son el mismo valor inicial."""
     settings = _settings()

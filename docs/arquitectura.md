@@ -71,7 +71,7 @@ flowchart LR
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
 | `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
-| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. Un lanzamiento del panel (`launch`, sin SHA) lo resuelve contra el VCS antes de invocar el grafo ([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). **No** toca el sandbox (E7). |
+| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. Un lanzamiento del panel (`launch`, sin SHA) lo resuelve contra el VCS antes de invocar el grafo ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
@@ -297,7 +297,7 @@ Si algo falla tras un `claim`, la clave se libera (`_release_quietly`) antes de
 propagar el error.
 
 El panel puede encolar una review sin artefacto
-([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)): parsea la URL, comprueba el
+([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)): parsea la URL, comprueba el
 repo y deja en `reviews:jobs` un `ReviewRequest` con `launch=True`,
 `pipeline_id=panel` y el SHA vacío. No llama al VCS.
 
@@ -307,7 +307,7 @@ repo y deja en `reviews:jobs` un `ReviewRequest` con `launch=True`,
 loop:
   job = BLPOP reviews:jobs (5 s)
   si hay job → _consume: si es un lanzamiento sin SHA, lee el commit en el VCS
-                (ADR-0031) y luego process_request (según el estado del hilo, ADR-0007)
+                (ADR-0029) y luego process_request (según el estado del hilo, ADR-0007)
                 fallo → reencolar con attempts+1, o DLQ al agotar
   si la cola está vacía:
     cada 30 s  → sweep_pending  (TTL de ingesta → pasada degradada :partial)

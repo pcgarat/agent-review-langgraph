@@ -120,18 +120,22 @@ def document_for(
     if unknown:
         raise ConfigError(unknown[0], "no es un dial")
     initial = initial_values(settings)
-    missing = sorted(set(initial) - set(submitted) - lock_names(settings))
-    if missing:
-        raise ConfigError(missing[0], "falta en el formulario")
+    locked = lock_names(settings)
     if painted is not None:
-        stale = sorted(
+        # Antes que «falta en el formulario»: un dial que un despliegue añadió o
+        # retiró con la página abierta se resuelve recargando (409), no culpando al
+        # formulario (400). Un candado con valor distinto sigue siendo 400.
+        drift = sorted(set(painted) ^ set(initial))
+        drift += sorted(
             name
             for name, value in painted.items()
             if name in initial and _differs(name, initial[name], value)
         )
-        if stale:
-            raise StaleForm(stale[0])
-    locked = lock_names(settings)
+        if drift:
+            raise StaleForm(drift[0])
+    missing = sorted(set(initial) - set(submitted) - locked)
+    if missing:
+        raise ConfigError(missing[0], "falta en el formulario")
     document: dict[str, object] = {}
     for name, raw in submitted.items():
         value = _coerce(name, raw, fields[name].annotation)
