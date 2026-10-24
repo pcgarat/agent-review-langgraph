@@ -374,6 +374,18 @@ def test_el_html_escapa_un_script_inyectado_en_un_campo_del_pr(panel: Panel) -> 
 # --- Razonamiento (021 RZ9) ---
 
 
+def test_la_ficha_claude_sigue_el_sse_y_ofrece_la_descarga(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "review_engine", "claude")
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert "EventSource" in body
+    assert "/claude/events" in body
+    assert 'id="claude-download"' in body
+    assert "body.text" not in body
+    assert "output.dataset.stream" in body
+
+
 def test_el_detalle_lleva_la_pestana_de_razonamiento(panel: Panel) -> None:
     body = panel.client.get(f"/review/{_REVIEW_KEY}").text
     assert "<h2>Razonamiento</h2>" in body

@@ -114,10 +114,10 @@ class Settings(BaseSettings):
     # Raiz de los artefactos ya validados del motor claude. La ruta relativa
     # (repo + pr + head_sha) la elige el worker; el CLI no escribe el fichero.
     claude_artifact_root: str = "var/claude"
-    # Tiempo de pared y tope de turnos del subproceso. No es un presupuesto
-    # de tokens: el motor llm sigue midiendose como hasta ahora.
-    claude_timeout_s: float = 900.0
-    claude_max_turns: int = 30
+    # Techos del subproceso. Una review corta no los gasta. No es un
+    # presupuesto de tokens: el motor llm sigue midiendose como hasta ahora.
+    claude_timeout_s: float = 3600.0
+    claude_max_turns: int = 200
     claude_bin: str = "claude"
     # Arbol de trabajo del servicio. Distinto del clon bare (`read-ws-`) y de
     # la raiz donde el worker guarda el JSON ya validado.

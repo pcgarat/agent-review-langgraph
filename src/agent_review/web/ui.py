@@ -679,11 +679,14 @@ def _claude_steps(trace: ReviewTrace) -> str:
 
 
 def _claude_section(trace: ReviewTrace) -> str:
-    endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/claude"
+    key = quote(trace.review_key, safe="/:")
+    stream = f"/api/reviews/{key}/claude/events"
+    download = f"/api/reviews/{key}/claude/download"
     return (
         "<section><h2>Claude</h2>"
-        '<p class="meta" id="claude-status">Cargando la ejecución del CLI…</p>'
-        f'<pre id="claude-log" data-endpoint="{_esc(endpoint)}"></pre>'
+        '<p class="meta" id="claude-status">Siguiendo la conversación…</p>'
+        f'<pre id="claude-log" data-stream="{_esc(stream)}"></pre>'
+        f'<p><a id="claude-download" href="{_esc(download)}">Descargar la conversación</a></p>'
         "</section>"
     )
 
@@ -1273,40 +1276,52 @@ _CLAUDE_LIVE_SCRIPT = """<script>
 (() => {
   const output = document.getElementById("claude-log");
   const status = document.getElementById("claude-status");
-  if (!output || !status) {
+  if (!output || !status || !output.dataset.stream) {
     return;
   }
-  const paint = (body) => {
-    output.textContent = body.text || "El CLI todavía no ha escrito nada.";
-    if (!body.started_at) {
-      status.textContent = "Este commit no tiene una ejecución del CLI registrada.";
-      return false;
-    }
-    const start = new Date(body.started_at);
-    const end = body.finished_at ? new Date(body.finished_at) : new Date();
-    const seconds = Math.max(0, Math.round((end - start) / 1000));
-    const when = start.toLocaleString();
-    status.textContent = body.running
-      ? `Claude CLI en marcha desde ${when}. Lleva ${seconds} s.`
-      : `Claude CLI empezó ${when} y terminó en ${seconds} s.`;
-    return body.running;
-  };
-  const tick = async () => {
+  const show = (line) => {
+    let event;
     try {
-      const response = await fetch(output.dataset.endpoint, { credentials: "same-origin" });
-      if (!response.ok) {
-        status.textContent = "No se pudo leer la ejecución del CLI.";
-        return;
-      }
-      const running = paint(await response.json());
-      if (running) {
-        setTimeout(tick, 2000);
-      }
+      event = JSON.parse(line);
     } catch (cause) {
-      status.textContent = String(cause);
+      return line;
     }
+    if (!event || typeof event !== "object") {
+      return line;
+    }
+    const message = event.message;
+    const content = message && Array.isArray(message.content) ? message.content : [];
+    const bits = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      if (block.type === "text" && block.text) {
+        bits.push(String(block.text));
+      } else if (block.type === "tool_use") {
+        bits.push("herramienta " + String(block.name || ""));
+      } else if (block.type === "tool_result") {
+        bits.push(String(block.content || ""));
+      }
+    }
+    if (event.type === "result" && event.result) {
+      bits.push(String(event.result));
+    }
+    return bits.length ? bits.join("\\n") : line;
   };
-  tick();
+  const source = new EventSource(output.dataset.stream);
+  source.addEventListener("line", (ev) => {
+    const line = JSON.parse(ev.data);
+    output.textContent += (output.textContent ? "\\n" : "") + show(line);
+  });
+  source.addEventListener("end", () => {
+    source.close();
+    status.textContent = "Conversación terminada. La descarga es el fichero entero.";
+  });
+  source.onerror = () => {
+    status.textContent = "No se pudo seguir la conversación.";
+    source.close();
+  };
 })();
 </script>"""
 

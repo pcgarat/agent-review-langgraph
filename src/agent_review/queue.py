@@ -36,7 +36,7 @@ PARKED_KEY = "reviews:claude:parked"
 NOTICE_KEY_PREFIX = "reviews:claude:notice:"
 # `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
 # siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
-PARK_REASONS = frozenset({"session", "quota", "quota-wait"})
+PARK_REASONS = frozenset({"session", "quota", "quota-wait", "ceiling"})
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve
 # el worker de fixes. Vive en su propia clave para no mezclarse con las reviews.

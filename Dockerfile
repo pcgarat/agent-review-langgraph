@@ -53,10 +53,14 @@ RUN apt-get update \
          'deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main' \
          > /etc/apt/sources.list.d/claude-code.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends claude-code \
+    && apt-get install -y --no-install-recommends claude-code bubblewrap socat \
     && rm -rf /var/lib/apt/lists/* \
     && command -v claude \
+    && command -v bwrap \
+    && command -v socat \
     && claude --version
+COPY image/claude/skills/ce-code-review /opt/claude-skills/ce-code-review
+RUN test -f /opt/claude-skills/ce-code-review/SKILL.md
 
 # `docker build` sin --target construye la ultima etapa. Tiene que ser la de
 # la aplicacion, sin el CLI.

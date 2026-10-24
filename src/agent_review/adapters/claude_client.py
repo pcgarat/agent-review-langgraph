@@ -9,6 +9,7 @@ from __future__ import annotations
 import httpx
 
 from agent_review.ports.claude import (
+    ClaudeCeiling,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
     ClaudeTimeout,
@@ -32,7 +33,7 @@ class HttpClaudeRunner:
         self._timeout = timeout_s
         self._client = client
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
+    def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str:
         headers: dict[str, str] = {}
         if self._token and not is_missing(self._token):
             headers["Authorization"] = f"Bearer {self._token}"
@@ -42,7 +43,12 @@ class HttpClaudeRunner:
             try:
                 response = client.post(
                     f"{self._url}/run",
-                    json={"repo": repo, "pr_id": pr_id, "head_sha": head_sha},
+                    json={
+                        "repo": repo,
+                        "pr_id": pr_id,
+                        "head_sha": head_sha,
+                        "base_sha": base_sha,
+                    },
                     headers=headers,
                     timeout=self._timeout + 30,
                 )
@@ -52,7 +58,9 @@ class HttpClaudeRunner:
                 raise ClaudeProcessCrashed("el servicio claude-runner no esta alcanzable") from exc
             if response.status_code == 429:
                 raise ClaudeQuotaExceeded(_with_detail("cupo de claude agotado", response))
-            if response.status_code in {408, 504}:
+            if response.status_code == 504:
+                raise ClaudeCeiling(_with_detail("claude llego al techo", response))
+            if response.status_code == 408:
                 raise ClaudeTimeout(_with_detail("claude excedio el tiempo de pared", response))
             if response.status_code != 200:
                 raise ClaudeProcessCrashed(

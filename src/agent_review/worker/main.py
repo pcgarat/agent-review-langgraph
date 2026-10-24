@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import threading
 import time
@@ -15,6 +16,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, RetryPolicy
 
+from agent_review.adapters.agent_mode import AgentModeRejected, adapt_agent_mode
 from agent_review.adapters.claude_artifact import ClaudeArtifactReviewer, ClaudeArtifactStore
 from agent_review.adapters.claude_client import HttpClaudeRunner
 from agent_review.adapters.context_factory import build_reader_factory
@@ -72,7 +74,12 @@ from agent_review.pending_store import PendingStore, RedisPendingStore
 from agent_review.policy.engine import PolicyEngine
 from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
-from agent_review.ports.claude import ClaudeInvalidOutput, ClaudeQuotaExceeded, ClaudeRunner
+from agent_review.ports.claude import (
+    ClaudeCeiling,
+    ClaudeInvalidOutput,
+    ClaudeQuotaExceeded,
+    ClaudeRunner,
+)
 from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
@@ -704,12 +711,29 @@ def ensure_claude_artifact(
             return
         _say(note, f"Claude: empieza el CLI para {short}.")
         started = time.monotonic()
-        stdout = runner.run(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        stdout = runner.run(
+            repo=request.repo,
+            pr_id=request.pr_id,
+            head_sha=request.head_sha,
+            base_sha=request.base_sha,
+        )
         elapsed = time.monotonic() - started
         _say(note, f"Claude: el CLI terminó en {elapsed:.0f}s.")
-        if not store.save(
-            stdout, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha
-        ):
+        try:
+            adapted = adapt_agent_mode(stdout)
+        except AgentModeRejected as exc:
+            if exc.discarded:
+                _say(note, f"Claude: se descartaron {exc.discarded} hallazgos.")
+            raise ClaudeInvalidOutput(
+                f"stdout de claude no es una review terminada para {request.review_key}"
+            ) from exc
+        if adapted.discarded:
+            _say(note, f"Claude: se descartaron {adapted.discarded} hallazgos.")
+        body = json.dumps(
+            [item.model_dump(mode="json") for item in adapted.findings],
+            ensure_ascii=False,
+        )
+        if not store.save(body, repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha):
             raise ClaudeInvalidOutput(
                 f"stdout de claude no es una lista de hallazgos para {request.review_key}"
             )
@@ -1506,6 +1530,10 @@ _PARK_NOTICES: dict[str, tuple[str, str]] = {
         "Cupo de Claude agotado",
         "La review no se ha publicado. El cupo no se reintenta.",
     ),
+    "ceiling": (
+        "Claude llego al techo",
+        "Se agotaron los turnos o el tiempo de pared. No se reintenta ni se publica.",
+    ),
 }
 
 
@@ -1520,8 +1548,9 @@ def panel_claude_link(settings: Settings) -> str | None:
 def claude_session_ready(queue: ReviewQueue, probe: Callable[[], bool] | None) -> bool:
     """True si este worker puede correr el CLI.
 
-    Con sesión, suelta lo parqueado por falta de ella. El cupo se queda: soltarlo
-    volvería a gastar el límite. Sin sonda (motor `llm`) no mira el parking.
+    Con sesión, suelta lo parqueado por falta de ella. El cupo y el techo se
+    quedan: soltarlos volvería a gastar la misma pasada. Sin sonda (motor
+    `llm`) no mira el parking.
     """
     if probe is None:
         return True
@@ -1749,6 +1778,12 @@ def _consume(
             park_claude_job(queue, request, reason="quota", chat=chat, link=park_link)
         except Exception:
             logger.exception("No se pudo parquear el cupo de %s", request.review_key)
+    except ClaudeCeiling:
+        logger.error("Claude llego al techo en %s; se parkea", request.review_key)
+        try:
+            park_claude_job(queue, request, reason="ceiling", chat=chat, link=park_link)
+        except Exception:
+            logger.exception("No se pudo parquear el techo de %s", request.review_key)
     except Cancelled:
         # Cancelacion pedida por una persona (019 OP28, D5): no se reencola ni va a
         # la DLQ. El hilo se **borra** para que ninguna reentrega reanude un trabajo
