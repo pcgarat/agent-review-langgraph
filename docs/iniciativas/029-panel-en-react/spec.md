@@ -2,10 +2,18 @@
 
 # Panel en React
 
-> **Estado:** aprobada
+> **Estado:** implementada
 >
 > **Aprobada:** 2026-10-24. Se aprueba con TypeScript estricto (Q1) y TanStack
 > Query (Q2); el resto de preguntas de §8 quedan como están propuestas.
+>
+> **Implementada:** 2026-10-24. Los ocho bloques (E, S, A, D, F, B, C y R) están
+> cerrados: la SPA es la única interfaz, `web/ui.py` ya no existe, `web` sirve el
+> build con *fallback* de `index.html` sin capturar `/api/*` ni `/healthz`, la
+> imagen lo construye en una etapa de Node y `make ci` incluye `frontend-check`.
+> Los tests que afirmaban sobre HTML se reubicaron en la API o en el componente;
+> ninguno se perdió. Q3 (un e2e con Playwright) y Q5 (paginación por servidor)
+> siguen fuera de esta entrega, como se propuso.
 >
 > **Entrega objetivo:** el panel de operación deja de ser HTML servido en el
 > servidor y pasa a ser una aplicación React que consume la misma API JSON. Se

@@ -32,7 +32,7 @@ make status                       # contenedores, URLs y prueba de credenciales
   resultante se copia a `src/agent_review/web/static` **antes** del `pip install`, de
   modo que viaja dentro del wheel. La imagen final no lleva Node, ni `node_modules`,
   ni el código de `frontend/`; `docker compose config` no cambia y no hay un segundo
-  servicio ([029](../docs/iniciativas/029-panel-en-react/spec.md), P14). Esa etapa es
+  servicio ([029](iniciativas/029-panel-en-react/spec.md), P14). Esa etapa es
   la única que necesita red en el build. Un despliegue sin build (por ejemplo,
   `pip install` desde el checkout con `dist` borrado) arranca igual pero las rutas
   del panel responden `503` con el motivo.
@@ -73,8 +73,8 @@ docker compose --profile claude up -d   # lo mismo que `make claude`, sin rebuil
 `.env` si siguen vacíos o en `change-me`: `CLAUDE_RUNNER_URL` (el DNS interno
 `http://claude-runner:8098`), `CLAUDE_RUNNER_TOKEN` y `PANEL_SESSION_SECRET`.
 Un valor ya puesto no se rota. La primera vez que crea el secreto del panel lo
-imprime: a partir de ahí la cookie `panel_session` tiene que llevarlo, porque
-no hay formulario de login. `CLAUDE_GIT_TOKEN` se deja vacío: el checkout
+imprime: ese es el token que se pega en `/login` (no la cookie; la cookie la pone
+el servidor). `CLAUDE_GIT_TOKEN` se deja vacío: el checkout
 reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN`
 ([ADR-0032](adr/0032-clonado-claude-con-el-token-de-vcs.md)).
 
@@ -186,7 +186,7 @@ ficheros versionados:
 | Revisor con herramientas (014/023) | `REVIEW_TOOLS_ROLES` (vacío: roles LLM que pueden leer ficheros y hacer `grep` mientras revisan; vacío = una llamada por lote como en 008). Topes y palancas del bucle: tabla siguiente |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
-| Panel, diales (027) | `PANEL_CONFIG_LOCK` (vacío: el operador puede publicar el catálogo). La página es `/config` |
+| Panel, diales (027) | `PANEL_CONFIG_LOCK` (vacío: el operador puede publicar el catálogo). La pantalla es `/config` |
 
 ### Configuración desde el panel (027)
 
@@ -194,7 +194,7 @@ El rol `operador` publica, en `/config`, los diales del catálogo de
 [027](iniciativas/027-configuracion-desde-el-panel/spec.md). La sección Claude
 son los techos del CLI (`claude_max_turns`, `claude_timeout_s`): el runner no
 lee Postgres; el worker se los manda en la siguiente ejecución. El `lector` ve la
-página y no guarda. Cada control nace con el valor que `Settings` ya resolvió
+pantalla y no guarda. Cada control nace con el valor que `Settings` ya resolvió
 (el entorno si la variable está puesta) y **Restaurar** lo devuelve a ese valor
 sin escribir. **Guardar** publica el documento entero en Postgres
 (`panel_config`); solo se guardan las claves que se apartan del valor inicial.
@@ -212,19 +212,19 @@ entrar también en el `environment` del `web` (`tests/test_compose.py` lo exige)
 El `web` monta `config/` en solo lectura: `MAX_AUTONOMY_OVERRIDE` se valida
 contra el `max_autonomy` de `autonomy.yaml` con el mismo motor de política,
 solo cuando el formulario pide un valor distinto del inicial. Sin el montaje, un
-guardado que cambie ese dial responde `400`; el resto de la página funciona.
+guardado que cambie ese dial responde `400`; el resto de la pantalla funciona.
 Los valores iniciales viajan con el formulario, así que un cambio de default en
-el despliegue con la página abierta responde `409` en vez de publicar el viejo;
-un dial que el despliegue añade o retira con la página abierta, también.
-Un candado que llega después de un override publicado gana: la página pinta el
+el despliegue con la pantalla abierta responde `409` en vez de publicar el viejo;
+un dial que el despliegue añade o retira con la pantalla abierta, también.
+Un candado que llega después de un override publicado gana: la pantalla pinta el
 valor del despliegue y el siguiente guardado descarta ese override, que
 `apply_document` ya ignoraba.
 
-La review que ya empezó sigue con la foto que fijó. La página nombra esa
+La review que ya empezó sigue con la foto que fijó. La pantalla nombra esa
 revisión junto a la publicada. La siguiente, y un **Reintentar** del panel,
 leen lo publicado; si montar ese reintento falla y se reencola, sigue leyendo lo
 publicado. Secretos, arranque y los YAML de
-`config/` no están en la página ([ADR-0031](adr/0031-configuracion-desde-el-panel.md)).
+`config/` no están en la pantalla ([ADR-0031](adr/0031-configuracion-desde-el-panel.md)).
 
 ### Revisor con herramientas (023)
 
@@ -464,7 +464,7 @@ token, para no lanzar la URL de otro repositorio
 | `GET` | `/api/state` | Sesión | Estado operativo: cola (`reviews:jobs`), en vuelo (`reviews:active:*`), pausas por `kind`, descartes (`reviews:jobs:dead`) y presupuesto (`budget:*`) |
 | `GET` | `/api/trace/{review_key}` | Sesión | Recorrido de la review (nodos, orden real y `next`); `404` si no existe |
 | `GET` | `/api/reviews/{review_key}` | Sesión | Ficha agregada de una review (029, P8): `{review_key, trace, paused, notes[], journal[], console_available, reasoning_available, claude}`. `console_available` dice si hay wave de `fix` y runner configurado; `reasoning_available`, si el stream de razonamiento existe. Ninguno de los dos abre el SSE. `claude` es `{available, events_available, download_available}` con `REVIEW_ENGINE=claude` y `null` con el motor `llm`. `404` solo si no hay traza, ni `notes`/`journal`, ni descarte en la DLQ; un descarte sin traza devuelve `200` con `trace: null` |
-| `GET` | `/api/history` | Sesión | Reviews terminadas, la más reciente primero (021): resultado (completa, parcial o incompleta), hallazgos por severidad, tokens, ficheros revisados y si hubo razonamiento. Filtros `repo`, `pr_id` y `limit`; la página HTML es `/history` |
+| `GET` | `/api/history` | Sesión | Reviews terminadas, la más reciente primero (021): resultado (completa, parcial o incompleta), hallazgos por severidad, tokens, ficheros revisados y si hubo razonamiento. Filtros `repo`, `pr_id` y `limit`; el histórico es la pantalla `/history` de la SPA |
 | `GET` | `/api/reviews/{review_key}/reasoning` | Sesión | Razonamiento de los revisores por SSE (021): repite lo guardado y sigue en vivo; `404` si no hay |
 | `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
 | `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
@@ -475,15 +475,41 @@ token, para no lanzar la URL de otro repositorio
 | `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
 | `GET` | `/api/bandeja` | Sesión | Pausas humanas abiertas (sin sello): las mismas preguntas que la tarjeta de Teams. `teams_enabled` dice si Teams también las muestra. Vacío si no hay ninguna |
 | `POST` | `/api/bandeja/{review_key}/decision` | `operador` | Responde una de esas preguntas. Cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` o, en una pausa de publicación, `{"batch": "blockers\|all\|none"}`. El actor es el de la sesión. Comparte el sello con Teams y con el detalle: la primera respuesta encola y el resto es `409`. `400` si el cuerpo no trae `items` ni `batch`, o trae los dos; `409` si no está pausada, no cubre los pendientes o el resultado no vale; `403` para `lector`; `503` si Redis no responde. Con Teams configurado, ganar encola `withdraw` y el bot borra la tarjeta |
-| `GET` | `/bandeja` | Sesión | La bandeja: tarjetas hasta que se responden, aviso en la página y, con permiso del navegador y la pestaña oculta, notificación del sistema |
 | `GET` | `/api/config` | Sesión | Documento de diales vigente (027): `revision`, `values` (solo las claves que se apartan del inicial), `initial`, `locked` y quién lo publicó. Lleva además `pins: [{review_key, revision}]` con las revisiones que fijaron las reviews en curso (029, P9); el campo **se omite** si el checkpointer no respondió, para no confundir «no lo pude leer» con «ninguna review fijó revisión». `503` si Postgres no responde |
 | `POST` | `/config` | `operador` | Publica el formulario entero (027): cuerpo `{"revision", "values", "initial"}`, con `initial` opcional. `400` con `{"detail": {"field"}}` si un valor no encaja o un dial está bloqueado; `409` con la revisión vigente si otro guardó antes o si `initial` ya no coincide con este proceso; `503` si Postgres no responde |
-| `GET` | `/config` | Sesión | Página HTML de diales (027): una sección por grupo, ayuda por control y un **Restaurar** por control |
-| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global, con el formulario de lanzamiento, y detalle con el recorrido y la consola) |
-| `GET` | `/claude` | `operador` | Formulario de la sesión de Claude, con el enlace a [claude.ai/settings/claude-code](https://claude.ai/settings/claude-code) donde se genera el token. El `lector` recibe `403` |
 | `GET` | `/api/reviews/{review_key}/claude/events` | Sesión (`lector` incluido) | SSE de la conversación del CLI: lo ya escrito y cada línea nueva, hasta que la ejecución termina. Sin sesión, `401` |
 | `GET` | `/api/reviews/{review_key}/claude/download` | Sesión (`lector` incluido) | El fichero entero de esa conversación, sin corte. `404` si este commit no tiene transcripción |
 | `POST` | `/api/claude/session` | `operador` | Cuerpo `{"token": "…"}`. Lo guarda en el fichero `0600` y devuelve `{"released": n}` sin el token. Misma defensa CSRF que el resto de comandos. Un formulario que no sea JSON del mismo origen recibe `403` |
+
+#### La SPA y el login
+
+Desde la 029 el panel **no** genera HTML: sirve la aplicación React de
+`frontend/dist` (dentro de la imagen, `web/static`), con los assets en `/assets/*`.
+Las rutas del navegador son las de siempre y son **contrato** (hay enlaces en
+comentarios de pull requests y en avisos de Teams):
+
+| Ruta | Qué abre |
+|---|---|
+| `/` | Cuadro de mando: cifras, lanzar, cola, en vuelo, pausas, descartes y presupuesto |
+| `/review/{review_key}` | Ficha: recorrido o pasos del CLI, log, comandos, decisión, consola, razonamiento y actividad de Claude |
+| `/bandeja` | Tarjetas de las pausas humanas abiertas, respuesta por hallazgo o por lote |
+| `/history` | Histórico con filtros `repo` / `pr_id` |
+| `/config` | Los diales con ayuda, **Restaurar** y **Guardar** |
+| `/claude` | Formulario del token del CLI (solo `operador`; el `lector` ve el aviso, y la API le da `403`) |
+| `/login` | Entrada: un campo para el token |
+
+Todas menos `/login` responden con el armazón de la SPA; quién entra y qué ve lo
+decide el cliente con `GET /api/session`, y quién puede ejecutar, la API con el
+`403` del rol. El *fallback* de la SPA **no** captura `/api/*` ni `/healthz`: un
+`GET /api/inexistente` sigue siendo `404` (029, P5). Un asset que no existe también
+es `404`, no el `index.html`. Sin build, esas rutas responden `503` con el motivo.
+
+**Entrar** es `POST /api/session` con el token del despliegue
+(`PANEL_SESSION_SECRET`); el servidor deja la cookie `HttpOnly` y la pantalla pasa
+al cuadro de mando. Ya no hace falta pegar la cookie en la consola del navegador:
+`scripts/ensure_dev_secrets.py` sigue imprimiendo el valor la primera vez, pero es
+solo para saber cuál es. **Salir** es `DELETE /api/session`. Sin secreto
+configurado (dev/test) la sesión se relaja como antes.
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review
 (o encola el `request` marcado si estaba pausada) y el worker aborta en la frontera de
@@ -514,10 +540,11 @@ es siempre el usuario de la sesión; el cuerpo de la petición no puede cambiarl
 
 Sin `PANEL_SESSION_SECRET` configurado (dev/test) la sesión se relaja y, si llega
 cabecera, se lee como `<usuario>:<rol>`. Con un secreto real la cabecera es el token
-opaco (`401` si no coincide). El actor de un comando es `PANEL_SESSION_USER` (o
-`panel`) y el rol es `PANEL_SESSION_ROLE`; un `lector` recibe `403` en cualquier
-comando (bloque 5). La `review_key` lleva `/`: el endpoint de recorrido la acepta
-entera.
+opaco (`401` si no coincide), que es lo que se pega en `/login`: el navegador no
+vuelve a verlo, porque la cookie es `HttpOnly`. El actor de un comando es
+`PANEL_SESSION_USER` (o `panel`) y el rol es `PANEL_SESSION_ROLE`; un `lector`
+recibe `403` en cualquier comando (bloque 5). La `review_key` lleva `/`: el endpoint
+de recorrido la acepta entera.
 
 ### Messaging endpoint del bot (`teams-bot`)
 
@@ -634,7 +661,9 @@ firma inválida o ausente da `401`.
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
 | «¿En qué nodo está ahora?» | El progreso del worker (019) | Con `PROGRESS_ENABLED=true`: `redis-cli HGETALL reviews:active:<review_key>` da el nodo en curso, su `started_at` y cuántas ramas del fan-out siguen. Sin marca y con el latido fresco, el worker vive pero no está ejecutando ningún nodo (entre reviews). Un `started_at` muy antiguo con la marca viva delata un nodo colgado, no un worker muerto |
 | «¿Qué está pensando el revisor?» | El razonamiento de los revisores (021) | Con `REASONING_STREAM_ENABLED=true`: pestaña «Razonamiento» del detalle en el panel, o `redis-cli XRANGE reviews:reasoning:<review_key> - +`. Un lote con `fallo` lleva el motivo (sin presupuesto, error del modelo) |
-| El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es el token (`X-Panel-Session` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
+| El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no hay sesión | Levantar con `--profile panel`; en producción se entra por `/login` con ese token, o se manda `X-Panel-Session` a mano. En dev/test sin secreto, la sesión se relaja |
+| El panel responde `503` con «no está construido» | La imagen se construyó sin la etapa `panel` o el checkout no tiene `frontend/dist` | Reconstruir la imagen (`make panel`); en local, `make frontend-build` antes de arrancar el `web` |
+| Cambié la SPA y el panel sigue igual | El `web` sirve el build de la imagen, no el fuente | `make panel` (reconstruye) o `make frontend-build` en local. Para iterar, `make panel-dev` (Vite en `:5173`) |
 | El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
 | Cancelar no surte efecto | La marca no llegó, o la review no pasa por una frontera | `redis-cli EXISTS reviews:cancel:<review_key>`; si está, la review corre: la cancelación se aplica al empezar el **siguiente nodo** (un nodo entero de latencia). Si estaba pausada, el comando encola el `request` marcado y el worker lo aborta al desencolar |
 | Un reintento termina cancelado, o un job de la review se descarta solo | Queda la marca de cancelación (*tombstone*, `CANCEL_TTL_S`) | Es esperado: aborta los rezagados de una review cancelada. «Reintentar» desde el panel la retira; a mano, `redis-cli DEL reviews:cancel:<review_key>` |

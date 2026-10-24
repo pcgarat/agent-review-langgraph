@@ -76,6 +76,6 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - [x] **R5** Test de que `GET /api/inexistente` sigue siendo `404`
 - [x] **R6** Etapa de Node en el `Dockerfile`; la imagen final sin Node
 - [x] **R7** `make ci` incluye `frontend-check`
-- [ ] **R8** `docs/operacion.md` §5: rutas nuevas y el login
-- [ ] **R9** `docs/arquitectura.md` §2: el `web` sirve la SPA
-- [ ] **R10** Spec a `implementada` e índice al día
+- [x] **R8** `docs/operacion.md` §5: rutas nuevas y el login
+- [x] **R9** `docs/arquitectura.md` §2: el `web` sirve la SPA
+- [x] **R10** Spec a `implementada` e índice al día
