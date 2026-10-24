@@ -3,6 +3,7 @@
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-23
 - **Corrección:** 2026-10-23 — el enlace de la iniciativa apunta a `archivo/` tras cerrarla.
+- **Corrección:** 2026-10-24 — el fetch puede reutilizar el token de VCS ([ADR-0032](0032-clonado-claude-con-el-token-de-vcs.md)). El subproceso `claude` sigue sin heredarlo.
 
 ## Contexto
 
@@ -45,7 +46,10 @@ ejecuta el CLI: la imagen del worker lleva el token con el que se comenta el PR.
   `head_sha`, o el job no entra al grafo.
 - Un JSON inválido no es una review de cero hallazgos.
 - `docker compose up` sin el perfil de este servicio sigue siendo el motor
-  `llm`. El contenedor del CLI no recibe el token con el que el worker publica.
+  `llm`. El subproceso `claude` no recibe el token con el que el worker publica.
+  El proceso del runner sí puede usarlo para el `fetch` si `CLAUDE_GIT_TOKEN`
+  está vacío ([ADR-0032](0032-clonado-claude-con-el-token-de-vcs.md)), y lo
+  retira del entorno antes de servir.
 - El secreto de sesión de Claude no entra en `ReviewState` ni en el aviso de
   Teams. Sin sesión, el job no ocupa el hilo del worker.
 - Con `claude` se compila otro grafo. No cae al de personas.

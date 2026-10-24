@@ -92,7 +92,10 @@ def _old_claude_runner_insecure_secrets(settings: Settings) -> list[str]:
     insecure: list[str] = []
     if is_missing(settings.claude_runner_token):
         insecure.append("CLAUDE_RUNNER_TOKEN")
-    provider = settings.github_token if settings.vcs_provider == "github" else settings.twg_bbc_token
+    if settings.vcs_provider == "github":
+        provider = settings.github_token
+    else:
+        provider = settings.twg_bbc_token
     if is_missing(settings.claude_git_token) and is_missing(provider):
         name = "GITHUB_TOKEN" if settings.vcs_provider == "github" else "TWG_BBC_TOKEN"
         insecure.append(name)

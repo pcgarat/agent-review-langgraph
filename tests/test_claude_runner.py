@@ -2,7 +2,7 @@
 
 El puerto devuelve stdout. El worker lo llama antes del grafo y no lo repite
 si el artefacto de ese `head_sha` ya es válido. El subproceso no hereda
-credenciales. El servicio no es el clon bare ni recibe el token de publicación.
+credenciales. El servicio no es el clon bare. El subproceso no recibe el token de VCS.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from agent_review.adapters.claude_cli import SubprocessClaudeRunner, claude_argv
 from agent_review.adapters.claude_client import HttpClaudeRunner
 from agent_review.claude_runner.checkout import (
     CheckoutError,
+    _auth_url,
     checkout_directory,
     drop_push_remotes,
     prepare_checkout,
@@ -324,6 +325,13 @@ def test_el_cliente_http_traduce_el_cupo_y_devuelve_stdout_sin_validar() -> None
     )
     with pytest.raises(ClaudeProcessCrashed, match="JSON"):
         runner.run(repo="r", pr_id=1, head_sha="abc")
+
+
+def test_la_url_de_clonado_sigue_al_proveedor() -> None:
+    assert _auth_url("acme/app", "ghp", provider="github") == (
+        "https://x-access-token:ghp@github.com/acme/app.git"
+    )
+    assert _auth_url("acme/app", "tok") == "https://x-token-auth:tok@bitbucket.org/acme/app.git"
 
 
 def test_el_checkout_no_es_el_clon_bare(tmp_path: Path) -> None:

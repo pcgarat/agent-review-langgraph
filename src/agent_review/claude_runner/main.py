@@ -1,8 +1,8 @@
 """Proceso `claude-runner` (025 R4, ADR-0028).
 
 Checkout en un volumen propio y subproceso `claude` con entorno cerrado. El
-worker pide el stdout por HTTP; este proceso no escribe el artefacto ni tiene
-el token con el que se comenta el PR.
+worker pide el stdout por HTTP; este proceso no escribe el artefacto. El fetch
+puede usar el token de VCS (ADR-0032) y el subproceso `claude` no lo hereda.
 """
 
 from __future__ import annotations
