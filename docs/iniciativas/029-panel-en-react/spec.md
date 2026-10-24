@@ -2,7 +2,10 @@
 
 # Panel en React
 
-> **Estado:** borrador
+> **Estado:** aprobada
+>
+> **Aprobada:** 2026-10-24. Se aprueba con TypeScript estricto (Q1) y TanStack
+> Query (Q2); el resto de preguntas de §8 quedan como están propuestas.
 >
 > **Entrega objetivo:** el panel de operación deja de ser HTML servido en el
 > servidor y pasa a ser una aplicación React que consume la misma API JSON. Se
@@ -324,13 +327,13 @@ make ci                   # incluye frontend-check cuando existe frontend/
 
 ## 8. Preguntas abiertas
 
-- **Q1 — ¿Se aprueba TypeScript estricto?** CoreUI viene en JavaScript sin tipos. Se
-  propone convertirlo en lo que se conserva (layout, sidebar, login y los componentes
-  del panel). La alternativa es JS + JSDoc, más rápido de arrancar y más débil justo
-  donde el panel trata contratos: `review_key`, revisiones y roles.
-- **Q2 — ¿Se aprueba TanStack Query como dependencia de runtime (P10)?** La
-  alternativa es un `useEffect` + `fetch` propio, que reimplementa caché,
-  invalidación y carreras en cada pantalla.
+- **Q1 —** *Resuelta (2026-10-24):* **TypeScript estricto.** CoreUI llega en
+  JavaScript y se convierte lo que se conserva. El panel trata contratos
+  (`review_key`, revisión, rol) y el tipado es justo lo que evita que una pantalla
+  invente un campo que la API no da.
+- **Q2 —** *Resuelta (2026-10-24):* **TanStack Query.** Caché, invalidación tras un
+  comando y carreras son el problema, no un extra; reimplementarlo en cada pantalla
+  sería el mismo código seis veces.
 - **Q3 — ¿Entra Playwright en CI?** Hoy no hay e2e. Un e2e contra el `web` real
   probaría de verdad la sesión con cookie y el SSE; cuesta un navegador en CI. Se
   propone una tarea posterior, no el primer bloque.
