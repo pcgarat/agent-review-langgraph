@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import shutil
 import threading
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from agent_review.adapters.claude_cli import SubprocessClaudeRunner, redact_text
+from agent_review.claude_activity import ClaudeActivity
 from agent_review.claude_runner.checkout import CheckoutError, checkout_directory, prepare_checkout
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
 from agent_review.ports.claude import ClaudeProcessCrashed, ClaudeQuotaExceeded, ClaudeTimeout
@@ -93,14 +95,32 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                 )
                 extra = {CHILD_TOKEN_ENV: token} if token else {}
                 extra["CLAUDE_CONFIG_DIR"] = str(_config_dir(current))
-                stdout = SubprocessClaudeRunner(
-                    argv_prefix=[current.claude_bin],
-                    max_turns=current.claude_max_turns,
-                    timeout_s=current.claude_timeout_s,
-                    extra_env=extra,
-                    cwd=directory,
-                    redact=secrets,
-                ).run(repo=body.repo, pr_id=body.pr_id, head_sha=body.head_sha)
+                # La imagen trae el binario. Una review no debe sustituirlo.
+                extra["DISABLE_UPDATES"] = "1"
+                activity = ClaudeActivity(
+                    _session_path(current), pr_id=body.pr_id, head_sha=body.head_sha
+                )
+                activity.start()
+
+                def _line(text: str) -> None:
+                    activity.append(redact_text(text, secrets))
+
+                try:
+                    stdout = SubprocessClaudeRunner(
+                        argv_prefix=[current.claude_bin],
+                        max_turns=current.claude_max_turns,
+                        timeout_s=current.claude_timeout_s,
+                        extra_env=extra,
+                        cwd=directory,
+                        redact=secrets,
+                    ).run(
+                        repo=body.repo,
+                        pr_id=body.pr_id,
+                        head_sha=body.head_sha,
+                        on_line=_line,
+                    )
+                finally:
+                    activity.finish()
         except CheckoutError as exc:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, _safe(str(exc), secrets)) from exc
         except ClaudeTimeout as exc:
@@ -160,9 +180,20 @@ def _drop_secret_env() -> None:
         os.environ.pop(key, None)
 
 
+def require_claude_binary(binary: str) -> None:
+    """El proceso no sirve si el ejecutable no esta en el PATH de la imagen."""
+    if shutil.which(binary) is None:
+        raise RuntimeError(
+            f"no se encontro el ejecutable {binary!r}. "
+            "La imagen de claude-runner instala el paquete apt claude-code; "
+            "el comando es claude."
+        )
+
+
 def main() -> None:
     settings = get_settings()
     require_claude_runner_secrets(settings)
+    require_claude_binary(settings.claude_bin)
     _drop_secret_env()
     logging.basicConfig(level=settings.log_level)
     uvicorn.run(

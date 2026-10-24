@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from agent_review.claude_activity import read_activity, review_target
 from agent_review.claude_session import write_session
 from agent_review.decision import require_decision_item
 from agent_review.domain.history import ReviewSummary
@@ -378,6 +379,20 @@ def _run_command(
         logger.exception("Comando fallido sobre %s", review_key)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     return {"review_key": review_key, "effect": effect.value, "actor": actor}
+
+
+@app.get("/api/reviews/{review_key:path}/claude")
+def claude_activity(
+    review_key: str,
+    session: Annotated[Session, Depends(require_session)],
+) -> dict[str, object]:
+    """Qué hace el CLI en este commit: cuándo empezó, si sigue, y las líneas."""
+    del session
+    target = review_target(review_key)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "La review no identifica un commit")
+    pr_id, head_sha = target
+    return read_activity(Path(_settings().claude_session_path), pr_id=pr_id, head_sha=head_sha)
 
 
 @app.get("/api/reviews/{review_key:path}/console")

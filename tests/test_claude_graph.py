@@ -148,7 +148,7 @@ def test_el_grafo_llm_sigue_con_verify_y_fix_dispatch() -> None:
     assert "fix_dispatch" in builder.nodes
 
 
-def test_el_perfil_con_typecheck_suma_la_persona_estatica(
+def test_el_motor_claude_no_pide_el_artefacto_estatico(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import sys
@@ -187,7 +187,7 @@ def test_el_perfil_con_typecheck_suma_la_persona_estatica(
     build_runtime(
         Settings(review_engine="claude", database_url="", repo_profile_config=str(perfil))
     )
-    assert capturado["nombres"] == ["claude", "standards"]
+    assert capturado["nombres"] == ["claude"]
 
     build_runtime(Settings(review_engine="claude", database_url="", repo_profile_config=str(sin)))
     assert capturado["nombres"] == ["claude"]
@@ -255,16 +255,16 @@ def test_todo_dropped_no_escribe_en_el_pr_aunque_la_cobertura_sea_parcial(tmp_pa
     assert "0 hallazgos" not in str(chat.avisos[-1]["body"])
 
 
-def test_fuente_estatica_sin_cubrir_sigue_comentando(tmp_path: Path) -> None:
+def test_sin_artefacto_la_persona_estatica_no_deja_la_review_incompleta(
+    tmp_path: Path,
+) -> None:
     vcs = FakeVcs(anchors={"tests/FooTest.php": _ancla()})
     store, graph = _grafo(tmp_path, [ToolingReviewer()], vcs=vcs)
     hallazgo = make_finding("No publicar").model_copy(update={"id": "uno"})
     _invoke(graph, store, [hallazgo])
     graph.invoke(Command(resume=_decision([("uno", DecisionOutcome.DROPPED)])), config=_config())
     assert vcs.inlines == []
-    [(_, _, body)] = vcs.comments
-    assert "Review incompleta" in body
-    assert "No publicar" not in body
+    assert vcs.comments == []
 
 
 def test_expired_no_escribe_en_el_pr(tmp_path: Path) -> None:

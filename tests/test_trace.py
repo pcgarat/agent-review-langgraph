@@ -308,6 +308,30 @@ def test_checkpointer_de_lectura_no_crea_tablas() -> None:
     assert calls == [], f"el lector no debe llamar setup ni cerrar el pool: {calls}"
 
 
+def test_el_estado_explica_una_fuente_estatica_ausente() -> None:
+    from agent_review.domain.models import ToolingSourceStatus
+    from agent_review.trace import notes_from_values
+
+    lines = notes_from_values(
+        {
+            "source_status": {"standards": ToolingSourceStatus.MISSING},
+            "published": True,
+            "coverage": None,
+        }
+    )
+    assert any("standards" in line and "missing" in line for line in lines)
+    assert any("pull request" in line for line in lines)
+
+
+def test_claude_sin_hallazgos_explica_que_no_escribio_en_el_pr() -> None:
+    from agent_review.trace import notes_from_values
+
+    lines = notes_from_values(
+        {"silence_without_choice": True, "published": None, "merged": [], "findings": []}
+    )
+    assert any("comentario vacío" in line for line in lines)
+
+
 def test_el_recorrido_no_viaja_por_el_estado() -> None:
     """Es un read model derivado: no entra en la allowlist del serde.
 

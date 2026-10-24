@@ -51,11 +51,13 @@ class HttpClaudeRunner:
             except httpx.RequestError as exc:
                 raise ClaudeProcessCrashed("el servicio claude-runner no esta alcanzable") from exc
             if response.status_code == 429:
-                raise ClaudeQuotaExceeded("cupo de claude agotado")
+                raise ClaudeQuotaExceeded(_with_detail("cupo de claude agotado", response))
             if response.status_code in {408, 504}:
-                raise ClaudeTimeout("claude excedio el tiempo de pared")
+                raise ClaudeTimeout(_with_detail("claude excedio el tiempo de pared", response))
             if response.status_code != 200:
-                raise ClaudeProcessCrashed(f"claude-runner respondio {response.status_code}")
+                raise ClaudeProcessCrashed(
+                    _with_detail(f"claude-runner respondio {response.status_code}", response)
+                )
             try:
                 payload = response.json()
             except ValueError as exc:
@@ -90,3 +92,32 @@ class HttpClaudeRunner:
         finally:
             if own:
                 client.close()
+
+
+def _with_detail(message: str, response: httpx.Response) -> str:
+    """Añade el `detail` del runner. Sin esto un 502 solo dice el código."""
+    detail = _response_detail(response)
+    if not detail:
+        return message
+    return f"{message}: {detail}"
+
+
+def _response_detail(response: httpx.Response) -> str:
+    raw: object = None
+    try:
+        raw = response.json()
+    except ValueError:
+        raw = None
+    if isinstance(raw, dict):
+        detail = raw.get("detail")
+        if isinstance(detail, str):
+            text = detail
+        elif detail is None:
+            text = ""
+        else:
+            text = str(detail)
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        text = response.text
+    return text.replace("\x00", "").strip()[-500:]

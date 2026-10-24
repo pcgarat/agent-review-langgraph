@@ -80,13 +80,14 @@ class ToolingReviewer:
 
     def _entries(
         self, *, repo: str, pr_id: int, head_sha: str
-    ) -> tuple[list[dict[str, Any]], ToolingSourceStatus]:
-        # Fuente no disponible: se propaga el motivo para no reportar "limpio".
-        if self._source is None:
-            return [], ToolingSourceStatus.MISSING
-        if "phpstan" not in self._allowed:
-            return [], ToolingSourceStatus.MISSING
+    ) -> tuple[list[dict[str, Any]], ToolingSourceStatus | None]:
+        # Sin artefacto la persona no participa: empezar la review no lo exige.
+        # Un fichero presente pero ilegible sí se declara: eso no es "no llegó".
+        if self._source is None or "phpstan" not in self._allowed:
+            return [], None
         status, raw = self._source.read("phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha)
+        if status is ToolingSourceStatus.MISSING:
+            return [], None
         if status is not ToolingSourceStatus.PRESENT:
             return [], status
         # Un artefacto presente pero vacio no es un JSON valido: no equivale a limpio.

@@ -157,7 +157,9 @@ de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
 convierte en «cero hallazgos».
 
 El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
-servicio `claude-runner`, no en el worker. El argv lleva `--max-turns`,
+servicio `claude-runner`, no en el worker. La etapa `claude-runner` del
+`Dockerfile` instala siempre el paquete apt `claude-code`; el ejecutable es
+`claude`. El subproceso recibe `DISABLE_UPDATES=1`. El argv lleva `--max-turns`,
 `--allowedTools Read,Grep,Glob`, `--disallowedTools` (Bash, Edit, Write,
 NotebookEdit, WebFetch, WebSearch) y `--permission-mode dontAsk`. El entorno
 del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando secretos. El
@@ -344,6 +346,14 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
    parsea la URL y encola `launch=True`. El commit lo lee `resolve_launch` en el
    worker, antes de `graph.invoke`
    ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
+6. **Un descarte sin recorrido no es un 404.** Si `trace` no existe y la clave
+   está en la DLQ, el detalle pinta el motivo y el campo `error` (log de los
+   intentos). El worker lo acumula en `reviews:failure:<review_key>` y lo copia
+   al descartar. Un fallo del `claude-runner` incluye el `detail` de la respuesta,
+   no solo el código HTTP. La ficha de una review con recorrido tiene el mismo
+   apartado **Log**: el motivo leído del estado (`source_status`, ficheros sin
+   revisar) y las líneas de `reviews:journal:<review_key>`, que no se borran al
+   terminar.
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
@@ -487,7 +497,10 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **La protección manda sobre la aprobación.**
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como
-  limpia.
+  limpia. Un artefacto que no se depositó no es una fuente sin cubrir: la persona
+  estática no participa y la review puede empezar y terminar sin él. Una salida
+  presente pero ilegible sí deja la review incompleta. Volver a lanzar una review
+  incompleta borra su hilo y la ejecuta otra vez; una completa reutiliza el hilo.
 - **Un hallazgo no se autopromueve.** Un `P0`–`P2` `unverified` lleva
   `failure_scenario`; un `verification` distinto de `unverified` lleva
   `verification_evidence`; ningún emisor declara más que su nivel (`LlmReviewer` →
