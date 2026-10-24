@@ -1,0 +1,62 @@
+// Ajustes del panel sobre el tema oscuro de CoreUI. Nada de reinventar el sistema
+// visual de la plantilla: se ajusta lo que el panel necesita y se deja el resto.
+@use '@coreui/coreui/scss/coreui' with (
+  $enable-deprecation-messages: false
+);
+
+:root {
+  --panel-rail: 1px solid var(--cui-border-color);
+}
+
+// El panel se mira de noche y en una pantalla de operación: el tema oscuro es
+// fijo y se declara en `index.html`, sin selector (029, P16).
+body {
+  background-color: var(--cui-body-bg);
+}
+
+.panel-brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cui-secondary-color);
+}
+
+// --- Login -------------------------------------------------------------------
+
+.login-shell {
+  background:
+    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 14%), transparent 60%),
+    var(--cui-body-bg);
+}
+
+// La tarjeta de login se apoya sobre el mismo fondo que el body: sin una
+// superficie distinta y una sombra, el borde de 1px es todo lo que la separa y a
+// pantalla completa se lee como un bloque de texto suelto.
+.login-card {
+  width: min(26rem, calc(100vw - 2rem));
+  --cui-card-bg: #272d3b;
+  background-color: #272d3b;
+  border-color: #39415a;
+  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 45%);
+}
+
+// --- Contenido ---------------------------------------------------------------
+
+.body h2.h6,
+.body h1.h6 {
+  font-weight: 600;
+}
+
+.card {
+  border-color: var(--cui-border-color);
+}
+
+// Cifras que se comparan en columna: sin `tabular-nums` los dígitos bailan.
+.num {
+  font-variant-numeric: tabular-nums;
+}

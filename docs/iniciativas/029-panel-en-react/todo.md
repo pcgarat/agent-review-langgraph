@@ -7,14 +7,14 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque E — Esqueleto (checkpoint E-K)
 
-- [ ] **E1** `frontend/` con Vite, React 19 y TS estricto; `package-lock.json` versionado
-- [ ] **E2** Armazón de CoreUI recortado: layout, sidebar, navbar y login como base
-- [ ] **E3** `base: '/'` y `BrowserRouter`; fuera `HashRouter` y `useColorModes`
-- [ ] **E4** Tema oscuro fijo y textos en español
-- [ ] **E5** Borrar las views de demo, los gráficos y sus assets
-- [ ] **E6** `NOTICE` con la licencia MIT de CoreUI
-- [ ] **E7** `.gitignore` para `node_modules/` y `frontend/dist/`
-- [ ] **E8** `make frontend-check` y `make frontend-build`
+- [x] **E1** `frontend/` con Vite, React 19 y TS estricto; `package-lock.json` versionado
+- [x] **E2** Armazón de CoreUI recortado: layout, sidebar, navbar y login como base
+- [x] **E3** `base: '/'` y `BrowserRouter`; fuera `HashRouter` y `useColorModes`
+- [x] **E4** Tema oscuro fijo y textos en español
+- [x] **E5** Borrar las views de demo, los gráficos y sus assets (no se copiaron)
+- [x] **E6** `NOTICE` con la licencia MIT de CoreUI
+- [x] **E7** `.gitignore` para `node_modules/` y `frontend/dist/`
+- [x] **E8** `make frontend-check` y `make frontend-build`
 
 ## Bloque S — Sesión (checkpoint S-K)
 

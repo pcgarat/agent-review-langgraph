@@ -6,6 +6,7 @@ COMPOSE ?= docker compose
 .DEFAULT_GOAL := help
 .PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
 	eval eval-live eval-record bootstrap twg-credentials ensure-dev-secrets \
+	frontend-install frontend-check frontend-build panel-dev \
 	up panel claude panel-claude down logs ps status smoke clean
 
 ##@ Dependencias
@@ -46,6 +47,23 @@ docs-check: ## Comprueba estructura, cabeceras y enlaces de la documentacion
 
 # Mismo orden y comandos que .github/workflows/ci.yml
 ci: lint format-check typecheck test docs-check ## Lint + formato + tipos + tests + docs (igual que el CI)
+
+##@ Frontend del panel (iniciativa 029)
+
+# El panel en React vive en `frontend/`. `node_modules` y `dist` no se versionan.
+FRONTEND ?= frontend
+
+frontend-install: ## Instala las dependencias del panel (npm ci)
+	cd $(FRONTEND) && npm ci
+
+frontend-check: ## Tipos, lint y tests del panel
+	cd $(FRONTEND) && npm run typecheck && npm run lint && npm test
+
+frontend-build: ## Build de produccion del panel
+	cd $(FRONTEND) && npm run build
+
+panel-dev: ## Vite en :5173 con proxy a un `web` ya levantado en :8090
+	cd $(FRONTEND) && npm run dev
 
 ##@ Evaluacion de la review (iniciativa 006)
 

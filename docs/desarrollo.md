@@ -119,6 +119,7 @@ omitido hasta que exista su baseline.
 | Presupuesto (017) | `test_budget` (contrato paramétrico de `InMemoryBudget` y `RedisBudget` sobre `fakeredis`, reserva/confirmación y el consumo desde el bucle), `test_llm_reviewer` y `test_llm_fixer` (reserva, tope blando, corte y devolución en el error), `test_worker` (reparto `2×total/N` en `build_reviewers`), `test_graph` (el hecho del corte en el `ReviewOutcome`) |
 | Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `test_web_ui` (pestaña, sin `innerHTML`) |
 | Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web_ui` y `test_web` (página `/history` y `/api/history`) |
+| Interfaz en React (029) | `frontend/src/**/*.test.ts(x)` con Vitest y Testing Library: `client.test.ts` (codificación de la `review_key`), `router.test.tsx` (la clave llega entera por splat y la guardia manda al login) y `LoginPage.test.tsx` (el token va en el cuerpo JSON, no se envía vacío y un `401` se explica). `make frontend-check` |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
 | Canal (chat) | `test_chat_outbox` (contrato `ChatNotice`, incluido `withdraw`, y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_claude_card` (lote de publicación y la tarjeta de `llm` sin `pause_kind`), `test_teams_threads` (hilo por PR y borrado de la tarjeta), `test_teams_bot_service` (consumo de la outbox, `withdraw`, pausa ya sellada y barrido), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado y borrado del mensaje; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
@@ -375,6 +376,29 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
    apartado **Log**: el motivo leído del estado (`source_status`, ficheros sin
    revisar) y las líneas de `reviews:journal:<review_key>`, que no se borran al
    terminar.
+
+### La interfaz en React (029)
+
+La interfaz del panel vive en `frontend/` (Vite + React 19 + TypeScript estricto,
+sobre el armazón de CoreUI). Mientras dure la migración conviven con el HTML de
+`web/ui.py`, que se retira en el bloque R de la iniciativa.
+
+1. **`npm`, no `uv`.** `make frontend-install` (una vez), `make frontend-check`
+   (tipos, lint y tests) y `make frontend-build`. `node_modules/` y
+   `frontend/dist/` no se versionan.
+2. **Desarrollo con `make panel-dev`**: Vite en `:5173` con *proxy* de `/api` al
+   `web` en `:8090`. La cookie es del mismo origen también ahí, así que el login
+   funciona sin CORS.
+3. **La sesión se pregunta, no se lee**: la cookie es `HttpOnly` y el rol sale de
+   `GET /api/session` a través de TanStack Query. No hay segunda copia del rol en
+   el cliente; un botón que además comprueba el rol en el servidor no cambia el
+   `403`.
+4. **Un tipo por contrato de la API** en `src/api/types.ts`, copiado de los modelos
+   de `web/`. Si un endpoint cambia, ese fichero es el primero que falla en `tsc`.
+5. **La `review_key` va por splat** (`/review/*`): lleva `/` y `:` dentro. En las
+   llamadas se codifica por segmento (`reviewPath`), en la URL del navegador no.
+6. **Nada de `dangerouslySetInnerHTML`.** Los logs y las transcripciones son datos
+   de terceros y se pintan como texto.
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
