@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from agent_review.domain.models import FindingAction, PendingDecision, Severity
 from agent_review.domain.trace import ReviewTrace, TraceNode
 from agent_review.settings import get_settings
+from agent_review.web.config_api import router as config_router
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -93,6 +94,7 @@ class Panel:
 def panel(monkeypatch: pytest.MonkeyPatch) -> Panel:
     app = FastAPI()
     app.include_router(router)
+    app.include_router(config_router)
     model = FakeReadModel(_state(), {_REVIEW_KEY: _trace(state="completed")})
     monkeypatch.setattr(app.state, "read_model", model, raising=False)
     return Panel(TestClient(app), model)
@@ -345,6 +347,7 @@ def test_el_lector_no_ve_el_formulario_de_decision(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
     app = FastAPI()
     app.include_router(router)
+    app.include_router(config_router)
     traces = {_HUMAN_KEY: _trace(state="paused", pause_kind="human", review_key=_HUMAN_KEY)}
     monkeypatch.setattr(app.state, "read_model", FakeReadModel(panel_state, traces), raising=False)
     client = TestClient(app)
@@ -367,6 +370,7 @@ def test_el_lector_no_ve_botones(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
     app = FastAPI()
     app.include_router(router)
+    app.include_router(config_router)
     monkeypatch.setattr(app.state, "read_model", FakeReadModel(_state()), raising=False)
     client = TestClient(app)
 

@@ -50,9 +50,11 @@ from agent_review.web.commands import (
     CommandService,
     build_command_service,
 )
+from agent_review.web.config_api import router as config_router
 from agent_review.web.launch import LaunchError, LaunchService
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
+from agent_review.web.review_detail import router as review_detail_router
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
 from agent_review.web.ui import get_history, recent_reviews
 from agent_review.web.ui import router as ui_router
@@ -74,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # El candado de diales y el almacen se resuelven al arrancar, no en la primera
     # visita a /config: un nombre fuera del catalogo o un Postgres obligatorio que
     # no responde tienen que tumbar el proceso, igual que en el worker (ADR-0031).
-    from agent_review.web.ui import build_config_store_for_panel
+    from agent_review.web.config_api import build_config_store_for_panel
 
     app.state.config_store = build_config_store_for_panel(settings)
     app.state.read_model = build_panel_read_model(settings)
@@ -631,6 +633,8 @@ def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:
 # la monta aqui para que el panel sea un unico proceso con una unica sesion.
 app.include_router(ui_router)
 app.include_router(bandeja_router)
+app.include_router(config_router)
+app.include_router(review_detail_router)
 
 
 def main() -> None:
