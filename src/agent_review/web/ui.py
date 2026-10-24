@@ -438,14 +438,13 @@ def _log_section(log: str) -> str:
 
 
 def _log_page(review_key: str, log: str, session: Session) -> str:
-    body = (
-        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>' + _log_section(log)
-    )
+    body = '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>' + _log_section(log)
     return _page(
         title=f"Review {review_key}",
         meta="Sin recorrido de nodos",
         body=body,
         session=session,
+        script="",
     )
 
 

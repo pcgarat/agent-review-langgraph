@@ -784,9 +784,7 @@ def process_request(
                 try:
                     saver.delete_thread(request.thread_id)
                 except Exception:
-                    logger.exception(
-                        "No se pudo borrar el hilo incompleto %s", request.review_key
-                    )
+                    logger.exception("No se pudo borrar el hilo incompleto %s", request.review_key)
                     return finished
                 snapshot = None
         else:
@@ -827,9 +825,7 @@ def process_request(
                 request.review_key,
             )
         if claude_runner is not None and claude_store is not None:
-            ensure_claude_artifact(
-                request, runner=claude_runner, store=claude_store, note=note
-            )
+            ensure_claude_artifact(request, runner=claude_runner, store=claude_store, note=note)
         state: ReviewState = {"request": request, "findings": []}
         if dial_snapshot is not None:
             state["dial_snapshot"] = dict(dial_snapshot)
@@ -1881,8 +1877,7 @@ def _outcome_line(outcome: ReviewOutcome) -> str:
     count = len(outcome.findings)
     if outcome.paused:
         return (
-            f"Pausa: {count} hallazgo(s) esperan una decisión "
-            "antes de escribir en el pull request."
+            f"Pausa: {count} hallazgo(s) esperan una decisión antes de escribir en el pull request."
         )
     if outcome.complete and count == 0:
         return (

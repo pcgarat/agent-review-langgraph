@@ -392,9 +392,7 @@ def claude_activity(
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "La review no identifica un commit")
     pr_id, head_sha = target
-    return read_activity(
-        Path(_settings().claude_session_path), pr_id=pr_id, head_sha=head_sha
-    )
+    return read_activity(Path(_settings().claude_session_path), pr_id=pr_id, head_sha=head_sha)
 
 
 @app.get("/api/reviews/{review_key:path}/console")

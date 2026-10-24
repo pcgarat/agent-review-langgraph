@@ -239,7 +239,8 @@ def _event_summary(event: dict[str, object]) -> str | None:
             continue
         if block.get("type") == "tool_use":
             name = str(block.get("name") or "herramienta")
-            payload = block.get("input") if isinstance(block.get("input"), dict) else {}
+            raw_input = block.get("input")
+            payload = raw_input if isinstance(raw_input, dict) else {}
             target = ""
             for key in ("file_path", "path", "pattern", "query"):
                 value = payload.get(key)
