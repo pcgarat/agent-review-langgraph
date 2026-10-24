@@ -92,8 +92,17 @@ class _Runner:
         self.stdout = stdout
         self.error = error
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str:
-        del repo, pr_id
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, max_turns, timeout_s
         self.calls.append(head_sha)
         self.bases.append(base_sha)
         if self.error is not None:
@@ -226,6 +235,71 @@ def test_el_proceso_caido_el_cupo_y_el_tiempo_son_errores_distintos(tmp_path: Pa
         lanzar(lento, 0.2)
     with pytest.raises(ClaudeCeiling, match="tope de turnos"):
         lanzar(tope, 5)
+
+
+def test_mientras_corre_el_cli_la_review_esta_en_vuelo(tmp_path: Path) -> None:
+    class _Progress:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, str]] = []
+            self.open: set[str] = set()
+
+        def start_node(self, review_key: str, node: str, *, at: object = None) -> None:
+            del review_key, at
+            self.events.append(("start", node))
+            self.open.add(node)
+
+        def finish_node(self, review_key: str, node: str) -> None:
+            del review_key
+            self.events.append(("finish", node))
+            self.open.discard(node)
+
+        def clear(self, review_key: str) -> None:
+            del review_key
+            self.events.append(("clear", ""))
+            self.open.clear()
+
+    class _Watch(_Runner):
+        def __init__(self, progress: _Progress, stdout: str) -> None:
+            super().__init__(stdout=stdout)
+            self.progress = progress
+
+        def run(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            head_sha: str,
+            base_sha: str,
+            max_turns: int | None = None,
+            timeout_s: float | None = None,
+        ) -> str:
+            assert "claude" in self.progress.open
+            return super().run(
+                repo=repo,
+                pr_id=pr_id,
+                head_sha=head_sha,
+                base_sha=base_sha,
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+            )
+
+    progress = _Progress()
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Watch(progress, json.dumps(_agente_completo()))
+    request = _request()
+
+    _consume(
+        InMemoryReviewQueue(),
+        _Graph(),
+        request,
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+        progress=progress,
+    )
+
+    assert progress.events.index(("start", "claude")) < progress.events.index(("finish", "claude"))
+    assert "claude" not in progress.open
 
 
 def test_con_artefacto_valido_no_se_repite_y_el_grafo_arranca(tmp_path: Path) -> None:
@@ -631,6 +705,23 @@ def test_prepare_checkout_deja_el_arbol_en_el_sha_sin_remotos(tmp_path: Path) ->
     assert listed.stdout.strip() == ""
     assert token not in config
     assert symlinks.stdout.strip() == "false"
+    prepare_checkout(
+        dest,
+        repo="cqm/demo",
+        head_sha=sha,
+        base_sha=base,
+        git_token=token,
+        remote_url=origin.as_uri(),
+        timeout_s=20,
+    )
+    again = subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--abbrev-ref", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert again.stdout.strip() == "review"
+    assert (dest / "f.txt").read_text(encoding="utf-8") == "head\n"
 
 
 def test_sin_base_sha_el_checkout_no_arranca(tmp_path: Path) -> None:
@@ -729,6 +820,7 @@ def test_el_compose_no_pasa_el_token_de_publicacion_al_runner() -> None:
     assert not any("claude-checkout" in item or "read-ws" in item for item in sandbox)
     assert not any("claude-checkout" in item for item in volumenes if "docker.sock" in item)
     assert services["worker"]["environment"]["CLAUDE_GIT_TOKEN"] == ""
+    assert set(service["security_opt"]) == {"apparmor=unconfined", "seccomp=unconfined"}
     sin_perfil = [name for name, item in services.items() if not item.get("profiles")]
     assert "claude-runner" not in sin_perfil
 
@@ -780,6 +872,41 @@ def test_los_techos_por_defecto_cubren_el_fan_out() -> None:
     assert "CLAUDE_TIMEOUT_S:-3600" in compose
 
 
+def test_el_cliente_manda_el_techo_publicado_y_calla_si_no_hay() -> None:
+    seen: dict[str, object] = {}
+
+    def captura(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"stdout": "[]"})
+
+    runner = HttpClaudeRunner(
+        url="http://claude-runner",
+        token="",
+        timeout_s=3600,
+        client=httpx.Client(transport=httpx.MockTransport(captura)),
+    )
+    runner.run(repo="r", pr_id=1, head_sha="abc", base_sha="base", max_turns=400, timeout_s=7200)
+    assert seen["body"] == {
+        "repo": "r",
+        "pr_id": 1,
+        "head_sha": "abc",
+        "base_sha": "base",
+        "max_turns": 400,
+        "timeout_s": 7200,
+    }
+    runner.run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+    assert "max_turns" not in seen["body"]
+    assert "timeout_s" not in seen["body"]
+
+
+def test_sin_cuerpo_el_runner_conserva_su_entorno() -> None:
+    from agent_review.claude_runner.main import resolve_ceilings
+
+    settings = Settings(_env_file=None, claude_max_turns=200, claude_timeout_s=3600)
+    assert resolve_ceilings(settings, max_turns=None, timeout_s=None) == (200, 3600.0)
+    assert resolve_ceilings(settings, max_turns=400, timeout_s=7200) == (400, 7200.0)
+
+
 def test_el_settings_del_runner_exige_el_sandbox(tmp_path: Path) -> None:
     workspace = tmp_path / "checkouts"
     config = tmp_path / "config"
@@ -789,6 +916,7 @@ def test_el_settings_del_runner_exige_el_sandbox(tmp_path: Path) -> None:
     assert sandbox["enabled"] is True
     assert sandbox["failIfUnavailable"] is True
     assert sandbox["allowUnsandboxedCommands"] is False
+    assert sandbox["enableWeakerNestedSandbox"] is True
     assert sandbox["network"]["allowedDomains"] == ["api.anthropic.com"]
     assert sandbox["network"]["strictAllowlist"] is True
     assert "bitbucket.org" not in sandbox["network"]["allowedDomains"]

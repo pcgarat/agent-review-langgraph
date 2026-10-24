@@ -67,6 +67,15 @@ class ClaudeArtifactStore:
             return None
         return parse_findings(body)
 
+    def discard(self, *, repo: str, pr_id: int, head_sha: str) -> None:
+        """Borra el artefacto y su candado. No falla si no estaban."""
+        path = self.path_for(repo=repo, pr_id=pr_id, head_sha=head_sha)
+        for item in (path, path.with_suffix(".lock")):
+            try:
+                item.unlink()
+            except FileNotFoundError:
+                continue
+
 
 def parse_findings(body: str) -> list[Finding] | None:
     """Lista valida, o `None` si el cuerpo no es esa lista.

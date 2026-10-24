@@ -80,6 +80,9 @@ def prepare_checkout(
             git_bin,
             timeout_s=timeout_s,
         )
+        # El reintento reutiliza este árbol. Git no deja hacer fetch sobre la
+        # rama que sigue checked out (`review` tras el intento anterior).
+        _detach_head(directory, git_bin=git_bin, timeout_s=timeout_s, git_token=git_token)
         _fetch_ref(
             directory,
             sha=head_sha,
@@ -114,6 +117,33 @@ def prepare_checkout(
         raise CheckoutError("no se pudo quitar el remoto; el CLI no arranca")
     if fetch_error is not None:
         raise fetch_error
+
+
+def _detach_head(
+    directory: Path,
+    *,
+    git_bin: str,
+    timeout_s: float,
+    git_token: str,
+) -> None:
+    """Pasa a detached HEAD si ya hay un commit. Un `git init` vacío no."""
+    head = _git(
+        directory,
+        ["rev-parse", "--verify", "-q", "HEAD"],
+        git_bin,
+        timeout_s=timeout_s,
+    )
+    if head.returncode != 0:
+        return
+    detached = _git(
+        directory,
+        ["-c", "core.symlinks=false", "checkout", "--detach", "-q"],
+        git_bin,
+        timeout_s=timeout_s,
+    )
+    if detached.returncode != 0:
+        detail = _redact(detached.stderr, git_token)
+        raise CheckoutError(f"git checkout --detach fallo: {detail}".rstrip(": ").rstrip())
 
 
 def _fetch_ref(

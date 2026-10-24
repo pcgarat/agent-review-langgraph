@@ -98,6 +98,16 @@ class Dial:
     help: str
 
 
+# Rango que el panel acepta al publicar los techos del CLI. El entorno puede
+# arrancar fuera de él: ese valor es el inicial del control y se conserva si
+# no se toca. Un guardado nuevo tiene que caer dentro, para que un cero o un
+# typo no deje el worker ocupado días.
+CLAUDE_PANEL_TURNS_MIN = 1
+CLAUDE_PANEL_TURNS_MAX = 2000
+CLAUDE_PANEL_TIMEOUT_MIN_S = 1.0
+CLAUDE_PANEL_TIMEOUT_MAX_S = 21600.0
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -116,8 +126,26 @@ class Settings(BaseSettings):
     claude_artifact_root: str = "var/claude"
     # Techos del subproceso. Una review corta no los gasta. No es un
     # presupuesto de tokens: el motor llm sigue midiendose como hasta ahora.
-    claude_timeout_s: float = 3600.0
-    claude_max_turns: int = 200
+    # El panel los publica; el worker los manda en POST /run. Sin override,
+    # el runner usa estos valores de su propio entorno.
+    claude_timeout_s: Annotated[
+        float,
+        Dial(
+            "Claude",
+            "Segundos de pared del CLI y del checkout. "
+            f"Entre {CLAUDE_PANEL_TIMEOUT_MIN_S:g} y {CLAUDE_PANEL_TIMEOUT_MAX_S:g}. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 3600.0
+    claude_max_turns: Annotated[
+        int,
+        Dial(
+            "Claude",
+            "Turnos del CLI (--max-turns). "
+            f"Entre {CLAUDE_PANEL_TURNS_MIN} y {CLAUDE_PANEL_TURNS_MAX}. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 200
     claude_bin: str = "claude"
     # Arbol de trabajo del servicio. Distinto del clon bare (`read-ws-`) y de
     # la raiz donde el worker guarda el JSON ya validado.

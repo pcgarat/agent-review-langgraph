@@ -33,24 +33,40 @@ class HttpClaudeRunner:
         self._timeout = timeout_s
         self._client = client
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str:
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
         headers: dict[str, str] = {}
         if self._token and not is_missing(self._token):
             headers["Authorization"] = f"Bearer {self._token}"
         own = self._client is None
         client = self._client or httpx.Client()
+        body: dict[str, object] = {
+            "repo": repo,
+            "pr_id": pr_id,
+            "head_sha": head_sha,
+            "base_sha": base_sha,
+        }
+        # Solo lo publicado. Omitirlo deja al runner con su entorno.
+        if max_turns is not None:
+            body["max_turns"] = max_turns
+        if timeout_s is not None:
+            body["timeout_s"] = timeout_s
+        wait = self._timeout if timeout_s is None else timeout_s
         try:
             try:
                 response = client.post(
                     f"{self._url}/run",
-                    json={
-                        "repo": repo,
-                        "pr_id": pr_id,
-                        "head_sha": head_sha,
-                        "base_sha": base_sha,
-                    },
+                    json=body,
                     headers=headers,
-                    timeout=self._timeout + 30,
+                    timeout=wait + 30,
                 )
             except httpx.TimeoutException as exc:
                 raise ClaudeTimeout("el servicio claude-runner no respondio") from exc

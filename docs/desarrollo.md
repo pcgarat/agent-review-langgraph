@@ -163,16 +163,25 @@ servicio `claude-runner`, no en el worker. La etapa `claude-runner` del
 proceso no arranca. El subproceso recibe `DISABLE_UPDATES=1` y
 `--setting-sources user`. El argv pide `/ce-code-review mode:agent base:<sha>`,
 permite `Read`, `Grep`, `Glob` y `Bash`, deniega edición, `WebFetch` y
-`WebSearch`, y usa `--permission-mode dontAsk`. Los techos son
-`CLAUDE_MAX_TURNS` 200 y `CLAUDE_TIMEOUT_S` 3600. El `settings.json` del config
+`WebSearch`, y usa `--permission-mode dontAsk`. Los techos por defecto son
+`CLAUDE_MAX_TURNS` 200 y `CLAUDE_TIMEOUT_S` 3600. El panel los publica (sección
+Claude, entre 1–2000 turnos y 1–21600 s) y el worker los manda en `POST /run`;
+sin override, el runner usa su entorno. El `settings.json` del config
 dir exige el sandbox: lista estricta `api.anthropic.com`, sin salir de él,
-checkout no escribible y `/tmp` sí ([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
+checkout no escribible, `/tmp` sí y `enableWeakerNestedSandbox`
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)). En Compose ese servicio
+lleva `apparmor=unconfined` y `seccomp=unconfined`: sin los dos, `bwrap` no
+crea el user namespace y el sandbox no arranca. El flag débil evita el
+`Can't mount proc` de un `/proc` nuevo dentro de Docker; la jaula ve los
+procesos del contenedor.
 El entorno del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando
 secretos. El token de sesión, si el fichero sigue vigente, se inyecta aparte
 (`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. `CLAUDE_CONFIG_DIR` apunta
 fuera del checkout. El checkout (`claude_runner/checkout.py`) deja `review` en
 el `head_sha` y `base` en el `base_sha`, quita los remotos y no arranca el CLI
-sin base o si el fetch de la base falla. `core.symlinks` queda en falso. Git
+sin base o si el fetch de la base falla. Un reintento sobre el mismo árbol
+suelta HEAD antes del fetch: Git no actualiza la rama que está checked out.
+`core.symlinks` queda en falso. Git
 corre con un entorno sin los tokens del proceso. La transcripción es el fichero
 entero en `claude_session`; el panel la sigue por SSE y la descarga con sesión.
 
@@ -324,7 +333,7 @@ de entrar al nodo. Al añadir un chequeo nuevo, dos reglas más:
 5. **La marca es un tombstone**: el worker no la retira al abortar. Sin hilo, cualquier
    job rezagado de la misma review (la reanudación del fix-worker, una decisión
    encolada) arrancaría desde `START`; la marca, con su TTL (`CANCEL_TTL_S`), hace que
-   `_consume` lo aborte. Solo el comando «Reintentar» la retira. Por la misma razón una
+   `_consume` lo aborte. «Reintentar» y «Eliminar» la retiran. Por la misma razón una
    pausa de **fix** no se marca: la marca abortaría el job que resuelve la wave.
 
 ### La web del panel (019)
@@ -353,7 +362,12 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
    parsea la URL y encola `launch=True`. El commit lo lee `resolve_launch` en el
    worker, antes de `graph.invoke`
    ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
-6. **Un descarte sin recorrido no es un 404.** Si `trace` no existe y la clave
+6. **Eliminar no borra el hilo en el panel.** `POST /api/reviews/{key}/forget`
+   sube `reviews:generation:<key>` y encola `forget=True`. El worker borra hilos,
+   artefacto y estado local ([ADR-0034](adr/0034-olvidar-una-ejecucion.md)). Un
+   job con generación menor no corre. Un lanzamiento nuevo adopta la vigente al
+   resolver el SHA. Los comentarios del PR se quedan.
+7. **Un descarte sin recorrido no es un 404.** Si `trace` no existe y la clave
    está en la DLQ, el detalle pinta el motivo y el campo `error` (log de los
    intentos). El worker lo acumula en `reviews:failure:<review_key>` y lo copia
    al descartar. Un fallo del `claude-runner` incluye el `detail` de la respuesta,

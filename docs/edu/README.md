@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Documentación educativa de LangGraph
 
@@ -117,6 +117,7 @@ Tabla de "quiero entender X → módulo donde vive X".
 | `context_schema`, `store`, `durability`, `Overwrite` | [10 — Patrones avanzados](10-patrones-avanzados.md) |
 | **El grafo de `reviews` recorrido caso a caso** (sin hallazgos, report, HITL, fix, fallos, degradada) | [11 — Recorrido de una review](11-recorrido-de-una-review.md) |
 | **La foto final**: el mismo recorrido con la cascada de verificación, las trazas y el presupuesto ya entregado (prospectivo) | [12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md) |
+| Jaula de `Bash`, `bwrap`, sandbox del CLI, `claude-runner` | [13 — La jaula](13-jaula-bwrap-y-runner.md) |
 
 ---
 
@@ -195,6 +196,11 @@ flowchart TD
     G -->|publish| VCS[comentarios inline + resumen]
     G -->|teaser · outbox| TEAMS[teams-bot · Teams]
 ```
+
+## Aparte de la serie de LangGraph
+
+[13 — La jaula](13-jaula-bwrap-y-runner.md) explica `bwrap`, el sandbox del CLI
+y el servicio `claude-runner`: la jaula en la que corre cada `Bash` de Claude.
 
 ## Glosario mínimo
 

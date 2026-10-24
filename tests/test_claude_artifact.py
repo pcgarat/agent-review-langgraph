@@ -224,6 +224,15 @@ def test_complete_sin_hallazgos_de_origen_es_lista_vacia() -> None:
     assert review.discarded == 0
 
 
+def test_un_failed_conserva_la_razon() -> None:
+    cuerpo = _agente()
+    cuerpo["status"] = "failed"
+    cuerpo["reason"] = "no se pudo despachar el revisor"
+
+    with pytest.raises(AgentModeRejected, match="no se pudo despachar el revisor"):
+        adapt_agent_mode(cuerpo)
+
+
 @pytest.mark.parametrize("status", ["failed", "skipped", "degraded"])
 def test_un_estado_que_no_es_complete_no_es_lista_vacia(status: str) -> None:
     cuerpo = _agente()

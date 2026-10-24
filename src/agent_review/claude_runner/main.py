@@ -25,6 +25,10 @@ from agent_review.claude_runner.checkout import CheckoutError, checkout_director
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
 from agent_review.ports.claude import ClaudeCeiling, ClaudeProcessCrashed, ClaudeQuotaExceeded
 from agent_review.settings import (
+    CLAUDE_PANEL_TIMEOUT_MAX_S,
+    CLAUDE_PANEL_TIMEOUT_MIN_S,
+    CLAUDE_PANEL_TURNS_MAX,
+    CLAUDE_PANEL_TURNS_MIN,
     Settings,
     clone_token,
     get_settings,
@@ -55,6 +59,13 @@ class RunBody(BaseModel):
     pr_id: int = Field(ge=1)
     head_sha: str
     base_sha: str
+    # Vacío: manda el entorno de este proceso. El worker manda el dial publicado.
+    max_turns: int | None = Field(
+        default=None, ge=CLAUDE_PANEL_TURNS_MIN, le=CLAUDE_PANEL_TURNS_MAX
+    )
+    timeout_s: float | None = Field(
+        default=None, ge=CLAUDE_PANEL_TIMEOUT_MIN_S, le=CLAUDE_PANEL_TIMEOUT_MAX_S
+    )
 
 
 class RunResponse(BaseModel):
@@ -87,6 +98,9 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                 _workspace_root(current), repo=body.repo, head_sha=body.head_sha
             )
             with _directory_lock(directory):
+                max_turns, timeout_s = resolve_ceilings(
+                    current, max_turns=body.max_turns, timeout_s=body.timeout_s
+                )
                 prepare_checkout(
                     directory,
                     repo=body.repo,
@@ -94,7 +108,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                     base_sha=body.base_sha,
                     git_token=credential,
                     provider=current.vcs_provider,
-                    timeout_s=current.claude_timeout_s,
+                    timeout_s=timeout_s,
                 )
                 extra = {CHILD_TOKEN_ENV: token} if token else {}
                 config_dir = _config_dir(current)
@@ -117,8 +131,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     stdout = SubprocessClaudeRunner(
                         argv_prefix=[current.claude_bin],
-                        max_turns=current.claude_max_turns,
-                        timeout_s=current.claude_timeout_s,
+                        max_turns=max_turns,
+                        timeout_s=timeout_s,
                         extra_env=extra,
                         cwd=directory,
                         redact=secrets,
@@ -144,6 +158,16 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         return RunResponse(stdout=redact_text(stdout, secrets))
 
     return app
+
+
+def resolve_ceilings(
+    settings: Settings, *, max_turns: int | None, timeout_s: float | None
+) -> tuple[int, float]:
+    """El cuerpo manda si viene. Si no, el entorno de este proceso."""
+    return (
+        settings.claude_max_turns if max_turns is None else max_turns,
+        settings.claude_timeout_s if timeout_s is None else timeout_s,
+    )
 
 
 def _workspace_root(settings: Settings) -> Path:
@@ -204,6 +228,9 @@ def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
             "enabled": True,
             "failIfUnavailable": True,
             "allowUnsandboxedCommands": False,
+            # Docker no deja montar un /proc nuevo. Sin esto cada Bash muere
+            # antes de git. La jaula ve los procesos del contenedor.
+            "enableWeakerNestedSandbox": True,
             "filesystem": {
                 # El cwd es un checkout dentro de esta raíz. denyWrite de un
                 # antepasado tapa el árbol aunque el sandbox permita el cwd.

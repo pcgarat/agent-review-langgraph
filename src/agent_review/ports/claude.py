@@ -41,4 +41,13 @@ class ClaudeRunner(Protocol):
     guardó un artefacto válido para esa clave.
     """
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str: ...
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str: ...

@@ -52,8 +52,17 @@ class _Runner:
         self.error = error
         self.calls: list[str] = []
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str:
-        del repo, pr_id, base_sha
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, base_sha, max_turns, timeout_s
         self.calls.append(head_sha)
         raise self.error
 
@@ -396,8 +405,17 @@ def test_el_enfriamiento_no_cubre_un_artefacto_ya_valido(tmp_path: Path) -> None
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def run(self, *, repo: str, pr_id: int, head_sha: str, base_sha: str) -> str:
-            del repo, pr_id, base_sha
+        def run(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            head_sha: str,
+            base_sha: str,
+            max_turns: int | None = None,
+            timeout_s: float | None = None,
+        ) -> str:
+            del repo, pr_id, base_sha, max_turns, timeout_s
             self.calls.append(head_sha)
             return "[]"
 

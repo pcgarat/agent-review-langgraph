@@ -84,6 +84,8 @@ from agent_review.ports.context import ContextLimits, ContextReaderPort
 from agent_review.ports.fixer import FixerPort
 from agent_review.ports.progress import ProgressPort
 from agent_review.ports.progress import clear as clear_progress
+from agent_review.ports.progress import finish_node as finish_progress
+from agent_review.ports.progress import start_node as start_progress
 from agent_review.ports.reasoning import ReasoningSink
 from agent_review.ports.reviewer import ReviewerPort
 from agent_review.ports.tooling import ToolingOutputSource
@@ -692,6 +694,9 @@ def ensure_claude_artifact(
     runner: ClaudeRunner,
     store: ClaudeArtifactStore,
     note: Callable[[str], None] | None = None,
+    progress: ProgressPort | None = None,
+    max_turns: int | None = None,
+    timeout_s: float | None = None,
 ) -> None:
     """Una llamada al CLI por `head_sha`, antes del grafo.
 
@@ -710,13 +715,21 @@ def ensure_claude_artifact(
             _say(note, f"Claude: artefacto ya válido para {short}. No se llama al CLI.")
             return
         _say(note, f"Claude: empieza el CLI para {short}.")
+        # El grafo aún no existe: sin esta marca la review sale de la cola y
+        # no entra en «En vuelo» hasta el primer nodo.
+        start_progress(progress, request.review_key, "claude")
         started = time.monotonic()
-        stdout = runner.run(
-            repo=request.repo,
-            pr_id=request.pr_id,
-            head_sha=request.head_sha,
-            base_sha=request.base_sha,
-        )
+        try:
+            stdout = runner.run(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                head_sha=request.head_sha,
+                base_sha=request.base_sha,
+                max_turns=max_turns,
+                timeout_s=timeout_s,
+            )
+        finally:
+            finish_progress(progress, request.review_key, "claude")
         elapsed = time.monotonic() - started
         _say(note, f"Claude: el CLI terminó en {elapsed:.0f}s.")
         try:
@@ -752,6 +765,9 @@ def process_request(
     claude_store: ClaudeArtifactStore | None = None,
     dial_snapshot: Mapping[str, object] | None = None,
     note: Callable[[str], None] | None = None,
+    progress: ProgressPort | None = None,
+    claude_max_turns: int | None = None,
+    claude_timeout_s: float | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -849,7 +865,15 @@ def process_request(
                 request.review_key,
             )
         if claude_runner is not None and claude_store is not None:
-            ensure_claude_artifact(request, runner=claude_runner, store=claude_store, note=note)
+            ensure_claude_artifact(
+                request,
+                runner=claude_runner,
+                store=claude_store,
+                note=note,
+                progress=progress,
+                max_turns=claude_max_turns,
+                timeout_s=claude_timeout_s,
+            )
         state: ReviewState = {"request": request, "findings": []}
         if dial_snapshot is not None:
             state["dial_snapshot"] = dict(dial_snapshot)
@@ -1532,7 +1556,9 @@ _PARK_NOTICES: dict[str, tuple[str, str]] = {
     ),
     "ceiling": (
         "Claude llego al techo",
-        "Se agotaron los turnos o el tiempo de pared. No se reintenta ni se publica.",
+        "Se agotaron los turnos o el tiempo de pared. No se reintenta ni se publica. "
+        "El techo se cambia en /config (sección Claude); este job hay que eliminarlo "
+        "y lanzarlo de nuevo.",
     ),
 }
 
@@ -1630,6 +1656,8 @@ def dispatch_job(
     park_link: str | None = None,
     expected_repo: str = "",
     dial_snapshot: Mapping[str, object] | None = None,
+    claude_max_turns: int | None = None,
+    claude_timeout_s: float | None = None,
 ) -> None:
     """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`.
 
@@ -1664,6 +1692,8 @@ def dispatch_job(
         park_link=park_link,
         expected_repo=expected_repo,
         dial_snapshot=dial_snapshot,
+        claude_max_turns=claude_max_turns,
+        claude_timeout_s=claude_timeout_s,
     )
 
 
@@ -1687,6 +1717,8 @@ def _consume(
     park_link: str | None = None,
     expected_repo: str = "",
     dial_snapshot: Mapping[str, object] | None = None,
+    claude_max_turns: int | None = None,
+    claude_timeout_s: float | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1705,12 +1737,40 @@ def _consume(
     requeued = False
     pending_key = request.review_key
     try:
+        # Un borrado no es una review: no se resuelve el commit ni se mira la
+        # marca de cancelacion, que este mismo job retira (ADR-0034).
+        fresh_launch = bool(request.launch and not request.head_sha)
+        if request.forget:
+            _forget_review(
+                graph,
+                request,
+                queue=queue,
+                paused=paused,
+                cancel=cancel,
+                history=history,
+                claude_store=claude_store,
+                progress=progress,
+            )
+            return
         # La cola aun muestra el job sin SHA. Cancelarlo marca esa clave; se
         # mira antes de llamar al VCS para no resolver un lanzamiento ya abortado.
         if request.cancelled or (cancel is not None and cancel.is_cancelled(pending_key)):
             _on_cancelled(graph, request, paused=paused)
             return
         request = resolve_launch(request, vcs, expected_repo=expected_repo)
+        if fresh_launch:
+            # El clic es posterior a cualquier «Eliminar» ya contado: adopta la
+            # generacion vigente. Un reintento que ya trae SHA no entra aqui.
+            request = request.model_copy(
+                update={"generation": queue.generation(request.review_key)}
+            )
+        elif request.generation < queue.generation(request.review_key):
+            logger.info(
+                "Review %s obsoleta (generacion %d); no se ejecuta",
+                request.review_key,
+                request.generation,
+            )
+            return
         if cancel is not None and cancel.is_cancelled(request.review_key):
             _on_cancelled(graph, request, paused=paused)
             return
@@ -1736,6 +1796,9 @@ def _consume(
             claude_store=claude_store,
             dial_snapshot=dial_snapshot,
             note=lambda text: _journal(queue, request.review_key, text),
+            progress=progress,
+            claude_max_turns=claude_max_turns,
+            claude_timeout_s=claude_timeout_s,
         )
         # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
         # Una reentrega del mismo job actualiza su entrada, no la duplica.
@@ -1837,6 +1900,63 @@ def _quota_on_cooldown(
     except Exception:
         logger.exception("No se pudo leer el enfriamiento del cupo de Claude")
         return False
+
+
+def _forget_review(
+    graph: ReviewGraph,
+    request: ReviewRequest,
+    *,
+    queue: ReviewQueue,
+    paused: PausedStore | None,
+    cancel: CancellationPort | None,
+    history: ReviewHistory | None,
+    claude_store: ClaudeArtifactStore | None,
+    progress: ProgressPort | None,
+) -> None:
+    """Deja la ejecucion como si no hubiera corrido. Los comentarios del PR siguen.
+
+    El hilo (y el de la pasada degradada), el artefacto de Claude y el estado
+    local desaparecen. Un job encolado antes del borrado lleva una generacion
+    menor y `_consume` no lo ejecuta.
+    """
+    review_key = request.review_key
+    saver = getattr(graph, "checkpointer", None)
+    if saver is not None:
+        for thread_id in (review_key, f"{review_key}:partial"):
+            try:
+                saver.delete_thread(thread_id)
+            except Exception:
+                logger.exception("No se pudo borrar el hilo %s", thread_id)
+    if claude_store is not None and request.head_sha:
+        try:
+            claude_store.discard(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+        except Exception:
+            logger.exception("No se pudo borrar el artefacto de Claude de %s", review_key)
+    try:
+        queue.withdraw(review_key)
+    except Exception:
+        logger.exception("No se pudo retirar de la cola %s", review_key)
+    if paused is not None:
+        try:
+            paused.resume(review_key)
+        except Exception:
+            logger.exception("No se pudo sacar del inbox %s", review_key)
+    clear_mark = getattr(cancel, "clear", None)
+    if callable(clear_mark):
+        try:
+            clear_mark(review_key)
+        except Exception:
+            logger.exception("No se pudo retirar la marca de cancelacion de %s", review_key)
+    if history is not None:
+        try:
+            history.forget(review_key)
+        except Exception:
+            logger.exception("No se pudo quitar %s del historico", review_key)
+    clear_progress(progress, review_key)
+    logger.info(
+        "Review %s eliminada; el siguiente lanzamiento de este commit empieza de cero",
+        review_key,
+    )
 
 
 def _on_cancelled(
@@ -2002,6 +2122,24 @@ def _checkpoint_values(saver: Any, thread_id: str) -> dict[str, object] | None:
     return values
 
 
+def _claude_ceilings(snapshot: Mapping[str, object] | None) -> tuple[int | None, float | None]:
+    """Techos publicados en la foto de esta review. `None` deja el entorno del runner."""
+    if not snapshot:
+        return None, None
+    overrides = snapshot.get("overrides")
+    if not isinstance(overrides, dict):
+        return None, None
+    turns = overrides.get("claude_max_turns")
+    timeout = overrides.get("claude_timeout_s")
+    max_turns = turns if isinstance(turns, int) and not isinstance(turns, bool) else None
+    timeout_s = (
+        float(timeout)
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+        else None
+    )
+    return max_turns, timeout_s
+
+
 def prepare_review(
     settings: Settings,
     store: Any,
@@ -2101,7 +2239,7 @@ def _mount_or_requeue(
     registry: ModelRegistry | None,
     cancellation: Any,
     budget_client: Any,
-) -> tuple[ReviewGraph, dict[str, object] | None] | None:
+) -> tuple[ReviewGraph, dict[str, object] | None, tuple[int | None, float | None]] | None:
     """Grafo y foto de esta review, o `None` si no se pudo montar y ya se reencoló.
 
     Montar (leer la foto, releer perfil y YAML, compilar) puede fallar igual que
@@ -2138,7 +2276,7 @@ def _review_runtime(
     registry: ModelRegistry | None,
     cancellation: Any,
     budget_client: Any,
-) -> tuple[ReviewGraph, dict[str, object] | None]:
+) -> tuple[ReviewGraph, dict[str, object] | None, tuple[int | None, float | None]]:
     """Grafo de *esta* review, montado con la foto de diales que le toca.
 
     Fuera del bucle para poder probarlo con una cola y un checkpointer falsos: es
@@ -2156,11 +2294,12 @@ def _review_runtime(
         budget_client=budget_client,
         probe_models=False,
     )
-    # El motor `claude` no monta personas ni política: su grafo se compila aparte y
-    # no tiene diales que fijar. Se devuelve `None` para no sellar una foto vacía.
+    # El grafo de claude no fija la foto: no monta personas ni política. Los techos
+    # del CLI sí salen de esa foto y el worker los manda en la llamada.
+    ceilings = _claude_ceilings(dial_snapshot)
     if effective.review_engine == "claude":
-        return graph, None
-    return graph, dial_snapshot
+        return graph, None, ceilings
+    return graph, dial_snapshot, ceilings
 
 
 def sweep_pending(
@@ -2275,6 +2414,8 @@ def run_forever(
             try:
                 active = graph
                 dial_snapshot: Mapping[str, object] | None = None
+                claude_max_turns: int | None = None
+                claude_timeout_s: float | None = None
                 if owns_runtime:
                     mounted = _mount_or_requeue(
                         settings,
@@ -2291,7 +2432,7 @@ def run_forever(
                     )
                     if mounted is None:
                         continue
-                    active, dial_snapshot = mounted
+                    active, dial_snapshot, (claude_max_turns, claude_timeout_s) = mounted
                 dispatch_job(
                     queue,
                     active,
@@ -2312,6 +2453,8 @@ def run_forever(
                     park_link=park_link,
                     expected_repo=settings.configured_repo(),
                     dial_snapshot=dial_snapshot,
+                    claude_max_turns=claude_max_turns,
+                    claude_timeout_s=claude_timeout_s,
                 )
             finally:
                 queue.ack()

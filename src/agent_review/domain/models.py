@@ -574,6 +574,15 @@ class ReviewRequest(BaseModel):
     # mal formado, no una orden de resolverlo.
     launch: bool = False
 
+    # El panel pide borrar esta ejecucion. El worker no invoca el grafo: borra
+    # el hilo, el artefacto de Claude y el estado local. Los comentarios del PR
+    # se quedan (ADR-0034).
+    forget: bool = False
+
+    # Generacion de la ejecucion. «Eliminar» la sube; un job con una menor no
+    # corre, para que un rezagado no rehaga lo que se acaba de borrar.
+    generation: int = Field(default=0, ge=0)
+
     @property
     def idempotency_key(self) -> str:
         return f"{self.repo}:{self.pr_id}:{self.head_sha}"

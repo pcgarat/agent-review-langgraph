@@ -139,7 +139,9 @@ arranca.
 dontAsk` y `--output-format stream-json`. Se añade `--setting-sources user`. El
 prompt posicional es el de la decisión 1. Los techos son 200 turnos y 3600 s
 (decisión 11). La config de usuario del runner activa el sandbox con lista
-estricta y sin arranque si no hay sandbox (decisión 5). El timeout HTTP del
+estricta y sin arranque si no hay sandbox (decisión 5). Dentro de Docker
+activa también `enableWeakerNestedSandbox`: sin ese flag, `bwrap` no monta
+un `/proc` nuevo y cada `Bash` muere antes del diff. El timeout HTTP del
 worker sigue por encima de esos 3600 s.
 
 **Adaptador.** No interpreta markdown. Un elemento que no cumple el contrato se
@@ -199,3 +201,11 @@ No es un canal anónimo.
 ## 7. Preguntas abiertas
 
 Ninguna.
+
+## Enmienda 2026-10-24
+
+200 turnos y 3600 s siguen siendo el valor inicial. `/config`, sección Claude,
+puede publicarlos entre 1 y 2000 turnos y entre 1 y 21600 s. El worker los envía
+en `POST /run` y el timeout HTTP queda 30 s por encima de ese tiempo de pared.
+Sin override, el runner usa su entorno. Un job ya parqueado por `ceiling` no se
+suelta al subir el dial: hay que eliminarlo y lanzarlo de nuevo.

@@ -2,6 +2,9 @@
 
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-24
+- **Corrección:** 2026-10-24 — el contenedor de `claude-runner` no lleva el seccomp ni el AppArmor por defecto. Esos perfiles impiden el user namespace que `bwrap` necesita, y sin él cada `Bash` falla. La jaula sigue siendo el sandbox del CLI.
+- **Corrección:** 2026-10-24 — dentro de Docker, `bwrap` tampoco puede montar un `/proc` nuevo. El `settings.json` activa `enableWeakerNestedSandbox`: la jaula reutiliza el `/proc` del contenedor.
+- **Corrección:** 2026-10-24 — 200 turnos y 3600 s son el valor inicial. El panel puede publicar otros, entre 1 y 2000 turnos y entre 1 y 21600 s. El worker los envía en `POST /run`. Sin override, el runner sigue con su entorno.
 
 ## Contexto
 
@@ -27,21 +30,34 @@ hace que el grafo interprete el markdown de la skill.
    cierra el sandbox del CLI: `bubblewrap` y `socat` en la imagen, lista
    estricta con solo `api.anthropic.com`, sin comandos fuera del sandbox, el
    checkout no escribible y `/tmp` sí. Si el sandbox no puede activarse, el
-   proceso no arranca.
-3. **El techo no se reintenta.** `CLAUDE_MAX_TURNS` es 200 y `CLAUDE_TIMEOUT_S`
-   es 3600. Agotar los turnos o el tiempo de pared parkea el job con motivo
-   `ceiling` y no lo reencola. Una caída anterior a ese techo sigue siendo
-   reintentable. La transcripción de esa pasada se queda y se descarga entera,
-   con sesión del panel.
+   proceso no arranca. El servicio Compose declara `apparmor=unconfined` y
+   `seccomp=unconfined`: con el perfil por defecto de Docker, `bwrap` no crea
+   el namespace y el sandbox no llega a existir. Hacen falta los dos. Aun
+   así, montar un `/proc` nuevo devuelve `Can't mount proc`. El
+   `settings.json` pone `enableWeakerNestedSandbox`: la jaula reutiliza el
+   `/proc` del contenedor y ve sus procesos. La lista de dominios y
+   `denyWrite` no cambian.
+3. **El techo no se reintenta.** El valor inicial de `CLAUDE_MAX_TURNS` es 200
+   y el de `CLAUDE_TIMEOUT_S` es 3600. El panel puede publicarlos dentro de
+   1–2000 turnos y 1–21600 s; el worker los manda en el cuerpo de `POST /run`.
+   Agotar los turnos o el tiempo de pared parkea el job con motivo `ceiling` y
+   no lo reencola. Una caída anterior a ese techo sigue siendo reintentable.
+   La transcripción de esa pasada se queda y se descarga entera, con sesión
+   del panel.
 
 ## Consecuencias
 
-- Un PR puede ocupar la cola del worker hasta una hora. Mientras corre, no coge
-  otro job.
+- Un PR puede ocupar la cola del worker hasta el tiempo de pared publicado
+  (por defecto una hora, como máximo seis). Mientras corre, no coge otro job.
 - El volumen `claude_session` crece con la conversación. No se recorta: llenar
   el disco es un fallo de escritura.
 - La copia de la skill vive en la imagen del runner, no en el árbol del PR.
   `--setting-sources user` no carga la config de ese árbol.
+- El contenedor no es la jaula de `Bash`. Un comando que saliera de `bwrap`
+  queda en un proceso sin el seccomp ni el AppArmor de Docker, con los
+  volúmenes del runner y sin puertos publicados.
+- Con `enableWeakerNestedSandbox`, un `Bash` ve la lista de procesos del
+  contenedor. No ve un `/proc` privado de la jaula.
 
 ## Alternativas descartadas
 
@@ -51,3 +67,6 @@ hace que el grafo interprete el markdown de la skill.
   chocaría con el mismo límite.
 - **Parsear el markdown de la skill.** No hay contrato que probar; el objeto
   `mode:agent` ya es la salida.
+- **Un perfil de seccomp y AppArmor reducido a los syscalls del user
+  namespace.** Más estrecho, y se rompe en cuanto `bwrap` pide uno que no
+  está listado. El cierre sigue siendo el sandbox del CLI.

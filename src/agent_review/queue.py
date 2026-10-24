@@ -25,6 +25,7 @@ FAILURE_LOG_PREFIX = "reviews:failure:"
 # Anotaciones que sobreviven al cierre de la review. El log de intentos se borra
 # al terminar; este se queda para la ficha del panel.
 JOURNAL_PREFIX = "reviews:journal:"
+GENERATION_PREFIX = "reviews:generation:"
 _FAILURE_LOG_TTL_S = 7 * 24 * 3600
 _FAILURE_LOG_KEEP = 8
 _FAILURE_LOG_LIMIT = 12_000
@@ -140,6 +141,22 @@ class ReviewQueue(Protocol):
 
     def clear_notice(self, kind: str) -> None:
         """Borra la clave del aviso. Una caducidad posterior puede avisar otra vez."""
+        ...
+
+    def generation(self, review_key: str) -> int:
+        """Generacion actual de esa ejecucion. `0` si nadie la ha subido."""
+        ...
+
+    def bump_generation(self, review_key: str) -> int:
+        """Sube la generacion y devuelve el valor nuevo."""
+        ...
+
+    def withdraw(self, review_key: str) -> int:
+        """Saca de la cola, el parking y la DLQ los jobs de esa ejecucion.
+
+        No toca el que el worker ya tiene en la lista de procesamiento: ese
+        termina, y el job de borrado que va detras limpia lo que haya escrito.
+        """
         ...
 
 
@@ -410,6 +427,29 @@ class RedisReviewQueue:
         _check_park_reason(kind)
         self._client.delete(_notice_key(kind))
 
+    def generation(self, review_key: str) -> int:
+        raw = self._client.get(_generation_key(review_key))
+        return _generation_value(raw)
+
+    def bump_generation(self, review_key: str) -> int:
+        bumped = self._client.incr(_generation_key(review_key))
+        return bumped if isinstance(bumped, int) else int(str(bumped))
+
+    def withdraw(self, review_key: str) -> int:
+        removed = _drop_matching(self._client, self._key, review_key)
+        removed += _drop_matching(self._client, self._parked_key, review_key)
+        removed += _drop_matching(self._client, self._dead_key, review_key)
+        self._client.delete(
+            _failure_key(review_key),
+            _journal_key(review_key),
+            f"reviews:reasoning:{review_key}",
+            f"reviews:active:{review_key}",
+            f"reviews:teams:card:{review_key}",
+        )
+        for extra in self._client.scan_iter(match=f"reviews:teams:card:{review_key}:final*"):
+            self._client.delete(extra)
+        return removed
+
 
 class InMemoryReviewQueue:
     """Cola compartible en tests y fallback sin Redis."""
@@ -421,6 +461,7 @@ class InMemoryReviewQueue:
         self._notices: dict[str, float | None] = {}
         self._failures: dict[str, list[str]] = {}
         self._journal: dict[str, list[str]] = {}
+        self._generation: dict[str, int] = {}
 
     def enqueue(self, request: ReviewRequest) -> None:
         self._items.append(request.model_dump_json())
@@ -526,6 +567,22 @@ class InMemoryReviewQueue:
     def clear_notice(self, kind: str) -> None:
         _check_park_reason(kind)
         self._notices.pop(kind, None)
+
+    def generation(self, review_key: str) -> int:
+        return self._generation.get(review_key, 0)
+
+    def bump_generation(self, review_key: str) -> int:
+        value = self._generation.get(review_key, 0) + 1
+        self._generation[review_key] = value
+        return value
+
+    def withdraw(self, review_key: str) -> int:
+        removed = _drop_memory(self._items, review_key)
+        removed += _drop_memory(self._parked, review_key)
+        removed += _drop_memory_list(self._dead, review_key)
+        self._failures.pop(review_key, None)
+        self._journal.pop(review_key, None)
+        return removed
 
     def __len__(self) -> int:
         return len(self._items)
@@ -634,6 +691,75 @@ def _failure_key(review_key: str) -> str:
 
 def _journal_key(review_key: str) -> str:
     return f"{JOURNAL_PREFIX}{review_key}"
+
+
+def _generation_key(review_key: str) -> str:
+    return f"{GENERATION_PREFIX}{review_key}"
+
+
+def _generation_value(raw: object) -> int:
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if not isinstance(raw, str):
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def _review_key_of(raw: str | bytes) -> str | None:
+    import json
+
+    text = raw.decode() if isinstance(raw, bytes) else raw
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    key = data.get("review_key")
+    if isinstance(key, str) and key:
+        return key
+    payload = data.get("request", data)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ReviewRequest.model_validate(payload).review_key
+    except ValueError:
+        return None
+
+
+def _drop_matching(client: redis.Redis, key: str, review_key: str) -> int:
+    removed = 0
+    for raw in client.lrange(key, 0, -1):
+        text = raw.decode() if isinstance(raw, bytes) else str(raw)
+        if _review_key_of(text) != review_key:
+            continue
+        removed += int(client.lrem(key, 1, text))
+    return removed
+
+
+def _drop_memory(items: deque[str], review_key: str) -> int:
+    kept: deque[str] = deque()
+    removed = 0
+    while items:
+        raw = items.popleft()
+        if _review_key_of(raw) == review_key:
+            removed += 1
+        else:
+            kept.append(raw)
+    items.extend(kept)
+    return removed
+
+
+def _drop_memory_list(items: list[str], review_key: str) -> int:
+    kept = [raw for raw in items if _review_key_of(raw) != review_key]
+    removed = len(items) - len(kept)
+    items[:] = kept
+    return removed
 
 
 def _as_text(item: object) -> str:

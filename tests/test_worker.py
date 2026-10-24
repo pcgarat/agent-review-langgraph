@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from diff_helpers import added_lines_diff
 
+from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
@@ -816,6 +817,76 @@ def test_consume_resuelve_el_lanzamiento_y_reencola_ese_commit() -> None:
     assert retried is not None
     assert retried.head_sha == "abc123"
     assert retried.attempts == 1
+
+
+def test_consume_olvida_la_ejecucion_sin_invocar_el_grafo(tmp_path: Path) -> None:
+    class _Saver:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_thread(self, thread_id: str) -> None:
+            self.deleted.append(thread_id)
+
+    class _Graph:
+        def __init__(self) -> None:
+            self.checkpointer = _Saver()
+
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("eliminar no invoca el grafo")
+
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    store = ClaudeArtifactStore(root=tmp_path)
+    request = ReviewRequest(repo="cqm/demo", pr_id=18, head_sha="abc", pipeline_id="panel")
+    assert store.save("[]", repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    queue.dead_letter(request, reason="intentos agotados")
+    generation = queue.bump_generation(request.review_key)
+    _consume(
+        queue,
+        graph,
+        request.model_copy(update={"forget": True, "generation": generation}),
+        max_attempts=3,
+        claude_store=store,
+    )
+
+    assert request.review_key in graph.checkpointer.deleted
+    assert f"{request.review_key}:partial" in graph.checkpointer.deleted
+    assert store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha) is None
+    assert queue.dead_letter_count == 0
+
+    class _Boom:
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("un job de la generacion anterior no corre")
+
+    _consume(queue, _Boom(), request.model_copy(update={"generation": 0}), max_attempts=3)
+
+
+def test_un_lanzamiento_nuevo_adopta_la_generacion_vigente() -> None:
+    class _Stop:
+        def __init__(self) -> None:
+            self.request: ReviewRequest | None = None
+
+        def invoke(self, state: dict[str, object], config: object = None) -> None:
+            del config
+            self.request = state["request"]  # type: ignore[assignment]
+            raise RuntimeError("parar")
+
+    graph = _Stop()
+    queue = InMemoryReviewQueue()
+    resolved = "cqm/emotivoo-v2:9:abc123:panel"
+    queue.bump_generation(resolved)
+    _consume(
+        queue,
+        graph,
+        _launch(),
+        max_attempts=3,
+        vcs=_HeadVcs(),
+        expected_repo="cqm/emotivoo-v2",
+    )
+
+    assert graph.request is not None
+    assert graph.request.review_key == resolved
+    assert graph.request.generation == 1
 
 
 def test_consume_no_resuelve_un_lanzamiento_ya_cancelado() -> None:
@@ -1700,7 +1771,7 @@ def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
     store.publish(expected=0, overrides={"llm_max_findings": 2}, actor="ana")
     request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
 
-    graph, snapshot = _review_runtime(
+    graph, snapshot, ceilings = _review_runtime(
         Settings(_env_file=None),
         store,
         None,
@@ -1714,7 +1785,37 @@ def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
     )
 
     assert snapshot == {"revision": 1, "overrides": {"llm_max_findings": 2}}
+    assert ceilings == (None, None)
     assert graph is not None
+
+
+def test_el_montaje_de_claude_manda_el_techo_publicado_sin_sellar_la_foto() -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(
+        expected=0,
+        overrides={"claude_max_turns": 400, "claude_timeout_s": 7200},
+        actor="ana",
+    )
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    _graph, snapshot, ceilings = _review_runtime(
+        Settings(_env_file=None, review_engine="claude", database_url=""),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot is None
+    assert ceilings == (400, 7200.0)
 
 
 class _SaverRoto:

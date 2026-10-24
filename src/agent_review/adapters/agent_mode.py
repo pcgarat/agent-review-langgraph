@@ -38,7 +38,11 @@ def adapt_agent_mode(payload: object) -> AgentModeReview:
     """Lista validada, o `AgentModeRejected` si no hay review que guardar."""
     data = _object(payload)
     if data.get("status") != _COMPLETE:
-        raise AgentModeRejected(f"status {data.get('status')!r} no es una review terminada")
+        detail = f"status {data.get('status')!r} no es una review terminada"
+        reason = data.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            detail = f"{detail}: {reason.strip()[:300]}"
+        raise AgentModeRejected(detail)
     findings = data.get("findings")
     if not isinstance(findings, list):
         raise AgentModeRejected("el objeto no trae una lista findings")

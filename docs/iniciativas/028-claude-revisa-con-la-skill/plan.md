@@ -62,7 +62,8 @@ cierra, con el comportamiento ya probado.
 - **El sandbox es un `settings.json` de ese config dir.** `sandbox.enabled`,
   lista estricta con solo `api.anthropic.com`, sin comandos fuera del
   sandbox, escritura del checkout denegada y `/tmp` permitido. `failIfUnavailable`
-  en verdadero. El arranque del runner exige `bwrap` y `socat` en el `PATH`,
+  en verdadero, y `enableWeakerNestedSandbox` también: en Docker un `/proc`
+  nuevo no monta. El arranque del runner exige `bwrap` y `socat` en el `PATH`,
   igual que ya exige el binario `claude`.
 - **La transcripción sustituye el log recortado.** Misma pareja de ficheros de
   actividad, clave `repo + pr_id + head_sha` entero, sin corte a 500 ni a

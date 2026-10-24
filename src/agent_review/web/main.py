@@ -320,6 +320,22 @@ def retry_review(
     return _run_command(commands.retry, review_key, session)
 
 
+@app.post("/api/reviews/{review_key:path}/forget")
+def forget_review(
+    review_key: str,
+    session: Annotated[Session, Depends(require_command_session)],
+    commands: Annotated[CommandService, Depends(get_commands)],
+) -> dict[str, object]:
+    """Encola el borrado local de la ejecucion (ADR-0034).
+
+    La transcripcion se retira aqui: el panel es quien tiene el volumen. El
+    hilo y el artefacto los borra el worker al tomar el job.
+    """
+    result = _run_command(commands.forget, review_key, session)
+    _drop_claude_activity(review_key)
+    return result
+
+
 @app.post("/api/reviews/{review_key:path}/resume")
 def resume_review(
     review_key: str,
@@ -364,6 +380,24 @@ async def _decision_items(request: Request) -> list[FindingDecision]:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"Item de decision invalido: {exc}"
         ) from exc
+
+
+def _drop_claude_activity(review_key: str) -> None:
+    target = review_target(review_key)
+    if target is None:
+        return
+    repo, pr_id, head_sha = target
+    status_path, log_path = activity_paths(
+        Path(_settings().claude_session_path),
+        repo=repo,
+        pr_id=pr_id,
+        head_sha=head_sha,
+    )
+    for path in (status_path, log_path):
+        try:
+            path.unlink()
+        except OSError:
+            continue
 
 
 def _run_command(

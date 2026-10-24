@@ -548,6 +548,31 @@ def test_decidir_con_un_item_invalido_da_400(client: TestClient) -> None:
     assert response.status_code == 400
 
 
+def test_eliminar_sube_la_generacion_y_encola_el_borrado() -> None:
+    service, queue, _paused, _marker = _service()
+    queue.enqueue(_request())
+    queue.dead_letter(_request(), reason="intentos agotados")
+
+    effect = service.forget(_REVIEW_KEY, actor="ana")
+
+    assert effect.value == "forgotten"
+    assert queue.generation(_REVIEW_KEY) == 1
+    assert queue.dead_letter_count == 0
+    job = queue.dequeue()
+    assert job is not None
+    assert job.forget is True
+    assert job.generation == 1
+    assert job.review_key == _REVIEW_KEY
+    assert queue.dequeue() is None
+
+
+def test_eliminar_una_clave_sin_commit_no_encola() -> None:
+    service, queue, _paused, _marker = _service()
+    with pytest.raises(CommandError):
+        service.forget("sin-commit", actor="ana")
+    assert queue.dequeue() is None
+
+
 def test_el_lector_no_decide(client: TestClient) -> None:
     service, _queue, _paused, _marker = _service()
     with client as c:

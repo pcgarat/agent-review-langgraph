@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-23
+Última modificación: 2026-10-24 | Creado: 2026-10-23
 
 # Configuración desde el panel
 
@@ -236,3 +236,11 @@ conflicto de revisión y foto en el estado) y cubren el HTML en `tests/test_web_
 
 Ninguna que bloquee el plan. El catálogo de §5.1 es el de esta entrega; ampliarlo
 es otra revisión de esta spec.
+
+## Enmienda 2026-10-24
+
+La sección **Claude** añade `claude_max_turns` (200, entre 1 y 2000) y
+`claude_timeout_s` (3600, entre 1 y 21600). El runner no lee el documento: el
+worker manda el valor publicado en `POST /run`. Sin override, sigue el entorno
+del runner. Un valor inicial que el despliegue dejó fuera del rango se conserva
+si el formulario no lo cambia.
