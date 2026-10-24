@@ -37,6 +37,7 @@ from agent_review.web.auth import Session, require_operador, require_session
 # mismo almacen y la misma lectura de revisiones fijadas.
 from agent_review.web.config_api import config_store as _config_store
 from agent_review.web.config_api import dial_pins as _dial_pins
+from agent_review.web.deps import get_read_model
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -46,7 +47,6 @@ from agent_review.web.read_model import (
     PanelState,
     PausedItem,
     QueueItem,
-    build_panel_read_model,
 )
 
 router = APIRouter()
@@ -64,19 +64,6 @@ _FORGET_CONFIRM = (
 # publicacion (kind `fix`) los comentarios del PR se quedan, asi que no se cancela
 # «la review» sino lo que aun corre (spec §5.4, W6/R2).
 _CANCEL_LABEL_PENDING = "Cancelar lo pendiente"
-
-
-def get_read_model(request: Request) -> PanelReadModel:
-    """Read model del proceso, con el *seam* en `app.state.read_model`.
-
-    No se reutiliza el de `web.main` porque `main` incluye este `router` y el import
-    seria circular; el contrato de inyeccion (fake en `app.state`) es el mismo.
-    """
-    model: PanelReadModel | None = getattr(request.app.state, "read_model", None)
-    if model is None:
-        model = build_panel_read_model(get_settings())
-        request.app.state.read_model = model
-    return model
 
 
 @router.get("/config", response_class=HTMLResponse)

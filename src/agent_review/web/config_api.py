@@ -17,20 +17,12 @@ from agent_review.config_store import ConfigReadError, ConfigStore
 from agent_review.panel_config import initial_values, lock_names
 from agent_review.settings import Settings, get_settings
 from agent_review.web.auth import Session, require_command_session, require_session
-from agent_review.web.read_model import PanelReadModel, build_panel_read_model
+from agent_review.web.deps import get_read_model
+from agent_review.web.read_model import PanelReadModel
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-
-def get_read_model(request: Request) -> PanelReadModel:
-    """Read model del proceso. Los tests inyectan un fake en `app.state.read_model`."""
-    model: PanelReadModel | None = getattr(request.app.state, "read_model", None)
-    if model is None:
-        model = build_panel_read_model(get_settings())
-        request.app.state.read_model = model
-    return model
 
 
 @router.get("/api/config")

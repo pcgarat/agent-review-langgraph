@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from agent_review.claude_activity import activity_paths, review_target
@@ -24,14 +24,14 @@ from agent_review.domain.trace import ReviewTrace
 from agent_review.ports.reasoning import ReasoningReader
 from agent_review.settings import Settings, get_settings
 from agent_review.web.auth import Session, require_session
+from agent_review.web.deps import get_console, get_read_model, get_reasoning
 from agent_review.web.read_model import (
     DeadLetterItem,
     PanelReadModel,
     PanelState,
     PausedItem,
-    build_panel_read_model,
 )
-from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
+from agent_review.web.runner_client import RunnerConsoleClient
 
 router = APIRouter()
 
@@ -70,44 +70,8 @@ class ReviewDetail(BaseModel):
     claude: ClaudeAvailability | None = None
 
 
-# Estas tres dependencias no viven en `web.main` porque `main` incluye este router
-# y el import de vuelta sería circular; el contrato de inyección (fake en
-# `app.state`) es el mismo que usan `ui.py` y la propia app.
-
-
-def get_read_model(request: Request) -> PanelReadModel:
-    """Read model del proceso. Los tests inyectan un fake en `app.state.read_model`."""
-    model: PanelReadModel | None = getattr(request.app.state, "read_model", None)
-    if model is None:
-        model = build_panel_read_model(get_settings())
-        request.app.state.read_model = model
-    return model
-
-
-def get_console(request: Request) -> RunnerConsoleClient:
-    """Cliente del runner del proceso. Construirlo no abre ningún stream."""
-    console: RunnerConsoleClient | None = getattr(request.app.state, "console", None)
-    if console is None:
-        console = build_runner_client(get_settings())
-        request.app.state.console = console
-    return console
-
-
-def get_reasoning(request: Request) -> ReasoningReader | None:
-    """Lector del razonamiento del proceso, o `None` sin Redis."""
-    if not hasattr(request.app.state, "reasoning"):
-        request.app.state.reasoning = build_reasoning_reader(get_settings())
-    reader: ReasoningReader | None = request.app.state.reasoning
-    return reader
-
-
-def build_reasoning_reader(settings: Settings) -> ReasoningReader | None:
-    """Lector del razonamiento (021 R5), o `None` sin Redis."""
-    if not settings.redis_url.strip():
-        return None
-    from agent_review.adapters.reasoning_redis import RedisReasoningReader
-
-    return RedisReasoningReader(url=settings.redis_url)
+# Las dependencias de inyección viven en `web.deps`, compartidas con `ui.py` y
+# `config_api.py`: `main` incluye este router y el import de vuelta sería circular.
 
 
 @router.get("/api/reviews/{review_key:path}")
