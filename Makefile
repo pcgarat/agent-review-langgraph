@@ -5,7 +5,7 @@ COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
 .PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
-	eval eval-live eval-record bootstrap twg-credentials up panel down logs ps smoke clean
+	eval eval-live eval-record bootstrap twg-credentials up panel down logs ps status smoke clean
 
 ##@ Dependencias
 
@@ -103,6 +103,9 @@ logs: ## Sigue los logs (S=<servicio>, por defecto worker)
 
 ps: ## Estado de los servicios
 	$(COMPOSE) ps
+
+status: ## Contenedores, URLs y prueba de las credenciales de integracion
+	COMPOSE="$(COMPOSE)" $(UV) run --extra $(EXTRAS) python scripts/status.py
 
 # Smoke Nivel 2 real: deposita el artefacto del CI y espera la review en el PR.
 smoke: ## Smoke Nivel 2 contra un PR real (PR=<id> [PIPELINE=<id>])
