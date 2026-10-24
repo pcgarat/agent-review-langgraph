@@ -486,6 +486,9 @@ El estado vivo de cada iniciativa y sus tareas están en
 [`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
 [025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
 tarjeta de lote, `claude-runner` y sesión en el panel.
+[028](iniciativas/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
+fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
 
 ---
 

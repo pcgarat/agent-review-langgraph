@@ -4,6 +4,7 @@
 - **Fecha:** 2026-10-23
 - **Corrección:** 2026-10-23 — el enlace de la iniciativa apunta a `archivo/` tras cerrarla.
 - **Corrección:** 2026-10-24 — el fetch puede reutilizar el token de VCS ([ADR-0032](0032-clonado-claude-con-el-token-de-vcs.md)). El subproceso `claude` sigue sin heredarlo.
+- **Corrección:** 2026-10-24 — el prompt, el sandbox de `Bash` y el techo están en [ADR-0033](0033-skill-fuera-del-nucleo.md). El CLI sigue fuera del worker.
 
 ## Contexto
 

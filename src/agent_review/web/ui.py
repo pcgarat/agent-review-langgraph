@@ -56,6 +56,13 @@ logger = logging.getLogger(__name__)
 
 _CANCEL = "cancel"
 _RETRY = "retry"
+_FORGET = "forget"
+_FORGET_LABEL = "Eliminar"
+_FORGET_CONFIRM = (
+    "Elimina el hilo, el artefacto de Claude y el estado local de esta ejecución. "
+    "Los comentarios ya publicados en el pull request se quedan. "
+    "El siguiente lanzamiento de este commit vuelve a revisar."
+)
 # Etiqueta del boton de cancelacion segun lo que de verdad detiene: detras de una
 # publicacion (kind `fix`) los comentarios del PR se quedan, asi que no se cancela
 # «la review» sino lo que aun corre (spec §5.4, W6/R2).
@@ -312,13 +319,13 @@ def review_detail(
     state = model.state()
     dead = _dead_item(state, review_key)
     log = _review_log(model, review_key, dead)
+    engine = get_settings().review_engine
     if trace is None:
         if dead is None and not log.strip():
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sin recorrido para {review_key}")
         if dead is None:
-            return HTMLResponse(_log_page(review_key, log, session))
-        return HTMLResponse(_discard_page(dead, session, log=log))
-    engine = get_settings().review_engine
+            return HTMLResponse(_log_page(review_key, log, session, engine=engine))
+        return HTMLResponse(_discard_page(dead, session, log=log, engine=engine))
     return HTMLResponse(
         _detail_page(
             trace,
@@ -437,24 +444,37 @@ def _log_section(log: str) -> str:
     return f"<section><h2>Log</h2><pre>{_esc(text)}</pre></section>"
 
 
-def _log_page(review_key: str, log: str, session: Session) -> str:
-    body = '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>' + _log_section(log)
+def _log_page(review_key: str, log: str, session: Session, *, engine: str = "llm") -> str:
+    """Ficha sin recorrido. El CLI de Claude corre antes del grafo: aquí se ve."""
+    claude = engine == "claude"
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
+        + (_claude_section(review_key) if claude else "")
+        + _forget_commands(review_key, session)
+        + _log_section(log)
+    )
     return _page(
         title=f"Review {review_key}",
         meta="Sin recorrido de nodos",
         body=body,
         session=session,
-        script="",
+        script=_COMMAND_SCRIPT + (_CLAUDE_LIVE_SCRIPT if claude else ""),
     )
 
 
-def _discard_page(item: DeadLetterItem, session: Session, *, log: str = "") -> str:
+def _discard_page(
+    item: DeadLetterItem, session: Session, *, log: str = "", engine: str = "llm"
+) -> str:
     """Ficha de un descarte sin recorrido: motivo y log de los intentos."""
     log = log.strip() or item.error.strip() or "No hay log guardado para este descarte."
-    commands = _buttons(item.review_key, ((_RETRY, "Reintentar"),), session)
+    claude = engine == "claude"
+    commands = _buttons(
+        item.review_key, ((_RETRY, "Reintentar"), (_FORGET, _FORGET_LABEL)), session
+    )
     body = "".join(
         (
             '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
+            _claude_section(item.review_key) if claude else "",
             "<section><h2>Descarte</h2>"
             f"<p>Motivo <strong>{_esc(item.reason) or '—'}</strong> · "
             f"intentos {_esc(item.attempts)} · {_fmt_dt(item.discarded_at)}</p>"
@@ -467,7 +487,7 @@ def _discard_page(item: DeadLetterItem, session: Session, *, log: str = "") -> s
         meta="Descartada antes de dejar recorrido",
         body=body,
         session=session,
-        script=_COMMAND_SCRIPT,
+        script=_COMMAND_SCRIPT + (_CLAUDE_LIVE_SCRIPT if claude else ""),
     )
 
 
@@ -483,7 +503,7 @@ def _detail_page(
     body = "".join(
         (
             '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
-            _claude_section(trace) if claude else "",
+            _claude_section(trace.review_key) if claude else "",
             _claude_steps(trace) if claude else _trace_section(trace),
             _log_section(log),
             _detail_commands(trace, session),
@@ -570,8 +590,12 @@ def _active_section(
     return _section("En vuelo", _table(headers, rows))
 
 
+_ACTIVE_LABEL = {"claude": "CLI de Claude"}
+
+
 def _active_node(node: ActiveNode) -> str:
-    text = f"{_esc(node.node)} desde {_fmt_dt(node.started_at)}"
+    label = _ACTIVE_LABEL.get(node.node, node.node)
+    text = f"{_esc(label)} desde {_fmt_dt(node.started_at)}"
     if node.branches > 1:
         text += f" ({_esc(node.branches)} ramas)"
     return text
@@ -593,13 +617,14 @@ def _paused_section(title: str, items: list[PausedItem], session: Session) -> st
 
 
 def _dead_section(items: list[DeadLetterItem], session: Session) -> str:
+    commands = ((_RETRY, "Reintentar"), (_FORGET, _FORGET_LABEL))
     rows = [
         "<tr>"
         f"<td>{_review_link(item.review_key)}</td>"
         f"<td>{_esc(item.attempts)}</td>"
         f"<td>{_esc(item.reason)}</td>"
         f"<td>{_fmt_dt(item.discarded_at)}</td>"
-        f"<td>{_buttons(item.review_key, ((_RETRY, 'Reintentar'),), session)}</td>"
+        f"<td>{_buttons(item.review_key, commands, session)}</td>"
         "</tr>"
         for item in items
     ]
@@ -678,12 +703,15 @@ def _claude_steps(trace: ReviewTrace) -> str:
     return f"<section><h2>Pasos</h2>{summary}{table}</section>"
 
 
-def _claude_section(trace: ReviewTrace) -> str:
-    endpoint = f"/api/reviews/{quote(trace.review_key, safe='/:')}/claude"
+def _claude_section(review_key: str) -> str:
+    key = quote(review_key, safe="/:")
+    stream = f"/api/reviews/{key}/claude/events"
+    download = f"/api/reviews/{key}/claude/download"
     return (
         "<section><h2>Claude</h2>"
-        '<p class="meta" id="claude-status">Cargando la ejecución del CLI…</p>'
-        f'<pre id="claude-log" data-endpoint="{_esc(endpoint)}"></pre>'
+        '<p class="meta" id="claude-status">Siguiendo la conversación…</p>'
+        f'<pre id="claude-log" data-stream="{_esc(stream)}"></pre>'
+        f'<p><a id="claude-download" href="{_esc(download)}">Descargar la conversación</a></p>'
         "</section>"
     )
 
@@ -780,12 +808,12 @@ def _trace_commands(trace: ReviewTrace) -> tuple[tuple[str, str], ...]:
     `expired` es del sistema (TTL).
     """
     if trace.state == "completed":
-        return ()
+        return ((_FORGET, _FORGET_LABEL),)
     if trace.pause_kind == "fix":
-        return ((_CANCEL, _CANCEL_LABEL_PENDING),)
+        return ((_CANCEL, _CANCEL_LABEL_PENDING), (_FORGET, _FORGET_LABEL))
     if trace.pause_kind == "human":
-        return ((_CANCEL, "Cancelar la review"),)
-    return ((_CANCEL, "Cancelar"),)
+        return ((_CANCEL, "Cancelar la review"), (_FORGET, _FORGET_LABEL))
+    return ((_CANCEL, "Cancelar"), (_FORGET, _FORGET_LABEL))
 
 
 def _config_store(request: Request, settings: Settings) -> ConfigStore:
@@ -913,7 +941,14 @@ def _dial_control(field: object, shown: object, initial: object, locked: bool) -
 
     if not isinstance(field, DialField):
         raise TypeError("field")
-    kind = "bool" if isinstance(initial, bool) else "int" if isinstance(initial, int) else "text"
+    if isinstance(initial, bool):
+        kind = "bool"
+    elif isinstance(initial, int):
+        kind = "int"
+    elif isinstance(initial, float):
+        kind = "float"
+    else:
+        kind = "text"
     disabled = " disabled" if locked else ""
     control_id = f"dial-{field.name}"
     same = shown == initial
@@ -949,6 +984,13 @@ def _pause_commands(item: PausedItem) -> tuple[tuple[str, str], ...]:
     return ((_CANCEL, "Cancelar la review"),)
 
 
+def _forget_commands(review_key: str, session: Session) -> str:
+    buttons = _buttons(review_key, ((_FORGET, _FORGET_LABEL),), session)
+    if not buttons:
+        return ""
+    return f"<section><h2>Comandos</h2>{buttons}</section>"
+
+
 def _buttons(review_key: str, commands: tuple[tuple[str, str], ...], session: Session) -> str:
     """Botones de comando, solo para el rol `operador` (OP33).
 
@@ -962,9 +1004,10 @@ def _buttons(review_key: str, commands: tuple[tuple[str, str], ...], session: Se
     buttons = []
     for name, label in commands:
         endpoint = _esc(f"{base}/{name}")
+        confirm = f' data-confirm="{_esc(_FORGET_CONFIRM)}"' if name == _FORGET else ""
         buttons.append(
             f'<button type="button" class="cmd" data-command="{name}" '
-            f'data-endpoint="{endpoint}">{_esc(label)}</button>'
+            f'data-endpoint="{endpoint}"{confirm}>{_esc(label)}</button>'
         )
     return f'<span class="commands">{"".join(buttons)}</span>'
 
@@ -1059,7 +1102,9 @@ _CONFIG_SCRIPT = """<script>
       if (control.dataset.kind === "bool") values[name] = control.checked;
       // Un entero vacio no es 0: publicarlo apagaria el presupuesto en silencio.
       // Se envia sin recortar y el servidor responde 400 nombrando el campo.
-      else if (control.dataset.kind === "int") values[name] = control.value.trim();
+      else if (control.dataset.kind === "int" || control.dataset.kind === "float") {
+        values[name] = control.value.trim();
+      }
       else values[name] = control.value;
     });
     try {
@@ -1273,40 +1318,52 @@ _CLAUDE_LIVE_SCRIPT = """<script>
 (() => {
   const output = document.getElementById("claude-log");
   const status = document.getElementById("claude-status");
-  if (!output || !status) {
+  if (!output || !status || !output.dataset.stream) {
     return;
   }
-  const paint = (body) => {
-    output.textContent = body.text || "El CLI todavía no ha escrito nada.";
-    if (!body.started_at) {
-      status.textContent = "Este commit no tiene una ejecución del CLI registrada.";
-      return false;
-    }
-    const start = new Date(body.started_at);
-    const end = body.finished_at ? new Date(body.finished_at) : new Date();
-    const seconds = Math.max(0, Math.round((end - start) / 1000));
-    const when = start.toLocaleString();
-    status.textContent = body.running
-      ? `Claude CLI en marcha desde ${when}. Lleva ${seconds} s.`
-      : `Claude CLI empezó ${when} y terminó en ${seconds} s.`;
-    return body.running;
-  };
-  const tick = async () => {
+  const show = (line) => {
+    let event;
     try {
-      const response = await fetch(output.dataset.endpoint, { credentials: "same-origin" });
-      if (!response.ok) {
-        status.textContent = "No se pudo leer la ejecución del CLI.";
-        return;
-      }
-      const running = paint(await response.json());
-      if (running) {
-        setTimeout(tick, 2000);
-      }
+      event = JSON.parse(line);
     } catch (cause) {
-      status.textContent = String(cause);
+      return line;
     }
+    if (!event || typeof event !== "object") {
+      return line;
+    }
+    const message = event.message;
+    const content = message && Array.isArray(message.content) ? message.content : [];
+    const bits = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      if (block.type === "text" && block.text) {
+        bits.push(String(block.text));
+      } else if (block.type === "tool_use") {
+        bits.push("herramienta " + String(block.name || ""));
+      } else if (block.type === "tool_result") {
+        bits.push(String(block.content || ""));
+      }
+    }
+    if (event.type === "result" && event.result) {
+      bits.push(String(event.result));
+    }
+    return bits.length ? bits.join("\\n") : line;
   };
-  tick();
+  const source = new EventSource(output.dataset.stream);
+  source.addEventListener("line", (ev) => {
+    const line = JSON.parse(ev.data);
+    output.textContent += (output.textContent ? "\\n" : "") + show(line);
+  });
+  source.addEventListener("end", () => {
+    source.close();
+    status.textContent = "Conversación terminada. La descarga es el fichero entero.";
+  });
+  source.onerror = () => {
+    status.textContent = "No se pudo seguir la conversación.";
+    source.close();
+  };
 })();
 </script>"""
 
@@ -1359,6 +1416,10 @@ _COMMAND_SCRIPT = """<script>
       if (!response.ok) {
         throw new Error((await response.text()) || response.statusText);
       }
+      if (button.dataset.command === "forget") {
+        window.location.href = "/";
+        return;
+      }
       button.textContent = "Enviado";
     } catch (cause) {
       error.textContent = String(cause);
@@ -1367,7 +1428,10 @@ _COMMAND_SCRIPT = """<script>
     }
   };
   document.querySelectorAll("button.cmd").forEach((button) => {
-    button.addEventListener("click", () => send(button));
+    button.addEventListener("click", () => {
+      if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
+      send(button);
+    });
   });
 })();
 </script>"""

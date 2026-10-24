@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import fakeredis
@@ -660,6 +661,31 @@ def test_api_history_devuelve_json_filtrado(monkeypatch: pytest.MonkeyPatch) -> 
     data = client.get("/api/history", params={"pr_id": 2}).json()
     assert [item["review_key"] for item in data] == ["b"]
     assert data[0]["end"] == "completa"
+
+
+def test_la_descarga_de_claude_es_el_fichero_entero_y_exige_sesion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.claude_activity import ClaudeActivity
+
+    monkeypatch.setattr(get_settings(), "claude_session_path", str(tmp_path / "s.json"))
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
+    sha = "c" * 40
+    activity = ClaudeActivity(tmp_path / "s.json", repo="acme/app", pr_id=9, head_sha=sha)
+    activity.start()
+    activity.append("q" * 25_000)
+    activity.finish()
+    key = f"acme/app:9:{sha}"
+    assert client.get(f"/api/reviews/{key}/claude/download").status_code == 401
+    headers = {"X-Panel-Session": "ana:lector"}
+    downloaded = client.get(f"/api/reviews/{key}/claude/download", headers=headers)
+    assert downloaded.status_code == 200
+    assert "q" * 25_000 in downloaded.text
+    events = client.get(f"/api/reviews/{key}/claude/events", headers=headers)
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+    assert "q" * 25_000 in events.text
+    assert "event: end" in events.text
 
 
 def test_un_aviso_de_reintento_no_cierra_el_lote() -> None:

@@ -163,8 +163,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       REVIEW_ENGINE: claude
       CLAUDE_BIN: ${CLAUDE_BIN:-claude}
-      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-30}
-      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-900}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-200}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
       CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
       CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
       CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
@@ -179,6 +179,13 @@ services:
     volumes:
       - claude_checkout:/var/claude-checkout
       - claude_session:/var/claude-session
+    # bwrap necesita un user namespace anidado. El seccomp y el AppArmor por
+    # defecto de Docker lo impiden, y con uno solo sigue fallando. La jaula
+    # de Bash es el sandbox del CLI (ADR-0033), no este perfil. Un /proc
+    # nuevo sigue prohibido: el settings.json usa enableWeakerNestedSandbox.
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('CLAUDE_RUNNER_PORT','8098'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
       interval: 30s
@@ -264,6 +271,8 @@ services:
       # ADR-0031). Ninguno es un secreto.
       PANEL_CONFIG_LOCK: ${PANEL_CONFIG_LOCK:-}
       AUTONOMY_CONFIG: ${AUTONOMY_CONFIG:-config/autonomy.yaml}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-200}
       MAX_AUTONOMY_OVERRIDE: ${MAX_AUTONOMY_OVERRIDE:-}
       SCOPE_IGNORE: ${SCOPE_IGNORE:-}
       LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}

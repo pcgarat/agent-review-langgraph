@@ -195,6 +195,20 @@ def test_la_vista_global_pinta_las_secciones(panel: Panel) -> None:
     assert "persona" in body, "el nodo en vuelo"
 
 
+def test_en_vuelo_el_cli_de_claude_enlaza_la_ficha(panel: Panel) -> None:
+    key = "cqm/emotivoo-v2:8:8d789e494938abcdef:1"
+    panel.model.panel_state.active.append(
+        ActiveReview(
+            review_key=key,
+            nodes=[ActiveNode(node="claude", started_at=_MOMENT)],
+        )
+    )
+    body = panel.client.get("/").text
+    assert "CLI de Claude" in body
+    assert f'href="/review/{key}"' in body
+    assert "claude desde" not in body
+
+
 def test_la_vista_global_enlaza_al_detalle(panel: Panel) -> None:
     body = panel.client.get("/").text
     assert f'href="/review/{_REVIEW_KEY}"' in body
@@ -269,9 +283,11 @@ def test_el_operador_ve_los_comandos_de_la_vista_global(panel: Panel) -> None:
     assert 'data-command="resume"' not in body
 
 
-def test_la_review_completada_no_ofrece_comandos(panel: Panel) -> None:
+def test_la_review_completada_ofrece_eliminar(panel: Panel) -> None:
     body = panel.client.get(f"/review/{_REVIEW_KEY}").text
-    assert "data-command" not in body
+    assert 'data-command="forget"' in body
+    assert 'data-command="cancel"' not in body
+    assert "Eliminar" in body
 
 
 def test_la_pausa_humana_ofrece_decidir_y_cancelar_sin_reanudar(panel: Panel) -> None:
@@ -372,6 +388,32 @@ def test_el_html_escapa_un_script_inyectado_en_un_campo_del_pr(panel: Panel) -> 
 
 
 # --- Razonamiento (021 RZ9) ---
+
+
+def test_sin_recorrido_la_ficha_claude_sigue_el_cli(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El CLI corre antes del grafo: la ficha de entonces solo tenía el Log."""
+    monkeypatch.setattr(get_settings(), "review_engine", "claude")
+    key = "cqm/emotivoo-v2:8:8d789e494938abcdef:1"
+    panel.model.extra_notes[key] = ["Claude: empieza el CLI para 8d789e494938."]
+    body = panel.client.get(f"/review/{key}").text
+    assert 'id="claude-log"' in body
+    assert "EventSource" in body
+    assert "/claude/events" in body
+    assert "empieza el CLI" in body
+
+
+def test_la_ficha_claude_sigue_el_sse_y_ofrece_la_descarga(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "review_engine", "claude")
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert "EventSource" in body
+    assert "/claude/events" in body
+    assert 'id="claude-download"' in body
+    assert "body.text" not in body
+    assert "output.dataset.stream" in body
 
 
 def test_el_detalle_lleva_la_pestana_de_razonamiento(panel: Panel) -> None:
@@ -497,7 +539,7 @@ def test_la_pagina_de_configuracion_pinta_cada_dial_y_restaurar(
     for field in fields:
         assert field.name in body
         assert field.help in body
-    for section in ("Presupuesto y lotes", "Verificador", "Bucle de lectura", "Política"):
+    for section in ("Claude", "Presupuesto y lotes", "Verificador", "Bucle de lectura", "Política"):
         assert section in body
     assert "Guardar" in body
     assert 'href="/config"' in panel.client.get("/").text

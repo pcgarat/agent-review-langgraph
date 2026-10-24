@@ -2,6 +2,8 @@
 
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-10
+- **Corrección:** 2026-10-24 — el runner sí ejecuta la skill, fuera del núcleo
+  ([ADR-0033](0033-skill-fuera-del-nucleo.md)). El núcleo sigue validando el contrato.
 
 ## Contexto
 

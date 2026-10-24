@@ -17,9 +17,14 @@ from typing import Annotated
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from agent_review.claude_activity import read_activity, review_target
+from agent_review.claude_activity import (
+    activity_paths,
+    read_activity,
+    review_target,
+    transcript_events,
+)
 from agent_review.claude_session import write_session
 from agent_review.decision import require_decision_item
 from agent_review.domain.history import ReviewSummary
@@ -315,6 +320,22 @@ def retry_review(
     return _run_command(commands.retry, review_key, session)
 
 
+@app.post("/api/reviews/{review_key:path}/forget")
+def forget_review(
+    review_key: str,
+    session: Annotated[Session, Depends(require_command_session)],
+    commands: Annotated[CommandService, Depends(get_commands)],
+) -> dict[str, object]:
+    """Encola el borrado local de la ejecucion (ADR-0034).
+
+    La transcripcion se retira aqui: el panel es quien tiene el volumen. El
+    hilo y el artefacto los borra el worker al tomar el job.
+    """
+    result = _run_command(commands.forget, review_key, session)
+    _drop_claude_activity(review_key)
+    return result
+
+
 @app.post("/api/reviews/{review_key:path}/resume")
 def resume_review(
     review_key: str,
@@ -361,6 +382,24 @@ async def _decision_items(request: Request) -> list[FindingDecision]:
         ) from exc
 
 
+def _drop_claude_activity(review_key: str) -> None:
+    target = review_target(review_key)
+    if target is None:
+        return
+    repo, pr_id, head_sha = target
+    status_path, log_path = activity_paths(
+        Path(_settings().claude_session_path),
+        repo=repo,
+        pr_id=pr_id,
+        head_sha=head_sha,
+    )
+    for path in (status_path, log_path):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+
+
 def _run_command(
     operation: Callable[..., CommandEffect],
     review_key: str,
@@ -391,8 +430,54 @@ def claude_activity(
     target = review_target(review_key)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "La review no identifica un commit")
-    pr_id, head_sha = target
-    return read_activity(Path(_settings().claude_session_path), pr_id=pr_id, head_sha=head_sha)
+    repo, pr_id, head_sha = target
+    return read_activity(
+        Path(_settings().claude_session_path), repo=repo, pr_id=pr_id, head_sha=head_sha
+    )
+
+
+@app.get("/api/reviews/{review_key:path}/claude/events")
+def claude_transcript(
+    review_key: str,
+    session: Annotated[Session, Depends(require_session)],
+) -> StreamingResponse:
+    """Líneas ya escritas y las que lleguen, hasta que la ejecución termine."""
+    del session
+    target = _claude_target(review_key)
+    repo, pr_id, head_sha = target
+    return StreamingResponse(
+        transcript_events(
+            Path(_settings().claude_session_path),
+            repo=repo,
+            pr_id=pr_id,
+            head_sha=head_sha,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/reviews/{review_key:path}/claude/download")
+def claude_download(
+    review_key: str,
+    session: Annotated[Session, Depends(require_session)],
+) -> FileResponse:
+    """El fichero entero de la conversación. No es un canal anónimo."""
+    del session
+    repo, pr_id, head_sha = _claude_target(review_key)
+    _status, log_path = activity_paths(
+        Path(_settings().claude_session_path), repo=repo, pr_id=pr_id, head_sha=head_sha
+    )
+    if not log_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No hay conversación de esta review")
+    return FileResponse(log_path, media_type="text/plain; charset=utf-8", filename=log_path.name)
+
+
+def _claude_target(review_key: str) -> tuple[str, int, str]:
+    target = review_target(review_key)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "La review no identifica un commit")
+    return target
 
 
 @app.get("/api/reviews/{review_key:path}/console")

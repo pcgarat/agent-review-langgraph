@@ -26,7 +26,7 @@ from agent_review.domain.models import (
     HitlDecision,
     ReviewRequest,
 )
-from agent_review.ports.claude import ClaudeQuotaExceeded
+from agent_review.ports.claude import ClaudeCeiling, ClaudeProcessCrashed, ClaudeQuotaExceeded
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.web.main import ClaudeLogin, app
@@ -52,8 +52,17 @@ class _Runner:
         self.error = error
         self.calls: list[str] = []
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-        del repo, pr_id
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, base_sha, max_turns, timeout_s
         self.calls.append(head_sha)
         raise self.error
 
@@ -265,6 +274,63 @@ def test_el_cupo_parkea_avisa_y_no_entra_al_grafo(tmp_path: Path) -> None:
     assert _LINK in avisos[0]
 
 
+def test_el_techo_parkea_una_vez_y_el_login_no_lo_suelta(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeCeiling("techo"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+    _consume(
+        queue,
+        graph,
+        _request("dos"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+
+    assert graph.calls == 0
+    assert queue.dequeue() is None
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+    assert len(_notices(outbox)) == 1
+    assert claude_session_ready(queue, lambda: True) is True
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+
+
+def test_una_caida_sigue_reintentandose(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("502"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    retried = queue.dequeue()
+    assert graph.calls == 0
+    assert retried is not None
+    assert retried.attempts == 1
+    assert queue.parked() == []
+
+
 def test_get_session_es_un_booleano(tmp_path: Path) -> None:
     path = tmp_path / "session.json"
     write_session(path, _TOKEN, ttl_s=3600)
@@ -339,8 +405,17 @@ def test_el_enfriamiento_no_cubre_un_artefacto_ya_valido(tmp_path: Path) -> None
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-            del repo, pr_id
+        def run(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            head_sha: str,
+            base_sha: str,
+            max_turns: int | None = None,
+            timeout_s: float | None = None,
+        ) -> str:
+            del repo, pr_id, base_sha, max_turns, timeout_s
             self.calls.append(head_sha)
             return "[]"
 
