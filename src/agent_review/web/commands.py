@@ -38,6 +38,7 @@ from agent_review.domain.models import (
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.paused_store import PausedStore
 from agent_review.queue import ReviewQueue
+from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitStatus
 
 logger = logging.getLogger(__name__)
 
@@ -94,10 +95,13 @@ class CommandService:
         queue: ReviewQueue,
         paused: PausedStore,
         cancellation: CancellationMarker,
+        submitter: DecisionSubmitter | None = None,
     ) -> None:
         self._queue = queue
         self._paused = paused
         self._cancellation = cancellation
+        # Si esta, la decision del detalle comparte el sello con Teams y la bandeja.
+        self._submitter = submitter
 
     def cancel(self, review_key: str, *, actor: str) -> CommandEffect:
         """Cancela una review, con la semantica por estado de la spec §5.4.
@@ -192,6 +196,8 @@ class CommandService:
             raise CommandError(f"{review_key} no esta pausada")
         if paused.kind is not PauseKind.HUMAN:
             raise CommandError(f"{review_key} no es una pausa humana")
+        if self._submitter is not None:
+            return self._decide_sealed(review_key, actor=actor, items=items)
         try:
             decision = build_decision(paused, actor=actor, items=items, reviewed_key=review_key)
         except DecisionError as exc:
@@ -204,6 +210,19 @@ class CommandService:
             decision.actor,
         )
         return CommandEffect.DECIDED
+
+    def _decide_sealed(
+        self, review_key: str, *, actor: str, items: list[FindingDecision]
+    ) -> CommandEffect:
+        """La misma decision que la bandeja y Teams: gana la primera."""
+        assert self._submitter is not None
+        outcome = self._submitter.submit_items(review_key, actor=actor, items=items, origin="panel")
+        if outcome.status is SubmitStatus.ENQUEUED:
+            return CommandEffect.DECIDED
+        if outcome.status is SubmitStatus.ALREADY_DECIDED:
+            who = outcome.actor or "otra persona"
+            raise CommandError(f"La decision ya la tomo {who}")
+        raise CommandError(outcome.reason or "La review ya no esta pausada")
 
 
 def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
@@ -226,7 +245,13 @@ def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
 
 
 def build_command_service(
-    *, queue: ReviewQueue, paused: PausedStore, cancellation: CancellationMarker
+    *,
+    queue: ReviewQueue,
+    paused: PausedStore,
+    cancellation: CancellationMarker,
+    submitter: DecisionSubmitter | None = None,
 ) -> CommandService:
     """Raiz de composicion del servicio de comandos del panel (OP29-OP32)."""
-    return CommandService(queue=queue, paused=paused, cancellation=cancellation)
+    return CommandService(
+        queue=queue, paused=paused, cancellation=cancellation, submitter=submitter
+    )

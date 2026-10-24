@@ -1,4 +1,4 @@
-"""Documento vigente de diales (026, ADR-0029).
+"""Documento vigente de diales (027, ADR-0031).
 
 Postgres es la fuente. Sin `DATABASE_URL`, o si en desarrollo no se puede
 conectar, el almacén es en memoria y empieza vacío: el sistema se comporta

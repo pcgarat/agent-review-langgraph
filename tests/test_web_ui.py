@@ -175,8 +175,11 @@ def test_la_vista_global_pinta_las_secciones(panel: Panel) -> None:
         "Pausas de fix",
         "Descartes",
         "Presupuesto",
+        "Lanzar review",
     ):
         assert title in body, f"falta la seccion {title}"
+    assert 'id="launch-review"' in body
+    assert "/api/launch" in body
     assert _REVIEW_KEY in body
     assert _HUMAN_KEY in body
     assert _FIX_KEY in body
@@ -257,6 +260,19 @@ def test_el_formulario_de_decision_pinta_cada_pendiente(panel: Panel) -> None:
     assert "ADR-0009" in body, "el aviso de que aprobar solo autoriza a intentarlo"
 
 
+def test_la_pausa_de_publicacion_ofrece_publicar_o_no(panel: Panel) -> None:
+    panel.model.state().paused.human[0].publication = True
+    panel.model.traces[_HUMAN_KEY] = _trace(
+        state="paused", pause_kind="human", review_key=_HUMAN_KEY
+    )
+    body = panel.client.get(f"/review/{_HUMAN_KEY}").text
+    assert "Publicar" in body
+    assert "No publicar" in body
+    assert 'value="dropped"' in body
+    assert 'value="rejected"' not in body
+    assert "ADR-0009" not in body
+
+
 def test_el_formulario_de_decision_escapa_el_texto_del_pr(panel: Panel) -> None:
     panel.model.state().paused.human[0].pending = [_pending("f1", title=_XSS, why_it_matters=_XSS)]
     panel.model.traces[_HUMAN_KEY] = _trace(
@@ -301,6 +317,8 @@ def test_el_lector_no_ve_botones(monkeypatch: pytest.MonkeyPatch) -> None:
     response = client.get("/", headers={"X-Panel-Session": "ana:lector"})
     assert response.status_code == 200
     assert "data-command" not in response.text
+    assert "Solo el rol operador lanza reviews." in response.text
+    assert 'id="launch-review"' not in response.text
 
 
 # --- Escapado de datos de terceros -----------------------------------------------
@@ -332,6 +350,24 @@ def test_el_texto_del_modelo_nunca_se_inserta_como_html(panel: Panel) -> None:
     script = script[: script.index("</script>")]
     assert "innerHTML" not in script
     assert "textContent += ev.text" in script
+
+
+# --- Bandeja (ADR-0030) ---
+
+
+def test_la_bandeja_explica_el_canal_y_no_pinta_html_del_aviso(panel: Panel) -> None:
+    from agent_review.settings import Settings
+
+    body = panel.client.get("/bandeja").text
+    assert "<h2>Bandeja de decisiones</h2>" in body
+    assert 'id="bandeja"' in body
+    assert "new Notification" in body
+    assert "innerHTML" not in body
+    if Settings().teams_enabled:
+        assert "Teams está configurado" in body
+    else:
+        assert "Teams no está configurado" in body
+    assert "Activar notificaciones" in body
 
 
 # --- Histórico (021 RZ11) ---
@@ -502,7 +538,7 @@ def test_el_lector_de_trazas_saca_la_revision_de_la_foto() -> None:
 def test_un_dial_bloqueado_se_pinta_con_su_inicial_y_otro_guardado_entra(
     panel: Panel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """El candado no puede dejar el formulario sin guardar (026)."""
+    """El candado no puede dejar el formulario sin guardar (027)."""
     from agent_review.config_store import MemoryConfigStore
     from agent_review.panel_config import initial_values
 

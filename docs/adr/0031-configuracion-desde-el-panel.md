@@ -1,4 +1,4 @@
-# ADR-0029 — Los diales de una review se publican desde el panel
+# ADR-0031 — Los diales de una review se publican desde el panel
 
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-23

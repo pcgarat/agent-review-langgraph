@@ -143,7 +143,7 @@ def test_las_variables_del_panel_estan_en_env_example() -> None:
 
 
 def test_el_panel_monta_config_y_recibe_los_diales_que_pinta() -> None:
-    """026: sin `config/` no puede validar el techo; sin los diales, el inicial miente."""
+    """027: sin `config/` no puede validar el techo; sin los diales, el inicial miente."""
     web = _compose()["services"]["web"]
     config = [v for v in web.get("volumes", []) if "config" in str(v)]
     assert config, "el panel necesita autonomy.yaml para validar MAX_AUTONOMY_OVERRIDE"

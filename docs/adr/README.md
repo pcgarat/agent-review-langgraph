@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Registro de decisiones (ADR)
 
@@ -36,7 +36,10 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0025](0025-matcher-del-gold-set-mide-el-defecto.md) | El matcher del *gold set* mide el defecto (localización + fragmento discriminante), no la redacción | Aceptado |
 | [0026](0026-contrato-de-lectura-con-tamano-real.md) | La lectura devuelve un value object con el tamaño real, no un `str` | Aceptado |
 | [0027](0027-dialecto-portable-de-grep.md) | `grep` habla un dialecto portable y rechaza lo que cada motor lee distinto | Aceptado |
-| [0029](0029-configuracion-desde-el-panel.md) | Los diales de una review se publican desde el panel; el hilo fija la foto al empezar | Aceptado |
+| [0028](0028-cli-claude-fuera-del-worker.md) | El CLI de Claude corre fuera del worker; el núcleo solo ve hallazgos ya validados | Aceptado |
+| [0029](0029-lanzamiento-desde-el-panel.md) | Una review se lanza desde el panel con la URL del pull request; el worker lee el commit | Aceptado |
+| [0030](0030-bandeja-web-de-la-decision.md) | La bandeja del panel es la otra superficie de la misma pregunta; vale la primera respuesta | Aceptado |
+| [0031](0031-configuracion-desde-el-panel.md) | Los diales de una review se publican desde el panel; el hilo fija la foto al empezar | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

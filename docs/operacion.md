@@ -10,6 +10,10 @@ arquitectura está en [`arquitectura.md`](arquitectura.md) y el vocabulario, en
 
 ## 1. Arranque
 
+La primera vez, con el mínimo para publicar una review, está en el
+[README](../README.md). Lo de aquí es el arranque de operación: los mismos
+comandos, más los perfiles y el mapa de servicios.
+
 ```bash
 scripts/bootstrap-env.sh          # crea .env desde .env.example (idempotente, permisos 600)
 $EDITOR .env                      # rellena los secretos (§3)
@@ -37,16 +41,30 @@ docker compose --profile panel up -d      # añade `web` (panel) a lo de siempre
 
 Sin el perfil, `docker compose up` arranca exactamente lo de siempre.
 
+El servicio del CLI de Claude es otro perfil
+([ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)):
+
+```bash
+docker compose --profile claude up -d   # añade `claude-runner`
+```
+
+Sin ese perfil el arranque sigue siendo el motor `llm`. El servicio no hereda
+el `.env`: no recibe el token con el que el worker publica. Su volumen de
+checkout no es el clon *bare* del `sandbox-runner`. La sesión de Claude es un
+fichero en el volumen `claude_session`, montado por este servicio y por el
+panel; el worker no lo monta.
+
 ### Servicios de compose
 
 | Servicio | Puerto | Monta | Notas |
 |---|---|---|---|
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
-| `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
+| `worker` | — | `./var` y `./config` (solo lectura); volumen `claude_artifacts` en `/app/var/claude` | Necesita `twg` en la imagen si el proveedor es `twg`. `CLAUDE_GIT_TOKEN` llega vacío. No monta `claude_session` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
-| `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) | Panel de operación: lee estado de Redis, el recorrido del checkpointer y publica los diales (026). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Solo arranca con `--profile panel` |
+| `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) y volumen `claude_session` en `/var/claude-session` | Panel de operación: lee estado de Redis, el recorrido del checkpointer, publica los diales (027) y lanza reviews con la URL del PR ([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM, pero sí el nombre del repo (`VCS_PROVIDER` y `BITBUCKET_*` o `GITHUB_OWNER`/`GITHUB_REPO`, sin token) para rechazar la URL de otro repo. Escribe la sesión de Claude (0600). Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
+| `claude-runner` (perfil `claude`) | `8098` solo interno | `claude_checkout` en `/var/claude-checkout`; `claude_session` en `/var/claude-session` | Checkout de solo lectura y subproceso `claude`. **Sin** `env_file` ni el token de publicación. `CLAUDE_GIT_TOKEN` solo vive aquí; el worker lo recibe vacío. `GET /session` dice si el fichero sigue vigente y lo retira si caducó |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
 | `redis` | — | — | Sin auth; solo red interna |
 
@@ -117,6 +135,7 @@ ficheros versionados:
 | Tema | Variables (valor por defecto) |
 |---|---|
 | Entorno | `ENVIRONMENT` (`development`; `production` activa el *fail-closed*), `LOG_LEVEL` (`INFO`) |
+| Motor | `REVIEW_ENGINE` (`llm` \| `claude`, por defecto `llm`; [ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)). Se lee al arrancar: cambiarlo es reiniciar el worker. `llm` compila el grafo de personas. `claude` compila el otro ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md)): el worker llama al `claude-runner` antes del grafo, guarda el stdout si es una lista de hallazgos y no vuelve a llamar si ese `head_sha` ya es válido. Sin sesión, el job pasa a `reviews:claude:parked` y el bucle sigue (una reanudación con decisión no). El job que agota el cupo parkea y no se reintenta; los siguientes esperan como `quota-wait` hasta que caduca el aviso. Cualquier otro valor aborta al construir `Settings`. `CLAUDE_ARTIFACT_ROOT` (`var/claude`): JSON ya validado. `CLAUDE_RUNNER_URL` (vacío en `llm`). `CLAUDE_TIMEOUT_S` (900) y `CLAUDE_MAX_TURNS` (30): topes del subproceso, no de tokens. `CLAUDE_WORKSPACE_ROOT`: árbol del servicio, distinto del clon *bare*. `CLAUDE_SESSION_PATH` y `CLAUDE_SESSION_TTL_S` (43200): fichero de sesión y caducidad que anota el panel. `PANEL_PUBLIC_URL`: enlace del aviso |
 | VCS | `VCS_PROVIDER` (`twg` \| `github`). Bitbucket: `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO`, `TWG_BIN`, `TWG_BBC_TOKEN`, `TWG_SITE`, `TWG_USER`, `TWG_TOKEN` (Jira), `TWG_TIMEOUT_S` (60). GitHub: `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_API_URL` |
 | Infraestructura | `REDIS_URL`, `DATABASE_URL`, `POSTGRES_PASSWORD` |
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
@@ -134,12 +153,12 @@ ficheros versionados:
 | Revisor con herramientas (014/023) | `REVIEW_TOOLS_ROLES` (vacío: roles LLM que pueden leer ficheros y hacer `grep` mientras revisan; vacío = una llamada por lote como en 008). Topes y palancas del bucle: tabla siguiente |
 | Fix y sandbox | `SANDBOX_ENABLED`, `SANDBOX_RUNNER_URL` (p. ej. `http://sandbox-runner:8099`), `SANDBOX_RUNNER_TOKEN`, `SANDBOX_GIT_TOKEN`, `SANDBOX_REGISTRY_USER`/`_TOKEN`, `SANDBOX_DOCKER_BIN`, `SANDBOX_TIMEOUT_S` (1200; manda el perfil), `SANDBOX_WORKSPACE_TTL_S` (1800: TTL de un workspace de lectura), `SANDBOX_MAX_WORKSPACES` (4: tope de clones abiertos a la vez), `FIX_DELIVERY` (`diff` \| `suggestion`), `FIX_RECIPES` (solo si no hay perfil), `MAX_FIX_LINES` (30) |
 | Handoff (fix-worker) | `REDIS_URL` (cola), `SANDBOX_RUNNER_URL`/`_TOKEN`, `MAX_FIX_ATTEMPTS_JOB` (3), `FIX_VERIFY_TTL_S` (7200), `FIX_POLL_S` (5), `FIX_SWEEP_S` (30) |
-| Panel, diales (026) | `PANEL_CONFIG_LOCK` (vacío: el operador puede publicar el catálogo). La página es `/config` |
+| Panel, diales (027) | `PANEL_CONFIG_LOCK` (vacío: el operador puede publicar el catálogo). La página es `/config` |
 
-### Configuración desde el panel (026)
+### Configuración desde el panel (027)
 
 El rol `operador` publica, en `/config`, los diales del catálogo de
-[026](iniciativas/026-configuracion-desde-el-panel/spec.md). El `lector` ve la
+[027](iniciativas/027-configuracion-desde-el-panel/spec.md). El `lector` ve la
 página y no guarda. Cada control nace con el valor que `Settings` ya resolvió
 (el entorno si la variable está puesta) y **Restaurar** lo devuelve a ese valor
 sin escribir. **Guardar** publica el documento entero en Postgres
@@ -163,7 +182,35 @@ valor del despliegue y el siguiente guardado descarta ese override, que
 La review que ya empezó sigue con la foto que fijó. La página nombra esa
 revisión junto a la publicada. La siguiente, y un **Reintentar** del panel,
 leen lo publicado. Secretos, arranque y los YAML de
-`config/` no están en la página ([ADR-0029](adr/0029-configuracion-desde-el-panel.md)).
+`config/` no están en la página ([ADR-0031](adr/0031-configuracion-desde-el-panel.md)).
+
+### Revisor con herramientas (023)
+
+El *prompt* del bucle anuncia **siempre** todas las capacidades del puerto (modos,
+`ref`, `files_only`, `depth`): estas banderas deciden el coste y la forma de servir,
+nunca la disponibilidad. Con todas en su default, el comportamiento servido es el de
+hoy.
+
+| Variable | Default | Qué hace | Apagado ⇒ qué pasa |
+|---|---|---|---|
+| `REVIEW_TOOLS_MAX_TURNS` | `4` | turnos con herramientas por lote (sin contar el final forzado) | — |
+| `REVIEW_TOOLS_MAX_CALLS` | `8` | total de peticiones por lote | — |
+| `REVIEW_TOOLS_MAX_BYTES` | `60000` | bytes servidos por lote | — |
+| `REVIEW_TOOLS_CALLS_PER_TURN` | `3` | peticiones atendidas en un mismo turno | se sube junto con `MAX_CALLS`: con más por turno y el mismo total, el lote se agota antes |
+| `REVIEW_TOOLS_GREP_MODE` | `literal` | modo por defecto de `grep` (`literal` \| `regex`) | el adaptador sirve literal aunque el *prompt* anuncie `regex`; pedirlo explícito **sí** funciona |
+| `REVIEW_TOOLS_READ_OUTLINE` | `off` | habilita `mode="outline"` en `read_file` | pedirlo cae a `full` y se avisa |
+| `REVIEW_TOOLS_READ_STATE` | `off` | bloque de lecturas de la review en el *prompt* | no viaja el bloque; las citas se siguen validando con el registro |
+| `REVIEW_TOOLS_TRUNCATION_NOTICE` | `on` | aviso de corte con el tamaño real del fichero | el corte se aplica igual pero **no** se anuncia: solo para reproducir el *prompt* viejo |
+| `REVIEW_TOOLS_STRICT_CALLS` | `off` | error explícito por petición no atendida | el excedente se descarta con un `AVISO` en el `<tool_result>` |
+| `REVIEW_TOOLS_PRECACHE_CONTEXT` | `on` | L1 precargado en el bucle | baja el *prompt* base del lote; el modelo debe leer lo que necesite (cuesta turnos) |
+| `REVIEW_TOOLS_IO_CACHE` | `off` | caché de E/S por review (ahorra E/S, no *prompt*) | cada lote vuelve a leer del repositorio |
+
+Desde 023, todas estas banderas **actúan**: `GREP_MODE` y `CALLS_PER_TURN` fijan
+defaults, `STRICT_CALLS` cambia el descarte por un error explícito, `READ_OUTLINE`,
+`READ_STATE`, `TRUNCATION_NOTICE`, `PRECACHE_CONTEXT` e `IO_CACHE` cambian lo
+servido o el *prompt* con el sentido de la tabla. Con `GREP_MODE=literal` (el
+default) un `mode="regex"` explícito del modelo se atiende igual; el flag solo fija
+el default. Ninguna cambia lo que el *prompt* anuncia que existe.
 
 ### Revisor con herramientas (023)
 
@@ -235,9 +282,18 @@ encapsula la lista `settings.PLACEHOLDER_VALUES`.
 | `SANDBOX_RUNNER_TOKEN` | Bearer compartido entre el `fix-worker` y el runner | Si `SANDBOX_ENABLED`; siempre para el `fix-worker` en producción | Agente |
 | `SANDBOX_CONSOLE_TOKEN` | Bearer de **solo lectura** de la consola del runner: lo usa el `web` y solo abre `GET /verify/{run_key}/console`, no `POST /verify` | Para la consola en vivo del panel | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
+| `CLAUDE_RUNNER_TOKEN` | Bearer entre el worker y `claude-runner` | Si `REVIEW_ENGINE=claude` | Agente |
+| `CLAUDE_GIT_TOKEN` | Token de solo lectura para el checkout de Claude. No lo exige el worker; el subproceso `claude` no lo hereda | El servicio `claude-runner` en producción | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Fase 4 | Agente |
 | `POSTGRES_PASSWORD` | Credencial de Postgres | En producción | Infra |
+
+La sesión de Claude no es una variable de entorno. El panel la escribe en
+`CLAUDE_SESSION_PATH` con modo `0600` y `claude-runner` la lee para
+`GET /session` y para inyectarla al subproceso. El worker no monta el volumen.
+El aviso de Teams lleva el enlace al panel y no el token. Al guardarla, los
+jobs parqueados por falta de sesión vuelven a `reviews:jobs`; los del cupo se
+quedan, porque soltarlos volvería a gastarlo.
 
 El `fix-worker` tiene su propio contrato, mucho menor: en producción solo exige
 `SANDBOX_RUNNER_URL` y un `SANDBOX_RUNNER_TOKEN` real, porque no recibe ningún otro
@@ -319,24 +375,30 @@ curl -sS -X POST "$REVIEWS_URL/webhook/tooling" \
 | `GET` | `/profile/{repo}` | — | Ruta del perfil cargado (ignora `{repo}`) |
 
 Cuerpo de una decisión:
-`{"actor": "ana", "items": [{"finding_id": "…", "outcome": "approved|rejected|noted", "note": ""}]}`.
+`{"actor": "ana", "items": [{"finding_id": "…", "outcome": "approved|rejected|noted|dropped", "note": ""}]}`.
+En la pausa del motor `llm` valen `approved`, `rejected` y `noted`. En la de
+publicación (`pause_kind=publication`) valen `approved` (publicar) y `dropped`
+(no publicar).
 
 ```bash
 agent_review list                                       # reviews pausadas y orden sugerida
 agent_review decide '<review_key>' --actor ana \
   --approve <id> --reject <id> --note "falso positivo" --noted <id>
+agent_review decide '<review_key>' --actor ana --drop <id>   # pausa de publicación
 ```
 
 La `review_key` lleva `/` y `:` (`cqm/emotivoo-v2:430:<sha>:<pipeline>`): ponla entre
 comillas. Exit `1` = no está pausada; exit `2` = decisión rechazada (falta algún
-pendiente, un id es ajeno o se usó `expired`).
+pendiente, un id es ajeno, se usó `expired` o el resultado no vale en esa pausa).
 
 ### Panel de operación (`web`, perfil `panel`)
 
 El panel es un proceso aparte (`python -m agent_review.web.main`), opt-in por el
 perfil de compose `panel`. Lee el estado operativo de Redis y el recorrido del
 checkpointer con un pool de **solo lectura**; no recibe credencial de VCS ni clave
-del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
+del LLM (solo lee estado y encola comandos). Recibe el nombre del repo, sin el
+token, para no lanzar la URL de otro repositorio
+([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). La sesión va en la cabecera
 `X-Panel-Session: <usuario>:<rol>` (`rol` `lector` u `operador`) o en la cookie
 `panel_session` (el navegador no puede mandar cabeceras en una navegación normal);
 **no** es `REVIEWS_DECISION_TOKEN`.
@@ -351,12 +413,18 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `POST` | `/api/reviews/{review_key}/cancel` | `operador` | `200` con el efecto; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `409` si no aplica; `503` si Redis no responde |
 | `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
-| `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` con `approved`/`rejected`/`noted`; la construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana o no cubre **todos** los pendientes; `503` si Redis no responde |
+| `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}`. En una pausa de arreglo, `approved`/`rejected`/`noted`; en una de publicación, `approved` (publicar) y `dropped` (no publicar). La construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana, no cubre **todos** los pendientes o el resultado no vale en esa pausa; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
-| `GET` | `/api/config` | Sesión | Documento de diales vigente (026): `revision`, `values` (solo las claves que se apartan del inicial), `initial`, `locked` y quién lo publicó. `503` si Postgres no responde |
-| `POST` | `/config` | `operador` | Publica el formulario entero (026): cuerpo `{"revision", "values", "initial"}`, con `initial` opcional. `400` con `{"detail": {"field"}}` si un valor no encaja; `409` con la revisión vigente si otro guardó antes o si `initial` ya no coincide con este proceso; `503` si Postgres no responde |
-| `GET` | `/config` | Sesión | Página HTML de diales (026): una sección por grupo, ayuda por control y un **Restaurar** por control |
-| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
+| `POST` | `/api/launch` | `operador` | Lanza una review con la URL del pull request ([ADR-0031](adr/0029-lanzamiento-desde-el-panel.md)). Cuerpo `{"url": "https://…/pull/123"}`. `202` `{"status": "encolada", "repo", "pr_id", "pipeline_id": "panel", "actor"}`: no devuelve `review_key` porque el SHA lo lee el worker. `400` si la URL no es un pull request de GitHub o Bitbucket, o el repo no es el del despliegue; `403` para `lector` o para un comando por cookie que no sea JSON del mismo origen; `503` si Redis no responde. No espera al artefacto del CI |
+| `GET` | `/api/bandeja` | Sesión | Pausas humanas abiertas (sin sello): las mismas preguntas que la tarjeta de Teams. `teams_enabled` dice si Teams también las muestra. Vacío si no hay ninguna |
+| `POST` | `/api/bandeja/{review_key}/decision` | `operador` | Responde una de esas preguntas. Cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` o, en una pausa de publicación, `{"batch": "blockers\|all\|none"}`. El actor es el de la sesión. Comparte el sello con Teams y con el detalle: la primera respuesta encola y el resto es `409`. `400` si el cuerpo no trae `items` ni `batch`, o trae los dos; `409` si no está pausada, no cubre los pendientes o el resultado no vale; `403` para `lector`; `503` si Redis no responde. Con Teams configurado, ganar encola `withdraw` y el bot borra la tarjeta |
+| `GET` | `/bandeja` | Sesión | La bandeja: tarjetas hasta que se responden, aviso en la página y, con permiso del navegador y la pestaña oculta, notificación del sistema |
+| `GET` | `/api/config` | Sesión | Documento de diales vigente (027): `revision`, `values` (solo las claves que se apartan del inicial), `initial`, `locked` y quién lo publicó. `503` si Postgres no responde |
+| `POST` | `/config` | `operador` | Publica el formulario entero (027): cuerpo `{"revision", "values", "initial"}`, con `initial` opcional. `400` con `{"detail": {"field"}}` si un valor no encaja o un dial está bloqueado; `409` con la revisión vigente si otro guardó antes o si `initial` ya no coincide con este proceso; `503` si Postgres no responde |
+| `GET` | `/config` | Sesión | Página HTML de diales (027): una sección por grupo, ayuda por control y un **Restaurar** por control |
+| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global, con el formulario de lanzamiento, y detalle con el recorrido y la consola) |
+| `GET` | `/claude` | `operador` | Formulario de la sesión de Claude. El `lector` recibe `403` |
+| `POST` | `/api/claude/session` | `operador` | Cuerpo `{"token": "…"}`. Lo guarda en el fichero `0600` y devuelve `{"released": n}` sin el token. Misma defensa CSRF que el resto de comandos. Un formulario que no sea JSON del mismo origen recibe `403` |
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review
 (o encola el `request` marcado si estaba pausada) y el worker aborta en la frontera de
@@ -366,11 +434,16 @@ para abortar también los jobs rezagados de la review; reintentar la retira. La 
 ofrece cada botón en el estado en que aplica y nunca ofrece «cancelar la review» si ya
 publicó (solo «cancelar lo pendiente»).
 
-Una pausa humana se **decide** desde el detalle de la review (022): el formulario muestra
+Una pausa humana se **decide** desde la bandeja (`/bandeja`) o desde el detalle de
+la review (022). Las dos pasan por el mismo sello que la tarjeta de Teams
+([ADR-0030](adr/0030-bandeja-web-de-la-decision.md)): vale la primera respuesta y
+la pregunta desaparece de los dos sitios. El formulario del detalle muestra
 cada hallazgo pendiente y envía la `HitlDecision` al endpoint de decisión, que la
 construye con `build_decision` y la encola; el worker reanuda el mismo hilo (ADR-0008).
-La UI ya no ofrece «Reanudar» en pausas humanas: decidir es la acción y `expired` es del
-sistema (TTL).
+En una pausa de arreglo las opciones son Aprobar, Rechazar y Anotar, y aprobar solo
+autoriza a intentar el arreglo. En una de publicación son Publicar y No publicar.
+La UI ya no ofrece «Reanudar» en pausas humanas: decidir es la acción. `expired` es del
+sistema (TTL) y, en la pausa de publicación, el barrido reanuda con `dropped`.
 
 Con la sesión en la cookie, un comando solo se acepta como `fetch` JSON del mismo
 origen (`Content-Type: application/json`, y `Origin`/`Sec-Fetch-Site` del propio panel
@@ -399,7 +472,10 @@ de llegar a los handlers.
 
 Las acciones de la tarjeta (`Action.Execute` / fallback `Action.Submit`) llegan a
 `/api/messages`, se traducen a marcas o a una `HitlDecision` con `build_decision` y
-se **encolan** en `reviews:jobs`. El bot no reanuda el grafo.
+se **encolan** en `reviews:jobs`. El bot no reanuda el grafo. Al encolar, borra
+el mensaje de la tarjeta. Un aviso `withdraw` (lo encola la bandeja o el propio
+bot cuando Teams está activo) hace lo mismo, y un barrido borra las tarjetas
+cuya pausa ya no está en el inbox.
 
 Solo se aceptan acciones que vengan del **canal capturado** (`reviews:teams:channel`)
 y, si `TEAMS_BOT_TENANT_ID` está fijado, de ese tenant. Las demás reciben «Esta

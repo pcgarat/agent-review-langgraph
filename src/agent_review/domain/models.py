@@ -117,16 +117,29 @@ class FindingAction(StrEnum):
     ESCALATE = "escalate"
     FIX_WITH_APPROVAL = "fix_with_approval"
     FIX_AUTO = "fix_auto"
+    # Motor claude (025): publicar el hallazgo. No es `fix_*`: el despacho de
+    # arreglos no la elige. La politica de autonomia no la emite.
+    PUBLISH = "publish"
 
     @property
     def pending(self) -> bool:
-        """¿La accion pide a una persona? Freno (escalate) o aprobacion (fix)."""
-        return self in (FindingAction.ESCALATE, FindingAction.FIX_WITH_APPROVAL)
+        """¿La accion pide a una persona? Freno, aprobacion de un fix, o publicar."""
+        return self in (
+            FindingAction.ESCALATE,
+            FindingAction.FIX_WITH_APPROVAL,
+            FindingAction.PUBLISH,
+        )
 
 
 # Acciones que dejan la review pendiente de una persona. Se mantiene como
 # frozenset de strings por compatibilidad.
-PENDING_ACTIONS = frozenset({FindingAction.ESCALATE.value, FindingAction.FIX_WITH_APPROVAL.value})
+PENDING_ACTIONS = frozenset(
+    {
+        FindingAction.ESCALATE.value,
+        FindingAction.FIX_WITH_APPROVAL.value,
+        FindingAction.PUBLISH.value,
+    }
+)
 
 
 class Finding(BaseModel):
@@ -337,10 +350,11 @@ class Decision(BaseModel):
 class DecisionOutcome(StrEnum):
     """Que decide una persona sobre un hallazgo pendiente."""
 
-    APPROVED = "approved"  # autoriza el arreglo (lo ejecuta la Fase 3)
+    APPROVED = "approved"  # en llm autoriza el arreglo; en claude, publicar
     REJECTED = "rejected"  # descarta el hallazgo (falso positivo o no aplica)
     NOTED = "noted"  # se atiende fuera del agente (deuda, ticket)
     EXPIRED = "expired"  # nadie decidio dentro del TTL
+    DROPPED = "dropped"  # motor claude: ni inline ni resumen. No es `rejected`
 
 
 class FindingDecision(BaseModel):
@@ -402,6 +416,10 @@ class ApprovalRequest(BaseModel):
     head_sha: str
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
+    # Motor claude (025). `publication` cambia la pregunta de la tarjeta (qué se
+    # publica). Ausente, la tarjeta del motor llm: Aprobar, Rechazar y Anotar.
+    # Lo copia `build_approval` desde el estado; el grafo llm no lo escribe.
+    pause_kind: Literal["publication"] | None = None
 
 
 class ChatNotice(BaseModel):
@@ -410,11 +428,14 @@ class ChatNotice(BaseModel):
     Es el mensaje que el worker **encola** (`reviews:notices`): durable y sin
     conocer el transporte. `published` es el teaser de una review ya publicada en
     el PR; `pause` es la tarjeta de decision y lleva la `ApprovalRequest`
-    **estructurada** (C12), no su render en texto. `review_key`, `repo` y `pr_id`
-    viajan siempre: son la identidad con la que el canal resuelve el hilo (C6).
+    **estructurada** (C12), no su render en texto. `withdraw` pide al canal que
+    retire la tarjeta ya publicada: lo encola quien gano la decision (la bandeja
+    o el propio bot) para que el mensaje desaparezca tambien del otro sitio.
+    `review_key`, `repo` y `pr_id` viajan siempre: son la identidad con la que el
+    canal resuelve el hilo (C6).
     """
 
-    kind: Literal["published", "pause"]
+    kind: Literal["published", "pause", "withdraw"]
     review_key: str
     repo: str
     pr_id: int
@@ -431,7 +452,7 @@ class ChatNotice(BaseModel):
         if self.kind == "pause":
             if self.approval is None:
                 raise ValueError("un aviso de pausa necesita la ApprovalRequest")
-        elif not self.title.strip():
+        elif self.kind == "published" and not self.title.strip():
             raise ValueError("un aviso de review necesita titulo")
         return self
 
@@ -538,7 +559,7 @@ class ReviewRequest(BaseModel):
     # reanudar el grafo (no se publica nada).
     cancelled: bool = False
 
-    # Panel (026): un reintento desde la DLQ vuelve a leer los diales publicados.
+    # Panel (027): un reintento desde la DLQ vuelve a leer los diales publicados.
     # Una reentrega del mismo job no lo pone: el hilo sigue con la foto que fijó.
     repin_dials: bool = False
 
@@ -547,6 +568,11 @@ class ReviewRequest(BaseModel):
     # artefacto llega tarde, la pasada completa de la misma ejecucion no encuentre
     # el hilo ya terminado y se quede en no-op.
     degraded: bool = False
+
+    # Lanzamiento desde el panel: el job viaja sin `head_sha` y el worker lo lee
+    # del VCS antes de invocar el grafo. Sin este flag, un SHA vacio es un job
+    # mal formado, no una orden de resolverlo.
+    launch: bool = False
 
     @property
     def idempotency_key(self) -> str:

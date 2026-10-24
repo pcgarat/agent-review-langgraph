@@ -78,7 +78,7 @@ la foto de los diales sobrevive a un reintento del mismo hilo.
 | CFG8 | Validar con el tipo del campo de `Settings`. Una clave desconocida, un secreto o un valor que el campo rechazaría se rechaza entero y sigue vigente la revisión anterior | El mismo modelo que ya falla al arrancar. No hay un segundo esquema |
 | CFG9 | `max_autonomy_override` sigue pudiendo solo **bajar** el techo del YAML. El valor inicial es `""` (manda el YAML) salvo que el entorno traiga otro | No se abre por el panel un camino que el código ya cerró |
 | CFG10 | El texto de ayuda vive en el metadato del campo, junto a la sección. La página lo pinta. `operacion.md` enlaza el catálogo y no copia la tabla | Dos redacciones del mismo dial se desfasarían |
-| CFG11 | El número de esta iniciativa es **026**. El 025 queda para `feat/025-revisor-claude-cli` | Un número no se reutiliza |
+| CFG11 | El número de esta iniciativa es **027**. El 026 se publicó con la bandeja de decisiones | Un número no se reutiliza |
 
 ## 5. Diseño o contrato
 

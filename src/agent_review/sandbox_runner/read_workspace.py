@@ -27,6 +27,10 @@ from agent_review.ports.context import (
 
 logger = logging.getLogger(__name__)
 
+# Prefijo del clon *bare* (ADR-0018). El checkout de Claude no puede usarlo:
+# un arbol de trabajo y un clon sin arbol son contratos distintos.
+BARE_CLONE_PREFIX = "read-ws-"
+
 # Limite de log que viaja al worker: suficiente para diagnosticar, nunca el volcado.
 _TAIL_CHARS = 4000
 # Coincidencias por defecto de un `grep`: acota la salida y el coste (016 R4).
@@ -397,7 +401,7 @@ class ReadWorkspaceManager:
             self._by_key.clear()
 
     def _clone(self, *, repo: str, head_sha: str, base_sha: str) -> ReadWorkspace:
-        directory = tempfile.mkdtemp(prefix="read-ws-")
+        directory = tempfile.mkdtemp(prefix=BARE_CLONE_PREFIX)
         url = self._url_template.format(token=self._token, repo=repo)
         self._init_bare(directory, url)
         self._fetch(directory, head_sha, required=True)

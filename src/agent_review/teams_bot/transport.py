@@ -65,6 +65,10 @@ class ChannelClient(Protocol):
         """Edita un mensaje ya publicado (la tarjeta que avanza: C7)."""
         ...
 
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        """Borra un mensaje ya publicado. Un 404 cuenta como ya borrado."""
+        ...
+
 
 class ChannelTransport:
     """Publica avisos en el hilo del PR, abriendo el hilo la primera vez (C6)."""
@@ -125,6 +129,26 @@ class ChannelTransport:
                 ),
             )
         return True
+
+    async def delete_card(self, review_key: str) -> bool:
+        """Borra la tarjeta del canal y olvida su mensaje. `False` si no consta.
+
+        Si el borrado falla, el mensaje sigue recordado para reintentarlo.
+        """
+        existing = self._store.card(review_key)
+        if existing is None:
+            return False
+        await self._client.delete(
+            existing.conversation_id,
+            existing.message_id,
+            service_url=existing.service_url,
+        )
+        self._store.forget_card(review_key)
+        return True
+
+    def open_card_keys(self) -> list[str]:
+        """Tarjetas que el canal aun tiene publicadas, por `review_key`."""
+        return self._store.open_card_keys()
 
     async def _open_thread(
         self,

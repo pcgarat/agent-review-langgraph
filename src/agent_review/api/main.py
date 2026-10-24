@@ -135,20 +135,8 @@ def _verify_decision_token(settings: Settings, authorization: str | None) -> Non
 
 
 def _expected_repo(settings: Settings) -> str:
-    """Identidad `owner/repo` del repo que revisa este despliegue, o "" si no hay.
-
-    El formato es el mismo en los dos proveedores (`workspace/repo` en Bitbucket,
-    `owner/repo` en GitHub), que es como lo manda el CI en el payload.
-    """
-    if settings.vcs_provider == "github":
-        owner = settings.github_owner.strip()
-        name = settings.github_repo.strip()
-    else:
-        owner = settings.bitbucket_workspace.strip()
-        name = settings.bitbucket_repo.strip()
-    if not (owner and name):
-        return ""
-    return f"{owner}/{name}"
+    """Identidad `owner/repo` del repo que revisa este despliegue, o "" si no hay."""
+    return settings.configured_repo()
 
 
 def _verify_repo(settings: Settings, repo: str) -> None:

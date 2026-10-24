@@ -7,7 +7,7 @@ import operator
 import re
 import shlex
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -24,6 +24,7 @@ from agent_review.domain.models import (
     DecisionOutcome,
     FileClass,
     Finding,
+    FindingAction,
     FixResolutions,
     FixResult,
     FixStatus,
@@ -122,7 +123,7 @@ class ReviewState(TypedDict, total=False):
     budget_exhausted: Annotated[set[str], operator.or_]
     # Tokens confirmados por persona. Reducer de suma: el gasto total de la review.
     tokens_spent: Annotated[dict[str, int], _merge_tokens]
-    # Foto de los diales del panel (026). El worker la escribe al empezar la review.
+    # Foto de los diales del panel (027). El worker la escribe al empezar la review.
     # Un hilo anterior no la tiene: se monta con `Settings`.
     dial_snapshot: dict[str, object]
     # Tope del contador compartido, escrito una vez por `scope`. El saldo del
@@ -170,6 +171,14 @@ class ReviewState(TypedDict, total=False):
     # Valor del `Command(resume=...)` de `fix_wait`: la wave resuelta por el worker
     # de fixes. Al reanudar, el nodo lo lee; una reentrega sin resolucion no lo toca.
     fix_resolution: FixResolutions | None
+    # Motor claude (025). Solo lo escribe `build_claude_graph`. Con el, todo en
+    # `dropped` (o un artefacto vacio) no escribe en el PR aunque la cobertura
+    # sea parcial. El grafo `llm` no lo pone: una review parcial sigue comentando.
+    silence_without_choice: bool
+    # Motor claude (025). Solo lo escribe `stamp`. `build_approval` lo copia a la
+    # `ApprovalRequest`: el worker reconstruye la pausa desde este estado, no
+    # desde el valor del `interrupt`. Ausente, la tarjeta sigue siendo la de `llm`.
+    pause_kind: str
 
 
 def _merge_coverage(
@@ -266,14 +275,19 @@ def build_approval(state: ReviewState) -> ApprovalRequest | None:
         )
     if not pending:
         return None
+    pause_kind: Literal["publication"] | None = None
+    if state.get("pause_kind") == "publication":
+        pause_kind = "publication"
     return ApprovalRequest(
         review_key=request.review_key,
         repo=request.repo,
         pr_id=request.pr_id,
         head_sha=request.head_sha,
         pending=pending,
+        pause_kind=pause_kind,
         # La decision debe cubrir todos los pendientes (`build_decision`): la pista
-        # los nombra todos; se cambia `--approve` por `--reject`/`--noted` donde toque.
+        # publica todos (`--approve`). En la pausa de arreglo se cambia por
+        # `--reject`/`--noted`; en la de publicación, por `--drop`.
         # Los ids pueden venir del LLM (espacios, parentesis...): se citan para que
         # la pista se pueda pegar tal cual en la shell.
         command_hint=(
@@ -351,7 +365,23 @@ def render_pause_notice(approval: ApprovalRequest) -> str:
     Llevar el token de dedupe lo haria leer como review publicada y el `publish`
     tras decidir no publicaria nada. El aviso es informativo: que quedo pausada,
     por que, y como decidir.
+
+    En `publication` no se copia la pista de CLI ni la regla que sello el
+    hallazgo: la decision es la tarjeta, y ese texto no es para el canal.
     """
+    if approval.pause_kind == "publication":
+        lines = [
+            f"Review pausada: {len(approval.pending)} hallazgo(s) esperan qué se publica.",
+            "",
+        ]
+        for item in approval.pending:
+            lines.append(
+                f"- `{item.finding_id}` [{item.severity.value}] {item.title} "
+                f"({item.file}:{item.line})"
+            )
+        lines.append("")
+        lines.append("La decisión se toma en Teams.")
+        return "\n".join(lines)
     lines = [
         f"Review pausada: {len(approval.pending)} hallazgo(s) esperan una decision humana.",
         "",
@@ -1056,163 +1086,12 @@ def build_graph(
         return {}
 
     def publish(state: ReviewState) -> ReviewState:
-        request = ReviewRequest.model_validate(state["request"])
-        findings = _merged(state)
-        decisions = state.get("decisions", [])
-        human = state.get("human_decisions")
-        fixes = state.get("fixes", {})
-        unavailable = _unavailable_sources(state)
-        coverage = state.get("coverage")
-        partial = coverage is not None and coverage.partial
-        by_id = {d.finding_id: d for d in decisions}
-        # 011: los `drop` siguen en `merged` (metrica) pero no se publican.
-        publishable: list[Finding] = []
-        for finding in findings:
-            decision = by_id.get(_finding_id(finding))
-            if decision is None:
-                raise ReviewIntegrityError(
-                    f"Hallazgo sin decision de politica: {_finding_id(finding)}"
-                )
-            if decision.publication is PublicationMode.DROP:
-                continue
-            publishable.append(finding)
-        if not publishable and not unavailable and not partial:
-            logger.info(
-                "PR %s#%s: sin hallazgos publicables",
-                request.repo,
-                request.pr_id,
-            )
-            return {}
-
-        complete = not unavailable and not partial
-        published = _published_markers(vcs, request)
-        # Solo se salta si ESTA ejecucion ya dejo su marca con la misma
-        # completitud (o una completa, que no se degrada). Un reintento
-        # degradado no repite el aviso; uno completo posterior si publica y
-        # sustituye al degradado. La marca es de la ejecucion, no del commit:
-        # un `pipeline_id` nuevo sobre el mismo `sha` es una review nueva.
-        already_complete = _has_marker(
-            published, _summary_token(request.dedupe_token, complete=True)
+        return _publish_review(
+            state,
+            vcs=vcs,
+            max_inline=int(policy.guards.get("max_inline_comments", 20)),
+            delivery=delivery,
         )
-        already_same = _has_marker(
-            published, _summary_token(request.dedupe_token, complete=complete)
-        )
-        if already_complete or already_same:
-            logger.info(
-                "PR %s#%s: esta ejecucion (%s) ya publico una review (%s); no se re-publica",
-                request.repo,
-                request.pr_id,
-                request.thread_id,
-                "completa" if complete else "degradada",
-            )
-            return {}
-        if unavailable:
-            # La review NO esta completa: no se puede leer "sin hallazgos" como
-            # "sin errores". Se publica igual, con el aviso por delante.
-            logger.warning(
-                "PR %s#%s: review incompleta, fuente estatica sin cubrir (%s)",
-                request.repo,
-                request.pr_id,
-                ", ".join(f"{name}={status.value}" for name, status in unavailable),
-            )
-        if partial and coverage is not None:
-            # Codigo o configuracion sin leer (012 C7): mismo trato que una fuente
-            # estatica sin cubrir. Es informativo: no cambia ninguna accion (Q3).
-            logger.warning(
-                "PR %s#%s: review parcial, sin revisar: %s",
-                request.repo,
-                request.pr_id,
-                ", ".join(f"{path}={reason.value}" for path, reason in coverage.skipped.items()),
-            )
-
-        max_inline = int(policy.guards.get("max_inline_comments", 20))
-        ordered = sorted(
-            publishable,
-            key=lambda f: _SEVERITY_ORDER[_effective_severity(f, by_id[_finding_id(f)])],
-        )
-        # 008 CX5: lineas anadidas del diff; una cita de contexto/borrada (L0
-        # SUMMARY) va al resumen sin pedir ancla al VCS.
-        diff_files = parse_unified_diff(state.get("diff") or "")
-
-        inlined: list[Finding] = []
-        summary_only: list[Finding] = []
-
-        for finding in ordered:
-            decision = by_id[_finding_id(finding)]
-            if (
-                human is not None
-                and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED
-            ):
-                # Descartado por una persona: va al resumen, sin inline.
-                summary_only.append(finding)
-                continue
-            if decision.publication is PublicationMode.SUMMARY:
-                # 011 G10: refutado con on_refuted=summary; nunca inline.
-                summary_only.append(finding)
-                continue
-            if len(inlined) >= max_inline:
-                summary_only.append(finding)
-                continue
-            file_diff = diff_files.get(finding.file)
-            if file_diff is None or finding.line not in file_diff.added:
-                summary_only.append(finding)
-                continue
-            quote = _quote_for_anchor(finding)
-            try:
-                anchor = vcs.resolve_inline_anchor(
-                    request.repo, request.pr_id, path=finding.file, text=quote
-                )
-            except Exception:
-                logger.exception("Fallo al resolver ancla %s:%s", finding.file, finding.line)
-                anchor = None
-            if anchor is None:
-                summary_only.append(finding)
-                continue
-            body = _render_inline(
-                finding,
-                decision,
-                token=request.dedupe_token,
-                human=human,
-                fix=fixes.get(_finding_id(finding)),
-                delivery=delivery,
-            )
-            if _has_marker(published, _inline_token(request.dedupe_token, _finding_id(finding))):
-                # Ya esta publicado (p.ej. el resumen no llego a escribirse por un
-                # fallo transitorio): no se repite el inline. La marca lleva el id
-                # del hallazgo, asi que dos titulos iguales en ficheros distintos
-                # no se confunden.
-                inlined.append(finding)
-                continue
-            try:
-                vcs.post_inline_comment(
-                    request.repo,
-                    request.pr_id,
-                    path=anchor.path,
-                    line=anchor.line,
-                    body=body,
-                    from_line=anchor.from_line,
-                )
-                published.append(ReviewMarker(id="", body=body))
-                inlined.append(finding)
-            except Exception:
-                logger.exception("Fallo al publicar inline %s:%s", finding.file, finding.line)
-                summary_only.append(finding)
-
-        summary = _render_summary(
-            publishable,
-            decisions,
-            summary_only=summary_only,
-            inlined=inlined,
-            unavailable=unavailable,
-            fixes=fixes,
-            token=request.dedupe_token,
-            complete=complete,
-            human=human,
-            coverage=coverage,
-        )
-        if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
-            vcs.post_comment(request.repo, request.pr_id, summary)
-        return {"published": True, "inlined_count": len(inlined)}
 
     def notify(state: ReviewState) -> ReviewState:
         """Aviso en Teams de una review recien publicada. Nodo propio (B9).
@@ -1222,32 +1101,7 @@ def build_graph(
         transitorio es un bug del canal: se registra y no tumba una review que ya
         esta publicada en el PR.
         """
-        if chat is None or not state.get("published"):
-            return {}
-        request = ReviewRequest.model_validate(state["request"])
-        try:
-            pr = vcs.get_pull_request(request.repo, request.pr_id)
-            chat.notify(
-                repo=request.repo,
-                pr_id=request.pr_id,
-                review_key=request.review_key,
-                title=f"Review de {request.repo}#{request.pr_id}",
-                body=_render_teams_body(
-                    _merged(state),
-                    state.get("decisions", []),
-                    inlined_count=state.get("inlined_count", 0),
-                ),
-                link=pr.url or None,
-            )
-        except Exception as exc:
-            if is_transient(exc):
-                raise
-            logger.exception(
-                "No se pudo avisar en Teams de %s#%s; la review ya esta publicada",
-                request.repo,
-                request.pr_id,
-            )
-        return {}
+        return _notify_review(state, vcs=vcs, chat=chat)
 
     graph = StateGraph(ReviewState)
     # Reintento de nodo (RetryPolicy) solo en los nodos que llaman a fuera: un
@@ -1291,6 +1145,428 @@ def build_graph(
     graph.add_edge("notify", END)
 
     return graph
+
+
+_STAMP_REASON = "elegir si se publica"
+# Mismo tope que `guards.max_inline_comments` por defecto. Este grafo no lee
+# la politica: el sello no pasa por `PolicyEngine`.
+_CLAUDE_MAX_INLINE = 20
+
+
+def build_claude_graph(
+    *,
+    vcs: VcsPort,
+    reviewers: list[ReviewerPort],
+    chat: ChatPort | None = None,
+    scope_ignore: str = "",
+    scope_classes: Mapping[str, list[str]] | None = None,
+    retry_policy: RetryPolicy | None = None,
+    progress: ProgressPort | None = None,
+    cancel: CancelCheck | None = None,
+) -> StateGraph[ReviewState]:
+    """Grafo del motor `claude` (025).
+
+    scope → persona → merge → stamp → hitl → publish → notify. El cargador del
+    artefacto entra como una persona mas. No hay `verify`, ni `policy`, ni
+    `fix_dispatch`.
+    """
+    if not reviewers:
+        raise ValueError("el grafo claude necesita al menos la persona del artefacto")
+
+    def node(name: str, fn: Any) -> Any:
+        return node_wrapper(name, fn, progress=progress, cancel=cancel)
+
+    retry = retry_policy if retry_policy is not None else default_retry_policy()
+    classes = merge_file_classes(scope_classes)
+    grounded_personas = frozenset(
+        reviewer.name for reviewer in reviewers if getattr(reviewer, "grounded", False)
+    )
+
+    def scope(state: ReviewState) -> ReviewState:
+        request = ReviewRequest.model_validate(state["request"])
+        diff = vcs.get_diff(request.repo, request.pr_id)
+        diff, coverage = prioritize_diff(diff, merge_ignore_patterns(scope_ignore), classes)
+        return {
+            "request": request,
+            "diff": diff,
+            "findings": [],
+            "source_status": {},
+            "coverage": coverage,
+        }
+
+    def dispatch(state: ReviewState) -> list[Send]:
+        request = ReviewRequest.model_validate(state["request"])
+        return [
+            Send(
+                "persona",
+                {
+                    "request": request,
+                    "diff": state["diff"],
+                    "reviewer": reviewer.name,
+                },
+            )
+            for reviewer in reviewers
+        ]
+
+    def persona(state: ReviewState, runtime: Runtime[None]) -> ReviewState:
+        name = state["reviewer"]
+        reviewer = next((r for r in reviewers if r.name == name), None)
+        if reviewer is None:
+            return {"findings": []}
+        request = ReviewRequest.model_validate(state["request"])
+        try:
+            result = reviewer.review(
+                repo=request.repo,
+                pr_id=request.pr_id,
+                diff=state["diff"],
+                head_sha=request.head_sha,
+                review_key=request.review_key,
+            )
+        except Exception as exc:
+            info = runtime.execution_info
+            attempt = info.node_attempt if info is not None else 1
+            if not is_transient(exc) or attempt < retry.max_attempts:
+                raise
+            logger.warning(
+                "Persona %s sin hallazgos: fallo transitorio tras %d intento(s) (%s)",
+                name,
+                attempt,
+                exc,
+            )
+            return {"findings": []}
+        update: ReviewState = {
+            "findings": result.findings,
+            "finding_sources": {_finding_id(f): reviewer.name for f in result.findings},
+        }
+        if result.coverage is not None:
+            update["coverage"] = result.coverage
+        if result.tooling_status is not None:
+            update["source_status"] = {reviewer.name: result.tooling_status}
+        return update
+
+    def merge(state: ReviewState) -> ReviewState:
+        merged, grounded_ids = _merge_findings(
+            state.get("findings", []),
+            state.get("finding_sources", {}),
+            grounded_personas=grounded_personas,
+        )
+        return {"merged": merged, "grounded_findings": grounded_ids}
+
+    def stamp(state: ReviewState) -> ReviewState:
+        decisions = [
+            Decision(
+                finding_id=_finding_id(finding),
+                action=FindingAction.PUBLISH,
+                reason=_STAMP_REASON,
+                matched_rule="claude",
+                policy_version="claude",
+                severity=finding.severity,
+                publication=PublicationMode.FULL,
+            )
+            for finding in _merged(state)
+        ]
+        return {
+            "decisions": decisions,
+            "silence_without_choice": True,
+            "pause_kind": "publication",
+        }
+
+    def hitl(state: ReviewState) -> ReviewState:
+        if state.get("human_decisions") is not None:
+            return {}
+        approval = build_approval(state)
+        if approval is None:
+            return {}
+        while True:
+            resume_value = interrupt(approval)
+            update = apply_hitl(state, resume_value)
+            if update:
+                return update
+
+    def publish(state: ReviewState) -> ReviewState:
+        return _publish_review(state, vcs=vcs, max_inline=_CLAUDE_MAX_INLINE, delivery=None)
+
+    def notify(state: ReviewState) -> ReviewState:
+        return _notify_review(state, vcs=vcs, chat=chat)
+
+    graph = StateGraph(ReviewState)
+    graph.add_node("scope", node("scope", scope), retry_policy=retry)
+    graph.add_node("persona", node("persona", persona), retry_policy=retry)
+    graph.add_node("merge", node("merge", merge))
+    graph.add_node("stamp", node("stamp", stamp))
+    graph.add_node("hitl", node("hitl", hitl))
+    graph.add_node("publish", node("publish", publish), retry_policy=retry)
+    graph.add_node("notify", node("notify", notify), retry_policy=retry)
+
+    graph.add_edge(START, "scope")
+    graph.add_conditional_edges("scope", dispatch, ["persona"])
+    graph.add_edge("persona", "merge")
+    graph.add_edge("merge", "stamp")
+    graph.add_edge("stamp", "hitl")
+    graph.add_edge("hitl", "publish")
+    graph.add_edge("publish", "notify")
+    graph.add_edge("notify", END)
+    return graph
+
+
+_SILENCE_BODY = "No se escribió en el PR: no había nada elegido para publicar."
+
+
+def _notify_silence(
+    state: ReviewState,
+    *,
+    vcs: VcsPort,
+    chat: ChatPort,
+) -> ReviewState:
+    """Aviso corto cuando el motor claude deja el PR en silencio."""
+    request = ReviewRequest.model_validate(state["request"])
+    try:
+        pr = vcs.get_pull_request(request.repo, request.pr_id)
+        chat.notify(
+            repo=request.repo,
+            pr_id=request.pr_id,
+            review_key=request.review_key,
+            title=f"Review de {request.repo}#{request.pr_id}",
+            body=_SILENCE_BODY,
+            link=pr.url or None,
+        )
+    except Exception as exc:
+        if is_transient(exc):
+            raise
+        logger.exception(
+            "No se pudo avisar el silencio de %s#%s",
+            request.repo,
+            request.pr_id,
+        )
+    return {}
+
+
+def _publish_review(
+    state: ReviewState,
+    *,
+    vcs: VcsPort,
+    max_inline: int,
+    delivery: DeliveryFormatter | None,
+) -> ReviewState:
+    request = ReviewRequest.model_validate(state["request"])
+    findings = _merged(state)
+    decisions = state.get("decisions", [])
+    human = state.get("human_decisions")
+    fixes = state.get("fixes", {})
+    unavailable = _unavailable_sources(state)
+    coverage = state.get("coverage")
+    partial = coverage is not None and coverage.partial
+    by_id = {d.finding_id: d for d in decisions}
+    # 011: los `drop` siguen en `merged` (metrica) pero no se publican.
+    publishable: list[Finding] = []
+    for finding in findings:
+        decision = by_id.get(_finding_id(finding))
+        if decision is None:
+            raise ReviewIntegrityError(f"Hallazgo sin decision de politica: {_finding_id(finding)}")
+        if decision.publication is PublicationMode.DROP:
+            continue
+        # 025: `dropped` no reescribe el sello. En publish es un DROP:
+        # ni inline ni resumen. En el motor claude solo `approved` se publica:
+        # `expired`, `rejected` y `noted` dejan el PR en silencio.
+        if human is not None:
+            outcome = human.outcome_for(_finding_id(finding))
+            if outcome is DecisionOutcome.DROPPED:
+                continue
+            if state.get("silence_without_choice") and outcome is not DecisionOutcome.APPROVED:
+                continue
+        publishable.append(finding)
+    # Solo el grafo claude escribe el campo. Sin eleccion y sin fuente
+    # estatica sin cubrir, no se comenta el PR aunque la cobertura sea parcial.
+    if state.get("silence_without_choice") and not publishable and not unavailable:
+        logger.info(
+            "PR %s#%s: sin eleccion de publicacion; no se escribe en el PR",
+            request.repo,
+            request.pr_id,
+        )
+        return {}
+    if not publishable and not unavailable and not partial:
+        logger.info(
+            "PR %s#%s: sin hallazgos publicables",
+            request.repo,
+            request.pr_id,
+        )
+        return {}
+
+    complete = not unavailable and not partial
+    published = _published_markers(vcs, request)
+    # Solo se salta si ESTA ejecucion ya dejo su marca con la misma
+    # completitud (o una completa, que no se degrada). Un reintento
+    # degradado no repite el aviso; uno completo posterior si publica y
+    # sustituye al degradado. La marca es de la ejecucion, no del commit:
+    # un `pipeline_id` nuevo sobre el mismo `sha` es una review nueva.
+    already_complete = _has_marker(published, _summary_token(request.dedupe_token, complete=True))
+    already_same = _has_marker(published, _summary_token(request.dedupe_token, complete=complete))
+    if already_complete or already_same:
+        logger.info(
+            "PR %s#%s: esta ejecucion (%s) ya publico una review (%s); no se re-publica",
+            request.repo,
+            request.pr_id,
+            request.thread_id,
+            "completa" if complete else "degradada",
+        )
+        # El comentario ya está. Devolver vacío dejaría `published` a falso y,
+        # con `silence_without_choice`, el aviso diría que no se escribió nada.
+        if state.get("silence_without_choice"):
+            return {"published": True}
+        return {}
+    if unavailable:
+        # La review NO esta completa: no se puede leer "sin hallazgos" como
+        # "sin errores". Se publica igual, con el aviso por delante.
+        logger.warning(
+            "PR %s#%s: review incompleta, fuente estatica sin cubrir (%s)",
+            request.repo,
+            request.pr_id,
+            ", ".join(f"{name}={status.value}" for name, status in unavailable),
+        )
+    if partial and coverage is not None:
+        # Codigo o configuracion sin leer (012 C7): mismo trato que una fuente
+        # estatica sin cubrir. Es informativo: no cambia ninguna accion (Q3).
+        logger.warning(
+            "PR %s#%s: review parcial, sin revisar: %s",
+            request.repo,
+            request.pr_id,
+            ", ".join(f"{path}={reason.value}" for path, reason in coverage.skipped.items()),
+        )
+
+    ordered = sorted(
+        publishable,
+        key=lambda f: _SEVERITY_ORDER[_effective_severity(f, by_id[_finding_id(f)])],
+    )
+    # 008 CX5: lineas anadidas del diff; una cita de contexto/borrada (L0
+    # SUMMARY) va al resumen sin pedir ancla al VCS.
+    diff_files = parse_unified_diff(state.get("diff") or "")
+
+    inlined: list[Finding] = []
+    summary_only: list[Finding] = []
+
+    for finding in ordered:
+        decision = by_id[_finding_id(finding)]
+        if human is not None and human.outcome_for(decision.finding_id) is DecisionOutcome.REJECTED:
+            # Descartado por una persona: va al resumen, sin inline.
+            summary_only.append(finding)
+            continue
+        if decision.publication is PublicationMode.SUMMARY:
+            # 011 G10: refutado con on_refuted=summary; nunca inline.
+            summary_only.append(finding)
+            continue
+        if len(inlined) >= max_inline:
+            summary_only.append(finding)
+            continue
+        file_diff = diff_files.get(finding.file)
+        if file_diff is None or finding.line not in file_diff.added:
+            summary_only.append(finding)
+            continue
+        quote = _quote_for_anchor(finding)
+        try:
+            anchor = vcs.resolve_inline_anchor(
+                request.repo, request.pr_id, path=finding.file, text=quote
+            )
+        except Exception:
+            logger.exception("Fallo al resolver ancla %s:%s", finding.file, finding.line)
+            anchor = None
+        if anchor is None:
+            summary_only.append(finding)
+            continue
+        body = _render_inline(
+            finding,
+            decision,
+            token=request.dedupe_token,
+            human=human,
+            fix=fixes.get(_finding_id(finding)),
+            delivery=delivery,
+        )
+        if _has_marker(published, _inline_token(request.dedupe_token, _finding_id(finding))):
+            # Ya esta publicado (p.ej. el resumen no llego a escribirse por un
+            # fallo transitorio): no se repite el inline. La marca lleva el id
+            # del hallazgo, asi que dos titulos iguales en ficheros distintos
+            # no se confunden.
+            inlined.append(finding)
+            continue
+        try:
+            vcs.post_inline_comment(
+                request.repo,
+                request.pr_id,
+                path=anchor.path,
+                line=anchor.line,
+                body=body,
+                from_line=anchor.from_line,
+            )
+            published.append(ReviewMarker(id="", body=body))
+            inlined.append(finding)
+        except Exception:
+            logger.exception("Fallo al publicar inline %s:%s", finding.file, finding.line)
+            summary_only.append(finding)
+
+    summary = _render_summary(
+        publishable,
+        decisions,
+        summary_only=summary_only,
+        inlined=inlined,
+        unavailable=unavailable,
+        fixes=fixes,
+        token=request.dedupe_token,
+        complete=complete,
+        human=human,
+        coverage=coverage,
+    )
+    if not _has_marker(published, _summary_token(request.dedupe_token, complete)):
+        vcs.post_comment(request.repo, request.pr_id, summary)
+    return {"published": True, "inlined_count": len(inlined)}
+
+
+def _notify_review(
+    state: ReviewState,
+    *,
+    vcs: VcsPort,
+    chat: ChatPort | None,
+) -> ReviewState:
+    """Aviso en Teams de una review recien publicada. Nodo propio (B9).
+
+    Un fallo transitorio lo reintenta la `RetryPolicy` del nodo y, si se agota,
+    el reintento del job continua aqui (no repite `publish`). Un fallo no
+    transitorio es un bug del canal: se registra y no tumba una review que ya
+    esta publicada en el PR.
+    """
+    if chat is None:
+        return {}
+    if not state.get("published"):
+        if state.get("silence_without_choice"):
+            return _notify_silence(state, vcs=vcs, chat=chat)
+        return {}
+    request = ReviewRequest.model_validate(state["request"])
+    try:
+        pr = vcs.get_pull_request(request.repo, request.pr_id)
+        body = (
+            _render_publication_notice(state)
+            if state.get("silence_without_choice")
+            else _render_teams_body(
+                _merged(state),
+                state.get("decisions", []),
+                inlined_count=state.get("inlined_count", 0),
+            )
+        )
+        chat.notify(
+            repo=request.repo,
+            pr_id=request.pr_id,
+            review_key=request.review_key,
+            title=f"Review de {request.repo}#{request.pr_id}",
+            body=body,
+            link=pr.url or None,
+        )
+    except Exception as exc:
+        if is_transient(exc):
+            raise
+        logger.exception(
+            "No se pudo avisar en Teams de %s#%s; la review ya esta publicada",
+            request.repo,
+            request.pr_id,
+        )
+    return {}
 
 
 def _published_markers(vcs: VcsPort, request: ReviewRequest) -> list[ReviewMarker]:
@@ -1680,6 +1956,20 @@ def _render_incomplete_header(
         f"analisis y su ausencia de hallazgos no equivale a un PR limpio. {detail}",
         "",
     ]
+
+
+def _render_publication_notice(state: ReviewState) -> str:
+    """Aviso del motor claude: cuenta lo publicado, no lo que sigue pendiente."""
+    human = state.get("human_decisions")
+    published = 0
+    left_out = 0
+    for finding in _merged(state):
+        outcome = human.outcome_for(_finding_id(finding)) if human is not None else None
+        if outcome is DecisionOutcome.APPROVED:
+            published += 1
+        else:
+            left_out += 1
+    return f"Se publicaron {published} hallazgo(s); {left_out} quedaron fuera."
 
 
 def _render_teams_body(

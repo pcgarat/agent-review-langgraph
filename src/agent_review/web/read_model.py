@@ -55,6 +55,7 @@ class QueueItem(BaseModel):
     head_sha: str = ""
     pipeline_id: str = ""
     attempts: int = 0
+    launch: bool = False
 
 
 class ActiveNode(BaseModel):
@@ -101,6 +102,7 @@ class PausedItem(BaseModel):
     pending: list[PendingDecision] = Field(default_factory=list)
     command_hint: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
+    publication: bool = False
 
 
 class PausedGroups(BaseModel):
@@ -191,6 +193,7 @@ class RedisPanelReadModel:
                     head_sha=request.head_sha,
                     pipeline_id=request.pipeline_id,
                     attempts=request.attempts,
+                    launch=request.launch,
                 )
             )
         return items
@@ -433,6 +436,7 @@ def _paused_item(review: PausedReview) -> PausedItem:
         state="PAUSED",
         pending=list(approval.pending),
         command_hint=approval.command_hint,
+        publication=approval.pause_kind == "publication",
     )
 
 

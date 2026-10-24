@@ -59,7 +59,7 @@ from agent_review.ports.reasoning import (
     emit_safely,
 )
 from agent_review.scope import split_diff
-from agent_review.verification.l0 import L0Disposition, evaluate_l0
+from agent_review.verification.l0 import L0Disposition, cite_text, evaluate_l0
 
 logger = logging.getLogger(__name__)
 
@@ -883,7 +883,7 @@ def _to_finding(
     ]
     if readings is not None:
         evidence_in = _filter_served_evidence(evidence_in, readings)
-    cite = _cite_text(evidence_in)
+    cite = cite_text(evidence_in)
     # 008 CX5 / D2 / D13: L0 manda; el `pre_existing` del modelo se ignora.
     l0 = evaluate_l0(file_diff, hint=hint, cite=cite)
     if l0.disposition is L0Disposition.DROP or l0.line is None:
@@ -923,19 +923,6 @@ def _to_finding(
     except (ContractError, ValidationError) as exc:
         logger.info("correctness: hallazgo descartado por el contrato (%s)", exc)
         return None
-
-
-def _cite_text(evidence: list[str]) -> str | None:
-    """Texto de evidencia para L0, sin el prefijo `file:line`."""
-    for item in evidence:
-        head, _, rest = item.partition(" ")
-        if rest and ":" in head:
-            return rest.strip()
-        if rest:
-            return rest.strip()
-        if item.strip():
-            return item.strip()
-    return None
 
 
 def _severity(value: object) -> str:

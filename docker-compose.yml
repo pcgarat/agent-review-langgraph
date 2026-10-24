@@ -40,10 +40,19 @@ services:
       # Credencial de servicio de twg (Bitbucket/Jira). Llega por `env_file: .env`
       # como TWG_BBC_TOKEN/TWG_SITE/TWG_USER/TWG_TOKEN: no hay fichero de auth en
       # el contenedor ni montaje del ~/.config/twg del host.
+      # La credencial de clonado del motor claude vive en `claude-runner`.
+      # Vaciarla aquí gana a `env_file`: el proceso que publica no la tiene.
+      CLAUDE_GIT_TOKEN: ""
+      CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-http://claude-runner:8098}
+      # Enlace del aviso si falta la sesión. El worker no monta el fichero.
+      PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:-http://localhost:8090}
     volumes:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
+      # JSON ya validado del motor claude. Encima de `./var` (solo lectura)
+      # para que el worker pueda escribirlo sin abrir el resto del volumen.
+      - claude_artifacts:/app/var/claude
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +144,41 @@ services:
       - reviews
     # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
 
+  # Motor claude (025, ADR-0028). Opt-in: sin el perfil, `docker compose up`
+  # sigue siendo el motor llm. Checkout en un volumen propio, no el clon bare
+  # del sandbox-runner. Sin `env_file`: no hereda el token con el que el
+  # worker publica. El subproceso `claude` tampoco recibe la credencial de
+  # clonado (el proceso la usa para el fetch y luego quita el remoto).
+  claude-runner:
+    build: .
+    restart: unless-stopped
+    profiles: ["claude"]
+    command: python -m agent_review.claude_runner.main
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REVIEW_ENGINE: claude
+      CLAUDE_BIN: ${CLAUDE_BIN:-claude}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-30}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-900}
+      CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
+      CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
+      CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
+      CLAUDE_GIT_TOKEN: ${CLAUDE_GIT_TOKEN:-}
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+    volumes:
+      - claude_checkout:/var/claude-checkout
+      - claude_session:/var/claude-session
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('CLAUDE_RUNNER_PORT','8098'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: solo el worker, en la red interna.
+
   # Canal de Teams (iniciativa 013): el bot con hilo por PR. Consume la outbox
   # (`reviews:notices`) y sirve el *messaging endpoint* `POST /api/messages` del
   # Bot Framework. Vive aislado del worker: NO tiene credencial de VCS ni clave del
@@ -177,7 +221,9 @@ services:
   # por el perfil `panel`: sin el perfil, `docker compose up` arranca lo de siempre
   # (R7). Como el `fix-worker` y el `teams-bot`, NO hereda el `.env` entero (nada de
   # `env_file`): el panel lee estado y encola comandos, asi que no recibe credencial
-  # de VCS ni clave del LLM (§5.8). Solo Redis, Postgres (lectura) y su sesion.
+  # de VCS ni clave del LLM (§5.8). Si recibe el nombre del repo (sin token) para
+  # rechazar la URL de otro repositorio al lanzar una review (ADR-0031). Solo Redis,
+  # Postgres (lectura) y su sesion.
   web:
     build: .
     restart: unless-stopped
@@ -202,14 +248,25 @@ services:
       # Los diales del panel se comparan contra el valor inicial de estos dos
       # procesos. Si el `web` no recibe la misma variable, la pagina pinta el
       # default del codigo mientras el worker resuelve el del `.env`, y guardar
-      # publica un numero que nadie pidio (026, ADR-0029).
+      # publica un numero que nadie pidio (027, ADR-0031).
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
       LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}
+      # Identidad del repo, sin el token: el panel rechaza la URL de otro repo
+      # y el worker es quien lee el commit (ADR-0031).
+      VCS_PROVIDER: ${VCS_PROVIDER:-twg}
+      BITBUCKET_WORKSPACE: ${BITBUCKET_WORKSPACE:-}
+      BITBUCKET_REPO: ${BITBUCKET_REPO:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      # Misma ruta que claude-runner. El token no es una variable de entorno.
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+      CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
     volumes:
+      - claude_session:/var/claude-session
       # Solo lectura: el techo de autonomia de un override publicado se valida
       # contra `config/autonomy.yaml`. Sin este montaje, cualquier guardado con
       # `MAX_AUTONOMY_OVERRIDE` responde 400. Los YAML siguen siendo de git: el
-      # panel no los edita (ADR-0029).
+      # panel no los edita (ADR-0031).
       - ./config:/app/config:ro
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
@@ -260,6 +317,9 @@ services:
 
 volumes:
   pg_data:
+  claude_artifacts:
+  claude_checkout:
+  claude_session:
 
 networks:
   reviews:

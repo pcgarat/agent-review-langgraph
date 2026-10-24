@@ -1,4 +1,4 @@
-Última modificación: 2026-10-11 | Creado: 2026-10-11
+Última modificación: 2026-10-23 | Creado: 2026-10-11
 
 # Documentación
 
@@ -10,6 +10,7 @@ comprueban con `make docs-check`.
 
 | Si quieres… | Lee |
 |---|---|
+| Saber qué es y levantarlo la primera vez | [`README.md`](../README.md) |
 | Entender el vocabulario | [`CONTEXT.md`](../CONTEXT.md) |
 | Saber cómo es el sistema hoy | [`arquitectura.md`](arquitectura.md) |
 | Arrancarlo, configurarlo o diagnosticarlo | [`operacion.md`](operacion.md) |

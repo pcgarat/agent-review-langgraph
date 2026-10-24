@@ -1,4 +1,4 @@
-"""Diales que el panel publica (026, ADR-0029).
+"""Diales que el panel publica (027, ADR-0031).
 
 El valor inicial de un control es el que `Settings` ya resolvió. El documento
 guardado solo contiene las claves que se apartan de ese valor. Restaurar una

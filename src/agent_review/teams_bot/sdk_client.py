@@ -68,6 +68,26 @@ class SDKChannelClient:
         activity = _to_activity(payload).with_id(message_id)
         await self._app.send(conversation_id, activity, service_url=service_url or None)
 
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        """Borra la actividad. Si Teams ya no la tiene, no es un fallo."""
+        try:
+            await self._app.api.conversations.delete_activity(
+                conversation_id,
+                message_id,
+                service_url=service_url or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - el conector no comparte una sola clase
+            if _already_gone(exc):
+                return
+            raise
+
+
+def _already_gone(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 404
+
 
 def adaptive_card(payload: dict[str, Any]) -> AdaptiveCard:
     """`dict` de Adaptive Card -> modelo del SDK.

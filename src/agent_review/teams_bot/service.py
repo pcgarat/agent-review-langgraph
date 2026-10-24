@@ -29,6 +29,7 @@ from agent_review.domain.paused import PauseKind
 from agent_review.paused_store import PausedStore
 from agent_review.settings import Settings
 from agent_review.teams_bot.cards import render_decision_card
+from agent_review.teams_bot.state import CardStore
 from agent_review.teams_bot.threads import ChannelStore
 from agent_review.teams_bot.transport import ChannelTransport
 
@@ -64,11 +65,13 @@ class TeamsBotService:
         outbox: ChatOutbox,
         transport: ChannelTransport,
         paused: PausedStore,
+        cards: CardStore | None = None,
         poll_s: float = 5.0,
     ) -> None:
         self._outbox = outbox
         self._transport = transport
         self._paused = paused
+        self._cards = cards
         self._poll_s = poll_s
 
     async def run_forever(self) -> None:
@@ -83,6 +86,8 @@ class TeamsBotService:
         while True:
             try:
                 processed, deferred = await self.drain()
+                if not deferred:
+                    await self.withdraw_settled()
             except Exception:  # noqa: BLE001 - el bucle no puede morir por un aviso
                 logger.exception("Fallo en el drenado de la outbox; se reintenta")
                 await asyncio.sleep(self._poll_s)
@@ -127,6 +132,8 @@ class TeamsBotService:
         y el inbox. Un aviso que aun no se puede entregar (sin canal, o sin poder
         leer el inbox) no es un fallo: vuelve a la cabeza de la cola.
         """
+        if notice.kind == "withdraw":
+            return await self._withdraw(notice)
         if notice.kind == "pause":
             try:
                 still_paused = self._still_paused(notice)
@@ -188,7 +195,61 @@ class TeamsBotService:
             paused = self._paused.get(notice.review_key)
         except Exception as exc:  # noqa: BLE001 - cualquier fallo de lectura es "no se sabe"
             raise _Unknown(f"no se pudo leer el inbox: {exc}") from exc
-        return paused is not None and paused.kind is PauseKind.HUMAN
+        if paused is None or paused.kind is not PauseKind.HUMAN:
+            return False
+        if self._cards is None:
+            return True
+        try:
+            sealed = self._cards.final(notice.review_key, pause=paused.pause_id)
+        except Exception as exc:  # noqa: BLE001 - sin el sello no se sabe si sigue abierta
+            raise _Unknown(f"no se pudo leer el sello: {exc}") from exc
+        return sealed is None
+
+    async def _withdraw(self, notice: ChatNotice) -> DispatchResult:
+        """Borra la tarjeta. Si Teams no responde, el barrido lo reintenta."""
+        try:
+            await self._transport.delete_card(notice.review_key)
+        except Exception as exc:  # noqa: BLE001 - retirar la tarjeta no tumba el bot
+            logger.warning("No se pudo retirar la tarjeta de %s: %s", notice.review_key, exc)
+        return DispatchResult.PUBLISHED
+
+    async def withdraw_settled(self) -> int:
+        """Borra tarjetas cuya pausa ya se respondio o dejo de estar en el inbox.
+
+        Cubre una decision por el CLI o la API, que no encolan `withdraw`, y un
+        aviso de retirada que no llego a borrarla.
+        """
+        removed = 0
+        for review_key in self._transport.open_card_keys():
+            if not self._card_settled(review_key):
+                continue
+            try:
+                if await self._transport.delete_card(review_key):
+                    removed += 1
+            except Exception as exc:  # noqa: BLE001 - el barrido reintenta
+                logger.warning("No se pudo retirar la tarjeta asentada de %s: %s", review_key, exc)
+        return removed
+
+    def _card_settled(self, review_key: str) -> bool:
+        """`True` si la pregunta ya no debe seguir en el canal.
+
+        Un fallo de lectura no se toma por «ya respondida»: borrar de mas
+        quitaria una tarjeta que la persona aun tiene que contestar.
+        """
+        try:
+            paused = self._paused.get(review_key)
+        except Exception as exc:  # noqa: BLE001 - no borrar si no se sabe
+            logger.warning("No se pudo leer la pausa de %s al retirar: %s", review_key, exc)
+            return False
+        if paused is None or paused.kind is not PauseKind.HUMAN:
+            return True
+        if self._cards is None:
+            return False
+        try:
+            return self._cards.final(review_key, pause=paused.pause_id) is not None
+        except Exception as exc:  # noqa: BLE001 - el sello ilegible no autoriza a borrar
+            logger.warning("No se pudo leer el sello de %s: %s", review_key, exc)
+            return False
 
 
 def build_teams_bot(
@@ -198,11 +259,16 @@ def build_teams_bot(
     outbox: ChatOutbox,
     store: ChannelStore,
     paused: PausedStore,
+    cards: CardStore | None = None,
 ) -> TeamsBotService:
     """Monta el servicio con el cliente del SDK (T6) y los stores reales."""
     transport = ChannelTransport(client=client, store=store)
     return TeamsBotService(
-        outbox=outbox, transport=transport, paused=paused, poll_s=settings.teams_bot_poll_s
+        outbox=outbox,
+        transport=transport,
+        paused=paused,
+        cards=cards,
+        poll_s=settings.teams_bot_poll_s,
     )
 
 

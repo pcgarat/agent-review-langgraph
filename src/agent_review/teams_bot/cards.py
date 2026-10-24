@@ -14,8 +14,10 @@ el render no conoce Redis.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Any
 
+from agent_review.decision import outcomes_for_pause
 from agent_review.domain.models import ApprovalRequest, DecisionOutcome, PendingDecision, Severity
 
 # Discriminantes de la accion, en `data.action`. El ingress despacha por aqui, de
@@ -23,6 +25,9 @@ from agent_review.domain.models import ApprovalRequest, DecisionOutcome, Pending
 # resto del contrato.
 DECISION_ACTION = "teams.decision"
 SUBMIT_ACTION = "teams.submit"
+# Lote de la pausa `publication`. Se envía solo: el bot lo traduce a una
+# `HitlDecision` completa. No es una marca.
+PUBLISH_BATCH_ACTION = "teams.publish_batch"
 
 _BUTTONS: tuple[tuple[str, DecisionOutcome], ...] = (
     ("Aprobar", DecisionOutcome.APPROVED),
@@ -30,10 +35,37 @@ _BUTTONS: tuple[tuple[str, DecisionOutcome], ...] = (
     ("Anotar", DecisionOutcome.NOTED),
 )
 
+# La cuarta acción de `publication` marca un hallazgo. El lote no pasa por aquí.
+_PUBLISH_BUTTONS: tuple[tuple[str, DecisionOutcome], ...] = (
+    ("Publicar", DecisionOutcome.APPROVED),
+    ("No publicar", DecisionOutcome.DROPPED),
+)
+
+_BATCHES: tuple[tuple[str, str], ...] = (
+    ("Solo bloqueantes", "blockers"),
+    ("Publicar todos", "all"),
+    ("No publicar ninguno", "none"),
+)
+
+
+class PublishBatch(StrEnum):
+    """Lote que cubre todos los pendientes de una pausa de publicación."""
+
+    BLOCKERS = "blockers"
+    ALL = "all"
+    NONE = "none"
+
+
 _OUTCOME_LABEL = {
     DecisionOutcome.APPROVED: "Aprobado por ti",
     DecisionOutcome.REJECTED: "Rechazado por ti",
     DecisionOutcome.NOTED: "Anotado por ti",
+    DecisionOutcome.DROPPED: "Dejado fuera por ti",
+}
+
+_PUBLISH_OUTCOME_LABEL = {
+    DecisionOutcome.APPROVED: "Publicar",
+    DecisionOutcome.DROPPED: "No publicar",
 }
 
 _SEVERITY_COLOR = {
@@ -67,10 +99,26 @@ def submit_action_data(review_key: str) -> dict[str, str]:
 def outcome_from_button(action: str) -> DecisionOutcome | None:
     """Traduce el identificador visible de un boton a su `DecisionOutcome`."""
     normalized = action.strip().lower()
-    for _label, outcome in _BUTTONS:
+    if normalized == DecisionOutcome.EXPIRED.value:
+        return None
+    for _label, outcome in (*_BUTTONS, *_PUBLISH_BUTTONS):
         if outcome.value == normalized:
             return outcome
     return None
+
+
+def allowed_outcomes(approval: ApprovalRequest) -> frozenset[DecisionOutcome]:
+    """Resultados que esta tarjeta puede marcar. La regla vive en `decision`."""
+    return outcomes_for_pause(approval.pause_kind)
+
+
+def publish_batch_data(review_key: str, batch: PublishBatch) -> dict[str, str]:
+    """`data` de un lote. No lleva hallazgos: el bot los resuelve al traducirlo."""
+    return {
+        "action": PUBLISH_BATCH_ACTION,
+        "review_key": review_key,
+        "batch": batch.value,
+    }
 
 
 def marks_complete(approval: ApprovalRequest, marks: Mapping[str, DecisionOutcome]) -> bool:
@@ -92,6 +140,9 @@ def render_decision_card(
     tarjeta se repinta por usuario, asi que dos personas marcan en paralelo y cada
     una ve lo suyo. El render no conoce Redis.
     """
+    if approval.pause_kind == "publication":
+        return _render_publication_card(approval, marks=marks or {}, link=link)
+
     marks = marks or {}
     complete = marks_complete(approval, marks)
     pending = len(approval.pending)
@@ -154,7 +205,61 @@ def render_decided_card(
     }
 
 
-def _finding_block(item: PendingDecision, *, marked: DecisionOutcome | None) -> dict[str, Any]:
+def _render_publication_card(
+    approval: ApprovalRequest,
+    *,
+    marks: Mapping[str, DecisionOutcome],
+    link: str | None,
+) -> dict[str, Any]:
+    """Tres lotes que se envían solos, y el marcado suelto con Enviar apagado."""
+    complete = marks_complete(approval, marks)
+    body: list[dict[str, Any]] = [
+        _text(f"Qué se publica · {approval.repo}#{approval.pr_id}", size="Large", bold=True),
+        _text(
+            f"{len(approval.pending)} hallazgo(s). Un lote cubre todos. "
+            "Si marcas uno a uno, Enviar espera al resto.",
+            subtle=True,
+        ),
+    ]
+    for item in approval.pending:
+        body.append(_finding_block(item, marked=marks.get(item.finding_id), proposal=False))
+    if not complete:
+        body.append(
+            _text(
+                "Marca todos los hallazgos para poder enviar la decision.",
+                subtle=True,
+                color="Warning",
+            )
+        )
+    actions: list[dict[str, Any]] = [
+        _execute_action(
+            label,
+            publish_batch_data(approval.review_key, PublishBatch(batch)),
+            style="positive" if batch == PublishBatch.BLOCKERS.value else None,
+            verb=PUBLISH_BATCH_ACTION,
+        )
+        for label, batch in _BATCHES
+    ]
+    for item in approval.pending:
+        actions.extend(_publish_mark_actions(approval.review_key, item))
+    actions.append(_submit_action(approval.review_key, enabled=complete))
+    if link:
+        actions.append({"type": "Action.OpenUrl", "title": "Abrir el PR", "url": link})
+    return {
+        "$schema": _CARD_SCHEMA,
+        "type": "AdaptiveCard",
+        "version": _CARD_VERSION,
+        "body": body,
+        "actions": actions,
+    }
+
+
+def _finding_block(
+    item: PendingDecision,
+    *,
+    marked: DecisionOutcome | None,
+    proposal: bool = True,
+) -> dict[str, Any]:
     body: list[dict[str, Any]] = [
         _text(
             f"[{item.severity.value}] {item.title}", bold=True, color=_SEVERITY_COLOR[item.severity]
@@ -164,12 +269,14 @@ def _finding_block(item: PendingDecision, *, marked: DecisionOutcome | None) -> 
     why = " ".join(item.why_it_matters.split())
     if why:
         body.append(_text(why))
-    proposed = f"Accion propuesta: {item.proposed_action.value}"
-    if item.reason.strip():
-        proposed += f" · {item.reason.strip()}"
-    body.append(_text(proposed, subtle=True))
+    if proposal:
+        proposed = f"Accion propuesta: {item.proposed_action.value}"
+        if item.reason.strip():
+            proposed += f" · {item.reason.strip()}"
+        body.append(_text(proposed, subtle=True))
     if marked is not None:
-        body.append(_text(_OUTCOME_LABEL.get(marked, marked.value), color="Good"))
+        labels = _OUTCOME_LABEL if proposal else _PUBLISH_OUTCOME_LABEL
+        body.append(_text(labels.get(marked, marked.value), color="Good"))
     return {"type": "Container", "separator": True, "items": body}
 
 
@@ -179,6 +286,19 @@ def _location(item: PendingDecision) -> str:
     if item.code_url:
         return f"{where} · [Ver el codigo]({item.code_url})"
     return where
+
+
+def _publish_mark_actions(review_key: str, item: PendingDecision) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for label, outcome in _PUBLISH_BUTTONS:
+        actions.append(
+            _execute_action(
+                f"{label} · {item.file}:{item.line}",
+                decision_action_data(review_key, item.finding_id, outcome),
+                style="positive" if outcome is DecisionOutcome.APPROVED else None,
+            )
+        )
+    return actions
 
 
 def _finding_actions(review_key: str, item: PendingDecision) -> list[dict[str, Any]]:
@@ -209,14 +329,18 @@ def _submit_action(review_key: str, *, enabled: bool) -> dict[str, Any]:
 
 
 def _execute_action(
-    title: str, data: dict[str, str], *, style: str | None = None
+    title: str,
+    data: dict[str, str],
+    *,
+    style: str | None = None,
+    verb: str = DECISION_ACTION,
 ) -> dict[str, Any]:
     # `fallback` a `Action.Submit`: los clientes antiguos no soportan
     # `Action.Execute` y mandan la accion como mensaje (lo valida el spike, T0).
     action: dict[str, Any] = {
         "type": "Action.Execute",
         "title": title,
-        "verb": DECISION_ACTION,
+        "verb": verb,
         "data": data,
         "fallback": {"type": "Action.Submit", "title": title, "data": data},
     }

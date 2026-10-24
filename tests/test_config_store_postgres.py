@@ -1,4 +1,4 @@
-"""Contrato del almacén en Postgres (026, ADR-0029).
+"""Contrato del almacén en Postgres (027, ADR-0031).
 
 Sin Postgres alcanzable en local, los casos se saltan: el CI no publica una base,
 pero el contrato de `ConfigStore` (fila vigente, historial, compare-and-swap y

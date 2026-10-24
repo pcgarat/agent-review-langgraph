@@ -55,6 +55,8 @@ def _items_from_args(args: argparse.Namespace) -> list[FindingDecision]:
         )
     for finding_id in args.noted:
         items.append(FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.NOTED))
+    for finding_id in args.drop:
+        items.append(FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.DROPPED))
     return items
 
 
@@ -95,13 +97,24 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("review_key", help="Clave de la review pausada (ver `agent_review list`)")
     decide.add_argument("--actor", required=True, help="Quien decide (queda auditado)")
     decide.add_argument(
-        "--approve", action="append", default=[], metavar="ID", help="Autoriza el arreglo"
+        "--approve",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Publica el hallazgo, o autoriza intentar el arreglo",
     )
     decide.add_argument(
         "--reject", action="append", default=[], metavar="ID", help="Descarta el hallazgo"
     )
     decide.add_argument(
         "--noted", action="append", default=[], metavar="ID", help="Se atiende fuera del agente"
+    )
+    decide.add_argument(
+        "--drop",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="No lo publica (pausa de publicación del motor claude)",
     )
     decide.add_argument("--note", default="", help="Nota para los hallazgos rechazados")
     decide.set_defaults(func=_cmd_decide)

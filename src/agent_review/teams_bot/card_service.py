@@ -12,7 +12,12 @@ from __future__ import annotations
 import logging
 
 from agent_review.domain.models import ApprovalRequest, DecisionOutcome
-from agent_review.teams_bot.cards import marks_complete, render_decided_card, render_decision_card
+from agent_review.teams_bot.cards import (
+    allowed_outcomes,
+    marks_complete,
+    render_decided_card,
+    render_decision_card,
+)
 from agent_review.teams_bot.state import CardStore
 
 logger = logging.getLogger(__name__)
@@ -63,6 +68,11 @@ class DecisionCardService:
         if not self._is_pending(approval, finding_id):
             logger.warning(
                 "Marca de un hallazgo ajeno a %s (%s); se ignora", approval.review_key, finding_id
+            )
+            return self.render(approval, user_id=user_id, link=link, pause=pause)
+        if outcome not in allowed_outcomes(approval):
+            logger.warning(
+                "Marca %s ajena a la tarjeta de %s; se ignora", outcome.value, approval.review_key
             )
             return self.render(approval, user_id=user_id, link=link, pause=pause)
         self._store.mark(

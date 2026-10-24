@@ -12,26 +12,30 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from agent_review.claude_session import write_session
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import FindingDecision
 from agent_review.history_store import ReviewHistory
-from agent_review.paused_store import RedisPausedStore
 from agent_review.ports.reasoning import ReasoningReader
-from agent_review.queue import RedisReviewQueue
+from agent_review.queue import RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings, require_panel_secrets
 from agent_review.web.auth import Session, require_command_session, require_session
+from agent_review.web.bandeja import build_bandeja
+from agent_review.web.bandeja import router as bandeja_router
 from agent_review.web.commands import (
     CommandEffect,
     CommandError,
     CommandService,
     build_command_service,
 )
+from agent_review.web.launch import LaunchError, LaunchService
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
@@ -54,20 +58,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     require_panel_secrets(settings)
     # El candado de diales y el almacen se resuelven al arrancar, no en la primera
     # visita a /config: un nombre fuera del catalogo o un Postgres obligatorio que
-    # no responde tienen que tumbar el proceso, igual que en el worker (ADR-0029).
+    # no responde tienen que tumbar el proceso, igual que en el worker (ADR-0031).
     from agent_review.web.ui import build_config_store_for_panel
 
     app.state.config_store = build_config_store_for_panel(settings)
     app.state.read_model = build_panel_read_model(settings)
     cancellation = build_cancellation(settings)
     if cancellation is not None:
+        # La bandeja y el formulario del detalle comparten sello y cola: la
+        # primera respuesta, venga de donde venga, es la que se encola.
+        bandeja = build_bandeja(settings)
+        app.state.bandeja = bandeja
         app.state.commands = build_command_service(
-            queue=RedisReviewQueue(url=settings.redis_url),
-            paused=RedisPausedStore(url=settings.redis_url),
+            queue=bandeja.queue,
+            paused=bandeja.paused,
             cancellation=cancellation,
+            submitter=bandeja.submitter,
         )
     app.state.console = build_runner_client(settings)
     app.state.reasoning = build_reasoning_reader(settings)
+    app.state.claude_login = build_claude_login(settings)
     try:
         yield
     finally:
@@ -89,6 +99,22 @@ def get_read_model(request: Request) -> PanelReadModel:
         model = build_panel_read_model(_settings())
         request.app.state.read_model = model
     return model
+
+
+def get_launcher(request: Request) -> LaunchService:
+    """Encola un lanzamiento. Los tests inyectan uno en `app.state.launcher`."""
+    launcher: LaunchService | None = getattr(request.app.state, "launcher", None)
+    if launcher is None:
+        settings = _settings()
+        queue = RedisReviewQueue(url=settings.redis_url)
+        if not queue.available():
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Lanzar una review necesita Redis, que no esta disponible",
+            )
+        launcher = LaunchService(queue, expected_repo=settings.configured_repo())
+        request.app.state.launcher = launcher
+    return launcher
 
 
 def get_commands(request: Request) -> CommandService:
@@ -160,6 +186,111 @@ def get_trace(
     if trace is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sin recorrido para {review_key}")
     return trace.model_dump(mode="json")
+
+
+class ClaudeLogin:
+    """Guarda la sesión y suelta solo lo parqueado por falta de ella."""
+
+    def __init__(self, *, path: Path, queue: ReviewQueue, ttl_s: float) -> None:
+        self._path = path
+        self._queue = queue
+        self._ttl = ttl_s
+
+    def save(self, token: str) -> int:
+        write_session(self._path, token, ttl_s=self._ttl)
+        released = self._queue.release_parked(reason="session")
+        self._queue.clear_notice("session")
+        logger.info("sesion de claude guardada; %d reviews vuelven a la cola", len(released))
+        return len(released)
+
+
+def build_claude_login(settings: Settings) -> ClaudeLogin:
+    return ClaudeLogin(
+        path=Path(settings.claude_session_path),
+        queue=RedisReviewQueue(url=settings.redis_url),
+        ttl_s=settings.claude_session_ttl_s,
+    )
+
+
+def get_claude_login(request: Request) -> ClaudeLogin:
+    login: ClaudeLogin | None = getattr(request.app.state, "claude_login", None)
+    if login is None:
+        login = build_claude_login(_settings())
+        request.app.state.claude_login = login
+    return login
+
+
+@app.post("/api/claude/session")
+async def save_claude_session(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    login: Annotated[ClaudeLogin, Depends(get_claude_login)],
+) -> dict[str, int]:
+    """El operador deja el token en el fichero `0600`. La respuesta no lo devuelve."""
+    del session
+    token = await _claude_token(request)
+    try:
+        released = login.save(token)
+    except OSError as exc:
+        logger.exception("No se pudo guardar la sesion de Claude")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar la sesion"
+        ) from exc
+    return {"released": released}
+
+
+async def _claude_token(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    token = body.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta el token")
+    return token.strip()
+
+
+@app.post("/api/launch", status_code=status.HTTP_202_ACCEPTED)
+async def launch_review(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    launcher: Annotated[LaunchService, Depends(get_launcher)],
+) -> dict[str, object]:
+    """Encola una review a partir de la URL del pull request.
+
+    No resuelve el commit: el worker lo lee del VCS. La respuesta no lleva
+    `review_key` porque aun no hay SHA.
+    """
+    url = await _launch_url(request)
+    try:
+        launched = launcher.launch(url, actor=session.user)
+    except LaunchError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("No se pudo encolar el lanzamiento")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {
+        "status": "encolada",
+        "repo": launched.repo,
+        "pr_id": launched.pr_id,
+        "pipeline_id": launched.pipeline_id,
+        "actor": session.user,
+    }
+
+
+async def _launch_url(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    url = body.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta la URL del pull request")
+    return url
 
 
 @app.post("/api/reviews/{review_key:path}/cancel")
@@ -337,6 +468,7 @@ def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:
 # La UI (OP15/OP33) vive en su propio router para no engordar este modulo; la app
 # la monta aqui para que el panel sea un unico proceso con una unica sesion.
 app.include_router(ui_router)
+app.include_router(bandeja_router)
 
 
 def main() -> None:

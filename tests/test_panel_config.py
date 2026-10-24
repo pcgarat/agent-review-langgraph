@@ -1,4 +1,4 @@
-"""Contrato de los diales del panel (026)."""
+"""Contrato de los diales del panel (027)."""
 
 from __future__ import annotations
 

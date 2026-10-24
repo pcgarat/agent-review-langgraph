@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -107,7 +107,7 @@ omitido hasta que exista su baseline.
 | L0 / L1 (008) | `test_verification_l0` (anclaje estricto, cita, `pre_existing`), `test_diff_parser` (lado viejo del diff), `test_llm_reviewer` (L0 en `_to_finding`, L1 por lote y humildad), `test_profile` (`context_docs`) |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
-| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, formulario de decisión y escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`); `test_compose` cubre el perfil `panel` |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, formulario de decisión y escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`), `test_bandeja` (la bandeja lista las pausas humanas, sella la primera respuesta y pide retirar la tarjeta si Teams está activo), `test_pr_url` y `test_web_launch` (lanzar una review con la URL del PR, ADR-0029) y `test_worker` (el worker resuelve el commit antes del grafo); `test_compose` cubre el perfil `panel` |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
@@ -116,9 +116,9 @@ omitido hasta que exista su baseline.
 | Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `test_web_ui` (pestaña, sin `innerHTML`) |
 | Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web_ui` y `test_web` (página `/history` y `/api/history`) |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
-| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice` y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_teams_threads` (hilo por PR), `test_teams_bot_service` (consumo de la outbox), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
+| Canal (chat) | `test_chat_outbox` (contrato `ChatNotice`, incluido `withdraw`, y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_claude_card` (lote de publicación y la tarjeta de `llm` sin `pause_kind`), `test_teams_threads` (hilo por PR y borrado de la tarjeta), `test_teams_bot_service` (consumo de la outbox, `withdraw`, pausa ya sellada y barrido), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado y borrado del mensaje; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
-| Perfil y worker | `test_profile`, `test_worker` |
+| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio), `test_claude_parking` (parking, aviso único, login del operador y cupo) |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
 | Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
 
@@ -141,6 +141,36 @@ se sustituyen por fakes (por ejemplo, el `DiffLineVcs` de los e2e).
    de pausa); `None` si el host no lo soporta. Nunca aborta.
 6. Añade el valor a `settings._VCS_PROVIDERS`, ramifica `worker.build_vcs` y
    `api._expected_repo`, y cubre la credencial en `insecure_secrets`.
+
+### El CLI de Claude (025)
+
+El puerto es `ClaudeRunner` (`ports/claude.py`): `run` devuelve stdout. El
+worker lo llama en `ensure_claude_artifact` antes de `invoke`, y no vuelve a
+llamar si el artefacto de ese `head_sha` ya es válido. El tiempo agotado, el
+cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
+de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
+convierte en «cero hallazgos».
+
+El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
+servicio `claude-runner`, no en el worker. El argv lleva `--max-turns`,
+`--allowedTools Read,Grep,Glob`, `--disallowedTools` (Bash, Edit, Write,
+NotebookEdit, WebFetch, WebSearch) y `--permission-mode dontAsk`. El entorno
+del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando secretos. El
+token de sesión, si el fichero sigue vigente, se inyecta aparte
+(`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. `CLAUDE_CONFIG_DIR` apunta
+fuera del checkout. El checkout (`claude_runner/checkout.py`) quita los remotos
+después del fetch y no arranca el CLI si alguno sigue; `core.symlinks` queda
+en falso. Git corre con un entorno sin los tokens del proceso y con tope de
+tiempo.
+
+Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
+`invoke`, salvo que el job ya traiga `decision` o `fix_resolution`. El aviso
+sale una vez (`claim_notice`). `POST /api/claude/session`
+(`require_command_session`) escribe el fichero `0600` y suelta solo el motivo
+`session`. El job que agota el cupo parkea con `quota` y no se reintenta.
+Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
+`quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
+artefacto ya válido no espera.
 
 ### Una persona nueva
 
@@ -298,9 +328,17 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
    (spec §5.4/§5.5) y su efecto. Una **decisión humana** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md))
    no tiene semántica propia: se construye con `build_decision` (`decision.py`), la misma
    del CLI, la API y Teams, y se encola.
-3. **La sesión viaja por cabecera o cookie**: `require_session` acepta
+3. **La bandeja no es otro validador.** `GET /api/bandeja` lee las pausas
+   humanas sin sello. `POST /api/bandeja/{key}/decision` llama a
+   `DecisionSubmitter`, el mismo que la tarjeta. El detalle, si el proceso tiene
+   Redis, usa ese submitter: no vuelvas a encolar una `HitlDecision` al lado.
+4. **La sesión viaja por cabecera o cookie**: `require_session` acepta
    `X-Panel-Session` (CLI, tests) y la cookie `panel_session` (navegador). Un endpoint
    nuevo que ejecute algo usa `require_operador`, nunca `require_session` a secas.
+5. **Lanzar una review no llama al VCS.** `POST /api/launch` (`web/launch.py`)
+   parsea la URL y encola `launch=True`. El commit lo lee `resolve_launch` en el
+   worker, antes de `graph.invoke`
+   ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
@@ -419,7 +457,10 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
    `ChannelTransport` (hilo por PR, edición de tarjeta).
 2. **Ingress:** `CardIngress` traduce las acciones; `sdk_handlers` cablea el SDK.
    La decisión pasa por `build_decision` y se **encola** en `reviews:jobs` (C4): el
-   bot no reanuda el grafo.
+   bot no reanuda el grafo. Un lote de `pause_kind=publication` entra por
+   `submit_batch` y no se acepta sobre una pausa del motor `llm`. Al encolar, el
+   bot borra el mensaje. Un `ChatNotice` `withdraw` hace lo mismo desde otro
+   proceso (la bandeja). Un aviso de pausa con la pausa ya sellada se descarta.
 3. Un canal nuevo (Slack, etc.) es otro consumidor de la outbox + otro ingress; el
    worker y el grafo no cambian. El SDK de Teams solo se importa en
    `sdk_client.py` / `sdk_handlers.py`.
@@ -435,6 +476,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   lleva marca.
 - **`hitl` no lleva `RetryPolicy`.**
 - **La identidad de ejecución, el hilo y el token de dedupe no divergen.**
+- **El panel no resuelve el commit de un lanzamiento.** Encola la URL ya parseada;
+  el worker lee el SHA antes de invocar el grafo y no lo vuelve a leer en un
+  reintento ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
 - **La protección manda sobre la aprobación.**
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como
@@ -448,6 +492,9 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **Ninguna persona compara su propia llamada contra un entero de presupuesto.** El
   gasto se reserva y se confirma contra el `BudgetPort` compartido; el hecho del
   corte (`budget_exhausted`) viaja, no se silencia.
+- **El token de la sesión de Claude no entra en Redis ni en el aviso.** El worker
+  pregunta `GET /session`. El fichero `0600` lo escriben el panel y lo lee el
+  runner.
 - **Un secreto, una declaración.** El contrato de arranque se deriva de `Settings`
   (`secrets_for`), no de una lista a mano: cada campo secreto declara su descriptor
   `Secret` y el valor de ejemplo vive en `PLACEHOLDER_VALUES`
