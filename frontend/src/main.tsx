@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { AppRoutes } from './router'
+import { ToastProvider } from './components/ToastProvider'
 import { SessionContext } from './session/session'
 import { useSessionState } from './session/useSessionState'
 import './styles/panel.scss'
@@ -25,7 +26,9 @@ function Root() {
   const session = useSessionState()
   return (
     <SessionContext.Provider value={session}>
-      <AppRoutes />
+      <ToastProvider>
+        <AppRoutes />
+      </ToastProvider>
     </SessionContext.Provider>
   )
 }
