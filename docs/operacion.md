@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Operación
 
@@ -44,7 +44,7 @@ Sin el perfil, `docker compose up` arranca exactamente lo de siempre.
 | `api` | `8000` publicado | `./var` (lectura y escritura), `./config` (solo lectura) | Deposita los artefactos |
 | `worker` | — | `./var` y `./config` (solo lectura) | Necesita `twg` en la imagen si el proveedor es `twg` |
 | `fix-worker` | — | `./config` (solo lectura) | Consume la wave y verifica. **Sin** `env_file`: solo recibe las variables que lee (Redis, runner, timeouts, perfil). **Sin** `docker.sock`, credenciales de VCS, Postgres, clave del LLM ni `REVIEWS_DECISION_TOKEN` |
-| `web` (perfil `panel`) | `PANEL_PORT` publicado | — | Panel de operación: lee estado de Redis y el recorrido del checkpointer. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Solo arranca con `--profile panel` |
+| `web` (perfil `panel`) | `PANEL_PORT` publicado | `./config` (solo lectura) | Panel de operación: lee estado de Redis, el recorrido del checkpointer y publica los diales (026). Monta `config/` para validar `MAX_AUTONOMY_OVERRIDE` contra `autonomy.yaml`; no lo edita. **Sin** `env_file`: no recibe credencial de VCS ni clave del LLM. Solo arranca con `--profile panel` |
 | `teams-bot` | `3978` solo interno | — | Consume la outbox y sirve `POST /api/messages`. **Sin** `ports` (el ingress/TLS lo publica) ni `env_file`: solo recibe Redis e identidad del bot. **Sin** credenciales de VCS, LLM ni Postgres |
 | `sandbox-runner` | `8099` solo interno | `./config` (solo lectura), `/run/user/1000/docker.sock` (demonio **rootless** propio) | Se construye con `SANDBOX_RUNNER=true`; recibe `TWG_BBC_TOKEN` vacío |
 | `postgres` | — | volumen `pg_data` | Checkpoints |
@@ -146,8 +146,19 @@ sin escribir. **Guardar** publica el documento entero en Postgres
 (`panel_config`); solo se guardan las claves que se apartan del valor inicial.
 
 `PANEL_CONFIG_LOCK` es una lista de nombres de campo separada por comas. Esos
-controles se ven y no se cambian. Un nombre que no esté en el catálogo aborta
-el arranque del `web` y del worker. Vacío por defecto.
+controles se ven, se pintan con su valor inicial y no se cambian: el navegador no
+los envía y el servidor descarta un valor distinto con `400`. Un nombre que no
+esté en el catálogo aborta el arranque del `web` y del worker. Vacío por defecto.
+
+El `web` monta `config/` en solo lectura: `MAX_AUTONOMY_OVERRIDE` se valida
+contra el `max_autonomy` de `autonomy.yaml` con el mismo motor de política,
+solo cuando el formulario pide un valor distinto del inicial. Sin el montaje, un
+guardado que cambie ese dial responde `400`; el resto de la página funciona.
+Los valores iniciales viajan con el formulario, así que un cambio de default en
+el despliegue con la página abierta responde `409` en vez de publicar el viejo.
+Un candado que llega después de un override publicado gana: la página pinta el
+valor del despliegue y el siguiente guardado descarta ese override, que
+`apply_document` ya ignoraba.
 
 La review que ya empezó sigue con la foto que fijó. La página nombra esa
 revisión junto a la publicada. La siguiente, y un **Reintentar** del panel,
@@ -342,6 +353,9 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana resolviendo todo como `expired`; `409` si no está pausada. La UI ya **no** lo ofrece en pausas humanas: decidir es la acción (022) |
 | `POST` | `/api/reviews/{review_key}/decision` | `operador` | Decisión humana explícita (022): cuerpo `{"items": [{"finding_id", "outcome", "note"}]}` con `approved`/`rejected`/`noted`; la construye `build_decision` (misma que CLI/API/Teams) y la encola. El `actor` es el de la sesión. `400` cuerpo mal formado; `409` si no está pausada, no es humana o no cubre **todos** los pendientes; `503` si Redis no responde |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
+| `GET` | `/api/config` | Sesión | Documento de diales vigente (026): `revision`, `values` (solo las claves que se apartan del inicial), `initial`, `locked` y quién lo publicó. `503` si Postgres no responde |
+| `POST` | `/config` | `operador` | Publica el formulario entero (026): cuerpo `{"revision", "values", "initial"}`, con `initial` opcional. `400` con `{"detail": {"field"}}` si un valor no encaja; `409` con la revisión vigente si otro guardó antes o si `initial` ya no coincide con este proceso; `503` si Postgres no responde |
+| `GET` | `/config` | Sesión | Página HTML de diales (026): una sección por grupo, ayuda por control y un **Restaurar** por control |
 | `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review

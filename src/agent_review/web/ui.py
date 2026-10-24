@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Annotated
@@ -24,11 +25,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
-from agent_review.config_store import ConfigStore, Publication
+from agent_review.config_store import ConfigReadError, ConfigStore, Publication
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import PendingDecision
 from agent_review.domain.trace import ReviewTrace
 from agent_review.history_store import ReviewHistory
+from agent_review.panel_config import SECTIONS, catalog, initial_values, lock_names
 from agent_review.settings import Settings, get_settings
 from agent_review.web.auth import Session, require_command_session, require_session
 from agent_review.web.read_model import (
@@ -44,6 +46,8 @@ from agent_review.web.read_model import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _CANCEL = "cancel"
 _RETRY = "retry"
@@ -124,34 +128,110 @@ def config_page(
 ) -> HTMLResponse:
     """Diales que el operador puede publicar (026)."""
     settings = get_settings()
+    try:
+        publication = _config_store(request, settings).read()
+    except ConfigReadError as exc:
+        # El panel es observabilidad: sin Postgres, decirlo; no un 500 con traza.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return HTMLResponse(_config_page(settings, publication, session, pins=_dial_pins(model)))
+
+
+@router.get("/api/config")
+def config_document(
+    session: Annotated[Session, Depends(require_session)],
+    request: Request,
+) -> dict[str, object]:
+    """El documento vigente en JSON, para un cliente que no pinta HTML (026).
+
+    La página es para una persona; esta lectura permite a un `curl` o al CLI saber
+    qué hay publicado sin parsear el formulario.
+    """
+    del session  # cualquier rol lee: el documento no es secreto
+    settings = get_settings()
     store = _config_store(request, settings)
-    return HTMLResponse(_config_page(settings, store.read(), session, pins=_dial_pins(model)))
+    try:
+        publication = store.read()
+    except ConfigReadError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {
+        "revision": publication.revision,
+        "values": publication.overrides,
+        "initial": initial_values(settings),
+        "locked": sorted(lock_names(settings)),
+        "actor": publication.actor,
+        "updated_at": publication.updated_at.isoformat() if publication.updated_at else None,
+    }
 
 
 @router.post("/config")
-def save_config(
-    payload: dict[str, object],
-    session: Annotated[Session, Depends(require_command_session)],
+async def save_config(
     request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
 ) -> dict[str, int]:
     """Publica el formulario entero. Una revisión vieja no escribe."""
-    from agent_review.panel_config import ConfigError, RevisionConflict, document_for
+    from agent_review.panel_config import (
+        ConfigError,
+        RevisionConflict,
+        StaleForm,
+        document_for,
+    )
 
-    revision = payload.get("revision")
-    values = payload.get("values")
-    if not isinstance(revision, int) or isinstance(revision, bool) or not isinstance(values, dict):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    revision, values, painted = await _config_form(request)
     settings = get_settings()
     try:
-        document = document_for(settings, values, autonomy_ceiling=_autonomy_ceiling(settings))
+        document = document_for(
+            settings,
+            values,
+            autonomy_ceiling=lambda: _autonomy_ceiling(settings),
+            painted=painted,
+        )
         published = _config_store(request, settings).publish(
             expected=revision, overrides=document, actor=session.user
         )
-    except RevisionConflict as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except (RevisionConflict, StaleForm) as exc:
+        # Las dos se resuelven recargando: la revisión la movió otro y el formulario
+        # se pintó con otros valores iniciales. El cuerpo lleva cuál es la vigente.
+        detail: dict[str, object] = {"detail": str(exc)}
+        if isinstance(exc, RevisionConflict):
+            detail["revision"] = exc.current
+        else:
+            detail["stale"] = True
+        raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
     except ConfigError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, {"detail": str(exc), "field": exc.field}
+        ) from exc
+    except ConfigReadError as exc:
+        # La escritura no llegó a confirmarse: es la infraestructura, no el
+        # formulario. Un 400 culparía al operador de un Postgres caído.
+        logger.warning("No se pudo publicar la configuración: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar la configuración"
+        ) from exc
     return {"revision": published.revision}
+
+
+async def _config_form(request: Request) -> tuple[int, dict[str, object], dict[str, object] | None]:
+    """Cuerpo del formulario, con `400` propio.
+
+    FastAPI tiparía el cuerpo como objeto y un array daría `422` con el detalle de
+    pydantic; el resto de comandos del panel responde `400` para un cuerpo que no
+    encaja, así que aquí se parsea igual.
+    """
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    revision = body.get("revision")
+    values = body.get("values")
+    if not isinstance(revision, int) or isinstance(revision, bool) or not isinstance(values, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    painted = body.get("initial")
+    if painted is not None and not isinstance(painted, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "initial debe ser un objeto")
+    return revision, values, painted
 
 
 @router.get("/review/{review_key:path}", response_class=HTMLResponse)
@@ -171,39 +251,56 @@ def review_detail(
 
 
 def _config_store(request: Request, settings: Settings) -> ConfigStore:
-    store = getattr(request.app.state, "config_store", None)
+    store: ConfigStore | None = getattr(request.app.state, "config_store", None)
     if store is None:
         from agent_review.config_store import build_config_store
-        from agent_review.panel_config import lock_names
 
-        lock_names(settings)
         store = build_config_store(settings)
         request.app.state.config_store = store
     return store
 
 
+def build_config_store_for_panel(settings: Settings) -> ConfigStore:
+    """Almacén del panel, validado en el arranque (026, ADR-0029).
+
+    El candado se resuelve aquí y no en la primera petición: un nombre fuera del
+    catálogo tiene que abortar el arranque, como en el worker. Construir también el
+    almacén deja el fallo de Postgres en el mismo sitio.
+    """
+    from agent_review.config_store import build_config_store
+    from agent_review.panel_config import lock_names
+
+    lock_names(settings)
+    return build_config_store(settings)
+
+
 def _autonomy_ceiling(settings: Settings) -> str:
-    from pathlib import Path
+    """Techo de `max_autonomy` declarado en el YAML, leído con el motor de política.
 
-    import yaml
-
+    Se resuelve solo al validar un override: el resto de guardados no depende de
+    que este proceso pueda leer `config/autonomy.yaml`.
+    """
     from agent_review.panel_config import ConfigError
+    from agent_review.policy.engine import PolicyEngine, PolicyError
 
-    path = Path(settings.autonomy_config)
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return str(PolicyEngine.from_file(settings.autonomy_config).raw()["max_autonomy"])
     except OSError as exc:
-        raise ConfigError("max_autonomy_override", f"no se pudo leer {path}") from exc
-    if not isinstance(data, dict):
-        raise ConfigError("max_autonomy_override", "autonomy.yaml no es un mapa")
-    return str(data.get("max_autonomy", "report"))
+        raise ConfigError(
+            "max_autonomy_override", f"no se pudo leer {settings.autonomy_config}"
+        ) from exc
+    except (PolicyError, ValueError, TypeError) as exc:
+        raise ConfigError("max_autonomy_override", f"autonomy.yaml inválido: {exc}") from exc
 
 
-def _dial_pins(model: object) -> list[tuple[str, int]]:
+def _dial_pins(model: object) -> list[tuple[str, int]] | None:
+    """Fotos fijadas por las reviews en curso; `None` si no se pudieron leer."""
     reader = getattr(model, "dial_pins", None)
     if not callable(reader):
         return []
     found = reader()
+    if found is None:
+        return None
     if not isinstance(found, list):
         return []
     pins: list[tuple[str, int]] = []
@@ -226,17 +323,18 @@ def _config_page(
     *,
     pins: list[tuple[str, int]] | None = None,
 ) -> str:
-    from agent_review.panel_config import SECTIONS, catalog, initial_values, lock_names
-
     initial = initial_values(settings)
-    shown = dict(initial)
-    shown.update(publication.overrides)
     locked = lock_names(settings)
     by_section: dict[str, list[str]] = {section: [] for section in SECTIONS}
     for field in catalog():
-        by_section[field.section].append(
-            _dial_control(field, shown[field.name], initial[field.name], field.name in locked)
-        )
+        if field.name in locked:
+            # Un dial bloqueado se pinta con su valor inicial, no con el override
+            # publicado que `apply_document` descarta: enseñar un número que la
+            # review no usa es peor que enseñar el del despliegue.
+            shown, blocked = initial[field.name], True
+        else:
+            shown, blocked = publication.overrides.get(field.name, initial[field.name]), False
+        by_section[field.section].append(_dial_control(field, shown, initial[field.name], blocked))
     sections = "".join(
         _section(section, "".join(controls)) for section, controls in by_section.items() if controls
     )
@@ -246,12 +344,22 @@ def _config_page(
     inflight = "".join(
         f"<li>{_esc(key)} fijó la revisión {revision}.</li>" for key, revision in pins or []
     )
-    inflight_html = f"<ul>{inflight}</ul>" if inflight else ""
+    if pins is None:
+        inflight_html = (
+            '<p class="meta">No se pudo leer la foto de las reviews en curso '
+            "(el checkpointer no respondió).</p>"
+        )
+    else:
+        inflight_html = f"<ul>{inflight}</ul>" if inflight else ""
     note = f"<p>Revisión publicada: {publication.revision}.</p>{inflight_html}"
+    # Los valores iniciales viajan con el formulario: el servidor compara contra
+    # lo que se pinto, no contra los defaults que tenga en ese momento.
+    painted = json.dumps(initial, ensure_ascii=False, default=str)
     body = (
         '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
         f"{note}"
-        f'<form id="config" data-revision="{publication.revision}">{sections}{save}</form>'
+        f'<form id="config" data-revision="{publication.revision}" '
+        f'data-initial="{_esc(painted)}">{sections}{save}</form>'
     )
     return _page(
         title="Configuración",
@@ -323,9 +431,14 @@ _CONFIG_SCRIPT = """<script>
     error.hidden = true;
     const values = {};
     controls.forEach((control) => {
+      // Un control bloqueado no se publica: su valor lo fija el despliegue y el
+      // servidor lo descartaria. Enviarlo solo confunde el diff.
+      if (control.disabled) return;
       const name = control.dataset.name;
       if (control.dataset.kind === "bool") values[name] = control.checked;
-      else if (control.dataset.kind === "int") values[name] = Number(control.value);
+      // Un entero vacio no es 0: publicarlo apagaria el presupuesto en silencio.
+      // Se envia sin recortar y el servidor responde 400 nombrando el campo.
+      else if (control.dataset.kind === "int") values[name] = control.value.trim();
       else values[name] = control.value;
     });
     try {
@@ -333,10 +446,15 @@ _CONFIG_SCRIPT = """<script>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ revision: Number(form.dataset.revision), values }),
+        body: JSON.stringify({
+          revision: Number(form.dataset.revision),
+          values,
+          initial: JSON.parse(form.dataset.initial || "{}"),
+        }),
       });
       if (response.status === 409) {
-        error.textContent = "Alguien guardó antes. Recarga la página.";
+        error.textContent =
+          "Alguien guardó antes o la página es de otra versión. Recarga la página.";
         error.hidden = false;
         save.disabled = false;
         return;

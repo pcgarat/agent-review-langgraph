@@ -287,6 +287,10 @@ class PgTraceReader:
                 self._resolved = True
         return self._saver
 
+    def reader_unavailable(self) -> bool:
+        """¿Se sabe ya que no hay fuente de recorrido? (Postgres no respondió)."""
+        return self._reader() is None
+
     def trace(self, review_key: str) -> ReviewTrace | None:
         return read_trace(self._reader(), review_key)
 
@@ -340,8 +344,14 @@ class CompositePanelReadModel:
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._trace_reader.trace(review_key)
 
-    def dial_pins(self) -> list[tuple[str, int]]:
-        """Reviews en curso y la revisión de diales que cada una fijó."""
+    def dial_pins(self) -> list[tuple[str, int]] | None:
+        """Reviews en curso y la revisión de diales que cada una fijó.
+
+        `None` significa «no pude leer»: el panel lo dice en vez de enseñar una
+        lista vacía, que se leería como «ninguna review en curso».
+        """
+        if self._trace_reader.reader_unavailable():
+            return None
         state = self.state()
         keys = [item.review_key for item in state.active]
         keys.extend(item.review_key for item in state.paused.human)

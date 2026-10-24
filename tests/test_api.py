@@ -231,6 +231,7 @@ def test_env_example_declara_todas_las_variables_y_ningun_secreto_vacio() -> Non
         "LLM_MODEL",
         "LLM_BASE_URL",
         "REVIEW_TOOLS_ROLES",  # 014: vacio = opt-in desactivado (una llamada por lote)
+        "PANEL_CONFIG_LOCK",  # 026: vacio = sin candado, el operador publica el catalogo
     }
     empty = sorted(name for name, value in declared if not value.strip())
     assert empty, "el filtro de vacios no deberia ser vacuo: `.env.example` deja variables vacias"

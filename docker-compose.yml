@@ -199,7 +199,18 @@ services:
       # Sin URL o sin token, la consola responde `404`.
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
+      # Los diales del panel se comparan contra el valor inicial de estos dos
+      # procesos. Si el `web` no recibe la misma variable, la pagina pinta el
+      # default del codigo mientras el worker resuelve el del `.env`, y guardar
+      # publica un numero que nadie pidio (026, ADR-0029).
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
+      LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}
+    volumes:
+      # Solo lectura: el techo de autonomia de un override publicado se valida
+      # contra `config/autonomy.yaml`. Sin este montaje, cualquier guardado con
+      # `MAX_AUTONOMY_OVERRIDE` responde 400. Los YAML siguen siendo de git: el
+      # panel no los edita (ADR-0029).
+      - ./config:/app/config:ro
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
       - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-23 | Creado: 2026-10-23
+Última modificación: 2026-10-24 | Creado: 2026-10-23
 
 # Todo: Configuración desde el panel
 
@@ -140,3 +140,51 @@ review de prueba usa la foto.
 - [x] `make ci` en verde.
 - [x] Los criterios de hecho 1–10 de la spec tienen un test o una frase en
   `operacion.md` que los cubre.
+
+## Bloque R — Revisión del código (checkpoint R-K)
+
+Hallazgos de la revisión de `feat/configuracion-desde-el-panel` (024).
+
+- [x] **R1** Candado y formulario
+  - Un dial bloqueado se pinta con su valor inicial, no con el override publicado
+    que `apply_document` descarta; el navegador no lo envía y el servidor acepta
+    que falte. Un valor distinto sigue siendo `400`.
+  - Verifica: `tests/test_web_ui.py` y `tests/test_panel_config.py`.
+  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/panel_config.py`.
+
+- [x] **R2** Valor inicial pintado
+  - El formulario viaja con sus `data-initial`; el servidor difunde contra esos
+    valores y responde `409` si no coinciden con los del proceso.
+  - Un entero vacío es `400` con su campo, nunca `0`.
+  - Verifica: `tests/test_web_ui.py`, `tests/test_panel_config.py`.
+  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/panel_config.py`.
+
+- [x] **R3** Techo y arranque
+  - `MAX_AUTONOMY_OVERRIDE` se valida con `PolicyEngine.from_file`, y solo cuando el
+    valor cambia: el resto de guardados no depende de leer el YAML.
+  - El `web` monta `config/` (solo lectura) y recibe los mismos diales que el
+    worker. El candado y el almacén se resuelven en el `lifespan`.
+  - Verifica: `tests/test_compose.py`, `tests/test_panel_config.py`.
+  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/web/main.py`,
+    `docker-compose.yml`.
+
+- [x] **R4** Almacén
+  - `publish` devuelve lo escrito (no relee), la primera inserción se serializa con
+    un cerrojo consultivo y `DATABASE_URL` vacía falla cerrado en producción.
+  - El esquema se crea sentencia a sentencia: psycopg prepara cada `execute` y una
+    sentencia preparada no admite dos `CREATE TABLE`.
+  - Verifica: `tests/test_config_store_postgres.py` (se salta sin `PANEL_CONFIG_TEST_DATABASE_URL`).
+  - Ficheros: `src/agent_review/config_store.py`, `tests/test_config_store_postgres.py`.
+
+- [x] **R5** Worker
+  - Montar el grafo por review pasa por el mismo camino de error que el trabajo: un
+    fallo reencola o va a la DLQ, nunca mata el bucle.
+  - Un reencolado interno no conserva `repin_dials`; el fallback sin almacén deja
+    rastro con la `review_key`.
+  - Verifica: `tests/test_worker.py`, `tests/test_panel_config.py`.
+  - Ficheros: `src/agent_review/worker/main.py`.
+
+### Checkpoint R-K
+
+- [x] `make ci` en verde.
+- [x] Los endpoints `/config` y `/api/config` están en `docs/operacion.md` §5.

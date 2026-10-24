@@ -7,13 +7,18 @@ clave es quitarla del documento.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeVar, get_args, get_origin
 
 from agent_review.domain.models import FindingAction
 from agent_review.policy.engine import PolicyError, reject_if_cap_raised
 from agent_review.settings import Dial, Secret, Settings
+
+# El techo se puede entregar ya resuelto o como proveedor: el `web` solo puede
+# leer `autonomy.yaml` si el despliegue monta `config/`, asi que se resuelve
+# unicamente cuando el formulario pide un override distinto del inicial.
+Ceiling = str | Callable[[], str]
 
 # Orden de las secciones en la página. Un dial con otra sección no se pinta.
 SECTIONS: tuple[str, ...] = (
@@ -38,6 +43,19 @@ class RevisionConflict(ConfigError):
     def __init__(self, current: int) -> None:
         self.current = current
         super().__init__("revision", f"la revisión vigente es {current}")
+
+
+class StaleForm(ConfigError):
+    """El formulario se pintó con otros valores iniciales que los de este proceso.
+
+    Un despliegue puede cambiar el default de un dial con la página abierta. Guardar
+    entonces publicaría como override lo que el operador nunca eligió (o rechazaría
+    un dial nuevo por «falta en el formulario»), así que el guardado se rechaza y el
+    operador recarga.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(field, "la página tiene valores iniciales de otra versión")
 
 
 @dataclass(frozen=True)
@@ -81,24 +99,45 @@ def document_for(
     settings: Settings,
     submitted: Mapping[str, object],
     *,
-    autonomy_ceiling: str,
+    autonomy_ceiling: Ceiling,
+    painted: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Formulario entero → overrides. Solo claves distintas del valor inicial."""
+    """Formulario entero → overrides. Solo claves distintas del valor inicial.
+
+    `painted` son los valores iniciales con los que se pintó el formulario. Sin
+    ellos, el diff se hace contra `Settings` del proceso: si un despliegue cambia un
+    default con una página abierta, el primer guardado publicaría como override el
+    valor viejo, y un dial nuevo daría «falta en el formulario». Con ellos, un
+    desfase se rechaza para que el operador recargue.
+
+    Las claves bloqueadas se aceptan si llegan con su valor inicial: el navegador
+    omite los controles `disabled`, y rechazarlas dejaría sin guardar cualquier otro
+    dial cuando el despliegue añade un candado sobre un override ya publicado. Un
+    valor distinto sigue rechazándose.
+    """
     fields = {item.name: Settings.model_fields[item.name] for item in catalog()}
     unknown = sorted(set(submitted) - set(fields))
     if unknown:
         raise ConfigError(unknown[0], "no es un dial")
-    missing = sorted(set(fields) - set(submitted))
+    initial = initial_values(settings)
+    missing = sorted(set(initial) - set(submitted) - lock_names(settings))
     if missing:
         raise ConfigError(missing[0], "falta en el formulario")
+    if painted is not None:
+        stale = sorted(
+            name
+            for name, value in painted.items()
+            if name in initial and _differs(name, initial[name], value)
+        )
+        if stale:
+            raise StaleForm(stale[0])
     locked = lock_names(settings)
-    initial = initial_values(settings)
     document: dict[str, object] = {}
     for name, raw in submitted.items():
         value = _coerce(name, raw, fields[name].annotation)
         if name == "max_autonomy_override" and isinstance(value, str) and value != initial[name]:
             try:
-                reject_if_cap_raised(autonomy_ceiling, value)
+                reject_if_cap_raised(_resolve_ceiling(autonomy_ceiling), value)
             except PolicyError as exc:
                 raise ConfigError(name, str(exc)) from exc
         if name in locked and value != initial[name]:
@@ -106,6 +145,22 @@ def document_for(
         if value != initial[name]:
             document[name] = value
     return document
+
+
+def _resolve_ceiling(ceiling: Ceiling) -> str:
+    return ceiling() if callable(ceiling) else ceiling
+
+
+def _differs(name: str, current: object, painted: object) -> bool:
+    """¿El valor pintado difiere del inicial de este proceso?
+
+    Se comparan ya normalizados por el tipo del campo: el formulario manda texto y
+    `Settings` trae `int`/`bool`, así que un `10` y un `"10"` son el mismo valor.
+    """
+    try:
+        return _coerce(name, painted, Settings.model_fields[name].annotation) != current
+    except ConfigError:
+        return True
 
 
 def apply_document(settings: Settings, document: Mapping[str, object]) -> Settings:
@@ -206,8 +261,11 @@ def _coerce_bool(name: str, value: object) -> bool:
 def _coerce_int(name: str, value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ConfigError(name, "se espera un entero")
+    text = str(value).strip()
+    if not text:
+        raise ConfigError(name, "se espera un entero")
     try:
-        number = int(str(value).strip())
+        number = int(text)
     except ValueError:
         raise ConfigError(name, "se espera un entero") from None
     if number < 0:

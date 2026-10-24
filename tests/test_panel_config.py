@@ -246,3 +246,111 @@ def test_el_compare_and_swap_en_memoria_es_exclusivo() -> None:
         thread.join()
     assert store.read().revision == 1
     assert len(errors) == 1
+
+
+def test_el_techo_solo_se_resuelve_si_el_override_cambia() -> None:
+    """Sin override distinto, el guardado no depende de leer autonomy.yaml."""
+    settings = _settings()
+
+    def _explode() -> str:
+        raise ConfigError("max_autonomy_override", "no se pudo leer")
+
+    assert document_for(settings, _form(settings), autonomy_ceiling=_explode) == {}
+    assert document_for(
+        settings,
+        _form(settings, llm_max_findings=2),
+        autonomy_ceiling=_explode,
+    ) == {"llm_max_findings": 2}
+    with pytest.raises(ConfigError):
+        document_for(
+            settings,
+            _form(settings, max_autonomy_override="report"),
+            autonomy_ceiling=_explode,
+        )
+
+
+def test_un_candado_acepta_su_valor_inicial_y_sigue_fijando_el_resto() -> None:
+    """El formulario puede omitir un bloqueado; con su inicial, tampoco estorba."""
+    settings = _settings(panel_config_lock="llm_max_findings")
+    form = _form(settings, review_tools_max_turns=6)
+    del form["llm_max_findings"]
+    assert document_for(settings, form, autonomy_ceiling="report") == {"review_tools_max_turns": 6}
+    assert document_for(settings, _form(settings), autonomy_ceiling="report") == {}
+
+
+def test_un_formulario_de_otra_version_no_publica() -> None:
+    settings = _settings()
+    painted = initial_values(settings)
+    painted["llm_max_findings"] = painted["llm_max_findings"] + 1
+    with pytest.raises(ConfigError) as stale:
+        document_for(
+            settings,
+            _form(settings),
+            autonomy_ceiling="report",
+            painted=painted,
+        )
+    assert stale.value.field == "llm_max_findings"
+
+
+def test_el_valor_pintado_se_compara_por_tipo_no_por_texto() -> None:
+    """El formulario manda texto: `"10"` y `10` son el mismo valor inicial."""
+    settings = _settings()
+    painted = {name: str(value) for name, value in initial_values(settings).items()}
+    assert document_for(settings, _form(settings), autonomy_ceiling="report", painted=painted) == {}
+
+
+def test_build_config_store_falla_cerrado_en_produccion_sin_url() -> None:
+    from agent_review.config_store import build_config_store
+
+    with pytest.raises(RuntimeError, match="Postgres"):
+        build_config_store(_settings(environment="production", database_url=""))
+
+
+def test_build_config_store_en_desarrollo_sin_url_usa_memoria() -> None:
+    from agent_review.config_store import build_config_store
+
+    store = build_config_store(_settings(database_url=""))
+    assert store.publish(expected=0, overrides={"scope_ignore": "x/"}, actor="ana").revision == 1
+
+
+def test_publicar_devuelve_lo_escrito_sin_releer_y_no_deja_la_revision_vieja() -> None:
+    """El `publish` no puede salir como fallo despues de confirmar la escritura."""
+    store = MemoryConfigStore()
+    written = store.publish(expected=0, overrides={"llm_max_findings": 3}, actor="ana")
+    assert written.revision == 1
+    assert written.actor == "ana"
+    assert written.overrides == {"llm_max_findings": 3}
+    assert written.updated_at is not None
+
+
+def test_un_reencolado_interno_no_conserva_la_orden_de_releer_lo_publicado() -> None:
+    from agent_review.domain.models import ReviewRequest
+    from agent_review.queue import InMemoryReviewQueue
+    from agent_review.worker.main import _requeue_or_drop
+
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", repin_dials=True)
+    _requeue_or_drop(queue, request, max_attempts=3)
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.attempts == 1
+    assert retried.repin_dials is False
+
+
+def test_el_fallback_sin_almacen_deja_rastro(caplog: pytest.LogCaptureFixture) -> None:
+    """CFG7: montar con `Settings` porque no hay lectura tiene que quedar en el log."""
+    import logging
+
+    from agent_review.domain.models import ReviewRequest
+    from agent_review.worker.main import prepare_review
+
+    class _Caido:
+        def read(self):  # type: ignore[no-untyped-def]
+            raise ConfigReadError("caido")
+
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a")
+    with caplog.at_level(logging.WARNING):
+        settings, snapshot = prepare_review(_settings(), _Caido(), None, request)
+    assert snapshot["revision"] == 0
+    assert settings.llm_max_findings == 10
+    assert any("no se pudo leer la configuración publicada" in r.message for r in caplog.records)

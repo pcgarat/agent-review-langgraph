@@ -34,6 +34,7 @@ from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.worker.main import (
     _consume,
+    _on_mount_failure,
     _with_base_sha,
     build_registry,
     build_reviewers,
@@ -1548,3 +1549,69 @@ def test_sweep_fix_expired_es_idempotente() -> None:
 
     assert len(first) == 1
     assert second == [], "ya encolada; no se duplica el barrido"
+
+
+def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
+    """La costura que hace que lo publicado llegue a una review (026 W1)."""
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(expected=0, overrides={"llm_max_findings": 2}, actor="ana")
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    graph, snapshot = _review_runtime(
+        Settings(_env_file=None),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot == {"revision": 1, "overrides": {"llm_max_findings": 2}}
+    assert graph is not None
+
+
+def test_un_fallo_al_montar_la_review_reencola_en_vez_de_tumbar_el_bucle() -> None:
+    """El job ya salio de la cola: montar mal no puede perderlo (026 F2)."""
+    from agent_review.config_store import ConfigReadError, MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    class _Caido:
+        def read(self):  # type: ignore[no-untyped-def]
+            raise ConfigReadError("postgres caido")
+
+    settings = Settings(_env_file=None, database_url="")
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a")
+
+    # `prepare_review` degrada a `Settings`; quien falla aqui es el checkpointer.
+    class _SaverRoto:
+        def get_tuple(self, config: object) -> object:
+            del config
+            raise ConnectionError("postgres caido")
+
+    with pytest.raises(Exception) as raised:  # noqa: PT011 - se mira el mensaje abajo
+        _review_runtime(
+            settings,
+            MemoryConfigStore(),
+            _SaverRoto(),
+            request,
+            vcs=FakeVcs(),
+            chat=None,
+            progress=None,
+            registry=None,
+            cancellation=None,
+            budget_client=None,
+        )
+    assert "postgres caido" in str(raised.value)
+
+    queue = InMemoryReviewQueue()
+    _on_mount_failure(queue, request, raised.value, settings=settings)
+    retried = queue.dequeue()
+    assert retried is not None, "un fallo al montar no puede perder el job"
+    assert retried.attempts == 1

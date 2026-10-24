@@ -1392,16 +1392,7 @@ def _consume(
             # el job entero, pero la clasificacion de job es mas laxa que la de
             # nodo: se registra para poder distinguirlo en la DLQ.
             logger.exception("Fallo no clasificado como transitorio en %s", request.review_key)
-        try:
-            _requeue_or_drop(queue, request, max_attempts=max_attempts)
-        except Exception:
-            # El manejo del error no puede tumbar el worker: el job ya salio de la
-            # cola (`BLPOP`) y una excepcion aqui mataria el bucle entero.
-            logger.exception(
-                "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
-                request.review_key,
-                request.model_dump_json(),
-            )
+        _requeue_quietly(queue, request, max_attempts=max_attempts)
     finally:
         clear_progress(progress, request.review_key)
 
@@ -1449,7 +1440,10 @@ def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts
         )
         queue.dead_letter(request, reason=f"intentos agotados ({max_attempts})")
         return
-    retry = request.model_copy(update={"attempts": request.attempts + 1})
+    # `repin_dials` es la orden de un reintento del panel de releer lo publicado.
+    # Conservarla en un reencolado interno re-fijaria la foto a mitad del hilo: el
+    # job arrancaria con la revision N y el `update_state` la sellaria como N+1.
+    retry = request.model_copy(update={"attempts": request.attempts + 1, "repin_dials": False})
     queue.enqueue(retry)
     logger.warning(
         "Review %s reencolada para el intento %d/%d",
@@ -1513,6 +1507,12 @@ def prepare_review(
     try:
         published = store.read()
     except ConfigReadError:
+        # CFG7: sin lectura y sin última buena, la review sigue con `Settings`.
+        # Dejarlo mudo haria indistinguible «no se publicó nada» de «no pude leer».
+        logger.warning(
+            "Review %s: no se pudo leer la configuración publicada; monto con Settings",
+            request.review_key,
+        )
         published = Publication(0, {}, "", None)
     snapshot = pinned_snapshot(
         published_revision=published.revision,
@@ -1523,6 +1523,72 @@ def prepare_review(
     overrides = snapshot.get("overrides")
     document = overrides if isinstance(overrides, dict) else {}
     return apply_document(settings, document), snapshot
+
+
+def _requeue_quietly(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
+    """Reencola o descarta sin poder tumbar el bucle: ya salio de la cola."""
+    try:
+        _requeue_or_drop(queue, request, max_attempts=max_attempts)
+    except Exception:
+        logger.exception(
+            "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
+            request.review_key,
+            request.model_dump_json(),
+        )
+
+
+def _on_mount_failure(
+    queue: ReviewQueue, request: ReviewRequest, exc: BaseException, *, settings: Settings
+) -> None:
+    """Un fallo al montar el grafo de una review no pierde el job.
+
+    `prepare_review` lee el almacén y el checkpointer y `build_runtime` relee el
+    perfil y el YAML: cualquiera puede fallar por la misma causa por la que
+    fallaría la review. El job ya salió de la cola, así que el camino es el mismo
+    que el de un fallo de trabajo: reencolar o, agotados los intentos, la DLQ.
+    """
+    if is_transient(exc):
+        logger.warning(
+            "Fallo transitorio montando la review %s (%s); se reencola",
+            request.review_key,
+            type(exc).__name__,
+        )
+    else:
+        logger.exception("Fallo montando la review %s", request.review_key)
+    _requeue_quietly(queue, request, max_attempts=settings.max_review_attempts)
+
+
+def _review_runtime(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    request: ReviewRequest,
+    *,
+    vcs: VcsPort | None,
+    chat: ChatPort | None,
+    progress: ProgressPort | None,
+    registry: ModelRegistry | None,
+    cancellation: Any,
+    budget_client: Any,
+) -> tuple[ReviewGraph, dict[str, object]]:
+    """Grafo de *esta* review, montado con la foto de diales que le toca.
+
+    Fuera del bucle para poder probarlo con una cola y un checkpointer falsos: es
+    la costura que decide si lo publicado llega de verdad a una review.
+    """
+    effective, dial_snapshot = prepare_review(settings, store, saver, request)
+    graph = build_runtime(
+        effective,
+        vcs=vcs,
+        chat=chat,
+        progress=progress,
+        checkpointer=saver,
+        registry=registry,
+        cancellation=cancellation,
+        budget_client=budget_client,
+        probe_models=False,
+    )
+    return graph, dial_snapshot
 
 
 def run_forever(
@@ -1599,20 +1665,27 @@ def run_forever(
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
             active = graph
-            dial_snapshot = None
+            dial_snapshot: Mapping[str, object] | None = None
             if owns_runtime:
-                effective, dial_snapshot = prepare_review(settings, config_store, saver, request)
-                active = build_runtime(
-                    effective,
-                    vcs=vcs,
-                    chat=chat,
-                    progress=progress,
-                    checkpointer=saver,
-                    registry=registry,
-                    cancellation=cancellation,
-                    budget_client=budget_client,
-                    probe_models=False,
-                )
+                # Montar el grafo de esta review (leer la foto, releer perfil y YAML,
+                # compilar) puede fallar igual que el trabajo. Tiene que pasar por el
+                # mismo camino de error: el job ya salio de la cola.
+                try:
+                    active, dial_snapshot = _review_runtime(
+                        settings,
+                        config_store,
+                        saver,
+                        request,
+                        vcs=vcs,
+                        chat=chat,
+                        progress=progress,
+                        registry=registry,
+                        cancellation=cancellation,
+                        budget_client=budget_client,
+                    )
+                except Exception as exc:
+                    _on_mount_failure(queue, request, exc, settings=settings)
+                    continue
             _consume(
                 queue,
                 active,
