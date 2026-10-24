@@ -74,8 +74,8 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - [x] **R3** Retirar `tests/test_web_ui.py` y sustituirlo por tests de API y componente
 - [x] **R4** Test de que cada ruta de `spec.md` §3.3 sirve `index.html`
 - [x] **R5** Test de que `GET /api/inexistente` sigue siendo `404`
-- [ ] **R6** Etapa de Node en el `Dockerfile`; la imagen final sin Node
-- [ ] **R7** `make ci` incluye `frontend-check`
+- [x] **R6** Etapa de Node en el `Dockerfile`; la imagen final sin Node
+- [x] **R7** `make ci` incluye `frontend-check`
 - [ ] **R8** `docs/operacion.md` §5: rutas nuevas y el login
 - [ ] **R9** `docs/arquitectura.md` §2: el `web` sirve la SPA
 - [ ] **R10** Spec a `implementada` e índice al día

@@ -27,6 +27,15 @@ make status                       # contenedores, URLs y prueba de credenciales
   sin imprimir valores. Solo comprueba `twg` si el proveedor es `twg`.
 - `REQUIRE_TWG=true` como `build-arg` hace que la imagen falle al construirse si
   falta el binario.
+- El build de la SPA del panel entra en la **misma** imagen, en una etapa `panel`
+  con Node que solo compila: `npm ci`, `tsc --noEmit` y `vite build`. El `dist`
+  resultante se copia a `src/agent_review/web/static` **antes** del `pip install`, de
+  modo que viaja dentro del wheel. La imagen final no lleva Node, ni `node_modules`,
+  ni el código de `frontend/`; `docker compose config` no cambia y no hay un segundo
+  servicio ([029](../docs/iniciativas/029-panel-en-react/spec.md), P14). Esa etapa es
+  la única que necesita red en el build. Un despliegue sin build (por ejemplo,
+  `pip install` desde el checkout con `dist` borrado) arranca igual pero las rutas
+  del panel responden `503` con el motivo.
 - `api` y `worker` llevan `restart: unless-stopped` y healthcheck. El del worker es
   el latido `/tmp/reviews-worker-heartbeat`: si tiene más de 60 s, el contenedor se
   considera enfermo.

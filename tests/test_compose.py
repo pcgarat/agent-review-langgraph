@@ -142,6 +142,43 @@ def test_las_variables_del_panel_estan_en_env_example() -> None:
         assert f"{key}=" in text, f"falta {key} en .env.example"
 
 
+# --- La imagen y el panel (029, R6) ------------------------------------------------
+
+
+def _dockerfile() -> str:
+    return (_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+
+def test_el_build_de_la_spa_va_en_una_etapa_con_node_y_la_imagen_final_no_lo_lleva() -> None:
+    """P14: la etapa de Node es solo de build; ningun servicio gana Node."""
+    text = _dockerfile()
+    etapas = [
+        line.split(" AS ", 1)[1]
+        for line in text.splitlines()
+        if line.startswith("FROM ") and " AS " in line
+    ]
+    assert "panel" in etapas, "falta la etapa que construye frontend/"
+    assert "node:" in text.split("FROM python", 1)[0], "la etapa del panel usa una imagen con node"
+    # La imagen final es `app` (y `claude-runner`, que hereda de ella). Node no
+    # entra en ninguna: si apareciera, el despliegue crece sin usarlo.
+    final = text.rsplit("FROM ", 1)[1].splitlines()[0]
+    assert final.strip() == "app", "la etapa por defecto tiene que ser la de la app"
+    despues_de_node = text.split("FROM python", 1)[1]
+    assert "FROM node" not in despues_de_node, "node no puede estar por debajo de la app"
+
+
+def test_el_build_de_la_spa_entra_en_el_paquete_del_web() -> None:
+    """`web.spa` busca el build en `web/static`, dentro del wheel (029, P5)."""
+    text = _dockerfile()
+    assert "--from=panel /panel/dist ./src/agent_review/web/static" in text
+    # Antes del `pip install .`: si va despues, el wheel no lo incluye y la imagen
+    # arranca sin panel.
+    assert text.index("--from=panel") < text.index("pip install .")
+    ignored = (_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    for path in ("frontend/node_modules", "frontend/dist"):
+        assert path in ignored, f"{path} no puede entrar en el contexto de build"
+
+
 def test_el_panel_monta_config_y_recibe_los_diales_que_pinta() -> None:
     """027: sin `config/` no puede validar el techo; sin los diales, el inicial miente."""
     web = _compose()["services"]["web"]

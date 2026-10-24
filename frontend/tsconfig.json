@@ -16,7 +16,9 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["vitest/globals"],
+    // `vite.config.ts` usa `node:path` y `process`; sin el tipo, `tsc` deja de
+    // compilar en cualquier máquina que no herede `@types/node` de fuera del repo.
+    "types": ["vitest/globals", "node"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]

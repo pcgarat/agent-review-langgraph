@@ -1,3 +1,17 @@
+# El panel de la SPA (029, P14) se construye en una etapa con Node y se copia ya
+# compilado: la imagen final no lleva Node, ni `node_modules`, ni el codigo de
+# `frontend/`. Es la unica etapa que necesita red para `npm ci`.
+FROM node:22-slim AS panel
+
+WORKDIR /panel
+# Solo el manifiesto y el lock: la capa de dependencias se reutiliza mientras no
+# cambien, aunque el codigo de la SPA cambie en cada commit.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+# `npm run build` es `tsc --noEmit && vite build`: sin tipos correctos no hay dist.
+RUN npm run build && test -f dist/index.html
+
 FROM python:3.12-slim AS app
 
 ENV PYTHONUNBUFFERED=1 \
@@ -29,6 +43,10 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+# El build de la SPA va DENTRO del paquete, antes del `pip install`: asi el wheel
+# lo incluye y `web.spa.bundled_static()` lo encuentra en site-packages. El resto
+# de servicios lleva estos tres ficheros sin usar: no hay un segundo servicio.
+COPY --from=panel /panel/dist ./src/agent_review/web/static
 # El contrato de hallazgo se valida en runtime (`domain/contracts.py`): sin esta
 # copia, la primera review dentro del contenedor falla al validar un `Finding`.
 COPY contracts ./contracts
