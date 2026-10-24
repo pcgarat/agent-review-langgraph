@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from fastapi import Request
 
+from agent_review.domain.history import ReviewSummary
+from agent_review.history_store import ReviewHistory
 from agent_review.ports.reasoning import ReasoningReader
 from agent_review.settings import Settings, get_settings
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
@@ -52,3 +54,34 @@ def get_reasoning(request: Request) -> ReasoningReader | None:
         request.app.state.reasoning = build_reasoning_reader(get_settings())
     reader: ReasoningReader | None = request.app.state.reasoning
     return reader
+
+
+# --- Histórico de reviews (021 R9) ------------------------------------------------
+
+
+def build_history_reader(settings: object) -> ReviewHistory | None:
+    """Histórico de reviews para el panel, o `None` sin Redis."""
+    url = str(getattr(settings, "redis_url", "") or "").strip()
+    if not url:
+        return None
+    from agent_review.history_store import RedisReviewHistory
+
+    return RedisReviewHistory(
+        url=url, retention_days=float(getattr(settings, "checkpoint_retention_days", 30.0))
+    )
+
+
+def get_history(request: Request) -> ReviewHistory | None:
+    """Histórico del proceso, con el *seam* en `app.state.history` (tests)."""
+    if not hasattr(request.app.state, "history"):
+        request.app.state.history = build_history_reader(get_settings())
+    history: ReviewHistory | None = request.app.state.history
+    return history
+
+
+def recent_reviews(
+    history: ReviewHistory | None, *, repo: str | None, pr_id: int | None, limit: int
+) -> list[ReviewSummary]:
+    if history is None:
+        return []
+    return history.recent(limit=limit, repo=repo or None, pr_id=pr_id)

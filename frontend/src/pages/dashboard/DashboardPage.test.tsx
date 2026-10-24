@@ -103,4 +103,29 @@ describe('cuadro de mando', () => {
     expect(screen.queryByRole('button', { name: 'Olvidar' })).not.toBeInTheDocument()
     expect(screen.getByText(/Tu rol es/)).toBeInTheDocument()
   })
+
+  it('cada review enlaza a su ficha con la clave entera', async () => {
+    renderDashboard(OPERADOR)
+
+    // La ruta es contrato: hay enlaces publicados en PRs y en avisos de Teams (P4).
+    const links = await screen.findAllByRole('link', { name: 'cqm/emotivoo-v2:41:aaa111:ci' })
+    expect(links[0]).toHaveAttribute('href', '/review/cqm/emotivoo-v2:41:aaa111:ci')
+  })
+
+  it('el nodo del CLI de Claude se nombra sin inventarse el del grafo', async () => {
+    const claude = {
+      ...PANEL_STATE,
+      active: [
+        {
+          review_key: 'cqm/emotivoo-v2:8:8d789e:panel',
+          nodes: [{ node: 'claude', started_at: '2026-10-24T10:58:00+00:00', branches: 1 }],
+        },
+      ],
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(claude)))
+
+    renderDashboard(OPERADOR)
+
+    expect(await screen.findByText('CLI de Claude')).toBeInTheDocument()
+  })
 })
