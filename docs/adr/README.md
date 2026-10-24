@@ -39,6 +39,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0028](0028-cli-claude-fuera-del-worker.md) | El CLI de Claude corre fuera del worker; el núcleo solo ve hallazgos ya validados | Aceptado |
 | [0029](0029-lanzamiento-desde-el-panel.md) | Una review se lanza desde el panel con la URL del pull request; el worker lee el commit | Aceptado |
 | [0030](0030-bandeja-web-de-la-decision.md) | La bandeja del panel es la otra superficie de la misma pregunta; vale la primera respuesta | Aceptado |
+| [0031](0031-configuracion-desde-el-panel.md) | Los diales de una review se publican desde el panel; el hilo fija la foto al empezar | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

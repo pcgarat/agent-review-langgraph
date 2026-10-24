@@ -166,6 +166,7 @@ def test_reintentar_un_descarte_lo_reencola_con_attempts_cero() -> None:
     assert effect is CommandEffect.RETRIED
     queued = queue.dequeue()
     assert queued is not None and queued.attempts == 0
+    assert queued.repin_dials is True
 
 
 def test_reintentar_saca_el_descarte_de_la_dlq_y_un_segundo_clic_da_409() -> None:

@@ -56,6 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # lee estado y encola comandos), asi que no se le exige el contrato del worker.
     settings = _settings()
     require_panel_secrets(settings)
+    # El candado de diales y el almacen se resuelven al arrancar, no en la primera
+    # visita a /config: un nombre fuera del catalogo o un Postgres obligatorio que
+    # no responde tienen que tumbar el proceso, igual que en el worker (ADR-0031).
+    from agent_review.web.ui import build_config_store_for_panel
+
+    app.state.config_store = build_config_store_for_panel(settings)
     app.state.read_model = build_panel_read_model(settings)
     cancellation = build_cancellation(settings)
     if cancellation is not None:
@@ -78,6 +84,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         close = getattr(app.state.read_model, "close", None)
         if callable(close):
             close()
+        close_config = getattr(app.state.config_store, "close", None)
+        if callable(close_config):
+            close_config()
 
 
 app = FastAPI(title="Panel de operacion", version="0.1.0", lifespan=lifespan)

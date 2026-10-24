@@ -123,6 +123,9 @@ class ReviewState(TypedDict, total=False):
     budget_exhausted: Annotated[set[str], operator.or_]
     # Tokens confirmados por persona. Reducer de suma: el gasto total de la review.
     tokens_spent: Annotated[dict[str, int], _merge_tokens]
+    # Foto de los diales del panel (027). El worker la escribe al empezar la review.
+    # Un hilo anterior no la tiene: se monta con `Settings`.
+    dial_snapshot: dict[str, object]
     # Tope del contador compartido, escrito una vez por `scope`. El saldo del
     # `ReviewOutcome` se deriva de el (`tokens_spent`) sin consultar el puerto: el
     # hecho viaja en el estado y el `replay` sigue siendo determinista (017 B4).

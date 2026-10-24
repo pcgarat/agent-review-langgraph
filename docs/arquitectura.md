@@ -423,6 +423,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `budget:<review_key>` / `budget:reserved:<review_key>` | Gasto confirmado y reservado sin confirmar del presupuesto de tokens de la review (017). Contador compartido por el fan-out; el script Lua reserva y confirma de forma atómica | 8 días |
 | Redis | `budget:fix:<review_key>` / `budget:fix:reserved:<review_key>` | Mismo contador para el fix (017 B11): clave aparte para que una review cara no deje sin presupuesto lo aprobado | 8 días |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
+| Postgres | `panel_config` / `panel_config_history` | Documento vigente de diales del panel (027, [ADR-0031](adr/0031-configuracion-desde-el-panel.md)): overrides, revisión, actor. El historial guarda cada foto. Sin fila, la review usa `Settings` | — |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 

@@ -245,7 +245,37 @@ services:
       # Sin URL o sin token, la consola responde `404`.
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
+      # Los diales del panel se comparan contra el valor inicial del worker, que
+      # lee el `.env` entero. Compose interpola estas variables del mismo `.env`,
+      # asi que los dos procesos resuelven el mismo inicial y el mismo candado.
+      # Un dial que falte aqui pinta el default del codigo mientras el worker usa
+      # el del `.env`: `tests/test_compose.py` exige el catalogo entero (027,
+      # ADR-0031). Ninguno es un secreto.
+      PANEL_CONFIG_LOCK: ${PANEL_CONFIG_LOCK:-}
+      AUTONOMY_CONFIG: ${AUTONOMY_CONFIG:-config/autonomy.yaml}
+      MAX_AUTONOMY_OVERRIDE: ${MAX_AUTONOMY_OVERRIDE:-}
+      SCOPE_IGNORE: ${SCOPE_IGNORE:-}
+      LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
+      LLM_BATCH_MAX_CHARS: ${LLM_BATCH_MAX_CHARS:-20000}
+      LLM_BATCH_RETRIES: ${LLM_BATCH_RETRIES:-2}
+      LLM_CONTEXT_MAX_CHARS: ${LLM_CONTEXT_MAX_CHARS:-40000}
+      VERIFIER_MAX_FINDINGS: ${VERIFIER_MAX_FINDINGS:-5}
+      VERIFIER_MAX_TOOL_CALLS: ${VERIFIER_MAX_TOOL_CALLS:-8}
+      VERIFIER_MAX_CONTEXT_BYTES: ${VERIFIER_MAX_CONTEXT_BYTES:-60000}
+      VERIFIER_REQUIRE_VERIFIED_FOR: ${VERIFIER_REQUIRE_VERIFIED_FOR:-P0,P1}
+      REVIEW_TOOLS_ROLES: ${REVIEW_TOOLS_ROLES:-}
+      REVIEW_TOOLS_MAX_TURNS: ${REVIEW_TOOLS_MAX_TURNS:-4}
+      REVIEW_TOOLS_MAX_CALLS: ${REVIEW_TOOLS_MAX_CALLS:-8}
+      REVIEW_TOOLS_MAX_BYTES: ${REVIEW_TOOLS_MAX_BYTES:-60000}
+      REVIEW_TOOLS_GREP_MODE: ${REVIEW_TOOLS_GREP_MODE:-literal}
+      REVIEW_TOOLS_READ_OUTLINE: ${REVIEW_TOOLS_READ_OUTLINE:-false}
+      REVIEW_TOOLS_READ_STATE: ${REVIEW_TOOLS_READ_STATE:-false}
+      REVIEW_TOOLS_TRUNCATION_NOTICE: ${REVIEW_TOOLS_TRUNCATION_NOTICE:-true}
+      REVIEW_TOOLS_STRICT_CALLS: ${REVIEW_TOOLS_STRICT_CALLS:-false}
+      REVIEW_TOOLS_CALLS_PER_TURN: ${REVIEW_TOOLS_CALLS_PER_TURN:-3}
+      REVIEW_TOOLS_PRECACHE_CONTEXT: ${REVIEW_TOOLS_PRECACHE_CONTEXT:-true}
+      REVIEW_TOOLS_IO_CACHE: ${REVIEW_TOOLS_IO_CACHE:-false}
       # Identidad del repo, sin el token: el panel rechaza la URL de otro repo
       # y el worker es quien lee el commit (ADR-0029).
       VCS_PROVIDER: ${VCS_PROVIDER:-twg}
@@ -256,6 +286,13 @@ services:
       # Misma ruta que claude-runner. El token no es una variable de entorno.
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
       CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
+    volumes:
+      - claude_session:/var/claude-session
+      # Solo lectura: el techo de autonomia de un override publicado se valida
+      # contra `config/autonomy.yaml`. Sin este montaje, cualquier guardado con
+      # `MAX_AUTONOMY_OVERRIDE` responde 400. Los YAML siguen siendo de git: el
+      # panel no los edita (ADR-0031).
+      - ./config:/app/config:ro
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
       - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"
@@ -270,8 +307,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-    volumes:
-      - claude_session:/var/claude-session
     networks:
       - reviews
 

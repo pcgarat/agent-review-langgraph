@@ -4,7 +4,7 @@ import fcntl
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -208,7 +208,12 @@ def build_registry(settings: Settings) -> ModelRegistry:
     return registry
 
 
-def build_budget(settings: Settings, *, key_prefix: str | None = None) -> BudgetPort:
+def build_budget(
+    settings: Settings,
+    *,
+    key_prefix: str | None = None,
+    client: Any = None,
+) -> BudgetPort:
     """Contador de presupuesto por review (017 B2/B6).
 
     Con URL de Redis configurada se usa el adaptador atomico; sin ella (o sin Redis),
@@ -225,6 +230,7 @@ def build_budget(settings: Settings, *, key_prefix: str | None = None) -> Budget
         url=settings.redis_url,
         total=total,
         key_prefix=key_prefix or KEY_PREFIX,
+        client=client,
     )
 
 
@@ -530,6 +536,10 @@ def build_delivery(settings: Settings) -> DeliveryFormatter:
     return DiffFormatter()
 
 
+# Distingue «no me pasaron la cancelación» de «este proceso no tiene».
+_MISSING: Any = object()
+
+
 def build_runtime(
     settings: Settings,
     *,
@@ -541,6 +551,10 @@ def build_runtime(
     fixer: FixerPort | None = None,
     verifier: VerifierPort | None = None,
     progress: ProgressPort | None = None,
+    registry: ModelRegistry | None = None,
+    cancellation: Any = _MISSING,
+    budget_client: Any = None,
+    probe_models: bool = True,
 ) -> Any:
     if settings.review_engine == "claude":
         return _build_claude_runtime(
@@ -555,14 +569,15 @@ def build_runtime(
     # Sin URL de Teams no hay canal: no se construye un adaptador que no publica.
     if chat is None:
         chat = build_chat(settings)
-    registry = build_registry(settings)
+    registry = registry if registry is not None else build_registry(settings)
     # Un unico contador de review para todo el fan-out (017 B1/B10); su tope viaja
     # al grafo para poder derivar el saldo del `ReviewOutcome` sin consultar al
     # puerto durante el `replay`. L2 (009) comparte el mismo contador.
-    review_budget = build_budget(settings)
+    review_budget = build_budget(settings, client=budget_client)
     if reviewers is None:
         reviewers = build_reviewers(settings, registry=registry, budget=review_budget, vcs=vcs)
-    validate_models(registry)
+    if probe_models:
+        validate_models(registry)
     policy = policy or PolicyEngine.from_file(
         settings.autonomy_config, cap_override=settings.max_autonomy_override
     )
@@ -573,7 +588,9 @@ def build_runtime(
     # La cancelacion (019 W4) viaja como el progreso: `build_graph` no conoce Redis,
     # asi que el composition root le pasa el chequeo ya construido. Sin Redis,
     # `build_cancellation` es `None` y la frontera no consulta nada (W2).
-    cancellation = build_cancellation(settings)
+    # Un montaje por review reutiliza la del proceso (`cancellation` ya resuelto).
+    if cancellation is _MISSING:
+        cancellation = build_cancellation(settings)
     if verifier is None:
         verifier = build_verifier(settings, registry=registry, vcs=vcs, budget=review_budget)
     graph = build_graph(
@@ -710,6 +727,7 @@ def process_request(
     fix_ttl_s: float | None = None,
     claude_runner: ClaudeRunner | None = None,
     claude_store: ClaudeArtifactStore | None = None,
+    dial_snapshot: Mapping[str, object] | None = None,
 ) -> ReviewOutcome:
     """Ejecuta la review una vez. No reencola: eso es de `run_forever`.
 
@@ -772,6 +790,10 @@ def process_request(
             request.review_key,
             ", ".join(snapshot.next),
         )
+        if dial_snapshot is not None and request.repin_dials:
+            update_state = getattr(graph, "update_state", None)
+            if update_state is not None:
+                update_state(config, {"dial_snapshot": dict(dial_snapshot)})
         result = cast("ReviewState", graph.invoke(None, config=config))
     else:
         if request.decision is not None:
@@ -784,9 +806,10 @@ def process_request(
             )
         if claude_runner is not None and claude_store is not None:
             ensure_claude_artifact(request, runner=claude_runner, store=claude_store)
-        result = cast(
-            "ReviewState", graph.invoke({"request": request, "findings": []}, config=config)
-        )
+        state: ReviewState = {"request": request, "findings": []}
+        if dial_snapshot is not None:
+            state["dial_snapshot"] = dict(dial_snapshot)
+        result = cast("ReviewState", graph.invoke(state, config=config))
     outcome = _log_outcome(result)
     if outcome.paused:
         _on_paused(
@@ -1546,6 +1569,7 @@ def dispatch_job(
     claude_session: Callable[[], bool] | None = None,
     park_link: str | None = None,
     expected_repo: str = "",
+    dial_snapshot: Mapping[str, object] | None = None,
 ) -> None:
     """Una vuelta del bucle. Sin sesión, el job sale de la cola y no hay `invoke`.
 
@@ -1579,6 +1603,7 @@ def dispatch_job(
         claude_store=claude_store,
         park_link=park_link,
         expected_repo=expected_repo,
+        dial_snapshot=dial_snapshot,
     )
 
 
@@ -1601,6 +1626,7 @@ def _consume(
     claude_store: ClaudeArtifactStore | None = None,
     park_link: str | None = None,
     expected_repo: str = "",
+    dial_snapshot: Mapping[str, object] | None = None,
 ) -> None:
     """Procesa un job; ante un fallo transitorio reencola, y al agotar intentos descarta.
 
@@ -1646,6 +1672,7 @@ def _consume(
             fix_ttl_s=fix_ttl_s,
             claude_runner=claude_runner,
             claude_store=claude_store,
+            dial_snapshot=dial_snapshot,
         )
         # Una review que ya no espera a nadie entra en el histórico del panel (021 R9).
         # Una reentrega del mismo job actualiza su entrada, no la duplica.
@@ -1703,16 +1730,7 @@ def _consume(
             # el job entero, pero la clasificacion de job es mas laxa que la de
             # nodo: se registra para poder distinguirlo en la DLQ.
             logger.exception("Fallo no clasificado como transitorio en %s", request.review_key)
-        try:
-            _requeue_or_drop(queue, request, max_attempts=max_attempts)
-        except Exception:
-            # El manejo del error no puede tumbar el worker: el job ya salio de la
-            # cola (`BLPOP`) y una excepcion aqui mataria el bucle entero.
-            logger.exception(
-                "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
-                request.review_key,
-                request.model_dump_json(),
-            )
+        _requeue_quietly(queue, request, max_attempts=max_attempts)
     finally:
         clear_progress(progress, request.review_key)
 
@@ -1777,7 +1795,13 @@ def _on_cancelled(
     logger.info("Review %s cancelada; hilo borrado y fuera del inbox", request.review_key)
 
 
-def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts: int) -> None:
+def _requeue_or_drop(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    keep_repin: bool = False,
+) -> None:
     if request.attempts + 1 >= max_attempts:
         # Job descartado a proposito tras fallos persistentes: no desaparece en el
         # log, va a la DLQ para poder reinyectarlo o inspeccionarlo (B2).
@@ -1788,7 +1812,13 @@ def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts
         )
         queue.dead_letter(request, reason=f"intentos agotados ({max_attempts})")
         return
-    retry = request.model_copy(update={"attempts": request.attempts + 1})
+    # `repin_dials` es la orden de un reintento del panel de releer lo publicado.
+    # Conservarla en un reencolado interno re-fijaria la foto a mitad del hilo: el
+    # job arrancaria con la revision N y el `update_state` la sellaria como N+1.
+    # Solo se conserva (`keep_repin`) si el fallo fue antes de tocar el hilo: ahi
+    # la foto nueva aun no se escribio y quitarla dejaria el reintento con la vieja.
+    repin = request.repin_dials and keep_repin
+    retry = request.model_copy(update={"attempts": request.attempts + 1, "repin_dials": repin})
     queue.enqueue(retry)
     logger.warning(
         "Review %s reencolada para el intento %d/%d",
@@ -1796,6 +1826,170 @@ def _requeue_or_drop(queue: ReviewQueue, request: ReviewRequest, *, max_attempts
         retry.attempts + 1,
         max_attempts,
     )
+
+
+def _checkpoint_values(saver: Any, thread_id: str) -> dict[str, object] | None:
+    """Valores del hilo, o `None` si todavía no existe."""
+    if saver is None:
+        return None
+    tup = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    if tup is None:
+        return None
+    checkpoint = getattr(tup, "checkpoint", None)
+    if not isinstance(checkpoint, dict):
+        return {}
+    values = checkpoint.get("channel_values")
+    if not isinstance(values, dict):
+        return {}
+    return values
+
+
+def prepare_review(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    request: ReviewRequest,
+) -> tuple[Settings, dict[str, object]]:
+    """Settings con los que montar esta review, y la foto que viaja en el estado."""
+    from agent_review.config_store import ConfigReadError, Publication
+    from agent_review.panel_config import apply_document, pinned_snapshot
+
+    try:
+        published = store.read()
+    except ConfigReadError:
+        # CFG7: sin lectura y sin última buena, la review sigue con `Settings`.
+        # Dejarlo mudo haria indistinguible «no se publicó nada» de «no pude leer».
+        logger.warning(
+            "Review %s: no se pudo leer la configuración publicada; monto con Settings",
+            request.review_key,
+        )
+        published = Publication(0, {}, "", None)
+    snapshot = pinned_snapshot(
+        published_revision=published.revision,
+        published=published.overrides,
+        checkpoint=_checkpoint_values(saver, request.thread_id),
+        repin=request.repin_dials,
+    )
+    overrides = snapshot.get("overrides")
+    document = overrides if isinstance(overrides, dict) else {}
+    return apply_document(settings, document), snapshot
+
+
+def _requeue_quietly(
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    max_attempts: int,
+    keep_repin: bool = False,
+) -> None:
+    """Reencola o descarta sin poder tumbar el bucle: ya salio de la cola."""
+    try:
+        _requeue_or_drop(queue, request, max_attempts=max_attempts, keep_repin=keep_repin)
+    except Exception:
+        logger.exception(
+            "No se pudo reencolar ni mandar a la DLQ %s; job perdido: %s",
+            request.review_key,
+            request.model_dump_json(),
+        )
+
+
+def _on_mount_failure(
+    queue: ReviewQueue, request: ReviewRequest, exc: BaseException, *, settings: Settings
+) -> None:
+    """Un fallo al montar el grafo de una review no pierde el job.
+
+    `prepare_review` lee el almacén y el checkpointer y `build_runtime` relee el
+    perfil y el YAML: cualquiera puede fallar por la misma causa por la que
+    fallaría la review. El job ya salió de la cola, así que el camino es el mismo
+    que el de un fallo de trabajo: reencolar o, agotados los intentos, la DLQ.
+
+    Montar no escribe en el hilo, así que un reintento del panel conserva
+    `repin_dials`: el siguiente intento tiene que releer lo publicado.
+    """
+    if is_transient(exc):
+        logger.warning(
+            "Fallo transitorio montando la review %s (%s); se reencola",
+            request.review_key,
+            type(exc).__name__,
+        )
+    else:
+        logger.exception("Fallo montando la review %s", request.review_key)
+    _requeue_quietly(queue, request, max_attempts=settings.max_review_attempts, keep_repin=True)
+
+
+def _mount_or_requeue(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    queue: ReviewQueue,
+    request: ReviewRequest,
+    *,
+    vcs: VcsPort | None,
+    chat: ChatPort | None,
+    progress: ProgressPort | None,
+    registry: ModelRegistry | None,
+    cancellation: Any,
+    budget_client: Any,
+) -> tuple[ReviewGraph, dict[str, object] | None] | None:
+    """Grafo y foto de esta review, o `None` si no se pudo montar y ya se reencoló.
+
+    Montar (leer la foto, releer perfil y YAML, compilar) puede fallar igual que
+    el trabajo. El job ya salió de la cola, así que un fallo pasa por el mismo
+    camino de error y el bucle sigue con el siguiente.
+    """
+    try:
+        return _review_runtime(
+            settings,
+            store,
+            saver,
+            request,
+            vcs=vcs,
+            chat=chat,
+            progress=progress,
+            registry=registry,
+            cancellation=cancellation,
+            budget_client=budget_client,
+        )
+    except Exception as exc:
+        _on_mount_failure(queue, request, exc, settings=settings)
+        return None
+
+
+def _review_runtime(
+    settings: Settings,
+    store: Any,
+    saver: Any,
+    request: ReviewRequest,
+    *,
+    vcs: VcsPort | None,
+    chat: ChatPort | None,
+    progress: ProgressPort | None,
+    registry: ModelRegistry | None,
+    cancellation: Any,
+    budget_client: Any,
+) -> tuple[ReviewGraph, dict[str, object] | None]:
+    """Grafo de *esta* review, montado con la foto de diales que le toca.
+
+    Fuera del bucle para poder probarlo con una cola y un checkpointer falsos: es
+    la costura que decide si lo publicado llega de verdad a una review.
+    """
+    effective, dial_snapshot = prepare_review(settings, store, saver, request)
+    graph = build_runtime(
+        effective,
+        vcs=vcs,
+        chat=chat,
+        progress=progress,
+        checkpointer=saver,
+        registry=registry,
+        cancellation=cancellation,
+        budget_client=budget_client,
+        probe_models=False,
+    )
+    # El motor `claude` no monta personas ni política: su grafo se compila aparte y
+    # no tiene diales que fijar. Se devuelve `None` para no sellar una foto vacía.
+    if effective.review_engine == "claude":
+        return graph, None
+    return graph, dial_snapshot
 
 
 def sweep_pending(
@@ -1850,9 +2044,41 @@ def run_forever(
     # El worker guarda el VCS para el enlace del aviso de pausa. Con un grafo
     # inyectado (tests) no lo hay y el aviso sale sin enlace.
     vcs: VcsPort | None = None
-    if graph is None:
+    owns_runtime = graph is None
+    saver: Any = None
+    registry: ModelRegistry | None = None
+    budget_client: Any = None
+    config_store: Any = None
+    if owns_runtime:
+        from agent_review.config_store import build_config_store
+        from agent_review.panel_config import lock_names
+        from agent_review.redis_utils import build_redis_client
+
+        lock_names(settings)
         vcs = build_vcs(settings)
-        graph = build_runtime(settings, chat=chat, vcs=vcs, progress=progress)
+        registry = build_registry(settings)
+        validate_models(registry)
+        config_store = build_config_store(settings)
+        if settings.redis_url.strip():
+            budget_client = build_redis_client(settings.redis_url)
+        # Cola, checkpointer y registro: una vez. El grafo de cada review se monta
+        # en el bucle. Este sirve para reconciliar hilos: `get_state` no usa diales.
+        saver = build_checkpointer(settings.database_url, required=is_production(settings))
+        graph = build_runtime(
+            settings,
+            vcs=vcs,
+            chat=chat,
+            progress=progress,
+            checkpointer=saver,
+            registry=registry,
+            cancellation=cancellation,
+            budget_client=budget_client,
+            probe_models=False,
+        )
+    if graph is None:
+        # Solo un grafo inyectado puede llegar aquí sin runtime montado, y ya se
+        # comprobó arriba; el `raise` deja el tipo estrechado para el bucle.
+        raise RuntimeError("el worker no tiene grafo")
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     history = build_history(settings)
@@ -1865,7 +2091,7 @@ def run_forever(
         claude_runner = runner
         claude_session = runner.active
     park_link = panel_claude_link(settings)
-    saver = getattr(graph, "checkpointer", None)
+    saver = saver if saver is not None else getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
     logger.info("Politica: %s", settings.autonomy_config)
     last_sweep = time.monotonic()
@@ -1874,9 +2100,28 @@ def run_forever(
     while True:
         request = queue.dequeue(timeout_s=poll_s)
         if request is not None:
+            active = graph
+            dial_snapshot: Mapping[str, object] | None = None
+            if owns_runtime:
+                mounted = _mount_or_requeue(
+                    settings,
+                    config_store,
+                    saver,
+                    queue,
+                    request,
+                    vcs=vcs,
+                    chat=chat,
+                    progress=progress,
+                    registry=registry,
+                    cancellation=cancellation,
+                    budget_client=budget_client,
+                )
+                if mounted is None:
+                    continue
+                active, dial_snapshot = mounted
             dispatch_job(
                 queue,
-                graph,
+                active,
                 request,
                 max_attempts=settings.max_review_attempts,
                 paused=paused_store,
@@ -1893,6 +2138,7 @@ def run_forever(
                 claude_session=claude_session,
                 park_link=park_link,
                 expected_repo=settings.configured_repo(),
+                dial_snapshot=dial_snapshot,
             )
             continue
         # La cola esta vacia: es el momento de aplicar los TTL (ingesta y decision).

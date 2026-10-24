@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Annotated
@@ -24,12 +25,19 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
+from agent_review.config_store import ConfigReadError, ConfigStore, Publication
 from agent_review.domain.history import ReviewSummary
 from agent_review.domain.models import PendingDecision
 from agent_review.domain.trace import ReviewTrace
 from agent_review.history_store import ReviewHistory
-from agent_review.settings import get_settings
-from agent_review.web.auth import Session, require_operador, require_session
+from agent_review.panel_config import SECTIONS, catalog, initial_values, lock_names
+from agent_review.settings import Settings, get_settings
+from agent_review.web.auth import (
+    Session,
+    require_command_session,
+    require_operador,
+    require_session,
+)
 from agent_review.web.read_model import (
     ActiveNode,
     ActiveReview,
@@ -43,6 +51,8 @@ from agent_review.web.read_model import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _CANCEL = "cancel"
 _RETRY = "retry"
@@ -63,6 +73,120 @@ def get_read_model(request: Request) -> PanelReadModel:
         model = build_panel_read_model(get_settings())
         request.app.state.read_model = model
     return model
+
+
+@router.get("/config", response_class=HTMLResponse)
+def config_page(
+    session: Annotated[Session, Depends(require_session)],
+    request: Request,
+    model: Annotated[PanelReadModel, Depends(get_read_model)],
+) -> HTMLResponse:
+    """Diales que el operador puede publicar (027)."""
+    settings = get_settings()
+    try:
+        publication = _config_store(request, settings).read()
+    except ConfigReadError as exc:
+        # El panel es observabilidad: sin Postgres, decirlo; no un 500 con traza.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return HTMLResponse(_config_page(settings, publication, session, pins=_dial_pins(model)))
+
+
+@router.get("/api/config")
+def config_document(
+    session: Annotated[Session, Depends(require_session)],
+    request: Request,
+) -> dict[str, object]:
+    """El documento vigente en JSON, para un cliente que no pinta HTML (027).
+
+    La página es para una persona; esta lectura permite a un `curl` o al CLI saber
+    qué hay publicado sin parsear el formulario.
+    """
+    del session  # cualquier rol lee: el documento no es secreto
+    settings = get_settings()
+    store = _config_store(request, settings)
+    try:
+        publication = store.read()
+    except ConfigReadError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    return {
+        "revision": publication.revision,
+        "values": publication.overrides,
+        "initial": initial_values(settings),
+        "locked": sorted(lock_names(settings)),
+        "actor": publication.actor,
+        "updated_at": publication.updated_at.isoformat() if publication.updated_at else None,
+    }
+
+
+@router.post("/config")
+async def save_config(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+) -> dict[str, int]:
+    """Publica el formulario entero. Una revisión vieja no escribe."""
+    from agent_review.panel_config import (
+        ConfigError,
+        RevisionConflict,
+        StaleForm,
+        document_for,
+    )
+
+    revision, values, painted = await _config_form(request)
+    settings = get_settings()
+    try:
+        document = document_for(
+            settings,
+            values,
+            autonomy_ceiling=lambda: _autonomy_ceiling(settings),
+            painted=painted,
+        )
+        published = _config_store(request, settings).publish(
+            expected=revision, overrides=document, actor=session.user
+        )
+    except (RevisionConflict, StaleForm) as exc:
+        # Las dos se resuelven recargando: la revisión la movió otro y el formulario
+        # se pintó con otros valores iniciales. El cuerpo lleva cuál es la vigente.
+        detail: dict[str, object] = {"detail": str(exc)}
+        if isinstance(exc, RevisionConflict):
+            detail["revision"] = exc.current
+        else:
+            detail["stale"] = True
+        raise HTTPException(status.HTTP_409_CONFLICT, detail) from exc
+    except ConfigError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, {"detail": str(exc), "field": exc.field}
+        ) from exc
+    except ConfigReadError as exc:
+        # La escritura no llegó a confirmarse: es la infraestructura, no el
+        # formulario. Un 400 culparía al operador de un Postgres caído.
+        logger.warning("No se pudo publicar la configuración: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar la configuración"
+        ) from exc
+    return {"revision": published.revision}
+
+
+async def _config_form(request: Request) -> tuple[int, dict[str, object], dict[str, object] | None]:
+    """Cuerpo del formulario, con `400` propio.
+
+    FastAPI tiparía el cuerpo como objeto y un array daría `422` con el detalle de
+    pydantic; el resto de comandos del panel responde `400` para un cuerpo que no
+    encaja, así que aquí se parsea igual.
+    """
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    revision = body.get("revision")
+    values = body.get("values")
+    if not isinstance(revision, int) or isinstance(revision, bool) or not isinstance(values, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "el cuerpo debe traer revision y values")
+    painted = body.get("initial")
+    if painted is not None and not isinstance(painted, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "initial debe ser un objeto")
+    return revision, values, painted
 
 
 def build_history_reader(settings: object) -> ReviewHistory | None:
@@ -188,6 +312,7 @@ def _home_links(session: Session) -> str:
         '<a href="/bandeja">Bandeja de decisiones</a>'
         ' · <a href="/history">Histórico de reviews &rarr;</a>'
     )
+    links += ' · <a href="/config">Configuración &rarr;</a>'
     if session.can_command():
         links += ' · <a href="/claude">Sesión de Claude</a>'
     return f'<p class="breadcrumb">{links}</p>'
@@ -531,6 +656,156 @@ def _trace_commands(trace: ReviewTrace) -> tuple[tuple[str, str], ...]:
     return ((_CANCEL, "Cancelar"),)
 
 
+def _config_store(request: Request, settings: Settings) -> ConfigStore:
+    store: ConfigStore | None = getattr(request.app.state, "config_store", None)
+    if store is None:
+        from agent_review.config_store import build_config_store
+
+        store = build_config_store(settings)
+        request.app.state.config_store = store
+    return store
+
+
+def build_config_store_for_panel(settings: Settings) -> ConfigStore:
+    """Almacén del panel, validado en el arranque (027, ADR-0031).
+
+    El candado se resuelve aquí y no en la primera petición: un nombre fuera del
+    catálogo tiene que abortar el arranque, como en el worker. Construir también el
+    almacén deja el fallo de Postgres en el mismo sitio.
+    """
+    from agent_review.config_store import build_config_store
+    from agent_review.panel_config import lock_names
+
+    lock_names(settings)
+    return build_config_store(settings)
+
+
+def _autonomy_ceiling(settings: Settings) -> str:
+    """Techo de `max_autonomy` declarado en el YAML, leído con el motor de política.
+
+    Se resuelve solo al validar un override: el resto de guardados no depende de
+    que este proceso pueda leer `config/autonomy.yaml`.
+    """
+    from agent_review.panel_config import ConfigError
+    from agent_review.policy.engine import PolicyEngine, PolicyError
+
+    try:
+        return str(PolicyEngine.from_file(settings.autonomy_config).raw()["max_autonomy"])
+    except OSError as exc:
+        raise ConfigError(
+            "max_autonomy_override", f"no se pudo leer {settings.autonomy_config}"
+        ) from exc
+    except (PolicyError, ValueError, TypeError) as exc:
+        raise ConfigError("max_autonomy_override", f"autonomy.yaml inválido: {exc}") from exc
+
+
+def _dial_pins(model: object) -> list[tuple[str, int]] | None:
+    """Fotos fijadas por las reviews en curso; `None` si no se pudieron leer."""
+    reader = getattr(model, "dial_pins", None)
+    if not callable(reader):
+        return []
+    found = reader()
+    if found is None:
+        return None
+    if not isinstance(found, list):
+        return []
+    pins: list[tuple[str, int]] = []
+    for item in found:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and isinstance(item[1], int)
+            and not isinstance(item[1], bool)
+        ):
+            pins.append((item[0], item[1]))
+    return pins
+
+
+def _config_page(
+    settings: Settings,
+    publication: Publication,
+    session: Session,
+    *,
+    pins: list[tuple[str, int]] | None = None,
+) -> str:
+    initial = initial_values(settings)
+    locked = lock_names(settings)
+    by_section: dict[str, list[str]] = {section: [] for section in SECTIONS}
+    for field in catalog():
+        if field.name in locked:
+            # Un dial bloqueado se pinta con su valor inicial, no con el override
+            # publicado que `apply_document` descarta: enseñar un número que la
+            # review no usa es peor que enseñar el del despliegue.
+            shown, blocked = initial[field.name], True
+        else:
+            shown, blocked = publication.overrides.get(field.name, initial[field.name]), False
+        by_section[field.section].append(_dial_control(field, shown, initial[field.name], blocked))
+    sections = "".join(
+        _section(section, "".join(controls)) for section, controls in by_section.items() if controls
+    )
+    save = ""
+    if session.can_command():
+        save = '<button id="save-config" type="button">Guardar</button>'
+    inflight = "".join(
+        f"<li>{_esc(key)} fijó la revisión {revision}.</li>" for key, revision in pins or []
+    )
+    if pins is None:
+        inflight_html = (
+            '<p class="meta">No se pudo leer la foto de las reviews en curso '
+            "(el checkpointer no respondió).</p>"
+        )
+    else:
+        inflight_html = f"<ul>{inflight}</ul>" if inflight else ""
+    note = f"<p>Revisión publicada: {publication.revision}.</p>{inflight_html}"
+    # Los valores iniciales viajan con el formulario: el servidor compara contra
+    # lo que se pintó, no contra los defaults que tenga en ese momento.
+    painted = json.dumps(initial, ensure_ascii=False, default=str)
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
+        f"{note}"
+        f'<form id="config" data-revision="{publication.revision}" '
+        f'data-initial="{_esc(painted)}">{sections}{save}</form>'
+    )
+    return _page(
+        title="Configuración",
+        meta="Cada control vuelve a su valor inicial con Restaurar. Guardar publica la revisión.",
+        body=body,
+        session=session,
+        script=_CONFIG_SCRIPT,
+    )
+
+
+def _dial_control(field: object, shown: object, initial: object, locked: bool) -> str:
+    from agent_review.panel_config import DialField
+
+    if not isinstance(field, DialField):
+        raise TypeError("field")
+    kind = "bool" if isinstance(initial, bool) else "int" if isinstance(initial, int) else "text"
+    disabled = " disabled" if locked else ""
+    control_id = f"dial-{field.name}"
+    same = shown == initial
+    restore_disabled = " disabled" if locked or same else ""
+    if kind == "bool":
+        checked = " checked" if shown else ""
+        control = (
+            f'<input id="{control_id}" type="checkbox" data-kind="bool" '
+            f'data-name="{_esc(field.name)}"'
+            f' data-initial="{"true" if initial else "false"}"{checked}{disabled}>'
+        )
+    else:
+        control = (
+            f'<input id="{control_id}" data-kind="{kind}" data-name="{_esc(field.name)}"'
+            f' data-initial="{_esc(initial)}" value="{_esc(shown)}"{disabled}>'
+        )
+    reason = " Lo fija el despliegue." if locked else ""
+    return (
+        f'<p><label for="{control_id}">{_esc(field.name)}</label> {control} '
+        f'<button type="button" class="restore" data-for="{control_id}"{restore_disabled}>'
+        f'Restaurar</button><br><span class="meta">{_esc(field.help)}{reason}</span></p>'
+    )
+
+
 def _trace_decision(trace: ReviewTrace, paused: PausedItem | None) -> bool:
     """¿El detalle debe pintar el formulario de decision? (022)"""
     return trace.pause_kind == "human" and paused is not None and paused.kind == "human"
@@ -607,6 +882,82 @@ def _pending_list(pending: list[PendingDecision]) -> str:
 # --- Primicas de marcado ---------------------------------------------------------
 
 
+_CONFIG_SCRIPT = """<script>
+(() => {
+  const form = document.getElementById("config");
+  if (!form) return;
+  const error = document.getElementById("error");
+  const controls = [...form.querySelectorAll("[data-kind]")];
+  const current = (control) => (
+    control.dataset.kind === "bool" ? String(control.checked) : control.value
+  );
+  const sync = (control) => {
+    const button = form.querySelector(`button.restore[data-for="${control.id}"]`);
+    if (!button || control.disabled) return;
+    button.disabled = current(control) === control.dataset.initial;
+  };
+  controls.forEach((control) => {
+    control.addEventListener("input", () => sync(control));
+    const button = form.querySelector(`button.restore[data-for="${control.id}"]`);
+    if (!button) return;
+    button.addEventListener("click", () => {
+      if (control.dataset.kind === "bool") control.checked = control.dataset.initial === "true";
+      else control.value = control.dataset.initial;
+      sync(control);
+    });
+  });
+  const save = document.getElementById("save-config");
+  if (!save) return;
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    error.hidden = true;
+    const values = {};
+    controls.forEach((control) => {
+      // Un control bloqueado no se publica: su valor lo fija el despliegue y el
+      // servidor lo descartaria. Enviarlo solo confunde el diff.
+      if (control.disabled) return;
+      const name = control.dataset.name;
+      if (control.dataset.kind === "bool") values[name] = control.checked;
+      // Un entero vacio no es 0: publicarlo apagaria el presupuesto en silencio.
+      // Se envia sin recortar y el servidor responde 400 nombrando el campo.
+      else if (control.dataset.kind === "int") values[name] = control.value.trim();
+      else values[name] = control.value;
+    });
+    try {
+      const response = await fetch("/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          revision: Number(form.dataset.revision),
+          values,
+          initial: JSON.parse(form.dataset.initial || "{}"),
+        }),
+      });
+      if (response.status === 409) {
+        error.textContent =
+          "Alguien guardó antes o la página es de otra versión. Recarga la página.";
+        error.hidden = false;
+        save.disabled = false;
+        return;
+      }
+      if (!response.ok) {
+        error.textContent = await response.text();
+        error.hidden = false;
+        save.disabled = false;
+        return;
+      }
+      window.location.reload();
+    } catch (cause) {
+      error.textContent = String(cause);
+      error.hidden = false;
+      save.disabled = false;
+    }
+  });
+})();
+</script>"""
+
+
 def _page(*, title: str, meta: str, body: str, session: Session, script: str) -> str:
     return (
         "<!doctype html>\n"
@@ -639,6 +990,7 @@ def _nav(session: Session) -> str:
         ' <span id="bandeja-count" class="badge" hidden></span>',
         '<a href="/">Panel</a>',
         '<a href="/history">Histórico</a>',
+        '<a href="/config">Configuración</a>',
     ]
     if session.can_command():
         links.append('<a href="/claude">Sesión de Claude</a>')

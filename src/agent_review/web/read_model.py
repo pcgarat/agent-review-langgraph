@@ -290,8 +290,34 @@ class PgTraceReader:
                 self._resolved = True
         return self._saver
 
+    def reader_unavailable(self) -> bool:
+        """¿Se sabe ya que no hay fuente de recorrido? (Postgres no respondió)."""
+        return self._reader() is None
+
     def trace(self, review_key: str) -> ReviewTrace | None:
         return read_trace(self._reader(), review_key)
+
+    def dial_revision(self, review_key: str) -> int | None:
+        """Revisión de diales que fijó el hilo, o `None` si no hay foto."""
+        from agent_review.panel_config import snapshot_revision
+
+        saver = self._reader()
+        if saver is None:
+            return None
+        for thread_id in (review_key, f"{review_key}:partial"):
+            try:
+                tup = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+            except Exception:
+                logger.exception("No se pudo leer la foto de diales de %s", review_key)
+                return None
+            if tup is None:
+                continue
+            checkpoint = getattr(tup, "checkpoint", None)
+            values = checkpoint.get("channel_values") if isinstance(checkpoint, dict) else None
+            revision = snapshot_revision(values if isinstance(values, dict) else None)
+            if revision is not None:
+                return revision
+        return None
 
     def close(self) -> None:
         """Cierra el pool de lectura. Best-effort: el panel es observabilidad."""
@@ -320,6 +346,25 @@ class CompositePanelReadModel:
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._trace_reader.trace(review_key)
+
+    def dial_pins(self) -> list[tuple[str, int]] | None:
+        """Reviews en curso y la revisión de diales que cada una fijó.
+
+        `None` significa «no pude leer»: el panel lo dice en vez de enseñar una
+        lista vacía, que se leería como «ninguna review en curso».
+        """
+        if self._trace_reader.reader_unavailable():
+            return None
+        state = self.state()
+        keys = [item.review_key for item in state.active]
+        keys.extend(item.review_key for item in state.paused.human)
+        keys.extend(item.review_key for item in state.paused.fix)
+        pins: list[tuple[str, int]] = []
+        for key in keys:
+            revision = self._trace_reader.dial_revision(key)
+            if revision is not None:
+                pins.append((key, revision))
+        return pins
 
     def close(self) -> None:
         self._trace_reader.close()

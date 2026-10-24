@@ -35,6 +35,8 @@ from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.worker.main import (
     _consume,
+    _mount_or_requeue,
+    _requeue_or_drop,
     _with_base_sha,
     build_registry,
     build_reviewers,
@@ -1687,3 +1689,95 @@ def test_sweep_fix_expired_es_idempotente() -> None:
 
     assert len(first) == 1
     assert second == [], "ya encolada; no se duplica el barrido"
+
+
+def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
+    """La costura que hace que lo publicado llegue a una review (027 W1)."""
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(expected=0, overrides={"llm_max_findings": 2}, actor="ana")
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    graph, snapshot = _review_runtime(
+        Settings(_env_file=None),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot == {"revision": 1, "overrides": {"llm_max_findings": 2}}
+    assert graph is not None
+
+
+class _SaverRoto:
+    """Checkpointer que no contesta: `prepare_review` falla al leer el hilo."""
+
+    def get_tuple(self, config: object) -> object:
+        del config
+        raise ConnectionError("postgres caido")
+
+
+def _mount(queue: InMemoryReviewQueue, request: ReviewRequest) -> object:
+    from agent_review.config_store import MemoryConfigStore
+
+    return _mount_or_requeue(
+        Settings(_env_file=None, database_url=""),
+        MemoryConfigStore(),
+        _SaverRoto(),
+        queue,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+
+def test_un_fallo_al_montar_la_review_reencola_en_vez_de_tumbar_el_bucle() -> None:
+    """El job ya salio de la cola: montar mal no puede perderlo (027 F2).
+
+    `_mount_or_requeue` es el paso que usa `run_forever`: devuelve `None` y el
+    bucle sigue con el siguiente job, sin propagar la excepcion.
+    """
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a")
+
+    assert _mount(queue, request) is None
+
+    retried = queue.dequeue()
+    assert retried is not None, "un fallo al montar no puede perder el job"
+    assert retried.attempts == 1
+
+
+def test_un_reintento_del_panel_que_no_monta_conserva_repin() -> None:
+    """Montar no toca el hilo: quitar `repin_dials` dejaria el reintento con la foto vieja."""
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", repin_dials=True)
+
+    assert _mount(queue, request) is None
+
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.repin_dials is True
+
+
+def test_un_reencolado_por_fallo_de_trabajo_quita_repin() -> None:
+    """Tras invocar, la foto nueva ya esta en el hilo: re-fijarla la sellaria otra vez."""
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", repin_dials=True)
+
+    _requeue_or_drop(queue, request, max_attempts=3)
+
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.repin_dials is False

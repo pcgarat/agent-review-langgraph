@@ -61,12 +61,16 @@ class FakeReadModel:
     def __init__(self, state: PanelState, traces: dict[str, ReviewTrace] | None = None) -> None:
         self.panel_state = state
         self.traces = traces or {}
+        self.pins: list[tuple[str, int]] = []
 
     def state(self) -> PanelState:
         return self.panel_state
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self.traces.get(review_key)
+
+    def dial_pins(self) -> list[tuple[str, int]]:
+        return self.pins
 
 
 @dataclass
@@ -437,3 +441,214 @@ def test_sin_redis_el_historico_sale_vacio(panel: Panel, monkeypatch: pytest.Mon
 
 def test_la_vista_global_enlaza_al_historico(panel: Panel) -> None:
     assert 'href="/history"' in panel.client.get("/").text
+
+
+def test_la_pagina_de_configuracion_pinta_cada_dial_y_restaurar(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import catalog
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", MemoryConfigStore(), raising=False)
+    body = panel.client.get("/config").text
+    fields = catalog()
+    assert body.count(">Restaurar<") == len(fields)
+    for field in fields:
+        assert field.name in body
+        assert field.help in body
+    for section in ("Presupuesto y lotes", "Verificador", "Bucle de lectura", "Política"):
+        assert section in body
+    assert "Guardar" in body
+    assert 'href="/config"' in panel.client.get("/").text
+
+
+def test_la_pagina_nombra_la_revision_que_fijo_una_review_en_curso(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", MemoryConfigStore(), raising=False)
+    panel.model.pins = [("acme/app:7:abc", 4)]
+    body = panel.client.get("/config").text
+    assert "acme/app:7:abc fijó la revisión 4." in body
+
+
+def test_guardar_publica_solo_la_clave_distinta_y_una_revision_vieja_no_escribe(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import initial_values
+
+    store = MemoryConfigStore()
+    monkeypatch.setattr(panel.client.app.state, "config_store", store, raising=False)
+    monkeypatch.setattr(get_settings(), "panel_config_lock", "")
+    values = initial_values(get_settings())
+    current = values["llm_max_findings"]
+    chosen = 0 if current != 0 else 1
+    values["llm_max_findings"] = chosen
+    saved = panel.client.post("/config", json={"revision": 0, "values": values})
+    assert saved.status_code == 200
+    assert store.read().overrides == {"llm_max_findings": chosen}
+    stale = panel.client.post("/config", json={"revision": 0, "values": values})
+    assert stale.status_code == 409
+    assert store.read().revision == 1
+    values["llm_batch_retries"] = -1
+    rejected = panel.client.post("/config", json={"revision": 1, "values": values})
+    assert rejected.status_code == 400
+    assert "llm_batch_retries" in rejected.text
+    assert store.read().overrides == {"llm_max_findings": chosen}
+
+
+def test_el_lector_no_puede_guardar(panel: Panel, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_review.config_store import MemoryConfigStore
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", MemoryConfigStore(), raising=False)
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
+    body = panel.client.get("/config", headers={"X-Panel-Session": "ana:lector"}).text
+    assert 'id="save-config"' not in body
+    assert "Restaurar" in body
+    rejected = panel.client.post(
+        "/config",
+        json={"revision": 0, "values": {}},
+        headers={"X-Panel-Session": "ana:lector"},
+    )
+    assert rejected.status_code == 403
+
+
+def test_el_lector_de_trazas_saca_la_revision_de_la_foto() -> None:
+    from agent_review.web.read_model import PgTraceReader
+
+    class _Tuple:
+        checkpoint = {"channel_values": {"dial_snapshot": {"revision": 4, "overrides": {}}}}
+
+    class _Saver:
+        def get_tuple(self, config: dict[str, object]) -> _Tuple | None:
+            configurable = config["configurable"]
+            assert isinstance(configurable, dict)
+            if str(configurable["thread_id"]).endswith(":partial"):
+                return None
+            return _Tuple()
+
+    reader = PgTraceReader(database_url="postgresql://unused")
+    reader._resolved = True
+    reader._saver = _Saver()  # type: ignore[assignment]
+    assert reader.dial_revision("acme/app:1") == 4
+
+
+def test_un_dial_bloqueado_se_pinta_con_su_inicial_y_otro_guardado_entra(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El candado no puede dejar el formulario sin guardar (027)."""
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import initial_values
+
+    store = MemoryConfigStore()
+    settings = get_settings()
+    initial = initial_values(settings)
+    locked = "llm_max_findings"
+    store.publish(expected=0, overrides={locked: 1}, actor="ana")
+    monkeypatch.setattr(panel.client.app.state, "config_store", store, raising=False)
+    monkeypatch.setattr(settings, "panel_config_lock", locked)
+    body = panel.client.get("/config").text
+    assert f'id="dial-{locked}"' in body
+    # El control bloqueado se pinta con el inicial (no con el override 1 que se
+    # descarta al montar la review) y llega deshabilitado.
+    control = body[body.index(f'id="dial-{locked}"') :]
+    tag = control[: control.index(">")]
+    assert "disabled" in tag
+    assert f'value="{initial[locked]}"' in tag
+    values = dict(initial)
+    del values[locked], values["review_tools_max_turns"]
+    values["review_tools_max_turns"] = initial["review_tools_max_turns"] + 1
+    response = panel.client.post("/config", json={"revision": 1, "values": values})
+    assert response.status_code == 200
+    # El override de un dial bloqueado no se republica: manda el valor del
+    # despliegue, asi que se descarta al guardar en vez de quedarse latente.
+    assert store.read().overrides == {"review_tools_max_turns": values["review_tools_max_turns"]}
+
+
+def test_un_formulario_pintado_con_otros_iniciales_no_publica(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un default cambiado con la pagina abierta no se convierte en override."""
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import initial_values
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", MemoryConfigStore(), raising=False)
+    values = initial_values(get_settings())
+    painted = dict(values)
+    painted["llm_max_findings"] = values["llm_max_findings"] + 5
+    response = panel.client.post(
+        "/config", json={"revision": 0, "values": values, "initial": painted}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["stale"] is True
+
+
+def test_un_entero_vacio_es_400_y_no_publica_cero(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import initial_values
+
+    store = MemoryConfigStore()
+    monkeypatch.setattr(panel.client.app.state, "config_store", store, raising=False)
+    values = initial_values(get_settings())
+    values["llm_max_findings"] = ""
+    response = panel.client.post("/config", json={"revision": 0, "values": values})
+    assert response.status_code == 400
+    assert response.json()["detail"]["field"] == "llm_max_findings"
+    assert store.read().revision == 0
+
+
+def test_la_ruta_de_config_responde_503_si_el_almacen_no_contesta(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import ConfigReadError
+    from agent_review.panel_config import initial_values
+
+    class _Caido:
+        def read(self):  # type: ignore[no-untyped-def]
+            raise ConfigReadError("caido")
+
+        def publish(self, **kwargs: object):  # type: ignore[no-untyped-def]
+            raise ConfigReadError("caido")
+
+        def history(self):  # type: ignore[no-untyped-def]
+            return ()
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", _Caido(), raising=False)
+    assert panel.client.get("/api/config").status_code == 503
+    values = initial_values(get_settings())
+    values["llm_max_findings"] = values["llm_max_findings"] + 1
+    saved = panel.client.post("/config", json={"revision": 0, "values": values})
+    assert saved.status_code == 503
+
+
+def test_el_conflicto_nombra_la_revision_vigente_y_la_lectura_json(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.panel_config import initial_values
+
+    store = MemoryConfigStore()
+    store.publish(expected=0, overrides={"scope_ignore": "vendor/"}, actor="ana")
+    monkeypatch.setattr(panel.client.app.state, "config_store", store, raising=False)
+    stale = panel.client.post(
+        "/config", json={"revision": 0, "values": initial_values(get_settings())}
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["revision"] == 1
+    document = panel.client.get("/api/config").json()
+    assert document["revision"] == 1
+    assert document["values"] == {"scope_ignore": "vendor/"}
+
+
+def test_un_cuerpo_que_no_es_objeto_es_400_no_422(
+    panel: Panel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.config_store import MemoryConfigStore
+
+    monkeypatch.setattr(panel.client.app.state, "config_store", MemoryConfigStore(), raising=False)
+    response = panel.client.post("/config", json=[1, 2, 3])
+    assert response.status_code == 400

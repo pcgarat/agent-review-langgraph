@@ -559,6 +559,10 @@ class ReviewRequest(BaseModel):
     # reanudar el grafo (no se publica nada).
     cancelled: bool = False
 
+    # Panel (027): un reintento desde la DLQ vuelve a leer los diales publicados.
+    # Una reentrega del mismo job no lo pone: el hilo sigue con la foto que fijó.
+    repin_dials: bool = False
+
     # Pasada degradada: la encola el barrido de ingesta cuando vence la espera sin
     # todos los artefactos. Tiene su propio hilo (`thread_id`) para que, si el
     # artefacto llega tarde, la pasada completa de la misma ejecucion no encuentre
