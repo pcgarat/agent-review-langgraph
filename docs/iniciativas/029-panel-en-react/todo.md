@@ -29,10 +29,10 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque A — API de la ficha (checkpoint A-K)
 
-- [ ] **A1** `GET /api/reviews/{review_key}`: traza, pausa, `notes`, `journal` y disponibilidad
-- [ ] **A2** `404` cuando no hay traza, log ni descarte
-- [ ] **A3** `GET /api/config` añade `pins`
-- [ ] **A4** Tests de A1–A3 en Python
+- [x] **A1** `GET /api/reviews/{review_key}`: traza, pausa, `notes`, `journal` y disponibilidad
+- [x] **A2** `404` cuando no hay traza, log ni descarte
+- [x] **A3** `GET /api/config` añade `pins`
+- [x] **A4** Tests de A1–A3 en Python
 
 ## Bloque D — Cuadro de mando (checkpoint D-K)
 
@@ -44,14 +44,14 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque F — Ficha (checkpoint F-K)
 
-- [ ] **F1** Recorrido de nodos con su duración
-- [ ] **F2** Pasos del CLI de Claude cuando `REVIEW_ENGINE=claude`
-- [ ] **F3** Log a partir de `notes` + `journal`, sin `dangerouslySetInnerHTML`
-- [ ] **F4** Formulario de decisión
-- [ ] **F5** Consola del sandbox por SSE
-- [ ] **F6** Razonamiento por SSE
-- [ ] **F7** Actividad de Claude por SSE y descarga
-- [ ] **F8** Ficha de un descarte sin recorrido
+- [x] **F1** Recorrido de nodos con su duración
+- [x] **F2** Pasos del CLI de Claude cuando `REVIEW_ENGINE=claude`
+- [x] **F3** Log a partir de `notes` + `journal`, sin `dangerouslySetInnerHTML`
+- [x] **F4** Formulario de decisión
+- [x] **F5** Consola del sandbox por SSE
+- [x] **F6** Razonamiento por SSE
+- [x] **F7** Actividad de Claude por SSE y descarga
+- [x] **F8** Ficha de un descarte sin recorrido
 
 ## Bloque B — Bandeja e histórico (checkpoint B-K)
 
