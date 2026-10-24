@@ -50,9 +50,17 @@ from agent_review.web.commands import (
     CommandService,
     build_command_service,
 )
+from agent_review.web.config_api import router as config_router
+from agent_review.web.deps import (
+    build_reasoning_reader,
+    get_console,
+    get_read_model,
+    get_reasoning,
+)
 from agent_review.web.launch import LaunchError, LaunchService
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
+from agent_review.web.review_detail import router as review_detail_router
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
 from agent_review.web.ui import get_history, recent_reviews
 from agent_review.web.ui import router as ui_router
@@ -74,7 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # El candado de diales y el almacen se resuelven al arrancar, no en la primera
     # visita a /config: un nombre fuera del catalogo o un Postgres obligatorio que
     # no responde tienen que tumbar el proceso, igual que en el worker (ADR-0031).
-    from agent_review.web.ui import build_config_store_for_panel
+    from agent_review.web.config_api import build_config_store_for_panel
 
     app.state.config_store = build_config_store_for_panel(settings)
     app.state.read_model = build_panel_read_model(settings)
@@ -107,15 +115,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Panel de operacion", version="0.1.0", lifespan=lifespan)
 
 
-def get_read_model(request: Request) -> PanelReadModel:
-    """Read model del proceso. Los tests inyectan un fake en `app.state.read_model`."""
-    model: PanelReadModel | None = getattr(request.app.state, "read_model", None)
-    if model is None:
-        model = build_panel_read_model(_settings())
-        request.app.state.read_model = model
-    return model
-
-
 def get_launcher(request: Request) -> LaunchService:
     """Encola un lanzamiento. Los tests inyectan uno en `app.state.launcher`."""
     launcher: LaunchService | None = getattr(request.app.state, "launcher", None)
@@ -141,32 +140,6 @@ def get_commands(request: Request) -> CommandService:
             "Los comandos necesitan Redis, que no esta disponible",
         )
     return commands
-
-
-def get_console(request: Request) -> RunnerConsoleClient:
-    """Cliente de la consola del runner (OP24)."""
-    console: RunnerConsoleClient | None = getattr(request.app.state, "console", None)
-    if console is None:
-        console = build_runner_client(_settings())
-        request.app.state.console = console
-    return console
-
-
-def build_reasoning_reader(settings: Settings) -> ReasoningReader | None:
-    """Lector del razonamiento (021 R5), o `None` sin Redis."""
-    if not settings.redis_url.strip():
-        return None
-    from agent_review.adapters.reasoning_redis import RedisReasoningReader
-
-    return RedisReasoningReader(url=settings.redis_url)
-
-
-def get_reasoning(request: Request) -> ReasoningReader | None:
-    """Lector del razonamiento del proceso. Los tests inyectan uno en memoria."""
-    if not hasattr(request.app.state, "reasoning"):
-        request.app.state.reasoning = build_reasoning_reader(_settings())
-    reader: ReasoningReader | None = request.app.state.reasoning
-    return reader
 
 
 @app.get("/healthz")
@@ -631,6 +604,8 @@ def _run_key_of(model: PanelReadModel, review_key: str) -> str | None:
 # la monta aqui para que el panel sea un unico proceso con una unica sesion.
 app.include_router(ui_router)
 app.include_router(bandeja_router)
+app.include_router(config_router)
+app.include_router(review_detail_router)
 
 
 def main() -> None:
