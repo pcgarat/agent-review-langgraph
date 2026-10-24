@@ -37,6 +37,16 @@ def _reader(vcs: FakeVcs | None = None, **kwargs) -> VcsContextReader:
     )
 
 
+def test_read_file_rechaza_una_ruta_que_sale_del_repo() -> None:
+    class _NoLee:
+        def get_file(self, repo: str, path: str, *, ref: str) -> str:
+            del repo, path, ref
+            raise AssertionError("no debe pedir el fichero")
+
+    with pytest.raises(ToolError, match="no permitida"):
+        _reader(_NoLee()).read_file("../../x/y/contents/z")  # type: ignore[arg-type]
+
+
 def test_sin_diff_no_puede_listar_nada() -> None:
     reader = _reader(diff="")
     assert reader.list_dir("").items == ()

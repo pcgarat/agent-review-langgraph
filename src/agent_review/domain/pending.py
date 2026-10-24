@@ -108,6 +108,14 @@ class InMemoryPendingStore:
     def ready(self) -> list[PendingReview]:
         return [r for r in self._items.values() if r.status is PendingStatus.READY]
 
+    def due(self, *, now: datetime | None = None) -> list[PendingReview]:
+        """Vencidas o ya degradadas, sin cambiar su estado."""
+        return [
+            review
+            for review in self._items.values()
+            if review.status is PendingStatus.DEGRADED or review.is_expired(now=now)
+        ]
+
     def sweep(self, *, now: datetime | None = None) -> list[PendingReview]:
         """Aplica TTLs y devuelve las reviews que quedan resueltas (degradadas)."""
         resolved: list[PendingReview] = []

@@ -24,6 +24,10 @@ class ContainerError(PermanentError):
     """Fallo no recuperable del runtime de contenedores (imagen inexistente, CLI ausente)."""
 
 
+class ContainerUnavailable(TransientError):
+    """`docker pull` o `login` fallaron: el registro puede responder en el reintento."""
+
+
 class ContainerTimeout(TransientError):
     """Un comando excedio su timeout: el contenedor se mata y se destruye igual."""
 
@@ -102,7 +106,7 @@ class DockerCliRuntime:
             self._login(reference, registry_user, registry_token)
         completed = self._run(["pull", reference], timeout_s=600.0)
         if completed.returncode != 0:
-            raise ContainerError(f"docker pull {reference} fallo: {completed.stderr.strip()}")
+            raise ContainerUnavailable(f"docker pull {reference} fallo: {completed.stderr.strip()}")
 
     def _login(self, reference: str, user: str, token: str) -> None:
         """`docker login` sin exponer el token en argv ni en los logs.
@@ -121,9 +125,11 @@ class DockerCliRuntime:
                 timeout=60.0,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            raise ContainerError(f"docker login fallo: {exc}") from exc
+            raise ContainerUnavailable(f"docker login fallo: {exc}") from exc
         if completed.returncode != 0:
-            raise ContainerError(f"docker login fallo en {registry}: {completed.stderr.strip()}")
+            raise ContainerUnavailable(
+                f"docker login fallo en {registry}: {completed.stderr.strip()}"
+            )
 
     def create(self, spec: ContainerSpec) -> str:
         argv = [

@@ -79,6 +79,22 @@ def is_denied(path: str, patterns: Sequence[str]) -> bool:
     return matches_any(normalized, expanded) or matches_any(name, expanded)
 
 
+def unsafe_repo_path(path: str) -> bool:
+    """Ruta que no es relativa al repo: `..`, absoluta, o con query/fragmento.
+
+    `..` y un `%2e%2e` decodificado salen del arbol. `?` y `#` cambian la URL
+    cuando la ruta se interpola en una peticion HTTP.
+    """
+    from urllib.parse import unquote
+
+    candidate = unquote(path or "")
+    if not candidate or candidate.startswith(("/", "\\")):
+        return True
+    if "\\" in candidate or "\x00" in candidate or "?" in candidate or "#" in candidate:
+        return True
+    return any(segment == ".." for segment in candidate.split("/"))
+
+
 def _normalize(path: str) -> str:
     """Quita los prefijos `./` y `/` de una ruta, nunca el punto de `.env`.
 

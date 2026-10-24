@@ -4,11 +4,13 @@ import base64
 import logging
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from agent_review.adapters.diff_parser import parse_unified_diff, resolve_added_line
 from agent_review.errors import PermanentError, TransientError
+from agent_review.ports.context import unsafe_repo_path
 from agent_review.ports.vcs import InlineAnchor, PullRequestInfo, ReviewMarker
 
 logger = logging.getLogger(__name__)
@@ -169,7 +171,10 @@ class GithubVcsAdapter:
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
-        data = self._get_json(self._repo_path(f"/contents/{path}"), params={"ref": ref})
+        if unsafe_repo_path(path):
+            raise GithubError(f"ruta no permitida: {path}")
+        encoded = quote(path, safe="/")
+        data = self._get_json(self._repo_path(f"/contents/{encoded}"), params={"ref": ref})
         if not isinstance(data, dict):
             raise GithubError(f"Contenido de {path}@{ref} con formato inesperado")
         content = data.get("content")

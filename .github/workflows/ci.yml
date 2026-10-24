@@ -31,10 +31,10 @@ jobs:
         run: uv sync --extra dev
 
       - name: Ruff (lint)
-        run: uv run --extra dev ruff check src tests
+        run: uv run --extra dev ruff check src tests scripts
 
       - name: Ruff (formato)
-        run: uv run --extra dev ruff format --check src tests
+        run: uv run --extra dev ruff format --check src tests scripts
 
       - name: Mypy
         run: uv run --extra dev mypy

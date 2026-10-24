@@ -15,6 +15,7 @@ from agent_review.ports.context import (
     is_denied,
     line_matcher,
     slice_lines,
+    unsafe_repo_path,
 )
 from agent_review.ports.vcs import VcsPort
 from agent_review.scope import changed_files
@@ -66,6 +67,8 @@ class VcsContextReader:
         end: int | None = None,
         mode: ReadMode = "full",
     ) -> ReadResult | None:
+        if unsafe_repo_path(path):
+            raise ToolError(f"ruta no permitida: {path}")
         if is_denied(path, self._denylist):
             return None
         sha = self._ref_sha(ref)

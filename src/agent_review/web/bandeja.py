@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from agent_review.chat_outbox import RedisChatOutbox
+from agent_review.decision import require_decision_item
 from agent_review.domain.models import FindingDecision
 from agent_review.domain.paused import PauseKind
 from agent_review.paused_store import PausedStore, RedisPausedStore
@@ -216,10 +217,7 @@ async def _decision_body(
     if not isinstance(raw.get("items"), list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Falta `items`")
     try:
-        return [
-            FindingDecision.model_validate(item) if isinstance(item, dict) else item
-            for item in raw["items"]
-        ], None
+        return [require_decision_item(item) for item in raw["items"]], None
     except ValueError as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"Item de decision invalido: {exc}"

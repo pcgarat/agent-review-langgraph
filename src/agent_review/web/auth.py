@@ -2,12 +2,13 @@
 
 Cancelar es una accion con consecuencias. El bearer de servicio de la API autoriza a
 un servicio, no identifica a una persona, asi que el panel usa una cabecera propia,
-`X-Panel-Session`, con la forma `<usuario>:<rol>`; **no** reutiliza
-`REVIEWS_DECISION_TOKEN` (son superficies distintas).
+`X-Panel-Session`; **no** reutiliza `REVIEWS_DECISION_TOKEN` (son superficies distintas).
 
-El valor de la cabecera se contrasta con `PANEL_SESSION_SECRET` mediante
-`hmac.compare_digest`, igual que el bearer de decision de la API. Sin secreto
-configurado (o con el valor de ejemplo) la sesion se relaja para dev/test.
+Con secreto real, la cabecera es un token opaco que se contrasta con
+`PANEL_SESSION_SECRET` mediante `hmac.compare_digest`. Quien actua y su rol salen de
+`PANEL_SESSION_USER` y `PANEL_SESSION_ROLE`, no del secreto: el actor se publica en
+el PR y no puede ser parte de la credencial. Sin secreto (o con el de ejemplo) la
+sesion se relaja y la cabecera, si viene, se lee como `<usuario>:<rol>`.
 """
 
 from __future__ import annotations
@@ -76,9 +77,10 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     Sin secreto configurado (o con el de ejemplo) se relaja como
     `_verify_decision_token`: la cabecera es opcional y, sin ella, la sesion es la
     local de operador. Con un secreto real, la cabecera es obligatoria y debe
-    coincidir **exactamente** con el secreto, que a su vez es la sesion
-    `<usuario>:<rol>`: el rol lo fija el despliegue, no quien llama, para que un
-    `lector` no pueda reclamar ser `operador`.
+    coincidir **exactamente** con el token. El rol lo fija el despliegue
+    (`PANEL_SESSION_ROLE`, o el sufijo legado `<usuario>:<rol>` del secreto si no
+    hay rol explicito), nunca quien llama, para que un `lector` no pueda reclamar
+    ser `operador`. El usuario publicado no se lee del secreto.
     """
     secret = settings.panel_session_secret.strip()
     relaxed = is_missing(secret)
@@ -94,11 +96,20 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     # `compare_digest` sobre bytes: con `str` no ASCII lanzaria `TypeError`.
     if not hmac.compare_digest(header.encode(), secret.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesion del panel invalida")
-    session = parse_session(secret)
-    if session is None:
-        logger.error("PANEL_SESSION_SECRET no tiene la forma <usuario>:<lector|operador>")
+    return _deployed_session(settings, secret)
+
+
+def _deployed_session(settings: Settings, secret: str) -> Session:
+    """Identidad del despliegue. El secreto solo se usa para el rol legado."""
+    user = settings.panel_session_user.strip() or "panel"
+    role_name = settings.panel_session_role.strip()
+    if not role_name:
+        legacy = parse_session(secret)
+        role_name = legacy.role.value if legacy is not None else Role.OPERADOR.value
+    if role_name not in {item.value for item in Role}:
+        logger.error("PANEL_SESSION_ROLE no es lector ni operador: %s", role_name)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesion del panel mal configurada")
-    return session
+    return Session(user=user, role=Role(role_name))
 
 
 def require_session(
