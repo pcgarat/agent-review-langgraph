@@ -202,7 +202,10 @@ make ci
 ```
 
 Los tests viven en `tests/test_panel_config.py` (resolución, restauración, candado,
-conflicto de revisión y foto en el estado) y cubren el HTML en `tests/test_web_ui.py`.
+conflicto de revisión y foto en el estado) y en `tests/test_web_config_api.py` (el
+contrato HTTP de `GET /api/config` y `POST /config`). El formulario HTML que cubría
+`tests/test_web_ui.py` se retiró en el bloque R de la [029](../029-panel-en-react/spec.md);
+su cobertura vive ahora en la API y en `ConfigPage.test.tsx`.
 
 ## 6. Riesgos
 

@@ -21,7 +21,7 @@ luego cambia son seis revisiones del layout.
 4. **Cuadro de mando (D).** La pantalla que responde «¿qué pasa ahora?».
 5. **Ficha (F).** Recorrido, log, comandos, decisión, consola y razonamiento.
 6. **Bandeja e histórico (B).** Las dos listas.
-7. **Configuración (C).** Los 26 diales con Restaurar.
+7. **Configuración (C).** Los 25 diales con Restaurar.
 8. **Retirada (R).** Se borra `ui.py` y el interruptor; CI y documentos vivos al día.
 
 ## Decisiones de implementación
@@ -90,7 +90,7 @@ sesión no hay ficha y sin el endpoint agregado la ficha haría seis peticiones.
 - **F-K:** la ficha pinta recorrido, log, comandos y decisión; la consola y el
   razonamiento se ven en vivo cuando existen.
 - **B-K:** la bandeja responde una pausa y el histórico filtra.
-- **C-K:** los 26 diales, con ayuda y Restaurar; guardar publica y un conflicto
+- **C-K:** los 25 diales, con ayuda y Restaurar; guardar publica y un conflicto
   `409` se explica en pantalla.
 - **R-K:** `ui.py` borrado, `PANEL_UI` inexistente, las seis rutas siguen
   respondiendo, `GET /api/inexistente` da `404` y `make ci` está en verde.

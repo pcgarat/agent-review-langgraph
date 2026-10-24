@@ -29,6 +29,30 @@ jobs:
       - name: Sincronizar dependencias (con extras dev)
         run: uv sync --extra dev
 
+      # Panel en React (029): mismos comandos que `make frontend-check`. El build
+      # no se versiona, asi que CI instala desde el lock y compila de verdad.
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Panel · dependencias
+        run: npm ci --prefix frontend
+
+      - name: Panel · tipos
+        run: npm run typecheck --prefix frontend
+
+      - name: Panel · lint
+        run: npm run lint --prefix frontend
+
+      - name: Panel · tests
+        run: npm test --prefix frontend
+
+      - name: Panel · build
+        run: npm run build --prefix frontend
+
       - name: Ruff (lint)
         run: uv run --extra dev ruff check src tests scripts
 

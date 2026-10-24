@@ -20,13 +20,13 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | aprobada | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) · [plan](024-contexto-conversacional-del-bucle/plan.md) · [todo](024-contexto-conversacional-del-bucle/todo.md) | 023 (K0 y K3) · S1–S5 (medida) van antes de las corridas *live* de 023 · A tras K3 · B solo con número · S–D pendientes |
 | 027 | [Configuración desde el panel](027-configuracion-desde-el-panel/spec.md) | aprobada | 🟠 El operador publica diales; cada control restaura su valor inicial; la review fija esa foto al empezar · [plan](027-configuracion-desde-el-panel/plan.md) · [todo](027-configuracion-desde-el-panel/todo.md) | 019 · C1–D1 hechas · [ADR-0031](../adr/0031-configuracion-desde-el-panel.md) |
 | 028 | [Claude revisa con la skill](028-claude-revisa-con-la-skill/spec.md) | implementada | 🟢 La skill revisa fuera del núcleo; el sandbox cierra `Bash`; el techo no se reintenta · [ADR-0033](../adr/0033-skill-fuera-del-nucleo.md) | 025 |
-| 029 | [Panel en React](029-panel-en-react/spec.md) | aprobada | 🔵 La interfaz pasa a una SPA React con login, base CoreUI y la API como único contrato; se retira el SSR de `ui.py` · [plan](029-panel-en-react/plan.md) · [todo](029-panel-en-react/todo.md) | 019 · 027 · Q1 (TypeScript) y Q2 (TanStack Query) resueltas; E1–R10 pendientes |
+| 029 | [Panel en React](029-panel-en-react/spec.md) | implementada | 🟢 La interfaz es una SPA React con login, base CoreUI y la API como único contrato; el SSR de `ui.py` está retirado · [plan](029-panel-en-react/plan.md) · [todo](029-panel-en-react/todo.md) | 019 · 027 · E1–R10 hechas; Q3 (e2e) y Q5 (paginación en servidor) fuera de la entrega |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **029**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **030**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

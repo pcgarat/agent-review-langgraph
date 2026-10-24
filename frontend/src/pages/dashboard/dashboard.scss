@@ -1,0 +1,16 @@
+// Ajustes propios del cuadro de mando. Solo lo que CoreUI no da: el resto son
+// clases de la plantilla (`.eyebrow` y `.num` viven en `styles/panel.scss`).
+
+.figure-card {
+  min-height: 100%;
+}
+
+// La tabla es la superficie principal de la pantalla: sin un borde superior suave
+// entre cabecera y filas, el `hover` de CoreUI es lo único que separa la cabecera
+// del primer registro.
+.dashboard-table thead th {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cui-secondary-color);
+}

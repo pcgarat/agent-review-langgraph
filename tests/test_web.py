@@ -474,6 +474,27 @@ def test_pg_trace_reader_delega_en_read_trace_y_cierra_el_pool(
     assert closed == ["close"]
 
 
+def test_pg_trace_reader_lee_la_revision_de_la_foto_de_diales() -> None:
+    """El panel no puede distinguir «guardado» de «en uso» sin esta lectura (029 P9)."""
+
+    class _Tuple:
+        checkpoint = {"channel_values": {"dial_snapshot": {"revision": 4, "overrides": {}}}}
+
+    class _Saver:
+        def get_tuple(self, config: dict[str, object]) -> _Tuple | None:
+            configurable = config["configurable"]
+            assert isinstance(configurable, dict)
+            # Un hilo `:partial` sin foto: se mira el del hilo completo.
+            if str(configurable["thread_id"]).endswith(":partial"):
+                return None
+            return _Tuple()
+
+    reader = read_model.PgTraceReader(database_url="postgresql://unused")
+    reader._resolved = True
+    reader._saver = _Saver()  # type: ignore[assignment]
+    assert reader.dial_revision("acme/app:1") == 4
+
+
 def test_build_panel_read_model_compone_las_dos_fuentes() -> None:
     model = build_panel_read_model(Settings())
     assert isinstance(model, CompositePanelReadModel)
@@ -661,6 +682,73 @@ def test_api_history_devuelve_json_filtrado(monkeypatch: pytest.MonkeyPatch) -> 
     data = client.get("/api/history", params={"pr_id": 2}).json()
     assert [item["review_key"] for item in data] == ["b"]
     assert data[0]["end"] == "completa"
+
+
+def test_api_history_lista_la_mas_reciente_primero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El orden es contrato: la SPA pinta lo que llega (021 R9, 029 Q5)."""
+    from datetime import timedelta
+
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    for key, hours in (("vieja", 5), ("nueva", 1)):
+        history.record(
+            ReviewSummary(
+                review_key=key,
+                repo="r",
+                pr_id=42,
+                head_sha="x",
+                finished_at=_MOMENT - timedelta(hours=hours),
+                end=ReviewEnd.PARTIAL,
+            )
+        )
+    monkeypatch.setattr(app.state, "history", history, raising=False)
+
+    data = client.get("/api/history", params={"repo": "r"}).json()
+
+    assert [item["review_key"] for item in data] == ["nueva", "vieja"]
+    assert data[0]["end"] == "parcial"
+
+
+def test_api_history_sin_redis_devuelve_una_lista_vacia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin Redis el panel no inventa un error: no hay histórico, y se dice así."""
+    monkeypatch.setattr(app.state, "history", None, raising=False)
+
+    response = client.get("/api/history")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_el_historico_no_escapa_nada_porque_no_pinta_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El repositorio es de terceros: viaja crudo en JSON y lo escapa React (P13)."""
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    history.record(
+        ReviewSummary(
+            review_key="<b>malo</b>:1:x",
+            repo="<b>malo</b>",
+            pr_id=1,
+            head_sha="x",
+            finished_at=_MOMENT,
+            end=ReviewEnd.COMPLETE,
+        )
+    )
+    monkeypatch.setattr(app.state, "history", history, raising=False)
+
+    body = client.get("/api/history").json()
+
+    assert body[0]["repo"] == "<b>malo</b>"
+    assert body[0]["review_key"] == "<b>malo</b>:1:x"
 
 
 def test_la_descarga_de_claude_es_el_fichero_entero_y_exige_sesion(
