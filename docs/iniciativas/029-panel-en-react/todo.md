@@ -25,7 +25,7 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 - [x] **S5** Pantalla de login con un solo campo
 - [x] **S6** El rol del cliente sale de `GET /api/session`; `ROLE_COOKIE` se borra
 - [x] **S7** Tests de S1–S3 en Python, con `TestClient`
-- [ ] **S8** `/claude`: formulario del token del CLI, solo `operador`
+- [x] **S8** `/claude`: formulario del token del CLI, solo `operador`
 
 ## Bloque A — API de la ficha (checkpoint A-K)
 
