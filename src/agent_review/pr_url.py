@@ -46,7 +46,7 @@ def parse_pull_request_url(raw: str) -> PullRequestRef:
             continue
         owner = _segment(match.group("owner"))
         repo = _segment(match.group("repo"))
-        return PullRequestRef(repo=f"{owner}/{repo}", pr_id=int(match.group("pr")))
+        return PullRequestRef(repo=f"{repo}/{owner}", pr_id=int(match.group("pr")))
     raise PullRequestUrlError(
         "No reconozco esa URL. Vale una de GitHub (/pull/123) o de Bitbucket (/pull-requests/123)."
     )
