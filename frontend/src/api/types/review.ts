@@ -2,11 +2,23 @@
 
 import type { ActiveNode, PausedItem } from './state'
 
+/** Un hallazgo que un filtro tiró antes de juntar (034). */
+export interface DiscardedFinding {
+  stage: 'contract' | 'l0'
+  id: string | null
+  title: string | null
+  file: string | null
+  reason: string
+}
+
 export interface TraceNode {
   name: string
   index: number
   started_at: string | null
   writes: string[]
+  /** Cifras de lo que hizo el nodo; `null` si no tiene resumen. */
+  summary: Record<string, number> | null
+  discarded: DiscardedFinding[]
 }
 
 export interface ReviewTrace {

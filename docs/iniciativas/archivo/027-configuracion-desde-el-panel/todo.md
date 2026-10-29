@@ -6,6 +6,11 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 [`plan.md`](plan.md). **W va antes que U**: la página no se pinta hasta que una
 review de prueba usa la foto.
 
+> **Nota (029, bloque R):** `U1` y `U2` describen el formulario HTML de
+> `web/ui.py`, que la [029](../029-panel-en-react/spec.md) retiró. La
+> cobertura de esa página vive ahora en `tests/test_web_config_api.py` y en
+> `ConfigPage.test.tsx`. Las tareas se conservan tal como se cerraron.
+
 ## Bloque C — Contrato en memoria (checkpoint C-K)
 
 - [x] **C1** Catálogo junto al campo
@@ -103,9 +108,8 @@ review de prueba usa la foto.
     copia `data-initial` al control y no llama al servidor. Deshabilitado si ya
     está en el valor inicial o si el candado incluye el campo.
   - `lector` ve la página y no ve Guardar.
-  - Verifica: `tests/test_web_ui.py` (23 controles, cuatro secciones, el botón
-    y el atributo del valor inicial).
-  - Ficheros: `src/agent_review/web/ui.py`, `tests/test_web_ui.py`.
+  - Verifica: `tests/test_web_config_api.py` y `ConfigPage.test.tsx`.
+  - Ficheros: `frontend/src/pages/config/`, `src/agent_review/web/config_api.py`.
 
 - [x] **U2** Guardar
   - `fetch` JSON con `require_command_session`. El cuerpo es el formulario
@@ -114,14 +118,13 @@ review de prueba usa la foto.
     inválido → el nombre del campo y la revisión anterior sigue vigente.
   - La página muestra la revisión publicada y, si hay una review en curso, la
     que esa review fijó en W1.
-  - Verifica: `tests/test_web_ui.py` y `tests/test_panel_config.py`.
-  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/web/commands.py`
-    solo si el POST vive junto a los otros comandos, `tests/test_web_ui.py`.
+  - Verifica: `tests/test_web_config_api.py` y `tests/test_panel_config.py`.
+  - Ficheros: `frontend/src/pages/config/`, `src/agent_review/web/config_api.py`.
 
 ### Checkpoint U-K
 
 - [x] Restaurar no escribe. Guardar una sola clave distinta publica solo esa clave.
-- [x] `make test T=tests/test_web_ui.py` en verde.
+- [x] `make test T=tests/test_web_config_api.py` en verde.
 
 ## Bloque D — Documentación (checkpoint D-K)
 
@@ -149,15 +152,15 @@ Hallazgos de la revisión de `feat/configuracion-desde-el-panel` (024).
   - Un dial bloqueado se pinta con su valor inicial, no con el override publicado
     que `apply_document` descarta; el navegador no lo envía y el servidor acepta
     que falte. Un valor distinto sigue siendo `400`.
-  - Verifica: `tests/test_web_ui.py` y `tests/test_panel_config.py`.
-  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/panel_config.py`.
+  - Verifica: `tests/test_web_config_api.py` y `tests/test_panel_config.py`.
+  - Ficheros: `frontend/src/pages/config/`, `src/agent_review/panel_config.py`.
 
 - [x] **R2** Valor inicial pintado
   - El formulario viaja con sus `data-initial`; el servidor difunde contra esos
     valores y responde `409` si no coinciden con los del proceso.
   - Un entero vacío es `400` con su campo, nunca `0`.
-  - Verifica: `tests/test_web_ui.py`, `tests/test_panel_config.py`.
-  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/panel_config.py`.
+  - Verifica: `tests/test_web_config_api.py`, `tests/test_panel_config.py`.
+  - Ficheros: `frontend/src/pages/config/`, `src/agent_review/panel_config.py`.
 
 - [x] **R3** Techo y arranque
   - `MAX_AUTONOMY_OVERRIDE` se valida con `PolicyEngine.from_file`, y solo cuando el
@@ -165,7 +168,7 @@ Hallazgos de la revisión de `feat/configuracion-desde-el-panel` (024).
   - El `web` monta `config/` (solo lectura) y recibe los mismos diales que el
     worker. El candado y el almacén se resuelven en el `lifespan`.
   - Verifica: `tests/test_compose.py`, `tests/test_panel_config.py`.
-  - Ficheros: `src/agent_review/web/ui.py`, `src/agent_review/web/main.py`,
+  - Ficheros: `src/agent_review/web/main.py`, `src/agent_review/web/config_api.py`,
     `docker-compose.yml`.
 
 - [x] **R4** Almacén

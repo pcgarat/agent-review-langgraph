@@ -16,6 +16,7 @@ from agent_review.domain.models import (
     ContextScope,
     Decision,
     DecisionOutcome,
+    DiscardedFinding,
     FileClass,
     Finding,
     FindingAction,
@@ -69,6 +70,8 @@ _STATE_TYPES: tuple[type, ...] = (
     FileClass,
     # 014: uso del bucle de herramientas por persona.
     ToolUsage,
+    # 034: hallazgos que la persona claude leyó y tiró.
+    DiscardedFinding,
     ApprovalRequest,
     PendingDecision,
     FindingDecision,

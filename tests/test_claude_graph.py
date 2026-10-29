@@ -28,6 +28,7 @@ from agent_review.domain.models import (
 from agent_review.graph.build import build_approval, build_claude_graph, build_graph
 from agent_review.policy.engine import PolicyEngine
 from agent_review.settings import Settings
+from agent_review.trace import read_trace
 from agent_review.worker.main import build_runtime
 
 _REPO = "r"
@@ -204,6 +205,8 @@ def test_l0_quita_la_cita_fuera_del_diff_antes_de_la_pausa(tmp_path: Path) -> No
     )
     result = _invoke(graph, store, [dentro, fuera])
     assert _pendientes(result) == ["dentro"]
+    descartes = graph.get_state(_config()).values["discarded"]
+    assert [(item.stage, item.id) for item in descartes] == [("l0", "fuera")]
 
 
 def test_la_persona_estatica_entra_en_la_misma_pausa(tmp_path: Path) -> None:
@@ -225,6 +228,10 @@ def test_la_persona_estatica_entra_en_la_misma_pausa(tmp_path: Path) -> None:
     assert "cli" in pendientes
     assert any(item.startswith("standards-") for item in pendientes)
     assert len(pendientes) == 2
+    # Dos ramas en el mismo paso: las escrituras no dicen de quién es cada una.
+    trace = read_trace(graph.checkpointer, _config()["configurable"]["thread_id"])
+    assert trace is not None
+    assert [node.summary for node in trace.nodes if node.name == "persona"] == [None, None]
 
 
 def test_artefacto_vacio_no_pausa_ni_escribe_y_avisa(tmp_path: Path) -> None:
@@ -334,3 +341,42 @@ def test_el_sello_es_publish_y_no_degrada_la_severidad(tmp_path: Path) -> None:
     rebuilt = build_approval(values)
     assert rebuilt is not None and rebuilt.pause_kind == "publication"
     assert result["__interrupt__"][0].value.pause_kind == "publication"  # type: ignore[index, attr-defined]
+
+
+def test_la_traza_cuenta_lo_que_hizo_cada_paso(tmp_path: Path) -> None:
+    vcs = FakeVcs(anchors={"tests/FooTest.php": _ancla()})
+    store, graph = _grafo(tmp_path, [], vcs=vcs)
+    dentro = make_finding("Cita dentro").model_copy(update={"id": "dentro"})
+    fuera = make_finding("Cita fuera").model_copy(
+        update={"id": "fuera", "evidence": ["tests/FooTest.php:3 no esta en el diff"]}
+    )
+    _invoke(graph, store, [dentro, fuera])
+    graph.invoke(
+        Command(resume=_decision([("dentro", DecisionOutcome.APPROVED)])), config=_config()
+    )
+
+    trace = read_trace(graph.checkpointer, _config()["configurable"]["thread_id"])
+
+    assert trace is not None
+    by_name = {node.name: node for node in trace.nodes}
+    assert by_name["scope"].summary == {"files": 1, "ignored": 0}
+    assert by_name["persona"].summary == {"returned": 2, "contract": 0, "l0": 1, "kept": 1}
+    assert [(item.id, item.reason) for item in by_name["persona"].discarded] == [
+        ("fuera", "la cita no aparece en el diff")
+    ]
+    assert by_name["merge"].summary == {"before": 1, "after": 1}
+    assert by_name["stamp"].summary == {"publish": 1, "other": 0}
+    assert by_name["publish"].summary == {"published": 1, "inline": 1}
+    assert by_name["hitl"].summary is None
+
+
+def test_la_traza_de_un_hilo_sin_descartes_no_falla(tmp_path: Path) -> None:
+    store, graph = _grafo(tmp_path, [])
+    _invoke(graph, store, [])
+
+    trace = read_trace(graph.checkpointer, _config()["configurable"]["thread_id"])
+
+    assert trace is not None
+    persona = next(node for node in trace.nodes if node.name == "persona")
+    assert persona.summary == {"returned": 0, "contract": 0, "l0": 0, "kept": 0}
+    assert persona.discarded == []

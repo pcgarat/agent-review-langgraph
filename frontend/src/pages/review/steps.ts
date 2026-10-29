@@ -1,6 +1,6 @@
 /** Diagrama de los pasos del grafo, en el orden en que una review los recorre. */
 
-import type { ReviewTrace } from '@/api/types/review'
+import type { DiscardedFinding, ReviewTrace } from '@/api/types/review'
 import type { ActiveNode } from '@/api/types/state'
 
 export type StepPhase = 'running' | 'paused' | 'done' | 'pending' | 'skipped'
@@ -95,6 +95,8 @@ export interface StepView {
   title: string
   phase: StepPhase
   caption: string
+  /** Hallazgos que el paso tiró, con su motivo (034). */
+  discarded: DiscardedFinding[]
 }
 
 /**
@@ -116,19 +118,63 @@ export function graphSteps(trace: ReviewTrace, running: readonly ActiveNode[]): 
   const active = new Set(running.map((node) => node.node))
   const pending = new Set(trace.next)
   const useNext = trace.state === 'in_progress' && active.size === 0
+  // Un nodo que corrió dos veces (reanudación) cuenta por su última pasada.
+  const lastRun = new Map(trace.nodes.map((node) => [node.name, node]))
   return names.map((name) => {
     const phase = phaseOf(trace.state, name, completed, active, pending, useNext)
     const spec = BY_NAME.get(name)
     const branches = running
       .filter((node) => node.node === name)
       .reduce((sum, node) => sum + node.branches, 0)
+    const node = lastRun.get(name)
+    const counted = phase === 'done' && node?.summary ? summaryCaption(name, node.summary) : null
     return {
       name,
       title: spec?.title ?? name,
       phase,
-      caption: caption(spec, name, phase, branches),
+      caption: counted ?? caption(spec, name, phase, branches),
+      discarded: phase === 'done' ? (node?.discarded ?? []) : [],
     }
   })
+}
+
+function count(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/** Texto con las cifras del paso (034 §4.1), o `null` si no sabe leerlas. */
+function summaryCaption(name: string, summary: Record<string, number>): string | null {
+  const n = (key: string) => summary[key] ?? 0
+  switch (name) {
+    case 'scope': {
+      const parts = [`${count(n('files'), 'fichero', 'ficheros')} en el diff`]
+      if (n('ignored') > 0) parts.push(count(n('ignored'), 'ignorado', 'ignorados'))
+      return parts.join(' · ')
+    }
+    case 'persona': {
+      if (n('returned') === 0) return 'La skill no devolvió hallazgos'
+      const parts = [`La skill devolvió ${n('returned')}`]
+      if (n('contract') > 0) {
+        parts.push(`${count(n('contract'), 'descartado', 'descartados')} por contrato`)
+      }
+      if (n('l0') > 0) parts.push(`${count(n('l0'), 'descartado', 'descartados')} por L0`)
+      if (n('kept') > 0) parts.push(`${n('kept')} ${n('kept') === 1 ? 'entra' : 'entran'}`)
+      return parts.join(' · ')
+    }
+    case 'merge': {
+      const parts = [`${n('after')} tras juntar`]
+      const duplicates = n('before') - n('after')
+      if (duplicates > 0) parts.push(count(duplicates, 'duplicado', 'duplicados'))
+      return parts.join(' · ')
+    }
+    case 'stamp':
+      return `${n('publish')} para publicar`
+    case 'publish':
+      if (n('published') === 0) return 'No se escribió en el PR'
+      return n('inline') > 0 ? `Comentario en el PR · ${n('inline')} en línea` : 'Comentario en el PR'
+    default:
+      return null
+  }
 }
 
 function phaseOf(

@@ -193,7 +193,7 @@ ficheros versionados:
 ### Configuración desde el panel (027)
 
 El rol `operador` publica, en `/config`, los diales del catálogo de
-[027](iniciativas/027-configuracion-desde-el-panel/spec.md). La sección Claude
+[027](iniciativas/archivo/027-configuracion-desde-el-panel/spec.md). La sección Claude
 son los techos del CLI (`claude_max_turns`, `claude_timeout_s`): el runner no
 lee Postgres; el worker se los manda en la siguiente ejecución. El `lector` ve la
 pantalla y no guarda. Cada control nace con el valor que `Settings` ya resolvió

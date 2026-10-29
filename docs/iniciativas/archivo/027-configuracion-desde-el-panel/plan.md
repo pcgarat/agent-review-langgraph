@@ -9,7 +9,7 @@ Este plan fija el orden y por qué el orden es ese.
 
 Cinco bloques. El contrato en memoria va primero porque la página y el worker
 dependen de él. El worker va **antes** que la página: si la foto no cambia la
-review, pintar 23 controles sería un formulario que miente.
+review, pintar 25 controles sería un formulario que miente.
 
 1. **Contrato (C).** Catálogo, valor inicial, candado, validación y techo de
    autonomía. Sin Postgres y sin HTML.
@@ -91,9 +91,10 @@ número que W ya deja en el estado.
 - **W-K (tras W):** una review nueva usa el override; un hilo reanudado sigue
   con la foto del checkpoint; un reintento usa la fila vigente. No se abre un
   pool por review. `make test T=tests/test_worker.py` en verde.
-- **U-K (tras U):** los 23 controles, en su sección, con ayuda y Restaurar.
+- **U-K (tras U):** los 25 controles, en cinco secciones (Presupuesto y lotes,
+  Verificador, Bucle de lectura, Claude y Política), con ayuda y Restaurar.
   Restaurar no escribe. Un `lector` recibe 403. Una revisión vieja recibe
-  conflicto y la fila no cambia. `make test T=tests/test_web_ui.py` en verde.
+  conflicto y la fila no cambia. `make test T=tests/test_web_config_api.py` en verde.
 - **D-K (tras D):** `make ci` en verde. `operacion.md` describe la página y
   `PANEL_CONFIG_LOCK` y enlaza el catálogo sin copiarlo.
 

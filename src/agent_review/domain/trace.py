@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent_review.domain.models import DiscardedFinding
+
 # Estado del hilo reconstruido del checkpointer: no queda nada por ejecutar
 # (`completed`), espera a una persona o a una wave de fix (`paused`) o quedo a
 # medias (`in_progress`: un nodo fallo o el worker murio a mitad).
@@ -31,6 +33,11 @@ class TraceNode(BaseModel):
     # Claves del estado que escribio el nodo (canales de LangGraph, no valores):
     # suficiente para saber que aporto cada paso sin arrastrar el estado entero.
     writes: list[str] = Field(default_factory=list)
+    # Cifras de lo que hizo el nodo (034), sacadas de lo que escribió su tarea.
+    # `None`: el nodo no tiene resumidor, aún no cerró o corrió en paralelo.
+    summary: dict[str, int] | None = None
+    # Hallazgos que el nodo tiró y por qué. Solo `persona` del motor claude.
+    discarded: list[DiscardedFinding] = Field(default_factory=list)
 
 
 class ReviewTrace(BaseModel):

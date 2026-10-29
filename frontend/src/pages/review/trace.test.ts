@@ -24,8 +24,8 @@ describe('duraciones del recorrido', () => {
     const timeline = deriveTimeline({
       ...REVIEW.trace!,
       nodes: [
-        { name: 'scope', index: 0, started_at: null, writes: [] },
-        { name: 'persona', index: 1, started_at: '2026-10-24T11:00:02+00:00', writes: [] },
+        { name: 'scope', index: 0, started_at: null, writes: [], summary: null, discarded: [] },
+        { name: 'persona', index: 1, started_at: '2026-10-24T11:00:02+00:00', writes: [], summary: null, discarded: [] },
       ],
     })
     // El primero no tiene sello: no hay marca de entrada que medir.
@@ -38,8 +38,8 @@ describe('duraciones del recorrido', () => {
     const timeline = deriveTimeline({
       ...REVIEW.trace!,
       nodes: [
-        { name: 'scope', index: 0, started_at: '2026-10-24T11:00:05+00:00', writes: [] },
-        { name: 'persona', index: 1, started_at: '2026-10-24T11:00:01+00:00', writes: [] },
+        { name: 'scope', index: 0, started_at: '2026-10-24T11:00:05+00:00', writes: [], summary: null, discarded: [] },
+        { name: 'persona', index: 1, started_at: '2026-10-24T11:00:01+00:00', writes: [], summary: null, discarded: [] },
       ],
       updated_at: '2026-10-24T11:00:06+00:00',
     })

@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_review.domain.contracts import ContractError, validate_finding
-from agent_review.domain.models import Finding
+from agent_review.domain.models import DiscardedFinding, Finding
 
 _COMPLETE = "complete"
 _SCENARIO_SEVERITIES = frozenset({"P0", "P1", "P2"})
@@ -23,15 +23,33 @@ _SCENARIO_SEVERITIES = frozenset({"P0", "P1", "P2"})
 class AgentModeRejected(Exception):
     """La salida no es una review terminada que se pueda guardar."""
 
-    def __init__(self, message: str, *, discarded: int = 0) -> None:
+    def __init__(self, message: str, *, rejected: tuple[DiscardedFinding, ...] = ()) -> None:
         super().__init__(message)
-        self.discarded = discarded
+        self.rejected = rejected
+
+    @property
+    def discarded(self) -> int:
+        return len(self.rejected)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return _reasons(self.rejected)
 
 
 @dataclass(frozen=True)
 class AgentModeReview:
     findings: list[Finding]
-    discarded: int
+    rejected: tuple[DiscardedFinding, ...] = ()
+
+    @property
+    def discarded(self) -> int:
+        """Un descarte por hallazgo que no cumple el contrato."""
+        return len(self.rejected)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """`#id: motivo`, una línea por descarte, para el diario."""
+        return _reasons(self.rejected)
 
 
 def adapt_agent_mode(payload: object) -> AgentModeReview:
@@ -51,22 +69,17 @@ def adapt_agent_mode(payload: object) -> AgentModeReview:
         raise AgentModeRejected("pre_existing_findings no es una lista")
 
     kept: list[Finding] = []
-    discarded = 0
-    for item in findings:
-        mapped = _map_finding(item, force_pre_existing=False)
-        if mapped is None:
-            discarded += 1
-        else:
-            kept.append(mapped)
-    for item in prior:
-        mapped = _map_finding(item, force_pre_existing=True)
-        if mapped is None:
-            discarded += 1
-        else:
-            kept.append(mapped)
+    rejected: list[DiscardedFinding] = []
+    for items, force in ((findings, False), (prior, True)):
+        for item in items:
+            mapped = _map_finding(item, force_pre_existing=force)
+            if isinstance(mapped, str):
+                rejected.append(_rejected(item, mapped))
+            else:
+                kept.append(mapped)
     if not kept and (findings or prior):
-        raise AgentModeRejected("todos los hallazgos se descartaron", discarded=discarded)
-    return AgentModeReview(findings=kept, discarded=discarded)
+        raise AgentModeRejected("todos los hallazgos se descartaron", rejected=tuple(rejected))
+    return AgentModeReview(findings=kept, rejected=tuple(rejected))
 
 
 def _object(payload: object) -> dict[str, Any]:
@@ -80,21 +93,22 @@ def _object(payload: object) -> dict[str, Any]:
     return payload
 
 
-def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
+def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | str:
+    """El hallazgo validado, o el motivo por el que no entra."""
     if not isinstance(item, dict):
-        return None
+        return "no es un objeto"
     ident = _identifier(item.get("#"))
     if ident is None:
-        return None
+        return "sin identificador #"
     why = _text(item.get("why_it_matters"))
     if not why:
-        return None
+        return "sin why_it_matters"
     scenario = _text(item.get("failure_scenario"))
     severity = item.get("severity")
     if not scenario and severity in _SCENARIO_SEVERITIES:
         scenario = why
     if severity in _SCENARIO_SEVERITIES and not scenario:
-        return None
+        return "sin failure_scenario"
     flag = True if force_pre_existing else item.get("pre_existing", False)
     body: dict[str, Any] = {
         "id": ident,
@@ -106,7 +120,7 @@ def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
         "autofix_class": item.get("autofix_class"),
         "owner": item.get("owner"),
         "confidence": item.get("confidence"),
-        "evidence": item.get("evidence"),
+        "evidence": _evidence(item),
         "pre_existing": flag,
     }
     suggested = item.get("suggested_fix")
@@ -119,8 +133,53 @@ def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
         body["failure_scenario"] = scenario
     try:
         return validate_finding(body)
-    except (ContractError, ValidationError):
-        return None
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first["loc"]) or "hallazgo"
+        return f"{field}: {first['msg']}"
+    except ContractError as exc:
+        return str(exc)
+
+
+def _rejected(item: object, reason: str) -> DiscardedFinding:
+    data = item if isinstance(item, dict) else {}
+    title = _text(data.get("title"))
+    file = _text(data.get("file"))
+    return DiscardedFinding(
+        stage="contract",
+        id=_identifier(data.get("#")),
+        title=title[:200] or None,
+        file=file or None,
+        reason=reason[:300],
+    )
+
+
+def _reasons(rejected: tuple[DiscardedFinding, ...]) -> tuple[str, ...]:
+    return tuple(
+        f"#{item.id}: {item.reason}" if item.id is not None else f"hallazgo sin #: {item.reason}"
+        for item in rejected
+    )
+
+
+def _evidence(item: dict[str, Any]) -> object:
+    """La skill promete una lista, pero en `lite` a veces la emite como texto.
+
+    Un texto se envuelve en una lista. `first_evidence` (la cita literal de la
+    línea) va delante si el primer elemento no la contiene: L0 busca en el
+    diff solo la primera cita, y en `lite` esa suele ser prosa. Cualquier otra
+    forma pasa tal cual y la rechaza el contrato.
+    """
+    value = item.get("evidence")
+    if isinstance(value, str):
+        value = [value.strip()] if value.strip() else []
+    quote = _text(item.get("first_evidence"))
+    if not quote:
+        return value
+    if value is None:
+        return [quote]
+    if isinstance(value, list) and not (value and isinstance(value[0], str) and quote in value[0]):
+        return [quote, *value]
+    return value
 
 
 def _identifier(value: object) -> str | None:

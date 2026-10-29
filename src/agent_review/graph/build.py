@@ -22,6 +22,7 @@ from agent_review.domain.models import (
     ContextScope,
     Decision,
     DecisionOutcome,
+    DiscardedFinding,
     FileClass,
     Finding,
     FindingAction,
@@ -110,6 +111,9 @@ class ReviewState(TypedDict, total=False):
     reviewer: str
     # Las personas escriben aqui en paralelo; el reducer acumula.
     findings: Annotated[list[Finding], operator.add]
+    # Hallazgos que una persona leyó y tiró antes del merge, con el filtro y el
+    # motivo (034). Solo la persona `claude` escribe; la ficha los cuenta.
+    discarded: Annotated[list[DiscardedFinding], operator.add]
     # Persona que produjo cada hallazgo (`_finding_id` -> nombre). Solo la usa el
     # merge para fusionar el mismo problema visto por dos personas con anclas
     # cercanas sin fusionar dos hallazgos de la misma persona en lineas distintas.
@@ -1253,6 +1257,8 @@ def build_claude_graph(
             update["coverage"] = result.coverage
         if result.tooling_status is not None:
             update["source_status"] = {reviewer.name: result.tooling_status}
+        if result.discarded:
+            update["discarded"] = result.discarded
         return update
 
     def merge(state: ReviewState) -> ReviewState:
