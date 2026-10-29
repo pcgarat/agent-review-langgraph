@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { ToastProvider } from '@/components/ToastProvider'
 import { HistoryPage } from '@/pages/HistoryPage'
 
@@ -28,10 +29,12 @@ function renderHistory(initial = '/history') {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initial]}>
-        <ToastProvider>
-          <HistoryPage />
-          <LocationProbe />
-        </ToastProvider>
+        <AutoRefreshProvider>
+          <ToastProvider>
+            <HistoryPage />
+            <LocationProbe />
+          </ToastProvider>
+        </AutoRefreshProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   )

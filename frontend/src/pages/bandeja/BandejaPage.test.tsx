@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { ToastProvider } from '@/components/ToastProvider'
 import { SessionContext, type SessionContextValue } from '@/session/session'
 import { BandejaPage } from '@/pages/BandejaPage'
@@ -37,9 +38,11 @@ function renderBandeja(session: SessionContextValue) {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SessionContext.Provider value={session}>
-          <ToastProvider>
-            <BandejaPage />
-          </ToastProvider>
+          <AutoRefreshProvider>
+            <ToastProvider>
+              <BandejaPage />
+            </ToastProvider>
+          </AutoRefreshProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,

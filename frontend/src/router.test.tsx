@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { SessionContext, type SessionContextValue } from '@/session/session'
 import { ToastProvider } from '@/components/ToastProvider'
 import { AppRoutes } from './router'
@@ -28,9 +29,11 @@ function renderAt(path: string, session: SessionContextValue) {
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter initialEntries={[path]}>
         <SessionContext.Provider value={session}>
-          <ToastProvider>
-            <AppRoutes />
-          </ToastProvider>
+          <AutoRefreshProvider>
+            <ToastProvider>
+              <AppRoutes />
+            </ToastProvider>
+          </AutoRefreshProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,

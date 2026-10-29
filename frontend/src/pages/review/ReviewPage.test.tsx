@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewDetail } from '@/api/types/review'
 import type { PanelState } from '@/api/types/state'
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { ToastProvider } from '@/components/ToastProvider'
 import { SessionContext, type SessionContextValue } from '@/session/session'
 import { PANEL_STATE } from '@/pages/dashboard/fixture'
@@ -77,9 +78,11 @@ function renderReview(session: SessionContextValue = OPERADOR) {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SessionContext.Provider value={session}>
-          <ToastProvider>
-            <ReviewPage reviewKey={REVIEW.review_key} />
-          </ToastProvider>
+          <AutoRefreshProvider>
+            <ToastProvider>
+              <ReviewPage reviewKey={REVIEW.review_key} />
+            </ToastProvider>
+          </AutoRefreshProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,
