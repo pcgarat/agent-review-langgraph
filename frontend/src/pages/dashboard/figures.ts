@@ -31,13 +31,40 @@ function activeSpend(state: PanelState): string {
 }
 
 /**
- * Las cuatro cifras de «¿qué pasa ahora?» (029, D1).
+ * Las cuatro cifras de «¿qué pasa ahora?» (029 D1, ampliado en 030).
  *
  * «Esperando persona» cuenta solo `paused.human`: una pausa `fix` espera a la wave
  * de corrección, no a una decisión humana, y sumarlas enseñaría trabajo que nadie
  * puede desatascar desde el panel.
+ *
+ * «En cola» suma los aparcados: están esperando, no corriendo ni descartados. Si
+ * no contaran, la primera pantalla diría «nada esperando» con un job parado
+ * esperando un token (030, K4).
  */
+/**
+ * Detalle de la cifra de cola: distingue lo que va a arrancar de lo que está
+ * apartado. Un «2 en cola» sin más esconde que ninguna de las dos va a moverse
+ * sin que alguien escriba la sesión.
+ */
+function queueDetail(queued: number, running: number, parked: number, pendingCommit: number): string {
+  if (queued === 0) return 'Nada esperando'
+  const parts: string[] = []
+  if (parked > 0) {
+    parts.push(`${formatNumber(parked)} ${parked === 1 ? 'aparcada' : 'aparcadas'}`)
+  }
+  if (running > 0) {
+    parts.push(
+      pendingCommit > 0
+        ? `${formatNumber(pendingCommit)} sin commit todavía`
+        : `${formatNumber(running)} lista${running === 1 ? '' : 's'} para arrancar`,
+    )
+  }
+  return parts.join(' · ')
+}
+
 export function dashboardFigures(state: PanelState): DashboardFigure[] {
+  const parked = state.parked ?? []
+  const queued = state.queue.length + parked.length
   const pendingCommit = state.queue.filter((item) => item.launch && !item.head_sha).length
   const human = state.paused.human
   const pendingDecisions = human.reduce((total, item) => total + item.pending.length, 0)
@@ -47,13 +74,8 @@ export function dashboardFigures(state: PanelState): DashboardFigure[] {
     {
       key: 'queue',
       label: 'En cola',
-      value: state.queue.length,
-      detail:
-        state.queue.length === 0
-          ? 'Nada esperando'
-          : pendingCommit > 0
-            ? `${formatNumber(pendingCommit)} sin commit todavía`
-            : 'Todas con commit',
+      value: queued,
+      detail: queueDetail(queued, state.queue.length, parked.length, pendingCommit),
     },
     {
       key: 'active',

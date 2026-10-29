@@ -61,6 +61,7 @@ describe('rutas', () => {
             queue: [],
             active: [],
             paused: { human: [], fix: [] },
+            parked: [],
             dead: [],
             budget: [],
           }),

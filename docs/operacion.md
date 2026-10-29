@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 # Operación
 
@@ -663,6 +663,7 @@ firma inválida o ausente da `401`.
 | «¿Qué está pensando el revisor?» | El razonamiento de los revisores (021) | Con `REASONING_STREAM_ENABLED=true`: pestaña «Razonamiento» del detalle en el panel, o `redis-cli XRANGE reviews:reasoning:<review_key> - +`. Un lote con `fallo` lleva el motivo (sin presupuesto, error del modelo) |
 | El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no hay sesión | Levantar con `--profile panel`; en producción se entra por `/login` con ese token, o se manda `X-Panel-Session` a mano. En dev/test sin secreto, la sesión se relaja |
 | El panel responde `503` con «no está construido» | La imagen se construyó sin la etapa `panel` o el checkout no tiene `frontend/dist` | Reconstruir la imagen (`make panel`); en local, `make frontend-build` antes de arrancar el `web` |
+| Lancé una review y no aparece en ninguna sección | El job está aparcado en `reviews:claude:parked`: sin sesión de Claude, el worker no ejecuta el CLI | Sección **Aparcados** del cuadro de mando: dice el motivo y qué lo desatasca. `session` se resuelve en `/claude`; `quota` y `ceiling` no vuelven solos. A mano, `redis-cli LRANGE reviews:claude:parked 0 -1` |
 | Cambié la SPA y el panel sigue igual | El `web` sirve el build de la imagen, no el fuente | `make panel` (reconstruye) o `make frontend-build` en local. Para iterar, `make panel-dev` (Vite en `:5173`) |
 | El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
 | Cancelar no surte efecto | La marca no llegó, o la review no pasa por una frontera | `redis-cli EXISTS reviews:cancel:<review_key>`; si está, la review corre: la cancelación se aplica al empezar el **siguiente nodo** (un nodo entero de latencia). Si estaba pausada, el comando encola el `request` marcado y el worker lo aborta al desencolar |

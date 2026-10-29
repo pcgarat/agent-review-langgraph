@@ -64,10 +64,11 @@ describe('cuadro de mando', () => {
   it('pinta las cuatro cifras de «¿qué pasa ahora?» con sus campos', async () => {
     renderDashboard(OPERADOR)
 
-    // La cola tiene 2, uno de ellos un lanzamiento todavía sin SHA.
+    // La cola suma los 2 encolados y los 2 aparcados: los aparcados están
+    // esperando y sin contarlos la cifra diría «nada» con trabajo parado (030).
     const queue = await figure('queue')
-    expect(within(queue).getByText('2')).toBeInTheDocument()
-    expect(within(queue).getByText('1 sin commit todavía')).toBeInTheDocument()
+    expect(within(queue).getByText('4')).toBeInTheDocument()
+    expect(within(queue).getByText('2 aparcadas · 1 sin commit todavía')).toBeInTheDocument()
 
     const active = await figure('active')
     expect(within(active).getByText('1')).toBeInTheDocument()

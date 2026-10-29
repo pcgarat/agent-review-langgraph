@@ -28,7 +28,14 @@ from agent_review.checkpointer import build_reader_checkpointer
 from agent_review.domain.models import PendingDecision, ReviewRequest
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.trace import PauseKindName, ReviewTrace
-from agent_review.queue import DEAD_LETTER_KEY, JOURNAL_PREFIX, QUEUE_KEY
+from agent_review.queue import (
+    DEAD_LETTER_KEY,
+    JOURNAL_PREFIX,
+    PARKED_KEY,
+    QUEUE_KEY,
+    ParkReason,
+    parse_parked,
+)
 from agent_review.redis_utils import build_redis_client
 from agent_review.settings import Settings
 from agent_review.trace import read_review_notes, read_trace
@@ -113,6 +120,25 @@ class PausedGroups(BaseModel):
     fix: list[PausedItem] = Field(default_factory=list)
 
 
+class ParkedItem(BaseModel):
+    """Un job del motor `claude` esperando en `reviews:claude:parked` (030).
+
+    No esta en la cola ni corriendo: el worker lo aparto porque no podia
+    ejecutarlo. `reason` dice que lo desatasca, y es lo unico que distingue una
+    espera de un token de un cupo agotado que no se debe reintentar.
+
+    El request entero no se expone: el panel no lo usa y un campo nuevo del modelo
+    apareceria en la API sin querer.
+    """
+
+    review_key: str
+    repo: str = ""
+    pr_id: int = 0
+    pipeline_id: str = ""
+    reason: ParkReason
+    launch: bool = False
+
+
 class PanelState(BaseModel):
     """Todo lo que el panel pinta de un tiron (OP13)."""
 
@@ -120,6 +146,9 @@ class PanelState(BaseModel):
     queue: list[QueueItem] = Field(default_factory=list)
     active: list[ActiveReview] = Field(default_factory=list)
     paused: PausedGroups = Field(default_factory=PausedGroups)
+    # Jobs apartados por el worker. Van aparte de `queue` porque no van a arrancar
+    # solos: hace falta una accion, o que caduque un aviso (030).
+    parked: list[ParkedItem] = Field(default_factory=list)
     dead: list[DeadLetterItem] = Field(default_factory=list)
     budget: list[BudgetItem] = Field(default_factory=list)
 
@@ -185,6 +214,7 @@ class RedisPanelReadModel:
             queue=self._guard("cola", self._read_queue, []),
             active=self._guard("en vuelo", self._read_active, []),
             paused=self._guard("pausas", self._read_paused, PausedGroups()),
+            parked=self._guard("aparcados", self._read_parked, []),
             dead=self._guard("descartes", self._read_dead, []),
             budget=self._guard("presupuesto", self._read_budget, []),
         )
@@ -237,6 +267,27 @@ class RedisPanelReadModel:
             item = _paused_item(review)
             (groups.fix if review.kind is PauseKind.FIX else groups.human).append(item)
         return groups
+
+    def _read_parked(self) -> list[ParkedItem]:
+        """Jobs aparcados por el worker, con su motivo (030).
+
+        El parse del payload es el del worker (`parked_entries`): una entrada
+        ilegible o con un motivo desconocido se descarta alli con un aviso, en vez
+        de llegar aqui como un motivo que la pantalla no sabria explicar.
+        """
+        items: list[ParkedItem] = []
+        for reason, request in parse_parked(self._client.lrange(PARKED_KEY, 0, -1)):
+            items.append(
+                ParkedItem(
+                    review_key=request.review_key,
+                    repo=request.repo,
+                    pr_id=request.pr_id,
+                    pipeline_id=request.pipeline_id,
+                    reason=reason,
+                    launch=request.launch,
+                )
+            )
+        return items
 
     def _read_dead(self) -> list[DeadLetterItem]:
         items: list[DeadLetterItem] = []

@@ -82,6 +82,26 @@ export const PANEL_STATE: PanelState = {
       },
     ],
   },
+  parked: [
+    {
+      review_key: 'pcgarat/agent-review-langgraph:19:abc123:panel',
+      repo: 'pcgarat/agent-review-langgraph',
+      pr_id: 19,
+      pipeline_id: 'panel',
+      // Espera un token: es el caso que dejaba un lanzamiento invisible (030).
+      reason: 'session',
+      launch: true,
+    },
+    {
+      review_key: 'pcgarat/agent-review-langgraph:20:def456:ci',
+      repo: 'pcgarat/agent-review-langgraph',
+      pr_id: 20,
+      pipeline_id: 'ci',
+      // Agotó el cupo: no vuelve solo, y eso lo cambia todo para el operador.
+      reason: 'quota',
+      launch: false,
+    },
+  ],
   dead: [
     {
       review_key: 'cqm/emotivoo-v2:46:fff666:ci',

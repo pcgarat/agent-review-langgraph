@@ -22,6 +22,7 @@ import {
   PausedSection,
   QueueSection,
 } from './dashboard/Sections'
+import { ParkedSection } from './dashboard/ParkedSection'
 import './dashboard/dashboard.scss'
 
 export function DashboardPage() {
@@ -90,6 +91,7 @@ export function DashboardPage() {
         items={data.paused.fix}
         isOperador={isOperador}
       />
+      <ParkedSection items={data.parked} />
       <DeadSection items={data.dead} isOperador={isOperador} />
       <BudgetSection items={data.budget} />
     </>

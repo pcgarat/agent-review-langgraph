@@ -61,11 +61,30 @@ export interface BudgetItem {
   remaining: number
 }
 
+/**
+ * Jobs que el worker apartó en `reviews:claude:parked` (030).
+ *
+ * No van a arrancar solos: hace falta una acción, o que caduque el aviso de
+ * cupo. `reason` dice cuál, y es lo único que distingue esperar un token de
+ * haber agotado el cupo.
+ */
+export type ParkReason = 'session' | 'quota' | 'quota-wait' | 'ceiling'
+
+export interface ParkedItem {
+  review_key: string
+  repo: string
+  pr_id: number
+  pipeline_id: string
+  reason: ParkReason
+  launch: boolean
+}
+
 export interface PanelState {
   generated_at: string
   queue: QueueItem[]
   active: ActiveReview[]
   paused: { human: PausedItem[]; fix: PausedItem[] }
+  parked: ParkedItem[]
   dead: DeadLetterItem[]
   budget: BudgetItem[]
 }

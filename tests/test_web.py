@@ -51,6 +51,7 @@ from agent_review.web.read_model import (
     DeadLetterItem,
     PanelReadModel,
     PanelState,
+    ParkedItem,
     PausedGroups,
     PausedItem,
     QueueItem,
@@ -142,6 +143,16 @@ def _fake_state() -> PanelState:
                 )
             ],
         ),
+        parked=[
+            ParkedItem(
+                review_key="pcgarat/agent-review-langgraph:19:abc:panel",
+                repo="pcgarat/agent-review-langgraph",
+                pr_id=19,
+                pipeline_id="panel",
+                reason="session",
+                launch=True,
+            )
+        ],
         dead=[
             DeadLetterItem(
                 review_key="cqm/emotivoo-v2:38:ccc:3",
@@ -199,8 +210,16 @@ def test_state_devuelve_las_secciones_del_panel() -> None:
     assert body["paused"]["human"][0]["pending"][0]["finding_id"] == "f1"
     assert body["paused"]["human"][0]["state"] == "PAUSED"
     assert body["paused"]["fix"][0]["jobs"][0]["run_key"] == "r:f2:1"
+    assert body["parked"][0]["reason"] == "session"
+    assert body["parked"][0]["pr_id"] == 19
     assert body["dead"][0]["reason"] == "twg caido"
     assert body["budget"][0]["remaining"] == 3700
+
+
+def test_state_sin_parking_devuelve_la_lista_vacia() -> None:
+    """La sección existe siempre: una clave ausente y una vacía no son lo mismo."""
+    body = client.get("/api/state").json()
+    assert "parked" in body
 
 
 def test_state_sin_secreto_se_relaja() -> None:

@@ -4,7 +4,8 @@ import logging
 import socket
 import time
 from collections import deque
-from typing import Protocol, runtime_checkable
+from collections.abc import Iterable
+from typing import Literal, Protocol, cast, get_args, runtime_checkable
 from uuid import uuid4
 
 import redis
@@ -37,7 +38,10 @@ PARKED_KEY = "reviews:claude:parked"
 NOTICE_KEY_PREFIX = "reviews:claude:notice:"
 # `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
 # siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
-PARK_REASONS = frozenset({"session", "quota", "quota-wait", "ceiling"})
+# `ParkReason` es el tipo y `PARK_REASONS` la lista de validación: una fuente
+# única para el worker y para el panel, que lo publica en la API (030).
+ParkReason = Literal["session", "quota", "quota-wait", "ceiling"]
+PARK_REASONS = frozenset(get_args(ParkReason))
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve
 # el worker de fixes. Vive en su propia clave para no mezclarse con las reviews.
@@ -118,6 +122,15 @@ class ReviewQueue(Protocol):
 
     def parked(self) -> list[ReviewRequest]:
         """Jobs en parking, en el orden en que llegaron."""
+        ...
+
+    def parked_entries(self) -> list[tuple[ParkReason, ReviewRequest]]:
+        """Jobs en parking con su motivo, en el orden en que llegaron.
+
+        `parked()` descarta el motivo y el panel lo necesita para decir que
+        desatasca cada job: no es lo mismo esperar un token que haber agotado el
+        cupo. El motivo sale del payload, validado contra `PARK_REASONS`.
+        """
         ...
 
     def release_parked(self, *, reason: str) -> list[ReviewRequest]:
@@ -394,6 +407,9 @@ class RedisReviewQueue:
             if (request := _parked_request(item)) is not None
         ]
 
+    def parked_entries(self) -> list[tuple[ParkReason, ReviewRequest]]:
+        return parse_parked(self._client.lrange(self._parked_key, 0, -1))
+
     def release_parked(self, *, reason: str) -> list[ReviewRequest]:
         _check_park_reason(reason)
         # Un solo script: entre LREM y RPUSH una caída perdía el job.
@@ -531,6 +547,9 @@ class InMemoryReviewQueue:
     def parked(self) -> list[ReviewRequest]:
         return [request for item in self._parked if (request := _parked_request(item)) is not None]
 
+    def parked_entries(self) -> list[tuple[ParkReason, ReviewRequest]]:
+        return parse_parked(self._parked)
+
     def release_parked(self, *, reason: str) -> list[ReviewRequest]:
         _check_park_reason(reason)
         kept: deque[str] = deque()
@@ -650,7 +669,7 @@ def _park_payload(request: ReviewRequest, *, reason: str) -> str:
     return json.dumps({"reason": reason, "request": request.model_dump(mode="json")})
 
 
-def _parse_park(item: str | bytes) -> tuple[str, ReviewRequest] | None:
+def _parse_park(item: str | bytes) -> tuple[ParkReason, ReviewRequest] | None:
     import json
 
     raw = item.decode() if isinstance(item, bytes) else item
@@ -666,7 +685,7 @@ def _parse_park(item: str | bytes) -> tuple[str, ReviewRequest] | None:
     if not isinstance(reason, str) or reason not in PARK_REASONS or not isinstance(payload, dict):
         return None
     try:
-        return reason, ReviewRequest.model_validate(payload)
+        return cast(ParkReason, reason), ReviewRequest.model_validate(payload)
     except ValueError:
         logger.warning("Job ilegible en el parking de Claude")
         return None
@@ -677,6 +696,22 @@ def _parked_request(item: str | bytes) -> ReviewRequest | None:
     if parsed is None:
         return None
     return parsed[1]
+
+
+def parse_parked(items: Iterable[str | bytes]) -> list[tuple[ParkReason, ReviewRequest]]:
+    """Entradas del parking con su motivo, saltando las ilegibles.
+
+    Es el parseo del worker y lo comparte el panel: dos lectores del mismo payload
+    con reglas distintas acabarían contando aparcados diferentes. Lo que no encaja
+    (JSON roto, motivo desconocido, request inválido) se descarta con un aviso en
+    `_parse_park`, no se propaga.
+    """
+    entries: list[tuple[ParkReason, ReviewRequest]] = []
+    for item in items:
+        parsed = _parse_park(item)
+        if parsed is not None:
+            entries.append(parsed)
+    return entries
 
 
 def _raw_dead_letter_payload(payload: str, *, reason: str) -> str:
