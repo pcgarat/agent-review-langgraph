@@ -8,8 +8,9 @@ estado y del rol (`lector` no ve ninguno) y el HTML escapa los datos de terceros
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
@@ -27,7 +28,7 @@ from agent_review.web.read_model import (
     PausedItem,
     QueueItem,
 )
-from agent_review.web.ui import router
+from agent_review.web.ui import _fmt_elapsed, router
 
 _MOMENT = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
 _REVIEW_KEY = "cqm/emotivoo-v2:42:abc:7"
@@ -187,6 +188,100 @@ def test_el_detalle_pinta_el_recorrido(panel: Panel) -> None:
     assert "scope" in body
     assert "persona" in body
     assert "Siguiente" in body or "siguiente" in body
+
+
+def _li(body: str, step: str) -> str:
+    marker = f'data-step="{step}"'
+    start = body.index(marker)
+    li_start = body.rindex("<li", 0, start)
+    return body[li_start : body.index("</li>", start) + 5]
+
+
+def test_en_vuelo_muestra_el_tiempo_de_ejecucion(panel: Panel) -> None:
+    body = panel.client.get("/").text
+    section = body.split("En vuelo", 1)[1].split("</section>", 1)[0]
+    visible = re.sub(r"<[^>]+>", " ", section)
+    assert "desde " not in section
+    assert "2026-10-16T10:00:00" not in visible
+    assert 'class="elapsed"' in section
+    assert 'data-started="2026-10-16T10:00:00+00:00"' in section
+    assert _fmt_elapsed(_MOMENT) in visible
+    assert "(3 ramas)" in section
+
+
+def test_el_tiempo_de_ejecucion_se_lee_en_duracion() -> None:
+    start = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+    assert _fmt_elapsed(None, now=start) == "—"
+    assert _fmt_elapsed(start, now=start) == "0 s"
+    assert _fmt_elapsed(start, now=start + timedelta(seconds=45)) == "45 s"
+    assert _fmt_elapsed(start, now=start + timedelta(seconds=90)) == "1 min 30 s"
+    assert _fmt_elapsed(start, now=start + timedelta(seconds=3700)) == "1 h 1 min"
+    assert _fmt_elapsed(start, now=start + timedelta(hours=25)) == "1 d 1 h"
+    assert _fmt_elapsed(start, now=start - timedelta(seconds=5)) == "0 s"
+    naive = datetime(2026, 10, 16, 10, 0)
+    assert _fmt_elapsed(naive, now=start + timedelta(minutes=1)) == "1 min 0 s"
+
+
+def test_la_ficha_tiene_el_diagrama_y_el_panel_se_maximiza(panel: Panel) -> None:
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert 'class="ficha"' in body
+    assert 'id="maximize"' in body
+    assert "classList.toggle" in body
+    scope = _li(body, "scope")
+    assert "step done" in scope
+    assert "Diff filtrado y contexto preparado" in scope
+    assert "spinner" not in scope
+    skipped = _li(body, "merge")
+    assert "step skipped" in skipped
+    assert "No se ejecutó" in skipped
+
+
+def test_el_paso_en_curso_lleva_spinner_y_lo_que_hace(panel: Panel) -> None:
+    trace = _trace(state="in_progress")
+    trace.nodes = [TraceNode(name="scope", index=0, started_at=_MOMENT, writes=["scope"])]
+    trace.next = ["persona"]
+    panel.model.traces[_REVIEW_KEY] = trace
+    panel.model.panel_state.active.append(
+        ActiveReview(
+            review_key=_REVIEW_KEY,
+            nodes=[ActiveNode(node="persona", started_at=_MOMENT, branches=3)],
+        )
+    )
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    running = _li(body, "persona")
+    assert "step running" in running
+    assert 'class="spinner"' in running
+    assert "Revisando el código con las personas (3 ramas)" in running
+    assert "step done" in _li(body, "scope")
+    assert "step pending" in _li(body, "merge")
+    assert "setInterval(tick, 2000)" in body
+
+
+def test_la_pausa_espera_sin_spinner(panel: Panel) -> None:
+    trace = _trace(state="paused", pause_kind="human", review_key=_HUMAN_KEY)
+    trace.nodes = [
+        TraceNode(name=name, index=index, started_at=_MOMENT)
+        for index, name in enumerate(["scope", "persona", "merge", "verify", "policy"])
+    ]
+    trace.next = ["hitl"]
+    panel.model.traces[_HUMAN_KEY] = trace
+    body = panel.client.get(f"/review/{_HUMAN_KEY}").text
+    waiting = _li(body, "hitl")
+    assert "step paused" in waiting
+    assert "pause-bar" in waiting
+    assert "Esperando una decisión humana" in waiting
+    assert "spinner" not in waiting
+    assert "step done" in _li(body, "policy")
+    assert "Candidatos contrastados" in _li(body, "verify")
+
+
+def test_el_diagrama_escapa_un_nombre_de_nodo(panel: Panel) -> None:
+    trace = _trace(state="in_progress")
+    trace.nodes.append(TraceNode(name=_XSS, index=2, started_at=_MOMENT))
+    panel.model.traces[_REVIEW_KEY] = trace
+    body = panel.client.get(f"/review/{_REVIEW_KEY}").text
+    assert _XSS not in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
 
 
 def test_el_detalle_sin_recorrido_es_404(panel: Panel) -> None:

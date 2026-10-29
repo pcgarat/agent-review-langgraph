@@ -1,11 +1,11 @@
 """UI del panel de operacion (iniciativa 019, OP15/OP33).
 
 HTML servido en servidor (SSR) sobre el `PanelReadModel`: la vista global pinta el
-estado operativo (cola, en vuelo con su presupuesto, pausas por `kind`, descartes y
-presupuesto por review) y el detalle pinta el recorrido del hilo. Los comandos
-(cancelar, reintentar, reanudar) son botones que solo ve el rol `operador`; el actor
-auditado lo pone el servidor desde la sesion, no el navegador. La consola de una
-pausa de fix sigue el SSE del panel.
+estado operativo (cola, en vuelo con el tiempo que lleva cada nodo, pausas por
+`kind`, descartes y presupuesto por review) y el detalle pinta el diagrama de pasos
+junto al recorrido del hilo. Los comandos (cancelar, reintentar, reanudar) son
+botones que solo ve el rol `operador`; el actor auditado lo pone el servidor desde
+la sesion, no el navegador. La consola de una pausa de fix sigue el SSE del panel.
 
 Sin plantillas ni CDN (018 §3.5): el HTML, el CSS y el JavaScript van embebidos y
 autocontenidos. Los datos que llegan del PR son de terceros, asi que **todo** lo que
@@ -17,8 +17,9 @@ from __future__ import annotations
 import html
 import json
 from collections.abc import Iterable
-from datetime import datetime
-from typing import Annotated
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -50,6 +51,103 @@ _RESUME = "resume"
 # publicacion (kind `fix`) los comentarios del PR se quedan, asi que no se cancela
 # «la review» sino lo que aun corre (spec §5.4, W6/R2).
 _CANCEL_LABEL_PENDING = "Cancelar lo pendiente"
+
+# Pasos del grafo, en el orden en que una review los recorre (ninguno se salta:
+# la decision de no hacer nada vive dentro del nodo). El texto de la derecha es
+# lo que esta haciendo mientras corre y lo que dejo hecho al cerrar.
+_Phase = Literal["running", "paused", "done", "pending", "skipped"]
+
+
+@dataclass(frozen=True, slots=True)
+class _StepSpec:
+    name: str
+    title: str
+    doing: str
+    done: str
+
+
+_STEPS: tuple[_StepSpec, ...] = (
+    _StepSpec(
+        "scope",
+        "Alcance",
+        "Leyendo el diff y preparando el contexto",
+        "Diff filtrado y contexto preparado",
+    ),
+    _StepSpec(
+        "persona",
+        "Personas",
+        "Revisando el código con las personas",
+        "Revisión de las personas terminada",
+    ),
+    _StepSpec(
+        "merge",
+        "Fusión",
+        "Uniendo los hallazgos duplicados",
+        "Hallazgos unidos",
+    ),
+    _StepSpec(
+        "verify",
+        "Verificación",
+        "Contrastando los candidatos",
+        "Candidatos contrastados",
+    ),
+    _StepSpec(
+        "policy",
+        "Política",
+        "Aplicando la política",
+        "Política aplicada",
+    ),
+    _StepSpec(
+        "hitl",
+        "Decisión",
+        "Esperando una decisión humana",
+        "Decisión humana registrada",
+    ),
+    _StepSpec(
+        "fix_dispatch",
+        "Arreglos",
+        "Proponiendo arreglos",
+        "Arreglos propuestos",
+    ),
+    _StepSpec(
+        "publish",
+        "Publicación",
+        "Publicando la review en el PR",
+        "Review publicada en el PR",
+    ),
+    _StepSpec(
+        "fix_wait",
+        "Espera",
+        "Esperando la verificación de los arreglos",
+        "Verificación de los arreglos recogida",
+    ),
+    _StepSpec(
+        "publish_fix",
+        "Seguimiento",
+        "Publicando el resultado de los arreglos",
+        "Resultado de los arreglos publicado",
+    ),
+    _StepSpec(
+        "notify_fix",
+        "Aviso del fix",
+        "Avisando del resultado de los arreglos",
+        "Aviso de arreglos enviado",
+    ),
+    _StepSpec(
+        "notify",
+        "Aviso",
+        "Avisando de la review en el canal",
+        "Aviso de la review enviado",
+    ),
+)
+_STEP_BY_NAME = {step.name: step for step in _STEPS}
+_PHASE_LABEL = {
+    "running": "en curso",
+    "paused": "en pausa",
+    "done": "completado",
+    "pending": "pendiente",
+    "skipped": "no ejecutado",
+}
 
 
 def get_read_model(request: Request) -> PanelReadModel:
@@ -121,11 +219,14 @@ def review_detail(
     session: Annotated[Session, Depends(require_session)],
     model: Annotated[PanelReadModel, Depends(get_read_model)],
 ) -> HTMLResponse:
-    """Detalle de una review: recorrido y, si es pausa de fix, consola en vivo (OP15)."""
+    """Detalle de una review: pasos, recorrido y, si es pausa de fix, consola (OP15)."""
     trace = model.trace(review_key)
     if trace is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sin recorrido para {review_key}")
-    return HTMLResponse(_detail_page(trace, _paused_item(model.state(), review_key), session))
+    state = model.state()
+    return HTMLResponse(
+        _detail_page(trace, _paused_item(state, review_key), session, _active_of(state, review_key))
+    )
 
 
 # --- Paginas ---------------------------------------------------------------------
@@ -148,7 +249,7 @@ def _global_page(state: PanelState, session: Session) -> str:
         meta=f"Estado generado el {_fmt_dt(state.generated_at)}",
         body='<p class="breadcrumb"><a href="/history">Histórico de reviews &rarr;</a></p>' + body,
         session=session,
-        script=_COMMAND_SCRIPT,
+        script=_COMMAND_SCRIPT + _ELAPSED_SCRIPT,
     )
 
 
@@ -208,22 +309,34 @@ def _severities(by_severity: dict[str, int]) -> str:
     return "(" + ", ".join(f"{_esc(k)}: {_esc(v)}" for k, v in by_severity.items()) + ")"
 
 
-def _detail_page(trace: ReviewTrace, paused: PausedItem | None, session: Session) -> str:
-    body = "".join(
-        (
-            '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>',
-            _trace_section(trace),
-            _detail_commands(trace, session),
-            _console_section(trace, paused),
-            _reasoning_section(trace),
-        )
+def _detail_page(
+    trace: ReviewTrace,
+    paused: PausedItem | None,
+    session: Session,
+    active: list[ActiveNode],
+) -> str:
+    panel = (
+        '<div class="detail-panel" id="detail-panel">'
+        '<div class="panel-tools">'
+        '<button type="button" id="maximize" class="maximize" aria-pressed="false" '
+        'aria-controls="detail-panel">Maximizar</button>'
+        "</div>"
+        f"{_trace_section(trace)}"
+        f"{_detail_commands(trace, session)}"
+        f"{_console_section(trace, paused)}"
+        f"{_reasoning_section(trace)}"
+        "</div>"
+    )
+    body = (
+        '<p class="breadcrumb"><a href="/">&larr; Volver al panel</a></p>'
+        f'<div class="ficha">{_steps_panel(trace, active)}{panel}</div>'
     )
     return _page(
         title=f"Review {trace.review_key}",
         meta=f"Estado {trace.state} · actualizado el {_fmt_dt(trace.updated_at)}",
         body=body,
         session=session,
-        script=_COMMAND_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT,
+        script=_COMMAND_SCRIPT + _CONSOLE_SCRIPT + _REASONING_SCRIPT + _FICHA_SCRIPT,
     )
 
 
@@ -266,10 +379,124 @@ def _active_section(
 
 
 def _active_node(node: ActiveNode) -> str:
-    text = f"{_esc(node.node)} desde {_fmt_dt(node.started_at)}"
+    text = f"{_esc(node.node)} · {_elapsed_html(node.started_at)}"
     if node.branches > 1:
         text += f" ({_esc(node.branches)} ramas)"
     return text
+
+
+def _active_of(state: PanelState, review_key: str) -> list[ActiveNode]:
+    for review in state.active:
+        if review.review_key == review_key:
+            return review.nodes
+    return []
+
+
+def _step_names(trace: ReviewTrace, active: list[ActiveNode]) -> list[str]:
+    """Orden canónico del grafo, más cualquier nodo que el recorrido haya visto."""
+    names = [step.name for step in _STEPS]
+    for node in trace.nodes:
+        if node.name not in names:
+            names.append(node.name)
+    for name in (*trace.next, *(node.node for node in active)):
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _phases(trace: ReviewTrace, active: list[ActiveNode]) -> dict[str, _Phase]:
+    """Estado de cada paso a partir del recorrido y de la marca de progreso.
+
+    La pausa gana al «en curso»: en un `interrupt` el worker ya no ejecuta el nodo,
+    aunque el checkpoint lo deje en `next`. Sin marca de progreso, `next` es el nodo
+    vivo de una review que sigue `in_progress`.
+    """
+    completed = {node.name for node in trace.nodes}
+    active_names = {node.node for node in active}
+    pending = set(trace.next)
+    use_next = trace.state == "in_progress" and not active_names
+    phases: dict[str, _Phase] = {}
+    for name in _step_names(trace, active):
+        if trace.state == "paused" and name in pending:
+            phases[name] = "paused"
+        elif trace.state != "paused" and (name in active_names or (use_next and name in pending)):
+            phases[name] = "running"
+        elif name in completed:
+            phases[name] = "done"
+        elif trace.state == "completed":
+            phases[name] = "skipped"
+        else:
+            phases[name] = "pending"
+    return phases
+
+
+def _caption(name: str, phase: _Phase, branches: int) -> str:
+    spec = _STEP_BY_NAME.get(name)
+    if phase == "running":
+        text = spec.doing if spec is not None else f"Ejecutando {name}"
+        if branches > 1:
+            return f"{text} ({branches} ramas)"
+        return text
+    if phase == "paused":
+        return spec.doing if spec is not None else f"En pausa en {name}"
+    if phase == "done":
+        return spec.done if spec is not None else f"Paso {name} terminado"
+    if phase == "skipped":
+        return "No se ejecutó"
+    return ""
+
+
+def _branches_of(active: list[ActiveNode], name: str) -> int:
+    return sum(node.branches for node in active if node.node == name)
+
+
+def _mark(phase: _Phase) -> str:
+    if phase == "done":
+        return '<span class="mark" aria-hidden="true">✓</span>'
+    if phase == "paused":
+        return (
+            '<span class="mark" aria-hidden="true">'
+            '<span class="pause-bar"></span><span class="pause-bar"></span>'
+            "</span>"
+        )
+    return '<span class="mark" aria-hidden="true"></span>'
+
+
+def _steps_panel(trace: ReviewTrace, active: list[ActiveNode]) -> str:
+    phases = _phases(trace, active)
+    items: list[str] = []
+    for name in _step_names(trace, active):
+        phase = phases[name]
+        spec = _STEP_BY_NAME.get(name)
+        title = spec.title if spec is not None else name
+        caption = _caption(name, phase, _branches_of(active, name))
+        label = f"{title}, {_PHASE_LABEL[phase]}"
+        if caption:
+            label = f"{label}. {caption}"
+        if phase == "running" and caption:
+            text = (
+                '<p class="step-text"><span class="spinner" aria-hidden="true"></span> '
+                f"{_esc(caption)}</p>"
+            )
+        elif caption:
+            text = f'<p class="step-text">{_esc(caption)}</p>'
+        else:
+            text = ""
+        current = ' aria-current="step"' if phase in {"running", "paused"} else ""
+        items.append(
+            f'<li class="step {phase}" data-step="{_esc(name)}" '
+            f'aria-label="{_esc(label)}"{current}>'
+            f"{_mark(phase)}"
+            f'<span class="step-name">{_esc(title)}</span>'
+            f"{text}"
+            "</li>"
+        )
+    return (
+        '<aside class="steps-panel">'
+        "<h2>Pasos</h2>"
+        f'<ol class="steps" data-state="{_esc(trace.state)}">{"".join(items)}</ol>'
+        "</aside>"
+    )
 
 
 def _paused_section(title: str, items: list[PausedItem], session: Session) -> str:
@@ -485,6 +712,41 @@ def _fmt_dt(value: datetime | None) -> str:
     return "—" if value is None else _esc(value.isoformat(timespec="seconds"))
 
 
+def _fmt_elapsed(started_at: datetime | None, *, now: datetime | None = None) -> str:
+    """Cuánto lleva un nodo en curso, a partir de su `started_at`.
+
+    El panel no muestra la fecha de inicio: el operador quiere la duración. Un
+    reloj adelantado no puede pintar un tiempo negativo.
+    """
+    if started_at is None:
+        return "—"
+    current = now or datetime.now(UTC)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    total = max(0, int((current - started_at).total_seconds()))
+    days, rem = divmod(total, 86_400)
+    hours, rem = divmod(rem, 3_600)
+    minutes, seconds = divmod(rem, 60)
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    if minutes:
+        return f"{minutes} min {seconds} s"
+    return f"{seconds} s"
+
+
+def _elapsed_html(started_at: datetime | None) -> str:
+    label = _esc(_fmt_elapsed(started_at))
+    if started_at is None:
+        return label
+    stamp = _esc(started_at.isoformat(timespec="seconds"))
+    # El `title` conserva el inicio para diagnosticar; lo que se lee es la duración.
+    return f'<span class="elapsed" data-started="{stamp}" title="Inicio {stamp}">{label}</span>'
+
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
@@ -528,6 +790,50 @@ button.cmd:disabled { opacity: .5; cursor: default; }
 #reasoning details.live summary::after { content: " · en curso"; color: var(--accent); }
 #reasoning details.failed summary { color: var(--bad); }
 #reasoning pre { margin: .4rem 0; }
+body:has(.ficha) { max-width: 1280px; }
+.ficha { display: grid; grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
+  gap: 1rem; align-items: start; margin-top: 1.25rem; }
+.steps-panel, .detail-panel { border: 1px solid var(--line); border-radius: .6rem;
+  padding: .85rem 1rem 1.1rem; min-width: 0; }
+.detail-panel { position: relative; }
+.panel-tools { display: flex; justify-content: flex-end; position: sticky; top: 0;
+  z-index: 2; background: Canvas; padding-bottom: .35rem; }
+button.maximize { font: inherit; padding: .25rem .7rem; border: 1px solid var(--line);
+  border-radius: .35rem; cursor: pointer; background: transparent; color: inherit; }
+.detail-panel.is-max { position: fixed; inset: 0; z-index: 30; margin: 0;
+  border-radius: 0; overflow: auto; background: Canvas; color: CanvasText;
+  padding: 1rem 1.5rem 2rem; }
+ol.steps { list-style: none; margin: .4rem 0 0; padding: 0; }
+.step { display: grid; grid-template-columns: 1.15rem 6.6rem minmax(0, 1fr);
+  column-gap: .55rem; align-items: start; position: relative; padding: 0 0 .85rem; }
+.step:not(:last-child)::before { content: ""; position: absolute;
+  left: calc(.575rem - 1px); top: 1.15rem; bottom: 0; width: 2px; background: var(--line); }
+.mark { width: 1.15rem; height: 1.15rem; border-radius: 50%; border: 2px solid var(--line);
+  display: grid; place-items: center; background: Canvas; font-size: .72rem; line-height: 1;
+  z-index: 1; margin-top: .12rem; }
+.step.done .mark { background: #2f855a; border-color: #2f855a; color: #fff; }
+.step.running .mark { border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
+.step.paused .mark { display: flex; gap: 2px; align-items: center; justify-content: center;
+  border-color: #b7791f; color: #b7791f; }
+.pause-bar { width: 2px; height: .5rem; background: currentColor; display: block; }
+.step.skipped { opacity: .55; }
+.step-name { font-weight: 600; }
+.step-text { display: flex; gap: .4rem; align-items: flex-start; margin: 0;
+  font-size: .82rem; line-height: 1.35; }
+.step.running .step-text { color: var(--accent); }
+.step.paused .step-text { color: #b7791f; }
+.spinner { flex: none; margin-top: .15rem; width: .85rem; height: .85rem; display: block;
+  box-sizing: border-box; border: 2px solid var(--accent); border-right-color: transparent;
+  border-radius: 50%; animation: spin .75s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+@media (max-width: 800px) {
+  .ficha { grid-template-columns: 1fr; }
+  .step { grid-template-columns: 1.15rem 6.2rem minmax(0, 1fr); }
+}
 """
 
 _COMMAND_SCRIPT = """<script>
@@ -644,5 +950,102 @@ _CONSOLE_SCRIPT = """<script>
     output.scrollTop = output.scrollHeight;
   });
   source.addEventListener("end", () => source.close());
+})();
+</script>"""
+
+# El intervalo vive fuera del <ol>: al refrescar los pasos no se reinicia el temporizador.
+_FICHA_SCRIPT = """<script>
+(() => {
+  const panel = document.getElementById("detail-panel");
+  const button = document.getElementById("maximize");
+  if (panel && button) {
+    const apply = (on) => {
+      panel.classList.toggle("is-max", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.textContent = on ? "Restaurar" : "Maximizar";
+    };
+    button.addEventListener("click", () => apply(!panel.classList.contains("is-max")));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        apply(false);
+      }
+    });
+  }
+  const list = document.querySelector("ol.steps");
+  if (!list || list.dataset.state === "completed") {
+    return;
+  }
+  const signature = (node) => [...node.querySelectorAll("li")].map((item) =>
+    `${item.dataset.step}|${item.className}|${item.textContent}`).join("\\n");
+  let busy = false;
+  let timer = 0;
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = 0;
+    }
+  };
+  const tick = async () => {
+    const current = document.querySelector("ol.steps");
+    if (!current || current.dataset.state === "completed") {
+      stop();
+      return;
+    }
+    if (busy) {
+      return;
+    }
+    busy = true;
+    try {
+      const response = await fetch(location.pathname, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "text/html" },
+      });
+      if (!response.ok) {
+        return;
+      }
+      const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
+      const next = parsed.querySelector("ol.steps");
+      if (!next || !current.isConnected || signature(current) === signature(next)) {
+        return;
+      }
+      current.replaceWith(next);
+      if (next.dataset.state === "completed") {
+        stop();
+      }
+    } catch (cause) {
+      /* la ficha sigue mostrando el ultimo recorrido conocido */
+    } finally {
+      busy = false;
+    }
+  };
+  timer = setInterval(tick, 2000);
+})();
+</script>"""
+
+_ELAPSED_SCRIPT = """<script>
+(() => {
+  const label = (ms) => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = total % 60;
+    if (days) return `${days} d ${hours} h`;
+    if (hours) return `${hours} h ${minutes} min`;
+    if (minutes) return `${minutes} min ${seconds} s`;
+    return `${seconds} s`;
+  };
+  const tick = () => {
+    document.querySelectorAll(".elapsed").forEach((node) => {
+      const started = Date.parse(node.dataset.started || "");
+      if (Number.isNaN(started)) {
+        return;
+      }
+      node.textContent = label(Date.now() - started);
+    });
+  };
+  tick();
+  setInterval(tick, 1000);
 })();
 </script>"""

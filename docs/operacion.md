@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 # Operación
 
@@ -294,7 +294,7 @@ del LLM (solo lee estado y encola comandos). La sesión va en la cabecera
 | `POST` | `/api/reviews/{review_key}/retry` | `operador` | Saca el descarte de la DLQ (atómico), retira la marca de cancelación si la hay y lo reencola con `attempts=0`; `409` si no está en la DLQ (un segundo clic no encola otra copia). Si reencolar falla, el descarte vuelve a la DLQ |
 | `POST` | `/api/reviews/{review_key}/resume` | `operador` | Reencola la reanudación de una pausa humana; `409` si no está pausada |
 | `GET` | `/api/reviews/{review_key}/console` | Sesión | SSE de la consola del sandbox (proxy del runner); `404` si no hay verificación en curso, si el runner no tiene su buffer o si no responde (se comprueba antes de abrir el stream) |
-| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML (global y detalle con el recorrido y la consola) |
+| `GET` | `/` y `/review/{review_key}` | Sesión | Vistas HTML. En «En vuelo» el nodo muestra su tiempo de ejecución (derivado de `started_at`), no la fecha de inicio. La ficha pone a la izquierda el diagrama de pasos del grafo (en curso, en pausa o completado) y a la derecha el recorrido, la consola y el razonamiento, en un panel que se puede maximizar |
 
 Los comandos **encolan** y no tocan el grafo (spec §5.4/§5.5): cancelar marca la review
 (o encola el `request` marcado si estaba pausada) y el worker aborta en la frontera de
@@ -426,7 +426,7 @@ firma inválida o ausente da `401`.
 | Fix `not_verifiable` | Sin digest, sin runner, sin fixer, o el runner rechazó la petición | La razón aparece en el inline y en el log `Fase 3:`. Si vino de un TTL (`FIX_VERIFY_TTL_S`), revisa que el `fix-worker` esté arriba |
 | La review pausa "en verificación" y no cierra | La wave no vuelve: `fix-worker` caído o runner sin responder | `docker compose logs -f fix-worker`; la wave vence por TTL y queda `NOT_VERIFIABLE` |
 | Worker «sano» pero sin avanzar | `twg` lento o una review larga (LLM) | El latido solo mide que el proceso vive; mirar el último `Procesando review`. El sandbox ya no bloquea al worker (E7) |
-| «¿En qué nodo está ahora?» | El progreso del worker (019) | Con `PROGRESS_ENABLED=true`: `redis-cli HGETALL reviews:active:<review_key>` da el nodo en curso, su `started_at` y cuántas ramas del fan-out siguen. Sin marca y con el latido fresco, el worker vive pero no está ejecutando ningún nodo (entre reviews). Un `started_at` muy antiguo con la marca viva delata un nodo colgado, no un worker muerto |
+| «¿En qué nodo está ahora?» | El progreso del worker (019) | Con `PROGRESS_ENABLED=true`: `redis-cli HGETALL reviews:active:<review_key>` da el nodo en curso, su `started_at` y cuántas ramas del fan-out siguen. En «En vuelo» el panel enseña el tiempo de ejecución derivado de ese `started_at`, no la fecha. Sin marca y con el latido fresco, el worker vive pero no está ejecutando ningún nodo (entre reviews). Un `started_at` muy antiguo con la marca viva delata un nodo colgado, no un worker muerto |
 | «¿Qué está pensando el revisor?» | El razonamiento de los revisores (021) | Con `REASONING_STREAM_ENABLED=true`: pestaña «Razonamiento» del detalle en el panel, o `redis-cli XRANGE reviews:reasoning:<review_key> - +`. Un lote con `fallo` lleva el motivo (sin presupuesto, error del modelo) |
 | El panel no arranca o da `401` en todo | Falta el perfil `panel`, o `PANEL_SESSION_SECRET` es real y no se manda sesión | Levantar con `--profile panel`; en producción la sesión es obligatoria (`X-Panel-Session: <usuario>:<rol>` o cookie `panel_session`). En dev/test sin secreto, la sesión se relaja |
 | El panel ve la cola pero no el recorrido | El pool de lectura de Postgres no abrió (`DATABASE_URL`) | El estado de Redis es independiente: `/api/state` funciona y `/api/trace/{key}` da `404` con el fallo en el log del `web` |
