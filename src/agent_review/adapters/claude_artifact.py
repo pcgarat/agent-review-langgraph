@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from agent_review.adapters.diff_parser import file_key, parse_unified_diff
 from agent_review.adapters.tooling_source import safe_segment
 from agent_review.domain.contracts import ContractError, validate_finding
-from agent_review.domain.models import Finding, ReviewContext, ReviewerResult
+from agent_review.domain.models import DiscardedFinding, Finding, ReviewContext, ReviewerResult
 from agent_review.verification.l0 import L0Disposition, cite_text, evaluate_l0
 
 
@@ -42,6 +42,11 @@ class ClaudeArtifactStore:
             raise ValueError(f"la ruta del artefacto escapa de {self._root}")
         return resolved
 
+    def _discarded_path(self, *, repo: str, pr_id: int, head_sha: str) -> Path:
+        return self.path_for(repo=repo, pr_id=pr_id, head_sha=head_sha).with_suffix(
+            ".discarded.json"
+        )
+
     def save(self, body: str, *, repo: str, pr_id: int, head_sha: str) -> bool:
         """Guarda el cuerpo si es una lista de hallazgos. `False` no deja marca."""
         findings = parse_findings(body)
@@ -66,6 +71,45 @@ class ClaudeArtifactStore:
         except OSError:
             return None
         return parse_findings(body)
+
+    def save_discarded(
+        self, items: list[DiscardedFinding], *, repo: str, pr_id: int, head_sha: str
+    ) -> None:
+        """Los descartes del contrato, al lado del artefacto (034 CP2).
+
+        Se escribe aunque la lista esté vacía: un reintento que reutiliza el
+        artefacto no debe leer los descartes de una pasada anterior.
+        """
+        path = self._discarded_path(repo=repo, pr_id=pr_id, head_sha=head_sha)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps([item.model_dump(mode="json") for item in items], ensure_ascii=False)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        os.replace(temporary, path)
+
+    def load_discarded(self, *, repo: str, pr_id: int, head_sha: str) -> list[DiscardedFinding]:
+        """Vacío si no hay fichero o no se puede leer: un artefacto anterior a 034."""
+        path = self._discarded_path(repo=repo, pr_id=pr_id, head_sha=head_sha)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        try:
+            return [DiscardedFinding.model_validate(item) for item in data]
+        except ValidationError:
+            return []
+
+    def discard(self, *, repo: str, pr_id: int, head_sha: str) -> None:
+        """Borra el artefacto, sus descartes y su candado. No falla si no estaban."""
+        path = self.path_for(repo=repo, pr_id=pr_id, head_sha=head_sha)
+        discarded = self._discarded_path(repo=repo, pr_id=pr_id, head_sha=head_sha)
+        for item in (path, discarded, path.with_suffix(".lock")):
+            try:
+                item.unlink()
+            except FileNotFoundError:
+                continue
 
 
 def parse_findings(body: str) -> list[Finding] | None:
@@ -131,16 +175,32 @@ class ClaudeArtifactReviewer:
             raise ClaudeArtifactMissing(f"no hay artefacto valido para {repo}#{pr_id}@{head_sha}")
         files = parse_unified_diff(diff)
         kept: list[Finding] = []
+        discarded = self._store.load_discarded(repo=repo, pr_id=pr_id, head_sha=head_sha)
         for finding in loaded:
             key = file_key(files, finding.file)
             if key is None:
+                discarded.append(_l0_discard(finding, _NOT_IN_DIFF))
                 continue
-            l0 = evaluate_l0(files[key], hint=finding.line, cite=cite_text(finding.evidence))
+            cite = cite_text(finding.evidence)
+            l0 = evaluate_l0(files[key], hint=finding.line, cite=cite)
             if l0.disposition is L0Disposition.DROP or l0.line is None:
+                discarded.append(_l0_discard(finding, _CITE_MISSING if cite else _UNANCHORED))
                 continue
             kept.append(
                 finding.model_copy(
                     update={"file": key, "line": l0.line, "pre_existing": l0.pre_existing}
                 )
             )
-        return ReviewerResult(findings=kept)
+        return ReviewerResult(findings=kept, discarded=discarded)
+
+
+# Motivos de L0 para la ficha (034 §4.3). `l0.reason` es el del motor `llm`.
+_NOT_IN_DIFF = "el fichero no está en el diff"
+_CITE_MISSING = "la cita no aparece en el diff"
+_UNANCHORED = "la línea no se pudo anclar"
+
+
+def _l0_discard(finding: Finding, reason: str) -> DiscardedFinding:
+    return DiscardedFinding(
+        stage="l0", id=finding.id, title=finding.title, file=finding.file, reason=reason
+    )

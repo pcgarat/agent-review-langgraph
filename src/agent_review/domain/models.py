@@ -291,6 +291,20 @@ class ToolUsage(BaseModel):
     files_read: list[str] = Field(default_factory=list)
 
 
+class DiscardedFinding(BaseModel):
+    """Un hallazgo que la skill devolvió y un filtro tiró antes del merge (034).
+
+    `contract`: el objeto `mode:agent` no cumple el contrato de hallazgos. `l0`:
+    la cita no se ancla al diff. Es un hecho para la ficha; no vuelve a entrar.
+    """
+
+    stage: Literal["contract", "l0"]
+    id: str | None = None
+    title: str | None = None
+    file: str | None = None
+    reason: str = Field(max_length=300)
+
+
 class ReviewerResult(BaseModel):
     """Hallazgos de una persona mas el estado de su fuente de datos.
 
@@ -303,6 +317,8 @@ class ReviewerResult(BaseModel):
     `coverage` es lo que la persona leyo de verdad (012): solo la pueblan las
     personas que revisan el diff por lotes; `None` = no declara cobertura.
     `tool_usage` es el gasto del bucle de herramientas (014); `None` = sin bucle.
+    `discarded` son los hallazgos que la persona leyó y tiró (034); solo lo puebla
+    la persona `claude`.
     """
 
     findings: list[Finding] = Field(default_factory=list)
@@ -311,6 +327,7 @@ class ReviewerResult(BaseModel):
     tokens_used: int = 0
     coverage: ReviewCoverage | None = None
     tool_usage: ToolUsage | None = None
+    discarded: list[DiscardedFinding] = Field(default_factory=list)
 
 
 class PublicationMode(StrEnum):
@@ -573,6 +590,15 @@ class ReviewRequest(BaseModel):
     # del VCS antes de invocar el grafo. Sin este flag, un SHA vacio es un job
     # mal formado, no una orden de resolverlo.
     launch: bool = False
+
+    # El panel pide borrar esta ejecucion. El worker no invoca el grafo: borra
+    # el hilo, el artefacto de Claude y el estado local. Los comentarios del PR
+    # se quedan (ADR-0034).
+    forget: bool = False
+
+    # Generacion de la ejecucion. «Eliminar» la sube; un job con una menor no
+    # corre, para que un rezagado no rehaga lo que se acaba de borrar.
+    generation: int = Field(default=0, ge=0)
 
     @property
     def idempotency_key(self) -> str:

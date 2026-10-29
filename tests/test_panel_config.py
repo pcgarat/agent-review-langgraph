@@ -19,6 +19,8 @@ from agent_review.panel_config import (
 from agent_review.settings import Settings
 
 _CATALOG = {
+    "claude_timeout_s",
+    "claude_max_turns",
     "llm_max_findings",
     "llm_budget_tokens_per_pr",
     "llm_batch_max_chars",
@@ -101,6 +103,36 @@ def test_rechaza_clave_ajena_entero_negativo_y_modo_de_grep() -> None:
             settings, _form(settings, review_tools_grep_mode="glob"), autonomy_ceiling="report"
         )
     assert mode.value.field == "review_tools_grep_mode"
+
+
+def test_el_techo_de_claude_se_publica_dentro_del_rango() -> None:
+    settings = _settings()
+    document = document_for(
+        settings,
+        _form(settings, claude_max_turns=400, claude_timeout_s="7200"),
+        autonomy_ceiling="report",
+    )
+    assert document == {"claude_max_turns": 400, "claude_timeout_s": 7200.0}
+    applied = apply_document(settings, document)
+    assert applied.claude_max_turns == 400
+    assert applied.claude_timeout_s == 7200.0
+    # Desde un tope encendido: si 0 no se aceptara, esto lanzaría ConfigError.
+    con_tope = _settings(claude_max_turns=200)
+    apagado = document_for(con_tope, _form(con_tope, claude_max_turns=0), autonomy_ceiling="report")
+    assert apagado == {"claude_max_turns": 0}
+    with pytest.raises(ConfigError) as negativo:
+        document_for(con_tope, _form(con_tope, claude_max_turns=-1), autonomy_ceiling="report")
+    assert negativo.value.field == "claude_max_turns"
+    encendido = document_for(
+        settings, _form(settings, claude_max_turns=50), autonomy_ceiling="report"
+    )
+    assert encendido == {"claude_max_turns": 50}
+    with pytest.raises(ConfigError) as timeout:
+        document_for(settings, _form(settings, claude_timeout_s=90000), autonomy_ceiling="report")
+    assert timeout.value.field == "claude_timeout_s"
+    # El entorno puede haber arrancado fuera del rango: no tocarlo no es un error.
+    fuera = _settings(claude_max_turns=5000)
+    assert document_for(fuera, _form(fuera), autonomy_ceiling="report") == {}
 
 
 def test_el_techo_de_autonomia_no_puede_subir() -> None:

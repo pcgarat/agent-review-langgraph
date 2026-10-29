@@ -1,0 +1,157 @@
+// El armazón replica `src/scss/style.scss` de coreui-free-react-admin-template:
+// fondo gris claro (o `dark-bg-subtle` en oscuro) con tarjetas blancas encima,
+// cabecera y sidebar de 4rem y footer de 3rem. Lo demás son ajustes del panel.
+@use '@coreui/coreui/scss/coreui' as * with (
+  $enable-deprecation-messages: false
+);
+
+// Superficies con nombre que usan las hojas de cada pantalla (bandeja, config,
+// review…). Apuntan a las variables de CoreUI para que los colores sean los de la
+// plantilla y cambien solos con el tema; un color nuevo se decide aquí, no en la
+// hoja de la pantalla.
+:root,
+[data-coreui-theme='light'],
+[data-coreui-theme='dark'] {
+  --panel-canvas-bg: var(--cui-tertiary-bg);
+  --panel-surface-bg: var(--cui-body-bg);
+  --panel-surface-header-bg: var(--cui-tertiary-bg);
+  --panel-surface-sunken-bg: var(--cui-tertiary-bg);
+  --panel-surface-elevated-bg: var(--cui-secondary-bg);
+  --panel-header-bg: var(--cui-body-bg);
+  --panel-border-color: var(--cui-border-color);
+  --panel-border-strong: var(--cui-border-color);
+  --panel-border-subtle: var(--cui-border-color-translucent);
+  --panel-card-shadow: none;
+  --panel-card-hover-shadow: var(--cui-box-shadow-sm);
+  --panel-code-bg: transparent;
+  --panel-code-color: var(--cui-code-color);
+  --panel-code-border: transparent;
+  --panel-table-head-bg: var(--cui-tertiary-bg);
+  --panel-table-stripe-bg: transparent;
+  --panel-table-hover-bg: rgba(var(--cui-emphasis-color-rgb), 0.075);
+  --panel-rail: 1px solid var(--cui-border-color);
+}
+
+@include color-mode(dark) {
+  --panel-canvas-bg: var(--cui-dark-bg-subtle);
+}
+
+body {
+  background-color: var(--panel-canvas-bg);
+}
+
+// CoreUI define `--cui-sidebar-occupy-start` en el hermano del sidebar, pero no
+// aplica el hueco: el sidebar es `fixed` y sin esta regla el contenido se dibuja
+// debajo.
+.wrapper {
+  width: 100%;
+  padding-inline: var(--cui-sidebar-occupy-start, 0) var(--cui-sidebar-occupy-end, 0);
+  will-change: auto;
+  @include transition(padding 0.15s);
+}
+
+.header > .container-fluid,
+.sidebar-header {
+  min-height: calc(4rem + 1px);
+}
+
+.sidebar-toggler {
+  margin-inline-start: auto;
+}
+
+.sidebar-narrow,
+.sidebar-narrow-unfoldable:not(:hover) {
+  .sidebar-toggler {
+    margin-inline-end: auto;
+  }
+}
+
+.header > .container-fluid + .container-fluid {
+  min-height: 3rem;
+}
+
+.footer {
+  min-height: calc(3rem + 1px);
+}
+
+@include color-mode(dark) {
+  .footer {
+    --cui-footer-bg: var(--cui-body-bg);
+  }
+}
+
+// --- Marca del sidebar ---------------------------------------------------------
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--cui-sidebar-brand-color);
+  text-decoration: none;
+}
+
+.sidebar-sygnet {
+  display: inline-flex;
+  flex: 0 0 2rem;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  color: #fff;
+  background-color: var(--cui-primary);
+  border-radius: var(--cui-border-radius);
+}
+
+.sidebar-brand-full {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+// --- Cabecera ------------------------------------------------------------------
+
+// `position="top-end"` centra la insignia en la esquina del enlace, que lleva
+// padding; se baja a la esquina del icono como en la demo. Los `!important`
+// vencen a las utilidades `top-0`/`start-100` que pone CoreUI.
+.header-counter {
+  --cui-badge-font-size: 0.625rem;
+  --cui-badge-padding-x: 0.45em;
+  --cui-badge-padding-y: 0.3em;
+  top: 0.55rem !important;
+  left: calc(100% - 0.45rem) !important;
+}
+
+// --- Contenido ---------------------------------------------------------------
+
+.eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cui-secondary-color);
+}
+
+.body h2.h6,
+.body h1.h6 {
+  font-weight: 600;
+}
+
+// Cifras que se comparan en columna: sin `tabular-nums` los dígitos bailan.
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+// Cabecera de tabla como la de la plantilla: fondo terciario y sin mayúsculas.
+// Se fija la variable y no `background-color` porque Bootstrap pinta la celda con
+// `--cui-table-bg` y un `box-shadow` encima.
+.panel-table > thead > tr > th {
+  --cui-table-bg: var(--cui-tertiary-bg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+// --- Selector de auto-refresh ------------------------------------------------
+
+.refresh-selector-menu {
+  min-width: 10rem;
+}

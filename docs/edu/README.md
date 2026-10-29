@@ -1,4 +1,4 @@
-Última modificación: 2026-10-16 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Documentación educativa de LangGraph
 
@@ -43,6 +43,7 @@ flowchart LR
     M9 --> M10[10 Avanzados]
     M10 --> M11[11 Recorrido de una review]
     M11 --> M12[12 Recorrido con todas las iniciativas]
+    M12 --> M14[14 Grafo por motor]
     M2 -. "misma clave, varias escrituras" .-> M3
     M4 -. "pausa durable" .-> M6
     M5 -. "re-ejecución" .-> M7
@@ -117,6 +118,8 @@ Tabla de "quiero entender X → módulo donde vive X".
 | `context_schema`, `store`, `durability`, `Overwrite` | [10 — Patrones avanzados](10-patrones-avanzados.md) |
 | **El grafo de `reviews` recorrido caso a caso** (sin hallazgos, report, HITL, fix, fallos, degradada) | [11 — Recorrido de una review](11-recorrido-de-una-review.md) |
 | **La foto final**: el mismo recorrido con la cascada de verificación, las trazas y el presupuesto ya entregado (prospectivo) | [12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md) |
+| Jaula de `Bash`, `bwrap`, sandbox del CLI, `claude-runner` | [13 — La jaula](13-jaula-bwrap-y-runner.md) |
+| **El grafo de cada motor** (`REVIEW_ENGINE=llm` y `=claude`) y los módulos que hay detrás de cada nodo | [14 — El grafo por motor](14-grafo-por-motor.md) |
 
 ---
 
@@ -159,6 +162,8 @@ El recorrido completo de este grafo, caso a caso, está en
 [11 — Recorrido de una review](11-recorrido-de-una-review.md); cómo quedaría con
 todas las iniciativas abiertas entregadas, en
 [12 — Recorrido con todas las iniciativas](12-recorrido-con-todas-las-iniciativas.md).
+El **otro** grafo, el del motor `claude`, y los módulos que intervienen en cada
+nodo de los dos están en [14 — El grafo por motor](14-grafo-por-motor.md).
 
 ---
 
@@ -195,6 +200,11 @@ flowchart TD
     G -->|publish| VCS[comentarios inline + resumen]
     G -->|teaser · outbox| TEAMS[teams-bot · Teams]
 ```
+
+## Aparte de la serie de LangGraph
+
+[13 — La jaula](13-jaula-bwrap-y-runner.md) explica `bwrap`, el sandbox del CLI
+y el servicio `claude-runner`: la jaula en la que corre cada `Bash` de Claude.
 
 ## Glosario mínimo
 

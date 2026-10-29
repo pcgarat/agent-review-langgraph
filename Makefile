@@ -5,7 +5,8 @@ COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
 .PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
-	eval eval-live eval-record bootstrap twg-credentials ensure-dev-secrets \
+	frontend-ci eval eval-live eval-record bootstrap twg-credentials ensure-dev-secrets \
+	frontend-install frontend-check frontend-build panel-dev \
 	up panel claude panel-claude down logs ps status smoke clean
 
 ##@ Dependencias
@@ -44,8 +45,37 @@ test-live: ## Tests marcados `live` (red y credenciales reales)
 docs-check: ## Comprueba estructura, cabeceras y enlaces de la documentacion
 	$(UV) run --extra $(EXTRAS) python scripts/check_docs.py
 
-# Mismo orden y comandos que .github/workflows/ci.yml
-ci: lint format-check typecheck test docs-check ## Lint + formato + tipos + tests + docs (igual que el CI)
+# Mismo orden y comandos que .github/workflows/ci.yml. El panel entra como una
+# comprobacion mas cuando existe `frontend/`: si los tipos, los tests o el build de
+# la SPA fallan, el `ci` falla aunque Python este verde (029, R7). Incluye el build
+# porque `tsc --noEmit` por separado no ve lo que ve Vite al empaquetar.
+#
+# `npm ci` necesita `node_modules`, que no se versiona. Se instala solo si falta:
+# en una maquina sin `make frontend-install` el `ci` instala y sigue, en vez de
+# fallar por un directorio que el repo no guarda.
+FRONTEND ?= frontend
+FRONTEND_READY := $(wildcard $(FRONTEND)/package.json)
+
+ci: lint format-check typecheck test docs-check $(if $(FRONTEND_READY),frontend-ci) ## Lint + formato + tipos + tests + docs + panel (igual que el CI)
+
+frontend-ci: ## Instala si falta y comprueba el panel (tipos, lint, tests y build)
+	@test -d $(FRONTEND)/node_modules || (cd $(FRONTEND) && npm ci)
+	cd $(FRONTEND) && npm run typecheck && npm run lint && npm test && npm run build
+
+##@ Frontend del panel (iniciativa 029)
+
+# El panel en React vive en `frontend/`. `node_modules` y `dist` no se versionan.
+frontend-install: ## Instala las dependencias del panel (npm ci)
+	cd $(FRONTEND) && npm ci
+
+frontend-check: ## Tipos, lint y tests del panel
+	cd $(FRONTEND) && npm run typecheck && npm run lint && npm test
+
+frontend-build: ## Build de produccion del panel
+	cd $(FRONTEND) && npm run build
+
+panel-dev: ## Vite en :5173 con proxy a un `web` ya levantado en :8090
+	cd $(FRONTEND) && npm run dev
 
 ##@ Evaluacion de la review (iniciativa 006)
 
@@ -104,8 +134,8 @@ claude: ensure-dev-secrets ## Levanta el stack con el runner de Claude (perfil `
 panel-claude: ensure-dev-secrets ## Panel y runner de Claude (perfiles `panel` y `claude`)
 	$(COMPOSE) --profile panel --profile claude up --build -d
 
-down: ## Para el stack
-	$(COMPOSE) down
+down: ## Para el stack entero, perfiles incluidos (`panel`, `claude`)
+	$(COMPOSE) --profile '*' down
 
 # `S=` elige el servicio: `make logs S=api`.
 logs: ## Sigue los logs (S=<servicio>, por defecto worker)

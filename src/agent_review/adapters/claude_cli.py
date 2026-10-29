@@ -7,15 +7,19 @@ por denegación deja pasar el secreto que nadie recordó nombrar.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import subprocess
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from agent_review.ports.claude import (
+    ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
-    ClaudeTimeout,
 )
 
 # Lo que el hijo puede heredar. Un token de VCS o de Teams no está aquí.
@@ -39,15 +43,15 @@ CHILD_ENV_ALLOW = frozenset(
     }
 )
 
-# Lectura permitida y escritura denegada. Nombrarlas en `--disallowedTools`
-# es la denegación: el proceso no tiene modo interactivo que pregunte.
-_READ_TOOLS = "Read,Grep,Glob"
-_DENIED_TOOLS = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+# Bash entra en las permitidas: en dontAsk, denegarlo entero quita también
+# el git de lectura. La red y la escritura las cierra el sandbox, no esta lista.
+_READ_TOOLS = "Read,Grep,Glob,Bash"
+_DENIED_TOOLS = "Edit,Write,NotebookEdit,WebFetch,WebSearch"
 
-_PROMPT = (
-    "Revisa el árbol de trabajo. Responde solo un array JSON de hallazgos "
-    "del esquema de review, sin markdown. Si no hay hallazgos, responde []."
-)
+# El hijo no corre como root. Un proceso sin privilegios no puede abrir
+# `/proc/1/environ` (es `400 root`), asi que los tokens del runner no dependen de
+# que el CLI respete una regla de lectura.
+CHILD_USER = "nobody"
 
 _QUOTA_MARKERS = (
     "quota",
@@ -57,6 +61,11 @@ _QUOTA_MARKERS = (
     "credit balance",
     "insufficient credit",
 )
+
+# El desenlace del CLI es un evento `result` con su `subtype`. El estado de
+# agotamiento es ese campo, no una mención en prosa: el informe de una review
+# puede citar `error_max_turns` o `quota` sin haberlos agotado.
+_CEILING_SUBTYPES = frozenset({"error_max_turns"})
 
 
 def redact_text(text: str, secrets: Sequence[str]) -> str:
@@ -75,23 +84,70 @@ def child_env(parent: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in parent.items() if key in CHILD_ENV_ALLOW}
 
 
-def claude_argv(prefix: Sequence[str], *, max_turns: int) -> list[str]:
-    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos."""
-    if max_turns < 1:
-        raise ValueError("el tope de turnos tiene que ser al menos 1")
+def review_prompt(base_sha: str) -> str:
+    """La skill revisa el PR. Un peer externo no entra en esta pasada."""
+    sha = base_sha.strip()
+    if not sha:
+        raise ValueError("sin base_sha el CLI no arranca")
+    return (
+        f"/ce-code-review mode:agent base:{sha} "
+        "No uses un peer externo ni envíes el diff fuera de esta máquina."
+    )
+
+
+def claude_argv(prefix: Sequence[str], *, max_turns: int, base_sha: str) -> list[str]:
+    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos.
+
+    `max_turns` 0 no manda `--max-turns`: el único tope es el tiempo de pared.
+    """
+    if max_turns < 0:
+        raise ValueError("el tope de turnos no puede ser negativo")
+    turns = ["--max-turns", str(max_turns)] if max_turns else []
     return [
         *prefix,
         "-p",
-        "--max-turns",
-        str(max_turns),
+        *turns,
         "--allowedTools",
         _READ_TOOLS,
         "--disallowedTools",
         _DENIED_TOOLS,
         "--permission-mode",
         "dontAsk",
-        _PROMPT,
+        "--setting-sources",
+        "user",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        review_prompt(base_sha),
     ]
+
+
+def _demote() -> Callable[[], None] | None:
+    """Baja a un uid sin privilegios justo antes de `execve`, o `None` si no
+    procede. En un test o en un portátil no se puede (y no hace falta): solo se
+    baja cuando el proceso es root, que es donde el kernel expone
+    `/proc/<pid>/environ` de los demás."""
+    if os.geteuid() != 0:
+        return None
+    try:
+        import pwd
+    except ImportError:  # pragma: no cover - no ocurre en las imágenes
+        return None
+    try:
+        entry = pwd.getpwnam(CHILD_USER)
+    except KeyError as exc:  # pragma: no cover - la imagen declara el usuario
+        raise ClaudeProcessCrashed(
+            f"el usuario {CHILD_USER!r} no existe: el hijo correria como root"
+        ) from exc
+
+    def demote() -> None:
+        # El orden importa: los grupos se sueltan antes de cambiar el uid, porque
+        # después ya no se tienen los privilegios para `setgroups`.
+        os.setgroups([entry.pw_gid])
+        os.setgid(entry.pw_gid)
+        os.setuid(entry.pw_uid)
+
+    return demote
 
 
 class SubprocessClaudeRunner:
@@ -107,10 +163,13 @@ class SubprocessClaudeRunner:
         extra_env: Mapping[str, str] | None = None,
         cwd: str | Path | None = None,
         redact: Sequence[str] = (),
+        user: str | None = None,
+        quota_is_cluster: bool = False,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("el tiempo de pared tiene que ser positivo")
-        self._argv = claude_argv(argv_prefix, max_turns=max_turns)
+        self._prefix = tuple(argv_prefix)
+        self._max_turns = max_turns
         self._timeout = timeout_s
         # `extra_env` se añade después del filtro: es una inyección deliberada
         # (el token de sesión), no una herencia del proceso padre.
@@ -119,29 +178,145 @@ class SubprocessClaudeRunner:
             self._environ.update(extra_env)
         self._cwd = None if cwd is None else str(cwd)
         self._redact = tuple(redact)
+        self._user = user
+        # Con el clúster un 429 no es el cupo de la suscripción: se espera.
+        self._quota_is_cluster = quota_is_cluster
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        on_line: Callable[[str], None] | None = None,
+    ) -> str:
         del repo, pr_id, head_sha
+        argv = claude_argv(self._prefix, max_turns=self._max_turns, base_sha=base_sha)
         try:
-            completed = subprocess.run(
-                self._argv,
+            process = subprocess.Popen(
+                argv,
                 cwd=self._cwd,
                 env=self._environ,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self._timeout,
-                check=False,
+                # `preexec_fn` corre en el hijo entre `fork` y `exec`: es el único
+                # punto donde soltar el uid no afecta a este proceso.
+                preexec_fn=_demote() if self._user else None,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise ClaudeTimeout(f"claude excedio {self._timeout}s") from exc
         except FileNotFoundError as exc:
             raise ClaudeProcessCrashed("no se encontro el ejecutable de claude") from exc
-        if completed.returncode != 0:
-            detail = redact_text((completed.stderr or completed.stdout or "").strip(), self._redact)
-            if _is_quota(detail):
+        captured = _LiveStdout(on_line)
+        stderr: list[str] = []
+        threads = (
+            threading.Thread(target=_read_stream, args=(process.stdout, captured.add, None)),
+            threading.Thread(target=_read_stream, args=(process.stderr, stderr.append, on_line)),
+        )
+        for thread in threads:
+            thread.start()
+        try:
+            code = process.wait(timeout=self._timeout)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.wait()
+            for thread in threads:
+                thread.join(timeout=2)
+            raise ClaudeCeiling(f"claude excedio {self._timeout}s") from exc
+        for thread in threads:
+            thread.join(timeout=2)
+        out = redact_text(captured.text(), self._redact)
+        err = redact_text("".join(stderr), self._redact)
+        if captured.ceiling() or _hit_turn_ceiling(err):
+            raise ClaudeCeiling("claude llego al tope de turnos")
+        if code != 0:
+            detail = (err or out).strip()
+            # Con desenlace estructurado se cree al CLI; sin él (caída antes del
+            # evento `result`) queda el texto de stderr para reconocer el cupo.
+            if not captured.outcome and _is_quota(detail):
+                if self._quota_is_cluster:
+                    raise ClaudeClusterLimited("el cluster limito la llamada")
                 raise ClaudeQuotaExceeded("cupo de claude agotado")
-            raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {completed.returncode}")
-        return redact_text(completed.stdout, self._redact)
+            raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {code}")
+        return out
+
+
+def _read_stream(
+    stream: object,
+    keep: Callable[[str], None],
+    on_line: Callable[[str], None] | None,
+) -> None:
+    if stream is None or not hasattr(stream, "readline"):
+        return
+    while True:
+        line = stream.readline()
+        if not line:
+            break
+        keep(line)
+        if on_line is None:
+            continue
+        with contextlib.suppress(Exception):
+            on_line(line.rstrip("\n"))
+
+
+class _LiveStdout:
+    """Separa el JSON final de los eventos que cuentan qué está haciendo Claude."""
+
+    def __init__(self, on_line: Callable[[str], None] | None) -> None:
+        self._raw: list[str] = []
+        self._result: str | None = None
+        self._saw = False
+        self._on_line = on_line
+        # Desenlace estructurado del CLI: `subtype` del último evento `result`.
+        self.outcome: str | None = None
+
+    def add(self, line: str) -> None:
+        self._raw.append(line)
+        text = line.strip()
+        if not text.startswith("{"):
+            return
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            return
+        self._saw = True
+        if self._on_line is not None:
+            with contextlib.suppress(Exception):
+                self._on_line(text)
+        if event.get("type") != "result":
+            return
+        if isinstance(event.get("subtype"), str):
+            self.outcome = event["subtype"]
+        if isinstance(event.get("result"), str):
+            self._result = event["result"]
+
+    def text(self) -> str:
+        if self._saw and self._result is not None:
+            return self._result
+        return "".join(self._raw)
+
+    def ceiling(self) -> bool:
+        """El CLI dijo que agotó los turnos. Su desenlace manda en los dos casos:
+        el código de salida de un techo es 1, igual que el de una caída."""
+        return self.outcome in _CEILING_SUBTYPES
+
+
+def _hit_turn_ceiling(text: str) -> bool:
+    """Busca el desenlace estructurado en un texto de líneas. Una mención en
+    prosa no cuenta: el stderr de un CLI que cita el marcador no agotó turnos."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("subtype") in _CEILING_SUBTYPES:
+            return True
+    return False
 
 
 def _is_quota(text: str) -> bool:

@@ -13,7 +13,15 @@ from typing import Literal, TypeVar, get_args, get_origin
 
 from agent_review.domain.models import FindingAction
 from agent_review.policy.engine import PolicyError, reject_if_cap_raised
-from agent_review.settings import Dial, Secret, Settings
+from agent_review.settings import (
+    CLAUDE_PANEL_TIMEOUT_MAX_S,
+    CLAUDE_PANEL_TIMEOUT_MIN_S,
+    CLAUDE_PANEL_TURNS_MAX,
+    CLAUDE_PANEL_TURNS_MIN,
+    Dial,
+    Secret,
+    Settings,
+)
 
 # El techo se puede entregar ya resuelto o como proveedor: el `web` solo puede
 # leer `autonomy.yaml` si el despliegue monta `config/`, asi que se resuelve
@@ -21,12 +29,21 @@ from agent_review.settings import Dial, Secret, Settings
 Ceiling = str | Callable[[], str]
 
 # Orden de las secciones en la página. Un dial con otra sección no se pinta.
+# Claude va primero: es el techo que parkea el job. El resto es del motor llm.
 SECTIONS: tuple[str, ...] = (
+    "Claude",
     "Presupuesto y lotes",
     "Verificador",
     "Bucle de lectura",
     "Política",
 )
+
+# Solo se aplica a un valor distinto del inicial. El entorno puede haber
+# arrancado fuera del rango y ese número sigue siendo el del despliegue.
+_RANGES: dict[str, tuple[float, float]] = {
+    "claude_max_turns": (CLAUDE_PANEL_TURNS_MIN, CLAUDE_PANEL_TURNS_MAX),
+    "claude_timeout_s": (CLAUDE_PANEL_TIMEOUT_MIN_S, CLAUDE_PANEL_TIMEOUT_MAX_S),
+}
 
 
 class ConfigError(ValueError):
@@ -147,6 +164,7 @@ def document_for(
         if name in locked and value != initial[name]:
             raise ConfigError(name, "lo fija el despliegue")
         if value != initial[name]:
+            _reject_out_of_range(name, value)
             document[name] = value
     return document
 
@@ -240,11 +258,22 @@ def _meta(field_info: object, kind: type[_Marker]) -> _Marker | None:
     return next((item for item in metadata if isinstance(item, kind)), None)
 
 
+def _reject_out_of_range(name: str, value: object) -> None:
+    bounds = _RANGES.get(name)
+    if bounds is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return
+    low, high = bounds
+    if value < low or value > high:
+        raise ConfigError(name, f"tiene que estar entre {low:g} y {high:g}")
+
+
 def _coerce(name: str, value: object, annotation: object) -> object:
     if annotation is bool:
         return _coerce_bool(name, value)
     if annotation is int:
         return _coerce_int(name, value)
+    if annotation is float:
+        return _coerce_float(name, value)
     if annotation is str or get_origin(annotation) is Literal:
         return _coerce_str(name, value, annotation)
     raise ConfigError(name, "tipo no publicable")
@@ -274,6 +303,24 @@ def _coerce_int(name: str, value: object) -> int:
         raise ConfigError(name, "se espera un entero") from None
     if number < 0:
         raise ConfigError(name, "no puede ser negativo")
+    return number
+
+
+def _coerce_float(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ConfigError(name, "se espera un número")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ConfigError(name, "se espera un número")
+        try:
+            number = float(text)
+        except ValueError:
+            raise ConfigError(name, "se espera un número") from None
+    else:
+        number = float(value)
+    if number != number or number in {float("inf"), float("-inf")}:
+        raise ConfigError(name, "se espera un número")
     return number
 
 

@@ -26,14 +26,20 @@ from agent_review.domain.models import (
     HitlDecision,
     ReviewRequest,
 )
-from agent_review.ports.claude import ClaudeQuotaExceeded
+from agent_review.ports.claude import (
+    ClaudeCeiling,
+    ClaudeClusterLimited,
+    ClaudeProcessCrashed,
+    ClaudeQuotaExceeded,
+)
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.web.main import ClaudeLogin, app
 from agent_review.worker.main import (
     _consume,
-    claude_session_ready,
+    claude_blocker,
     dispatch_job,
+    release_cluster_wait,
     release_quota_wait,
 )
 
@@ -52,8 +58,17 @@ class _Runner:
         self.error = error
         self.calls: list[str] = []
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-        del repo, pr_id
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, base_sha, max_turns, timeout_s
         self.calls.append(head_sha)
         raise self.error
 
@@ -93,7 +108,7 @@ def test_sin_sesion_parkea_y_el_job_llm_se_consume() -> None:
         primero,
         max_attempts=3,
         chat=chat,
-        claude_session=lambda: False,
+        claude_session=lambda: "session",
         park_link=_LINK,
     )
     segundo = queue.dequeue()
@@ -118,7 +133,7 @@ def test_sin_sesion_parkea_y_el_job_llm_se_consume() -> None:
         sacado,
         max_attempts=3,
         chat=chat,
-        claude_session=lambda: False,
+        claude_session=lambda: "session",
         park_link=_LINK,
     )
     assert _notices(outbox) == []
@@ -129,7 +144,7 @@ def test_con_sesion_se_suelta_solo_lo_parado_por_ella() -> None:
     queue.park(_request("sesion"), reason="session")
     queue.park(_request("cupo"), reason="quota")
 
-    assert claude_session_ready(queue, lambda: True) is True
+    assert claude_blocker(queue, lambda: None) is None
 
     suelto = queue.dequeue()
     assert suelto is not None
@@ -138,8 +153,17 @@ def test_con_sesion_se_suelta_solo_lo_parado_por_ella() -> None:
 
 
 def test_el_operador_guarda_sin_devolver_el_token(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # El `dist` no se versiona: el armazón de la SPA se inyecta para que la prueba
+    # no dependa de haber construido `frontend/` (029, R4).
+    from agent_review.web import spa
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>", encoding="utf-8")
+    monkeypatch.setattr(spa, "spa_directory", lambda: dist)
+
     queue = InMemoryReviewQueue()
     queue.park(_request("sesion"), reason="session")
     queue.park(_request("cupo"), reason="quota")
@@ -156,23 +180,24 @@ def test_el_operador_guarda_sin_devolver_el_token(
         )
         client.cookies.set("panel_session", "ana:operador")
         formulario = client.post("/api/claude/session", data={"token": _TOKEN})
+        # La pagina es de la SPA (029): el armazon se sirve a cualquier sesion y es
+        # el cliente quien no pinta el formulario al `lector`. Quien manda es la
+        # API, que sigue devolviendo `403` al POST.
         pagina = client.get("/claude", headers={"X-Panel-Session": "ana:lector"})
         operador = client.post(
             "/api/claude/session",
             headers={"X-Panel-Session": "ana:operador"},
             json={"token": _TOKEN},
         )
-        formulario_ok = client.get("/claude", headers={"X-Panel-Session": "ana:operador"})
 
     assert lector.status_code == 403
     assert formulario.status_code == 403
-    assert pagina.status_code == 403
+    assert pagina.status_code == 200
     assert operador.status_code == 200
     assert operador.json() == {"released": 1}
     assert _TOKEN not in operador.text
     assert _TOKEN not in caplog.text
-    assert _TOKEN not in formulario_ok.text
-    assert "https://claude.ai/settings/claude-code" in formulario_ok.text
+    assert _TOKEN not in pagina.text
     path = tmp_path / "session.json"
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600
@@ -195,7 +220,7 @@ def test_la_sesion_caducada_se_retira_y_el_aviso_se_repite(tmp_path: Path) -> No
         primero,
         max_attempts=3,
         chat=chat,
-        claude_session=lambda: False,
+        claude_session=lambda: "session",
         park_link=_LINK,
     )
     assert len(_notices(outbox)) == 1
@@ -206,7 +231,7 @@ def test_la_sesion_caducada_se_retira_y_el_aviso_se_repite(tmp_path: Path) -> No
     settings = Settings(_env_file=None, claude_session_path=str(path), claude_runner_token="")
     with TestClient(build_app(settings)) as client:
         respuesta = client.get("/session")
-    assert respuesta.json() == {"active": False}
+    assert respuesta.json() == {"active": False, "reason": "session"}
     assert _TOKEN not in respuesta.text
     assert not path.exists()
 
@@ -216,7 +241,7 @@ def test_la_sesion_caducada_se_retira_y_el_aviso_se_repite(tmp_path: Path) -> No
         _request("despues"),
         max_attempts=3,
         chat=chat,
-        claude_session=lambda: False,
+        claude_session=lambda: "session",
         park_link=_LINK,
     )
     avisos = _notices(outbox)
@@ -265,18 +290,109 @@ def test_el_cupo_parkea_avisa_y_no_entra_al_grafo(tmp_path: Path) -> None:
     assert _LINK in avisos[0]
 
 
-def test_get_session_es_un_booleano(tmp_path: Path) -> None:
+def test_el_techo_parkea_una_vez_y_el_login_no_lo_suelta(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeCeiling("techo"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+    _consume(
+        queue,
+        graph,
+        _request("dos"),
+        max_attempts=3,
+        chat=chat,
+        claude_runner=runner,
+        claude_store=store,
+        park_link=_LINK,
+    )
+
+    assert graph.calls == 0
+    assert queue.dequeue() is None
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+    assert len(_notices(outbox)) == 1
+    assert claude_blocker(queue, lambda: None) is None
+    assert [item.head_sha for item in queue.parked()] == ["uno", "dos"]
+
+
+def test_una_caida_sigue_reintentandose(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("502"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        graph,
+        _request("uno"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    retried = queue.dequeue()
+    assert graph.calls == 0
+    assert retried is not None
+    assert retried.attempts == 1
+    assert queue.parked() == []
+
+
+def test_un_429_del_cluster_se_reencola_y_no_parkea(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("el cluster limito la llamada"))
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        _Graph(),
+        _request("limite"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.head_sha == "limite"
+    assert queue.parked() == []
+    assert queue.dead_letters() == []
+
+
+def test_get_session_dice_si_y_por_que_no(tmp_path: Path) -> None:
     path = tmp_path / "session.json"
     write_session(path, _TOKEN, ttl_s=3600)
     settings = Settings(_env_file=None, claude_session_path=str(path), claude_runner_token="")
     with TestClient(build_app(settings)) as client:
         respuesta = client.get("/session")
-    assert respuesta.json() == {"active": True}
+    assert respuesta.json() == {"active": True, "reason": None}
     assert _TOKEN not in respuesta.text
 
+
+@pytest.mark.parametrize(
+    ("payload", "blocker"),
+    [
+        ({"active": True, "reason": None}, None),
+        ({"active": False, "reason": "gateway"}, "gateway"),
+        ({"active": False, "reason": "session"}, "session"),
+        # Un runner anterior a ADR-0038 no manda `reason`: falta la sesión.
+        ({"active": False}, "session"),
+        ({"active": True}, None),
+    ],
+)
+def test_el_cliente_traduce_el_motivo_de_session(
+    payload: dict[str, object], blocker: str | None
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         del request
-        return httpx.Response(200, json={"active": True})
+        return httpx.Response(200, json=payload)
 
     cliente = HttpClaudeRunner(
         url="http://claude-runner",
@@ -284,7 +400,8 @@ def test_get_session_es_un_booleano(tmp_path: Path) -> None:
         timeout_s=1,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    assert cliente.active() is True
+    assert cliente.blocker() == blocker
+    assert cliente.active() is (blocker is None)
 
 
 def test_el_worker_no_monta_el_fichero_de_sesion() -> None:
@@ -339,8 +456,17 @@ def test_el_enfriamiento_no_cubre_un_artefacto_ya_valido(tmp_path: Path) -> None
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def run(self, *, repo: str, pr_id: int, head_sha: str) -> str:
-            del repo, pr_id
+        def run(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            head_sha: str,
+            base_sha: str,
+            max_turns: int | None = None,
+            timeout_s: float | None = None,
+        ) -> str:
+            del repo, pr_id, base_sha, max_turns, timeout_s
             self.calls.append(head_sha)
             return "[]"
 
@@ -365,6 +491,119 @@ def test_una_decision_sin_sesion_no_se_parkea() -> None:
             )
         }
     )
-    dispatch_job(queue, graph, request, max_attempts=3, claude_session=lambda: False)
+    dispatch_job(queue, graph, request, max_attempts=3, claude_session=lambda: "session")
     assert graph.calls == 1
     assert queue.parked() == []
+
+
+def test_el_aviso_de_parqueo_caduca_para_volver_a_avisar() -> None:
+    """El #11: el aviso de `ceiling` se reclamaba sin fecha y no se limpiaba.
+
+    `ceiling` no se desbloquea solo, así que sin caducidad el aviso de Teams no
+    volvería a salir nunca, ni siquiera tras subir el techo y volver a chocar.
+    """
+    from agent_review.worker.main import park_claude_job
+
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+    request = _request("ceiling-aviso")
+
+    park_claude_job(queue, request, reason="ceiling", chat=chat, link=_LINK)
+    assert len(_notices(outbox)) == 1
+    # El aviso queda retenido, pero **con** fecha: no es eterno.
+    assert queue.notice_held("ceiling") is True
+    assert queue.notice_ttl_s("ceiling") is not None
+
+    # Un segundo parqueo no repite el aviso mientras siga vigente.
+    park_claude_job(queue, request, reason="ceiling", chat=chat, link=_LINK)
+    assert _notices(outbox) == []
+
+
+def test_el_aviso_de_sesion_tambien_caduca() -> None:
+    """`session` se suelta al entrar, pero si nadie entra el aviso no es eterno."""
+    from agent_review.worker.main import park_claude_job
+
+    queue = InMemoryReviewQueue()
+    chat = OutboxChatAdapter(outbox=InMemoryChatOutbox())
+    park_claude_job(queue, _request("sesion-aviso"), reason="session", chat=chat, link=_LINK)
+    assert queue.notice_ttl_s("session") is not None
+
+
+def test_el_enfriamiento_del_cupo_sigue_siendo_el_corto() -> None:
+    """El cupo sí caduca a los 900 s: no debe heredar el plazo largo del aviso."""
+    from agent_review.worker.main import _QUOTA_COOLDOWN_S, park_claude_job
+
+    queue = InMemoryReviewQueue()
+    chat = OutboxChatAdapter(outbox=InMemoryChatOutbox())
+    park_claude_job(queue, _request("cupo"), reason="quota", chat=chat, link=_LINK)
+    ttl = queue.notice_ttl_s("quota")
+    assert ttl is not None
+    assert ttl <= _QUOTA_COOLDOWN_S + 1
+
+
+def test_un_429_del_cluster_espera_sin_gastar_intentos(tmp_path: Path) -> None:
+    """ADR-0038: ni reintento inmediato ni DLQ. Espera el enfriamiento y vuelve sola."""
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeClusterLimited("el cluster limito la llamada"))
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+    for head_sha in ("uno", "dos"):
+        _consume(
+            queue,
+            graph,
+            _request(head_sha),
+            max_attempts=3,
+            chat=chat,
+            claude_runner=runner,
+            claude_store=store,
+            park_link=_LINK,
+        )
+
+    # El segundo ni llama al CLI: el enfriamiento ya está puesto.
+    assert runner.calls == ["uno"]
+    assert graph.calls == 0
+    assert queue.dequeue() is None
+    assert queue.dead_letters() == []
+    assert [reason for reason, _ in queue.parked_entries()] == ["cluster-wait", "cluster-wait"]
+    assert all(item.attempts == 0 for item in queue.parked())
+    avisos = _notices(outbox)
+    assert len(avisos) == 1
+    assert "cluster limita" in avisos[0]
+    assert 0 < (queue.notice_ttl_s("cluster-wait") or 0) <= 300
+
+    assert release_cluster_wait(queue) == []
+    queue.clear_notice("cluster-wait")
+    sueltos = release_cluster_wait(queue)
+    assert [item.head_sha for item in sueltos] == ["uno", "dos"]
+    assert queue.parked() == []
+
+
+def test_con_el_gateway_caido_aparca_como_gateway_y_vuelve_solo() -> None:
+    queue = InMemoryReviewQueue()
+    graph = _Graph()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+    for head_sha in ("uno", "dos"):
+        dispatch_job(
+            queue,
+            graph,
+            _request(head_sha),
+            max_attempts=3,
+            chat=chat,
+            claude_session=lambda: "gateway",
+            park_link=_LINK,
+        )
+    assert graph.calls == 0
+    assert [reason for reason, _ in queue.parked_entries()] == ["gateway", "gateway"]
+    avisos = _notices(outbox)
+    assert len(avisos) == 1
+    assert "Gateway" in avisos[0]
+    assert "Inicia sesion" not in avisos[0]
+
+    # Vuelve el health: los dos salen y la próxima caída avisa otra vez.
+    assert claude_blocker(queue, lambda: None) is None
+    assert queue.parked() == []
+    assert not queue.notice_held("gateway")

@@ -188,3 +188,22 @@ def test_el_tope_de_coincidencias_corta_el_grep() -> None:
 def test_el_rango_de_read_file_es_inclusivo(start, end, expected) -> None:
     reader = _reader(FakeVcs(files={("a.txt", HEAD): "uno\ndos\ntres"}), diff="")
     assert _text(reader, "a.txt", start=start, end=end) == expected
+
+
+def test_la_base_se_lee_en_la_bifurcacion_no_en_la_punta_de_destino() -> None:
+    """`base_sha` es la punta viva de destino; el lado `base` es el merge-base."""
+    vcs = FakeVcs(
+        {(APP, "fork"): "antes del PR\n", (APP, BASE): "main avanzo\n"}, merge_base="fork"
+    )
+    reader = _reader(vcs)
+    assert _text(reader, APP, ref="base") == "antes del PR\n"
+    assert vcs.calls == [("cqm/x", APP, "fork")]
+
+
+def test_sin_merge_base_del_host_la_base_no_se_sirve() -> None:
+    """Mejor sin lado `base` que con la punta de destino haciéndose pasar por él."""
+    vcs = FakeVcs(merge_base=None)
+    reader = _reader(vcs)
+    assert reader.read_file(APP, ref="base") is None
+    assert vcs.calls == []
+    assert _text(reader, APP) == "import os\n\nneedle = 1\nprint(needle)\n"

@@ -9,6 +9,8 @@ services:
     environment:
       DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
       REDIS_URL: redis://redis:6379/0
+      # Gana a `env_file`: la clave del clúster solo la ve nan-gateway.
+      NAN_API_KEY: ""
     volumes:
       # La API deposita aqui los artefactos que el worker lee (Fase 1).
       - ./var:/app/var
@@ -43,6 +45,8 @@ services:
       # La credencial de clonado del motor claude vive en `claude-runner`.
       # Vaciarla aquí gana a `env_file`: el proceso que publica no la tiene.
       CLAUDE_GIT_TOKEN: ""
+      # Gana a `env_file`: la clave del clúster solo la ve nan-gateway.
+      NAN_API_KEY: ""
       CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-http://claude-runner:8098}
       # Enlace del aviso si falta la sesión. El worker no monta el fichero.
       PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:-http://localhost:8090}
@@ -126,6 +130,8 @@ services:
       # El runner no revisa nada: no necesita las credenciales de Bitbucket del
       # worker (TWG_*). Solo clona con su token de solo lectura y ejecuta la imagen.
       TWG_BBC_TOKEN: ""
+      # Gana a `env_file`: la clave del clúster solo la ve nan-gateway.
+      NAN_API_KEY: ""
       # Workspaces de lectura (iniciativa 016): TTL de un clon *bare* abierto y
       # tope de clones simultaneos. Explicito aqui porque solo el runner los
       # aplica; el valor del `.env` los puede subir.
@@ -152,7 +158,9 @@ services:
   # worker publica. El subproceso `claude` tampoco recibe la credencial de
   # clonado (el proceso la usa para el fetch y luego quita el remoto).
   claude-runner:
-    build: .
+    build:
+      context: .
+      target: claude-runner
     restart: unless-stopped
     profiles: ["claude"]
     command: python -m agent_review.claude_runner.main
@@ -161,8 +169,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       REVIEW_ENGINE: claude
       CLAUDE_BIN: ${CLAUDE_BIN:-claude}
-      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-30}
-      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-900}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-0}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
       CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
       CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
       CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
@@ -174,9 +182,27 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       TWG_BBC_TOKEN: ${TWG_BBC_TOKEN:-}
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
+      # Sin elección en el panel, manda esto. anthropic deja el hijo como hoy.
+      CLAUDE_UPSTREAM: ${CLAUDE_UPSTREAM:-anthropic}
+      CLAUDE_GATEWAY_URL: ${CLAUDE_GATEWAY_URL:-http://nan-gateway:4000}
+      CLAUDE_GATEWAY_TOKEN_FILE: /run/gateway/token
+      CLAUDE_GATEWAY_MODEL: ${CLAUDE_GATEWAY_MODEL:-deepseek-v4-flash}
     volumes:
       - claude_checkout:/var/claude-checkout
       - claude_session:/var/claude-session
+      - gateway_token:/run/gateway:ro
+    # Sin esperar al gateway: con Anthropic no hace falta, y con el clúster
+    # GET /session ya mira su health antes de cada review.
+    depends_on:
+      nan-gateway-token:
+        condition: service_completed_successfully
+    # bwrap necesita un user namespace anidado. El seccomp y el AppArmor por
+    # defecto de Docker lo impiden, y con uno solo sigue fallando. La jaula
+    # de Bash es el sandbox del CLI (ADR-0033), no este perfil. Un /proc
+    # nuevo sigue prohibido: el settings.json usa enableWeakerNestedSandbox.
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('CLAUDE_RUNNER_PORT','8098'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
       interval: 30s
@@ -186,6 +212,66 @@ services:
     networks:
       - reviews
     # Sin `ports`: solo el worker, en la red interna.
+
+  # Una sola vez por volumen. Reiniciar el stack no rota la clave.
+  nan-gateway-token:
+    image: alpine:3.20
+    profiles: ["claude"]
+    restart: "no"
+    command: ["sh", "/ensure-gateway-token.sh"]
+    volumes:
+      - gateway_token:/run/gateway
+      - ./scripts/ensure-gateway-token.sh:/ensure-gateway-token.sh:ro
+    networks:
+      - reviews
+
+  # Traduce /v1/messages al clúster. La clave de NaN no entra en el runner.
+  # Imagen pineada: 1.82.7 y 1.82.8 publicaron un robador de credenciales.
+  # Sin NET_ADMIN: el cierre de egress lo pone el sidecar, y este proceso no
+  # puede levantarlo.
+  nan-gateway:
+    image: ghcr.io/berriai/litellm:v1.106.6
+    restart: unless-stopped
+    profiles: ["claude"]
+    entrypoint: ["/bin/sh", "/opt/nan-gateway-entrypoint.sh"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      NAN_API_KEY: ${NAN_API_KEY:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # El mapa de precios va en la imagen. Sin esto el proceso pide GitHub
+      # y el egress lo corta.
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    volumes:
+      - ./config/nan-gateway.yaml:/app/config.yaml:ro
+      - ./scripts/nan-gateway-entrypoint.sh:/opt/nan-gateway-entrypoint.sh:ro
+      - gateway_token:/run/gateway:ro
+      - gateway_egress:/run/egress:ro
+    depends_on:
+      nan-gateway-token:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    networks:
+      - reviews
+
+  # Mismo netns que nan-gateway. NET_ADMIN vive aquí, no en LiteLLM.
+  nan-gateway-egress:
+    build:
+      context: .
+      target: nan-egress
+    restart: unless-stopped
+    profiles: ["claude"]
+    network_mode: "service:nan-gateway"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - gateway_egress:/run/egress
 
   # Canal de Teams (iniciativa 013): el bot con hilo por PR. Consume la outbox
   # (`reviews:notices`) y sirve el *messaging endpoint* `POST /api/messages` del
@@ -241,6 +327,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PANEL_ENABLED: ${PANEL_ENABLED:-true}
+      REVIEW_ENGINE: ${REVIEW_ENGINE:-llm}
       PANEL_PORT: ${PANEL_PORT:-8090}
       PANEL_SESSION_SECRET: ${PANEL_SESSION_SECRET:-}
       REDIS_URL: redis://redis:6379/0
@@ -261,6 +348,8 @@ services:
       # ADR-0031). Ninguno es un secreto.
       PANEL_CONFIG_LOCK: ${PANEL_CONFIG_LOCK:-}
       AUTONOMY_CONFIG: ${AUTONOMY_CONFIG:-config/autonomy.yaml}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-0}
       MAX_AUTONOMY_OVERRIDE: ${MAX_AUTONOMY_OVERRIDE:-}
       SCOPE_IGNORE: ${SCOPE_IGNORE:-}
       LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}
@@ -294,6 +383,10 @@ services:
       # Misma ruta que claude-runner. El token no es una variable de entorno.
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
       CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
+      # Mismo destino por defecto que claude-runner: sin elección guardada, el
+      # panel enseña el modelo que de verdad corre.
+      CLAUDE_UPSTREAM: ${CLAUDE_UPSTREAM:-anthropic}
+      CLAUDE_GATEWAY_MODEL: ${CLAUDE_GATEWAY_MODEL:-deepseek-v4-flash}
     volumes:
       - claude_session:/var/claude-session
       # Solo lectura: el techo de autonomia de un override publicado se valida
@@ -353,6 +446,8 @@ volumes:
   claude_artifacts:
   claude_checkout:
   claude_session:
+  gateway_token:
+  gateway_egress:
 
 networks:
   reviews:

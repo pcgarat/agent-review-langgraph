@@ -2,6 +2,9 @@
 
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-23
+- **Corrección:** 2026-10-24 — los techos del CLI (`claude_max_turns`,
+  `claude_timeout_s`) entran en el catálogo. El runner no lee Postgres: el
+  worker se los manda en `POST /run` cuando la foto de la review los trae.
 
 ## Contexto
 

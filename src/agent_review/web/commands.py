@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from agent_review.claude_activity import review_target
 from agent_review.decision import DecisionError, build_decision
 from agent_review.domain.models import (
     DecisionOutcome,
@@ -58,6 +59,7 @@ class CommandEffect(StrEnum):
     RETRIED = "retried"
     RESUMED = "resumed"
     DECIDED = "decided"  # decision humana explicita encolada (022)
+    FORGOTTEN = "forgotten"  # borrado local encolado; el worker lo aplica (ADR-0034)
 
 
 class CancellationMarker(Protocol):
@@ -78,6 +80,8 @@ class ReviewCommands(Protocol):
     def cancel(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
     def retry(self, review_key: str, *, actor: str) -> CommandEffect: ...
+
+    def forget(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
     def resume(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
@@ -154,6 +158,25 @@ class CommandService:
             raise
         logger.info("Reintento encolado para %s (actor=%s)", review_key, actor)
         return CommandEffect.RETRIED
+
+    def forget(self, review_key: str, *, actor: str) -> CommandEffect:
+        """Encola el borrado local de una ejecucion (ADR-0034).
+
+        Sube la generacion antes de encolar, y retira las copias que aun estan
+        en la cola, para que no arranquen y rehagan lo que se va a borrar. El
+        worker, al tomar el job, borra el hilo y el artefacto. Los comentarios
+        ya publicados en el PR se quedan.
+        """
+        request = _request_to_forget(review_key)
+        generation = self._queue.bump_generation(review_key)
+        self._queue.withdraw(review_key)
+        self._queue.enqueue(
+            request.model_copy(
+                update={"forget": True, "generation": generation, "attempts": 0, "cancelled": False}
+            )
+        )
+        logger.info("Borrado encolado para %s (actor=%s)", review_key, actor)
+        return CommandEffect.FORGOTTEN
 
     def resume(self, review_key: str, *, actor: str) -> CommandEffect:
         """Reencola la reanudacion de una pausa humana (spec §5.5).
@@ -242,6 +265,21 @@ def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
         for job in paused.fix_request.jobs
     ]
     return paused.request.model_copy(update={"fix_resolution": FixResolutions(items=items)})
+
+
+def _request_to_forget(review_key: str) -> ReviewRequest:
+    target = review_target(review_key)
+    if target is None:
+        raise CommandError(f"{review_key} no identifica un commit")
+    repo, pr_id, head_sha = target
+    prefix = f"{repo}:{pr_id}:{head_sha}"
+    pipeline = review_key[len(prefix) + 1 :] if review_key.startswith(prefix + ":") else ""
+    request = ReviewRequest(
+        repo=repo, pr_id=pr_id, head_sha=head_sha, pipeline_id=pipeline, forget=True
+    )
+    if request.review_key != review_key:
+        raise CommandError(f"{review_key} no identifica un commit")
+    return request
 
 
 def build_command_service(

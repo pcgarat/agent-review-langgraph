@@ -1,0 +1,43 @@
+// Solo lo que CoreUI no da. `.eyebrow`, `.num` y los overrides del tema viven en
+// `styles/panel.scss`; aquí, únicamente la tarjeta de una pausa.
+
+// La tarjeta es la unidad de trabajo de la pantalla: un borde izquierdo de color
+// avisa de que hay algo esperando aunque el título quede fuera de vista al hacer
+// scroll en una lista larga.
+.pause-card {
+  border-color: color-mix(in srgb, var(--cui-warning) 38%, var(--panel-border-color));
+  border-left: 4px solid var(--cui-warning);
+
+  > .card-header {
+    border-bottom-color: color-mix(in srgb, var(--cui-warning) 30%, var(--panel-border-color));
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--cui-warning) 20%, var(--panel-surface-header-bg)),
+        var(--panel-surface-header-bg) 70%
+      );
+  }
+}
+
+// El hallazgo se separa del siguiente con su propia superficie encajada y borde
+// definido: sin ella, dos hallazgos seguidos se leen como un párrafo con botones
+// sueltos.
+.finding {
+  padding: 0.9rem 1.05rem;
+  background-color: var(--panel-surface-sunken-bg);
+  border: 1px solid var(--panel-border-color);
+  border-left: 4px solid var(--cui-info);
+  border-radius: 0.45rem;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
+
+  &:last-of-type {
+    margin-bottom: 0 !important;
+  }
+}
+
+// El fallo de una respuesta se queda en su tarjeta: es de esa pausa, no de la
+// pantalla, y el toast se va a los cuatro segundos.
+.decision-error {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--panel-border-color);
+}

@@ -129,6 +129,11 @@ class TwgVcsAdapter:
         del repo
         return self._run(["prs", "diff", str(pr_id)], json_output=False)
 
+    def merge_base(self, repo: str, *, head_sha: str, base_sha: str) -> str | None:
+        """`twg` no expone el merge-base de Bitbucket: el lado `base` no se sirve."""
+        del repo, head_sha, base_sha
+        return None
+
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
         if unsafe_repo_path(path):

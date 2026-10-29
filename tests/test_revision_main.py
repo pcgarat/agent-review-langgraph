@@ -64,7 +64,7 @@ def test_b1_dlq_de_un_job_con_decision_no_tumba_el_worker() -> None:
 
 def test_b1_un_fallo_de_la_propia_dlq_no_escapa_de_consume() -> None:
     class _BrokenQueue(InMemoryReviewQueue):
-        def dead_letter(self, request: ReviewRequest, *, reason: str) -> None:
+        def dead_letter(self, request: ReviewRequest, *, reason: str, error: str = "") -> None:
             raise ConnectionError("redis caido")
 
     request = ReviewRequest(repo=REPO, pr_id=9, head_sha="deadbeef", attempts=2)

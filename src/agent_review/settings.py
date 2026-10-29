@@ -16,6 +16,13 @@ _VCS_PROVIDERS = {"twg", "github"}
 # distinto aborta el proceso: no hay interruptor por PR ni caida silenciosa.
 _REVIEW_ENGINES = {"llm", "claude"}
 
+# Destino del CLI cuando nadie ha elegido en el panel (032). `gateway` habla
+# con el clúster a través de LiteLLM; `anthropic` es el comportamiento de hoy.
+_CLAUDE_UPSTREAMS = {"anthropic", "gateway"}
+
+# Modelos del clúster que el panel puede elegir. El id es el alias del gateway.
+CLUSTER_MODELS = frozenset({"deepseek-v4-flash", "glm5.3-flash"})
+
 # Procesos que tienen contrato de secretos propio (I3). Un `required_in` con otro
 # nombre es un error al construir el descriptor: un secreto que nadie exige nunca.
 PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot", "claude-runner"})
@@ -98,6 +105,15 @@ class Dial:
     help: str
 
 
+# Rango que el panel acepta al publicar los techos del CLI. El entorno puede
+# arrancar fuera de él: ese valor es el inicial del control y se conserva si
+# no se toca. El tiempo no baja de 1 s. En turnos, 0 apaga el tope.
+CLAUDE_PANEL_TURNS_MIN = 0
+CLAUDE_PANEL_TURNS_MAX = 2000
+CLAUDE_PANEL_TIMEOUT_MIN_S = 1.0
+CLAUDE_PANEL_TIMEOUT_MAX_S = 21600.0
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -114,10 +130,28 @@ class Settings(BaseSettings):
     # Raiz de los artefactos ya validados del motor claude. La ruta relativa
     # (repo + pr + head_sha) la elige el worker; el CLI no escribe el fichero.
     claude_artifact_root: str = "var/claude"
-    # Tiempo de pared y tope de turnos del subproceso. No es un presupuesto
-    # de tokens: el motor llm sigue midiendose como hasta ahora.
-    claude_timeout_s: float = 900.0
-    claude_max_turns: int = 30
+    # Techos del subproceso. Una review corta no los gasta. No es un
+    # presupuesto de tokens: el motor llm sigue midiendose como hasta ahora.
+    # El panel los publica; el worker los manda en POST /run. Sin override,
+    # el runner usa estos valores de su propio entorno.
+    claude_timeout_s: Annotated[
+        float,
+        Dial(
+            "Claude",
+            "Segundos de pared del CLI y del checkout. "
+            f"Entre {CLAUDE_PANEL_TIMEOUT_MIN_S:g} y {CLAUDE_PANEL_TIMEOUT_MAX_S:g}. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 3600.0
+    claude_max_turns: Annotated[
+        int,
+        Dial(
+            "Claude",
+            "Turnos del CLI (--max-turns). 0 lo apaga: solo corta el tiempo. "
+            f"Entre 1 y {CLAUDE_PANEL_TURNS_MAX} si está activo. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 0
     claude_bin: str = "claude"
     # Arbol de trabajo del servicio. Distinto del clon bare (`read-ws-`) y de
     # la raiz donde el worker guarda el JSON ya validado.
@@ -139,6 +173,20 @@ class Settings(BaseSettings):
         str,
         Secret(inventory_only="vacio: el runner clona con el token de VCS ya configurado"),
     ] = ""
+    # Si nadie ha elegido en el panel. `anthropic` deja el hijo como hoy.
+    claude_upstream: str = "anthropic"
+    # URL interna del gateway (`http://nan-gateway:4000`). Vacía con Anthropic.
+    claude_gateway_url: str = ""
+    # Override del master key. Vacío: el runner lee el fichero que el perfil
+    # `claude` crea al arrancar. No es la clave del clúster.
+    claude_gateway_token: Annotated[
+        str,
+        Secret(inventory_only="override del master key; el stack lo genera si está vacío"),
+    ] = ""
+    claude_gateway_token_file: str = ""
+    # Modelo del clúster cuando el destino de entorno es `gateway` y el panel
+    # no ha elegido. El panel puede sustituirlo por `glm5.3-flash`.
+    claude_gateway_model: str = "deepseek-v4-flash"
     # Fichero 0600 de la sesión. Lo escriben el panel y lo lee el runner.
     # El worker no lo abre: pregunta GET /session.
     claude_session_path: str = "var/claude-session/session.json"
@@ -612,6 +660,32 @@ class Settings(BaseSettings):
                     f"REVIEW_TOOLS_GREP_MODE debe ser `literal` o `regex`, no {value!r}"
                 )
             return normalized
+        return value
+
+    @field_validator("claude_upstream", mode="before")
+    @classmethod
+    def _normalize_claude_upstream(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in _CLAUDE_UPSTREAMS:
+                raise ValueError(
+                    f"CLAUDE_UPSTREAM debe ser uno de {sorted(_CLAUDE_UPSTREAMS)}, no {value!r}"
+                )
+            return normalized
+        return value
+
+    @field_validator("claude_gateway_model", mode="before")
+    @classmethod
+    def _normalize_claude_gateway_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized and normalized not in CLUSTER_MODELS:
+                raise ValueError(
+                    "CLAUDE_GATEWAY_MODEL debe ser "
+                    + " o ".join(sorted(CLUSTER_MODELS))
+                    + f", no {value!r}"
+                )
+            return normalized or "deepseek-v4-flash"
         return value
 
     @field_validator("review_engine", mode="before")

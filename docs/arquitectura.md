@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 # Arquitectura
 
@@ -26,6 +26,7 @@ flowchart LR
         FIXW["fix-worker<br/>verifica · nunca publica"]
         BOT["teams-bot<br/>outbox · POST /api/messages"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
+        WEB["web :8090 · perfil panel<br/>SPA + API JSON"]
         REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
@@ -36,6 +37,9 @@ flowchart LR
     API --> VAR
     API --> REDIS
     HUMAN -->|"CLI agent_review / POST decision"| API
+    HUMAN -->|"navegador · SPA"| WEB
+    WEB -->|"lee estado y encola comandos"| REDIS
+    WEB -->|"recorrido (solo lectura)"| PG
     REDIS -->|BLMOVE| WORKER
     WORKER --> VAR
     WORKER --> CFG
@@ -75,6 +79,7 @@ flowchart LR
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
+| `web` (`web/main.py`) | `python -m agent_review.web.main` | Panel de operación. Sirve la **SPA** (`frontend/dist`, en la imagen `web/static`) y la API JSON: lee el estado de Redis y el recorrido del checkpointer con un pool de solo lectura, y **encola** comandos, decisiones y lanzamientos. No escribe el estado del grafo ni habla con el VCS (`launch` lo resuelve el worker). El *fallback* de `index.html` no captura `/api/*` ni `/healthz` ([029](iniciativas/archivo/029-panel-en-react/spec.md), P5). Opt-in por el perfil `panel`. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. La **bandeja** ([026](iniciativas/archivo/026-bandeja-de-decisiones/spec.md)) es la lista de esas preguntas y comparte el sello con Teams y con el detalle. |
 
 ---
@@ -103,10 +108,17 @@ src/agent_review/
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
 ├── sandbox_runner/ Servicio de verificación y workspace de lectura (verifier, workspace,
 │                  read_workspace, runtime, recipes)
+├── web/           Panel de operación: `main` (app y API), `spa` (build de la SPA y su
+│                  *fallback*), `review_detail`/`config_api`/`bandeja`/`commands`,
+│                  `read_model` (Redis + checkpointer) y `deps` (inyección)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
     paused_store.py checkpointer.py scope.py decision.py trace.py
 ```
+
+La interfaz no vive en Python: es una SPA en `frontend/` (Vite, React y TypeScript
+estricto sobre CoreUI) cuyo build se sirve desde `web` y que consume la misma API
+JSON. El servidor no sabe cómo se pinta una review.
 
 Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
 (`autonomy.yaml` y `models.yaml`), **Strategy** (`FixerPort`, `DeliveryFormatter`,
@@ -191,7 +203,7 @@ compila otro grafo ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md),
 flowchart TD
     START([START]) --> scope
     scope["scope<br/>diff para anclar"] -->|"Send"| persona
-    persona["persona<br/>cargador claude + estática si el perfil declara typecheck"] --> merge
+    persona["persona<br/>cargador del artefacto de Claude"] --> merge
     merge --> stamp
     stamp["stamp<br/>acción publish, sin política"] --> hitl
     hitl{"hitl<br/>¿cuáles se publican?"} -->|no| publish
@@ -202,7 +214,11 @@ flowchart TD
 ```
 
 No hay `verify`, `policy` ni `fix_dispatch`. El cargador lee el artefacto ya
-validado y tira con L0 la cita que no está en el diff. El sello marca cada
+validado y tira con L0 la cita que no está en el diff. Escribe en `discarded`
+cada hallazgo tirado, con su filtro y su motivo: los de L0 y los que el worker
+rechazó por contrato al adaptar el objeto `mode:agent`, que deja en
+`<sha>.discarded.json` junto al artefacto. La tarjeta «Pasos» los cuenta
+([034](iniciativas/034-cifras-de-cada-paso/spec.md)). El sello marca cada
 hallazgo que pasó con acción `publish` y `publication=full`; no ejecuta la
 política. `dropped` no se publica (ni inline ni resumen) y no es `rejected`.
 Con `silence_without_choice`, solo un `approved` se publica. `dropped`,
@@ -232,7 +248,12 @@ los jobs siguientes salen a la misma lista con `reason` `quota-wait` y vuelven
 a la cola cuando el aviso caduca; un artefacto ya válido de ese `head_sha` no
 espera. El login del operador suelta solo lo parqueado por la sesión. El
 barrido de cola vacía vuelve a mirar la sesión y suelta `quota-wait` si el
-aviso ya no está.
+aviso ya no está. Con un modelo del clúster
+([ADR-0038](adr/0038-el-cluster-se-espera.md)), `GET /session` dice también
+el motivo: con el gateway caído el job sale con `reason` `gateway` y vuelve en
+cuanto el gateway responde. Un 429 que el gateway no absorbe llega como `503`
+(`ClaudeClusterLimited`): ese job y los siguientes esperan como
+`cluster-wait` 300 s, sin gastar intentos ni ir a la DLQ.
 
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
@@ -249,6 +270,7 @@ LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
 | `request`, `diff`, `reviewer` | Sustituye | `reviewer` solo existe en cada rama del `Send` |
 | `review_context` | Sustituye | `ReviewContext` de L1 (008): ficheros al head y docs del perfil; lo escribe `scope` y el fan-out lo reenvía |
 | `findings` | `operator.add` | Lo escriben las personas en paralelo |
+| `discarded` | `operator.add` | Hallazgos que la persona `claude` tiró antes del merge, con `stage` (`contract` o `l0`) y motivo (034). El motor `llm` no lo escribe |
 | `finding_sources`, `source_status`, `fixes` | Merge de dict | Por `finding_id` o por persona |
 | `budget_exhausted` | `operator.or_` | Personas que se cortaron por presupuesto (017); cada rama escribe la suya en paralelo |
 | `tokens_spent` | Suma de dict | Tokens confirmados por persona: el gasto real de la review |
@@ -405,16 +427,20 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
 | Redis | `reviews:jobs:processing:<host>` | Job en vuelo de ese worker, hasta el `ack`. Un proceso nuevo con el mismo host lo devuelve a `reviews:jobs`; otro host, si el latido (`…:hb`) supera 6 h | latido 6 h |
-| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request. Un payload ilegible llega en crudo (`raw`) | — |
-| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota` o `quota-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` no | — |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, `error` (log de los intentos) y request. Un payload ilegible llega en crudo (`raw`). El enlace del panel abre ese log cuando no hay recorrido | — |
+| Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
+| Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
+| Redis | `reviews:meta:<review_key>` | **Metadatos del PR**: `pr_id` y `pr_title`. El worker los guarda al iniciar cada review; el panel los lee para mostrar `#ID - título` en lugar de la `review_key` técnica | 30 días |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait`, `ceiling`, `gateway` o `cluster-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` y `cluster-wait` vuelven al caducar su aviso; `gateway`, cuando el gateway responde; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/archivo/030-panel-ensena-los-aparcados/spec.md)) | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
+| Redis | `reviews:claude:notice:session`, `reviews:claude:notice:ceiling` | Aviso único de cada motivo. `session` además se borra al iniciar sesión. El de `ceiling` no se desbloquea solo: su fecha es lo que permite volver a avisar al chocar de nuevo el techo | 86400 s |
 | Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |
 | Redis | `reviews:fixes:processing:<host>` | Fix en vuelo, misma regla que `reviews:jobs:processing` | latido 6 h |
 | Redis | `reviews:fixes:dead` | DLQ de fixes. Un payload ilegible llega en crudo (`raw`) | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
-| Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí «qué corre ahora y desde cuándo» (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |
+| Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí qué corre ahora y pinta el tiempo de ejecución a partir de `started_at` (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |
 | Redis | `reviews:reasoning:<review_key>` | *Stream* del **razonamiento de los revisores** (021): un evento por inicio, trozo de texto (agrupado), fin o fallo de cada lote, con persona, lote *i/N*, ficheros y `usage`. Lo escribe el worker con `REASONING_STREAM_ENABLED` y lo lee el panel por SSE. `MAXLEN ~` por `REASONING_MAX_BYTES` | `REASONING_TTL_S` (10 días) |
 | Redis | `reviews:history` / `reviews:history:data` | **Histórico de reviews terminadas** (021): *sorted set* `review_key` → instante de cierre y hash `review_key` → `ReviewSummary` en JSON. Lo escribe el worker al cerrar cada review (una reentrega actualiza la entrada) y lo lee el panel | Poda por fecha con `CHECKPOINT_RETENTION_DAYS` (30 días), al escribir y en el barrido |
 | Redis | `reviews:cancel:<review_key>` | Marca de **cancelación** (019 §5.4): la escribe el panel y la leen la frontera de nodo y `_consume` al desencolar, que abortan la review. Tras abortar queda como *tombstone* para abortar los jobs rezagados (sin hilo arrancarían desde `START`); solo «Reintentar» la retira. Una pausa de fix no se marca | `CANCEL_TTL_S` (7 días) |
@@ -430,6 +456,7 @@ vencimiento vive en `sweep_fix_expired`
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Postgres | `panel_config` / `panel_config_history` | Documento vigente de diales del panel (027, [ADR-0031](adr/0031-configuracion-desde-el-panel.md)): overrides, revisión, actor. El historial guarda cada foto. Sin fila, la review usa `Settings` | — |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
+| Disco | `CLAUDE_ARTIFACT_ROOT/<repo>/<pr>/<sha>.json` y `<sha>.discarded.json` | Artefacto del motor `claude`: hallazgos validados y, al lado, los que el contrato rechazó (034). `forget` borra los dos | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 
 ### Workspaces de lectura (memoria del `sandbox-runner`)
@@ -484,6 +511,18 @@ El estado vivo de cada iniciativa y sus tareas están en
 [`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
 [025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
 tarjeta de lote, `claude-runner` y sesión en el panel.
+[028](iniciativas/archivo/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
+fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
+[032](iniciativas/archivo/032-skill-con-modelo-de-la-cluster/spec.md) está implementada:
+`/claude` elige `claude`, `deepseek-v4-flash` o `glm5.3-flash`, y
+`claude-runner` lo aplica en cada `POST /run`. El gateway del perfil
+`claude` traduce los dos modelos del clúster; su egress solo llega a
+`api.nan.builders` y un 429, agotados tres reintentos, espera como
+`cluster-wait` en vez de parquearse como cupo
+([ADR-0038](adr/0038-el-cluster-se-espera.md))
+([ADR-0037](adr/0037-la-skill-con-un-backend-ajeno.md)). El *gold
+set* no entra: sigue midiendo solo el motor `llm`.
 
 ---
 
@@ -508,7 +547,7 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D13 | **Marcas en PRs largos** | `twg prs comment query -n 200`: a partir del comentario 200 el dedupe no ve marcas antiguas. |
 | D14 | **Observabilidad** | **Parcial:** no hay trazas (LangSmith) ni métricas sobre tráfico real; solo logs. El **recorrido** de una review (nodos, orden y punto de parada) se lee del checkpointer con `trace.read_trace` y el **panel** de operación ([019](iniciativas/archivo/019-panel-de-operacion/spec.md)) muestra cola, en vuelo, pausas, descartes y gasto, además de la consola del sandbox en vivo. Las trazas con prompt/`usage`/latencia por llamada las aborda la [018](iniciativas/018-trazas-de-la-review/spec.md) (self-hosted); las métricas agregadas siguen fuera. |
 | D15 | **Pausa degradada huérfana** | Si la pasada degradada pausa y después también pausa la completa, la completa ocupa la entrada del inbox (misma `review_key`). La reconciliación borra el hilo `:partial` superado. Vigilar que no queden hilos `:partial` pausados sin entrada. |
-| D16 | **Heartbeat sin progreso** | **Resuelta (019).** El latido de compose sigue midiendo solo que el proceso vive, pero el worker deja en `reviews:active:<review_key>` el nodo en curso y su `started_at` (hash de progreso, W10) y el **panel** lo muestra: se distingue «vivo» de «avanzando». El latido se queda como healthcheck a propósito ([ADR-0020](adr/0020-panel-como-servicio-aparte.md)): no debe depender de Redis. |
+| D16 | **Heartbeat sin progreso** | **Resuelta (019).** El latido de compose sigue midiendo solo que el proceso vive, pero el worker deja en `reviews:active:<review_key>` el nodo en curso y su `started_at` (hash de progreso, W10) y el **panel** muestra ese nodo con su tiempo de ejecución: se distingue «vivo» de «avanzando». El latido se queda como healthcheck a propósito ([ADR-0020](adr/0020-panel-como-servicio-aparte.md)): no debe depender de Redis. |
 | D19 | **Anclaje por cercanía** | **Resuelto (008 L0):** el `LlmReviewer` ya no recoloca por cercanía; cita de contexto/borrada va al resumen y cita inventada se descarta. `ToolingReviewer` sigue con `best_line` (grounded). |
 | D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |
 | D22 | **Contrato de secretos a mano** | **Resuelta (020, [ADR-0022](adr/0022-contrato-de-secretos-declarado.md)).** El contrato se deriva de `Settings`: cada campo secreto declara un `Secret` en su `metadata` (procesos donde aplica, condición de activación y qué se espera del valor) y `secrets_for(settings, process)` es la única vía de lectura. Se borran las listas a mano y los cuatro sets de placeholders: `PLACEHOLDER_VALUES` es la única definición, y API, web y el `sandbox_runner` comparten el predicado `is_missing` que la encapsula. La causa del fallo de `92dea1e` (dos listas para el mismo secreto) ya no puede repetirse. |

@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -12,12 +12,14 @@ tocar nada, lee [`CONTEXT.md`](../CONTEXT.md) y los ADR de la zona que vas a cam
 ```bash
 make help        # lista todos los atajos, agrupados
 make install     # uv sync --extra dev (Python 3.12; el CI fija UV_FROZEN=true)
-make ci          # ruff check + ruff format --check + mypy (strict) + pytest + docs-check
+make ci          # ruff check + ruff format --check + mypy (strict) + pytest + docs-check (+ frontend-ci)
 ```
 
 `make ci` ejecuta lo mismo y en el mismo orden que `.github/workflows/ci.yml`. Los
 tests `live` (contra Bitbucket real) quedan excluidos por defecto (`-m 'not live'`);
-`make test-live` los pide en positivo (red y credenciales reales).
+`make test-live` los pide en positivo (red y credenciales reales). El panel de la
+SPA entra como `frontend-ci` cuando existe `frontend/`: instala si falta
+`node_modules` y corre tipos, lint, tests y build (029, R7).
 
 El `Makefile` es el índice de tareas del repo, no solo de calidad. Además de `make ci`:
 
@@ -33,6 +35,9 @@ make ensure-dev-secrets           # rellena URL y secretos locales vacíos; no t
 make logs S=api                   # sigue los logs de un servicio (por defecto worker)
 make smoke PR=417                 # smoke Nivel 2 real contra un PR (docs/operacion.md §6)
 make status                       # contenedores, URLs y prueba de credenciales
+make frontend-install             # npm ci del panel (una vez; `ci` lo hace si falta)
+make frontend-check               # tipos, lint y tests de la SPA
+make panel-dev                    # Vite con proxy a un `web` ya levantado
 ```
 
 `tests/conftest.py` aísla la suite del host: desactiva el `.env` en `Settings` y
@@ -111,18 +116,19 @@ omitido hasta que exista su baseline.
 | L0 / L1 (008) | `test_verification_l0` (anclaje estricto, cita, `pre_existing`), `test_diff_parser` (lado viejo del diff), `test_llm_reviewer` (L0 en `_to_finding`, L1 por lote y humildad), `test_profile` (`context_docs`) |
 | Reintentos | `test_retry`, `test_revision_main` (regresiones B1–B10) |
 | HITL | `test_hitl`, `test_hitl_e2e`, `test_hitl_persistence`, `test_paused`, `test_cli`, `test_checkpointer` |
-| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_ui` (vistas HTML, botones por estado y rol, formulario de decisión y escapado de datos del PR), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`), `test_bandeja` (la bandeja lista las pausas humanas, sella la primera respuesta y pide retirar la tarjeta si Teams está activo), `test_pr_url` y `test_web_launch` (lanzar una review con la URL del PR, ADR-0029) y `test_worker` (el worker resuelve el commit antes del grafo); `test_compose` cubre el perfil `panel` |
+| Recorrido y panel (019) | `test_trace` (recorrido reconstruido del `saver` sin grafo: completado, pausado humano/fix y a medias, contrastado contra `get_state_history`; lector sin DDL y sin saver), `test_progress` (semántica del `ProgressPort` sobre `fakeredis` y envoltura de nodo: firma/`Runtime`/`RetryPolicy` preservados), `test_cancel` (cancelación: `Cancelled` no se reintenta, la frontera aborta sin ejecutar el nodo, el worker borra el hilo y limpia el inbox), `test_web` (panel: endpoints `/api/state` y `/api/trace` con un read model falso, read model real sobre `fakeredis`, sesión con rol `401`/`403` y fail-closed de `PANEL_SESSION_SECRET`), `test_web_review_detail` (ficha agregada de la 029: los campos de A1, el `404` de A2 y `pins` de A3), `test_web_spa` (las seis rutas de §3.3 y `/login` sirven el `index.html`; `GET /api/inexistente` sigue siendo `404`), `test_web_config_api` (contrato HTTP de `/api/config` y `POST /config`: `409` de revisión, `stale`, `400` del campo, candado, `503` y `403`), `test_web_commands` (comandos por estado: cancelar antes/después de publicar, reintentar, reanudar y **decidir** —022—, incluida la validación con `build_decision`), `test_bandeja` (la bandeja lista las pausas humanas, sella la primera respuesta y pide retirar la tarjeta si Teams está activo), `test_pr_url` y `test_web_launch` (lanzar una review con la URL del PR, ADR-0029) y `test_worker` (el worker resuelve el commit antes del grafo); `test_compose` cubre el perfil `panel` y la etapa de Node del `Dockerfile`, y `test_makefile` el `ci` con el panel |
 | Fix | `test_fix_selection`, `test_fix_validation`, `test_fix_node`, `test_fix_render`, `test_fix_e2e`, `test_llm_fixer` |
 | Handoff (E7) | `test_fix_worker` (verificación e idempotencia del `fix-worker`), `test_queue` (colas `reviews:fixes`), `test_compose` (aislamiento del servicio) |
 | Sandbox | `test_http_sandbox`, `test_sandbox_runner`, `test_sandbox_console` (consola en vivo: `on_line` no altera el `VerifyReport`, `Popen` separa `stdout`/`stderr` y emite al vuelo, buffer circular y SSE, `404` sin `run_key`), `test_compose` |
 | Lectura de contexto (016) | `test_context_ports` (contrato paramétrico de los tres adaptadores, `FixtureContextReader` y el dialecto portable de 023), `test_outline` (índice de símbolos: AST, heurística declarada y fichero no indexable), `test_context_vcs`, `test_context_workspace`, `test_read_workspace` (workspace *bare* del runner y endpoints), `test_context_factory` (elección y degradación), `test_context_cache` (la caché de E/S solo cubre `read_file`), `test_tool_loop` (bucle, topes, citas, registro de lecturas y presupuesto) |
 | Presupuesto (017) | `test_budget` (contrato paramétrico de `InMemoryBudget` y `RedisBudget` sobre `fakeredis`, reserva/confirmación y el consumo desde el bucle), `test_llm_reviewer` y `test_llm_fixer` (reserva, tope blando, corte y devolución en el error), `test_worker` (reparto `2×total/N` en `build_reviewers`), `test_graph` (el hecho del corte en el `ReviewOutcome`) |
-| Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `test_web_ui` (pestaña, sin `innerHTML`) |
-| Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web_ui` y `test_web` (página `/history` y `/api/history`) |
+| Razonamiento (021) | `test_reasoning` (sink y lector Redis sobre `fakeredis`: agrupación de trozos, TTL, tope, lotes paralelos, Redis caído), `test_openai_llm` (*streaming*, oyente roto, corte a mitad), `test_llm_reviewer` (diff numerado y eventos por lote), `test_web` (SSE y cierre) y `ReviewPage.test.tsx` (la pestaña, sin `innerHTML`). `streams.test.tsx` cubre la regla de reinicio del stream (`resetOnOpen`): `'clean'` no reinicia tras un corte que el navegador reanuda con `Last-Event-ID`, `'always'` sí porque la consola del sandbox no emite `id:` |
+| Histórico (021) | `test_history` (resumen completa/parcial/incompleta, almacén en memoria y sobre `fakeredis`, poda, Redis caído, el worker anota solo lo que no queda pausado), `test_web` (`/api/history`: filtros, orden y lista vacía) y `HistoryPage.test.tsx` (tabla, filtros en la URL y paginación) |
+| Interfaz en React (029) | `frontend/src/**/*.test.ts(x)` con Vitest y Testing Library: `client.test.ts` (codificación de la `review_key`), `router.test.tsx` (la clave llega entera por splat y la guardia manda al login), `LoginPage.test.tsx` (el token va en el cuerpo JSON, no se envía vacío y un `401` se explica) y un test por pantalla con datos falsos (cuadro de mando con el tiempo de ejecución en vuelo, ficha con el diagrama de pasos y el panel maximizable, bandeja, histórico, configuración y Claude). `make frontend-check`, incluido en `make ci` |
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
 | Canal (chat) | `test_chat_outbox` (contrato `ChatNotice`, incluido `withdraw`, y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_claude_card` (lote de publicación y la tarjeta de `llm` sin `pause_kind`), `test_teams_threads` (hilo por PR y borrado de la tarjeta), `test_teams_bot_service` (consumo de la outbox, `withdraw`, pausa ya sellada y barrido), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado y borrado del mensaje; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
-| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio), `test_claude_parking` (parking, aviso único, login del operador y cupo) |
+| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio, paridad del argv con Anthropic y 429 del clúster), `test_claude_backend` (elección del panel y destino de cada `POST /run`), `test_claude_parking` (parking, aviso único, login del operador, cupo de Anthropic, espera del 429 del clúster y gateway caído), `test_compose` (egress de `nan-gateway`: el sidecar tiene `NET_ADMIN`, LiteLLM no) |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
 | Operación | `test_status` (`make status`: puertos, credencial aceptada o rechazada, módulo apagado sin prueba; sin red ni Docker), `test_ensure_dev_secrets` (rellena una vez los secretos locales y no inventa `CLAUDE_GIT_TOKEN`) |
 | Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
@@ -154,28 +160,85 @@ worker lo llama en `ensure_claude_artifact` antes de `invoke`, y no vuelve a
 llamar si el artefacto de ese `head_sha` ya es válido. El tiempo agotado, el
 cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
 de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
-convierte en «cero hallazgos».
+convierte en «cero hallazgos». El objeto `mode:agent` lo traduce
+`adapters/agent_mode.py`: un `evidence` que llega como texto se envuelve en
+lista, y `first_evidence` (la cita literal) va delante si la primera evidencia
+no la contiene: L0 solo busca en el diff la primera cita. Un hallazgo que no cumple el
+contrato se descarta, y el log del worker dice cuál y por qué (`#1: evidence:
+…`). Si se descartan todos, la salida es inválida. El techo de turnos y el cupo se clasifican por
+el **desenlace estructurado** del CLI (`type: result` y su `subtype`), nunca por
+buscar palabras en el texto: el informe de una review puede citar
+`error_max_turns` o `quota` sin haberlos agotado, y una review de este repo los
+cita. La prosa de `stderr` solo decide el cupo cuando el CLI se cayó antes de
+emitir su `result`.
 
 El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
-servicio `claude-runner`, no en el worker. El argv lleva `--max-turns`,
-`--allowedTools Read,Grep,Glob`, `--disallowedTools` (Bash, Edit, Write,
-NotebookEdit, WebFetch, WebSearch) y `--permission-mode dontAsk`. El entorno
-del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando secretos. El
-token de sesión, si el fichero sigue vigente, se inyecta aparte
+servicio `claude-runner`, no en el worker. La etapa `claude-runner` del
+`Dockerfile` instala `claude-code`, `bubblewrap` y `socat`, y copia la skill
+`ce-code-review`. El ejecutable es `claude`. Sin `claude`, `bwrap` o `socat` el
+proceso no arranca. El subproceso recibe `DISABLE_UPDATES=1` y
+`--setting-sources user`. El argv pide `/ce-code-review mode:agent base:<merge-base>`,
+permite `Read`, `Grep`, `Glob` y `Bash`, deniega edición, `WebFetch` y
+`WebSearch`, y usa `--permission-mode dontAsk`. Los techos por defecto son
+`CLAUDE_MAX_TURNS` 0 (apagado) y `CLAUDE_TIMEOUT_S` 3600. El panel los publica
+(sección Claude: el tiempo entre 1 y 21600 s no se apaga; los turnos, 0 o
+1–2000) y el worker los manda en `POST /run`;
+sin override, el runner usa su entorno. El `settings.json` del config
+dir exige el sandbox: lista estricta `api.anthropic.com`, sin salir de él,
+checkout no escribible, `/tmp` sí y `enableWeakerNestedSandbox`
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)). En Compose ese servicio
+lleva `apparmor=unconfined` y `seccomp=unconfined`: sin los dos, `bwrap` no
+crea el user namespace y el sandbox no arranca. El flag débil evita el
+`Can't mount proc` de un `/proc` nuevo dentro de Docker; la jaula ve los
+procesos del contenedor.
+El entorno del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando
+secretos. El token de sesión, si el fichero sigue vigente, se inyecta aparte
 (`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. `CLAUDE_CONFIG_DIR` apunta
-fuera del checkout. El checkout (`claude_runner/checkout.py`) quita los remotos
-después del fetch y no arranca el CLI si alguno sigue; `core.symlinks` queda
-en falso. Git corre con un entorno sin los tokens del proceso y con tope de
-tiempo.
+fuera del checkout. **El hijo no corre como root**: se baja a `nobody` entre
+`fork` y `exec`, porque si no el kernel le deja leer `/proc/1/environ`, donde
+siguen los tokens del runner por mucho que se borren del entorno en memoria
+([ADR-0035](adr/0035-el-hijo-del-runner-no-es-root.md)). Por eso la config se cede
+a ese usuario y el hijo recibe `HOME` y `TMPDIR` propios dentro de ella; el
+checkout lo sigue escribiendo `git` como root. Si el proceso es root y el usuario
+no existe, el runner no arranca. El checkout (`claude_runner/checkout.py`) deja `review` en
+el `head_sha` y `base` en el `base_sha`, quita los remotos y no arranca el CLI
+sin base o si el fetch de la base falla. `base_sha` es la punta viva de la rama
+destino, no la bifurcación: los dos fetch son `--depth 1` y después se
+profundiza por pasos (`--deepen` 50, 200 y 1000) hasta que `git merge-base
+review base` resuelve. Ese merge-base es el `base:` que recibe la skill. Sin él,
+el diff contra la punta mete invertido lo que entró en destino tras la
+bifurcación. Si no aparece, el checkout falla cerrado. Un reintento sobre el mismo árbol
+suelta HEAD antes del fetch: Git no actualiza la rama que está checked out.
+`core.symlinks` queda en falso. Git
+corre con un entorno sin los tokens del proceso. La transcripción es el fichero
+entero en `claude_session`; el panel la sigue por SSE y la descarga con sesión.
+El SSE **siempre termina**: sin transcripción, `404` antes de abrir el stream
+(mismo criterio que la consola); con ella, cierra al llegar `finished_at` o, si
+el runner murió a mitad, tras `IDLE_S` (180 s) sin una línea nueva. Antes, un
+`finished_at` que nunca llegaba dejaba el bucle girando: cada petición se comía un
+hilo del threadpool y unas pocas dejaban el panel sin servir.
 
 Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
 `invoke`, salvo que el job ya traiga `decision` o `fix_resolution`. El aviso
 sale una vez (`claim_notice`). `POST /api/claude/session`
 (`require_command_session`) escribe el fichero `0600` y suelta solo el motivo
-`session`. El job que agota el cupo parkea con `quota` y no se reintenta.
+`session`. El job que agota el cupo parkea con `quota` y no se reintenta. El
+que agota el tiempo de pared parkea con `ceiling`; si el tope de turnos está activo y se agota, también. El login no lo suelta.
 Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
 `quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
-artefacto ya válido no espera.
+artefacto ya válido no espera. Con el clúster
+([ADR-0038](adr/0038-el-cluster-se-espera.md)) la sonda es
+`HttpClaudeRunner.blocker()`: devuelve `None`, `session` o `gateway`, y
+`claude_blocker` aparca con ese motivo. `ClaudeClusterLimited` (el `503` del
+runner) aparca como `cluster-wait` y pone `reviews:claude:notice:cluster-wait`;
+mientras siga, los jobs siguientes esperan igual que con `quota-wait`.
+
+El aviso de parqueo que se manda a Teams **caduca siempre**: 900 s para `quota`
+y 300 s para `cluster-wait` (los enfriamientos), y 24 h para `session`,
+`gateway` y `ceiling`. El de `gateway` se borra además en cuanto el gateway
+responde. `ceiling` no se desbloquea
+solo, así que sin fecha el aviso no volvería a salir nunca, ni tras subir el
+techo y volver a chocarlo. Caducado, el siguiente parqueo vuelve a avisar.
 
 ### Una persona nueva
 
@@ -315,7 +378,7 @@ de entrar al nodo. Al añadir un chequeo nuevo, dos reglas más:
 5. **La marca es un tombstone**: el worker no la retira al abortar. Sin hilo, cualquier
    job rezagado de la misma review (la reanudación del fix-worker, una decisión
    encolada) arrancaría desde `START`; la marca, con su TTL (`CANCEL_TTL_S`), hace que
-   `_consume` lo aborte. Solo el comando «Reintentar» la retira. Por la misma razón una
+   `_consume` lo aborte. «Reintentar» y «Eliminar» la retiran. Por la misma razón una
    pausa de **fix** no se marca: la marca abortaría el job que resuelve la wave.
 
 ### La web del panel (019)
@@ -344,6 +407,59 @@ El panel (`web/`) es CQRS-lite ([ADR-0020](adr/0020-panel-como-servicio-aparte.m
    parsea la URL y encola `launch=True`. El commit lo lee `resolve_launch` en el
    worker, antes de `graph.invoke`
    ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
+6. **Eliminar no borra el hilo en el panel.** `POST /api/reviews/{key}/forget`
+   sube `reviews:generation:<key>` y encola `forget=True`. El worker borra hilos,
+   artefacto y estado local ([ADR-0034](adr/0034-olvidar-una-ejecucion.md)). Un
+   job con generación menor no corre. Un lanzamiento nuevo adopta la vigente al
+   resolver el SHA. Los comentarios del PR se quedan.
+7. **Un descarte sin recorrido no es un 404.** Si `trace` no existe y la clave
+   está en la DLQ, el detalle pinta el motivo y el campo `error` (log de los
+   intentos). El worker lo acumula en `reviews:failure:<review_key>` y lo copia
+   al descartar. Un fallo del `claude-runner` incluye el `detail` de la respuesta,
+   no solo el código HTTP. La ficha de una review con recorrido tiene el mismo
+   apartado **Log**: el motivo leído del estado (`source_status`, ficheros sin
+   revisar) y las líneas de `reviews:journal:<review_key>`, que no se borran al
+   terminar.
+
+### La interfaz en React (029)
+
+La interfaz del panel vive en `frontend/` (Vite + React 19 + TypeScript estricto,
+sobre el armazón de CoreUI) y es la **única**: el HTML servido en el servidor
+(`web/ui.py`) se retiró en el bloque R de la iniciativa. `web` monta el build con
+`StaticFiles` y un *fallback* de `index.html`; la API JSON es el único contrato.
+
+1. **`npm`, no `uv`.** `make frontend-install` (una vez), `make frontend-check`
+   (tipos, lint y tests) y `make frontend-build`. `node_modules/` y
+   `frontend/dist/` no se versionan. `make ci` incluye `frontend-ci` cuando existe
+   `frontend/`, e instala si falta `node_modules`.
+2. **Desarrollo con `make panel-dev`**: Vite en `:5173` con *proxy* de `/api` al
+   `web` en `:8090`. La cookie es del mismo origen también ahí, así que el login
+   funciona sin CORS.
+3. **La sesión se pregunta, no se lee**: la cookie es `HttpOnly` y el rol sale de
+   `GET /api/session` a través de TanStack Query. No hay segunda copia del rol en
+   el cliente; un botón que además comprueba el rol en el servidor no cambia el
+   `403`. Se entra por `/login` (`POST /api/session`) y se sale con `DELETE`.
+4. **Un tipo por contrato de la API** en `src/api/types/`, copiado de los modelos
+   de `web/`. Si un endpoint cambia, ese fichero es el primero que falla en `tsc`.
+5. **La `review_key` va por splat** (`/review/*`): lleva `/` y `:` dentro. En las
+   llamadas se codifica por segmento (`reviewPath`), en la URL del navegador no.
+6. **Nada de `dangerouslySetInnerHTML`.** Los logs y las transcripciones son datos
+   de terceros y se pintan como texto.
+7. **Las rutas del navegador son contrato** (`/`, `/review/*`, `/bandeja`,
+   `/history`, `/config`, `/claude` y `/login`): hay enlaces publicados. El test de
+   `tests/test_web_spa.py` comprueba que cada una sirve el armazón y que el
+   *fallback* no se come los `404` de `/api`. Añadir una ruta de backend nueva no
+   toca nada; añadir una de cliente, sí.
+8. **`web/spa.py` resuelve el build en cada petición**: `web/static` (imagen)
+   primero y `frontend/dist` (checkout) después. Sin build, las rutas del panel
+   responden `503` con el motivo; el resto de la API sigue igual.
+9. **El aspecto es el de la demo de CoreUI**: el armazón (`AppLayout`,
+   `AppSidebar`, `AppHeader`, `AppBreadcrumb`) y `styles/panel.scss` reproducen
+   `DefaultLayout` y `style.scss` de la plantilla. Una pantalla nueva se compone
+   con tarjetas (`CCard`, o `PanelSection` si es una tabla con recuento), tablas
+   con la clase `panel-table` e iconos de `@coreui/icons`; el título va en el
+   `title` de la ruta, que pintan las migas, no en un `h1`. Los colores salen de
+   las variables `--cui-*` para que los dos temas funcionen sin CSS por tema.
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
@@ -368,9 +484,18 @@ Hay tres adaptadores y todos pasan el mismo test de contrato:
    y el que usa el gold set (`fixtures/head`, `fixtures/base`).
 2. **`VcsContextReader`** (`adapters/context_vcs.py`): modo degradado por
    `VcsPort.get_file`. Sin árbol, `grep` y `list_dir` solo ven lo ya servido y los
-   ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`).
+   ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`). El lado `base` lo
+   lee en `VcsPort.merge_base`: GitHub lo da con `compare`; `twg` no, y entonces
+   `ref="base"` no se sirve.
 3. **`WorkspaceContextReader`** (`adapters/context_workspace.py`): HTTP contra los
    `/workspaces` del `sandbox-runner`; es el único que hace `grep` del árbol completo.
+   El runner profundiza el clon hasta el merge-base (`git_merge_base.py`) y sirve
+   ahí `ref="base"`; si no aparece, no lo sirve.
+
+**El lado `base` es la bifurcación.** El `base_sha` del PR es la punta viva de la
+rama destino. Leer o diffear ahí hace pasar por «antes del PR» lo que entró en
+destino después de abrir la rama. Ningún lector sirve la punta como `base`: o el
+merge-base, o nada.
 
 Encima de cualquiera de ellos puede ir un **`CachingReader`**
 (`adapters/context_cache.py`, 023 C1): un decorador que comparte un caché **por
@@ -484,10 +609,25 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
 - **El panel no resuelve el commit de un lanzamiento.** Encola la URL ya parseada;
   el worker lee el SHA antes de invocar el grafo y no lo vuelve a leer en un
   reintento ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)).
+- **Un endpoint que no existe sigue siendo `404`.** El *fallback* de la SPA no
+  captura `/api/*` ni `/healthz`; un HTML con `200` haría creer que el contrato
+  tiene una ruta que no tiene (029, P5). Las rutas del navegador
+  (`/`, `/review/*`, `/bandeja`, `/history`, `/config`, `/claude` y `/login`) sí son
+  contrato: hay enlaces publicados.
 - **La protección manda sobre la aprobación.**
 - **El fixer nunca ve secretos ni el perfil completo.**
 - **«Sin hallazgos» con una fuente sin cubrir se publica como incompleta**, nunca como
-  limpia.
+  limpia. Un artefacto que no se depositó no es una fuente sin cubrir: la persona
+  estática no participa y la review puede empezar y terminar sin él. Una salida
+  presente pero ilegible sí deja la review incompleta. Volver a lanzar una review
+  incompleta borra su hilo y la ejecuta otra vez; una completa reutiliza el hilo.
+  **La excepción es la pasada degradada**: se encola porque el artefacto no llegó,
+  así que ahí su ausencia *sí* es una fuente sin cubrir. `build_runtime` recibe
+  `degraded` y monta el `ToolingReviewer` con `required=True`, que declara
+  `MISSING`. Sin eso, la pasada que existe para avisar de la falta de artefacto
+  terminaba publicándose como si PHPStan hubiera pasado. Cuando la pasada
+  degradada no llega a montar personas (motor `claude`), la marca `:partial` del
+  publicador sigue diciéndolo.
 - **Un hallazgo no se autopromueve.** Un `P0`–`P2` `unverified` lleva
   `failure_scenario`; un `verification` distinto de `unverified` lleva
   `verification_evidence`; ningún emisor declara más que su nivel (`LlmReviewer` →

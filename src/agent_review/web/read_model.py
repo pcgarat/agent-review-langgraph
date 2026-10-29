@@ -22,16 +22,24 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import redis
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from agent_review.checkpointer import build_reader_checkpointer
 from agent_review.domain.models import PendingDecision, ReviewRequest
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.trace import PauseKindName, ReviewTrace
-from agent_review.queue import DEAD_LETTER_KEY, QUEUE_KEY
+from agent_review.queue import (
+    DEAD_LETTER_KEY,
+    JOURNAL_PREFIX,
+    PARKED_KEY,
+    QUEUE_KEY,
+    ParkReason,
+    parse_parked,
+)
 from agent_review.redis_utils import build_redis_client
+from agent_review.review_meta_store import RedisReviewMetaStore
 from agent_review.settings import Settings
-from agent_review.trace import read_trace
+from agent_review.trace import read_review_notes, read_trace
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +64,16 @@ class QueueItem(BaseModel):
     pipeline_id: str = ""
     attempts: int = 0
     launch: bool = False
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        return f"#{self.pr_id}"
 
 
 class ActiveNode(BaseModel):
@@ -71,6 +89,19 @@ class ActiveReview(BaseModel):
 
     review_key: str
     nodes: list[ActiveNode] = Field(default_factory=list)
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class DeadLetterItem(BaseModel):
@@ -80,6 +111,20 @@ class DeadLetterItem(BaseModel):
     attempts: int = 0
     reason: str = ""
     discarded_at: datetime | None = None
+    error: str = ""
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class BudgetItem(BaseModel):
@@ -103,6 +148,19 @@ class PausedItem(BaseModel):
     command_hint: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
     publication: bool = False
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class PausedGroups(BaseModel):
@@ -112,6 +170,37 @@ class PausedGroups(BaseModel):
     fix: list[PausedItem] = Field(default_factory=list)
 
 
+class ParkedItem(BaseModel):
+    """Un job del motor `claude` esperando en `reviews:claude:parked` (030).
+
+    No esta en la cola ni corriendo: el worker lo aparto porque no podia
+    ejecutarlo. `reason` dice que lo desatasca, y es lo unico que distingue una
+    espera de un token de un cupo agotado que no se debe reintentar.
+
+    El request entero no se expone: el panel no lo usa y un campo nuevo del modelo
+    apareceria en la API sin querer.
+    """
+
+    review_key: str
+    repo: str = ""
+    pr_id: int = 0
+    pipeline_id: str = ""
+    reason: ParkReason
+    launch: bool = False
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
+
+
 class PanelState(BaseModel):
     """Todo lo que el panel pinta de un tiron (OP13)."""
 
@@ -119,6 +208,9 @@ class PanelState(BaseModel):
     queue: list[QueueItem] = Field(default_factory=list)
     active: list[ActiveReview] = Field(default_factory=list)
     paused: PausedGroups = Field(default_factory=PausedGroups)
+    # Jobs apartados por el worker. Van aparte de `queue` porque no van a arrancar
+    # solos: hace falta una accion, o que caduque un aviso (030).
+    parked: list[ParkedItem] = Field(default_factory=list)
     dead: list[DeadLetterItem] = Field(default_factory=list)
     budget: list[BudgetItem] = Field(default_factory=list)
 
@@ -131,6 +223,14 @@ class PanelReadModel(Protocol):
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         """Recorrido del hilo, o `None` si no existe (o no hay fuente de datos)."""
+        ...
+
+    def notes(self, review_key: str) -> list[str]:
+        """Motivo de un cierre incompleto o parcial, leído del estado final."""
+        ...
+
+    def journal(self, review_key: str) -> list[str]:
+        """Líneas que el worker fue anotando para esta review."""
         ...
 
 
@@ -161,16 +261,64 @@ class RedisPanelReadModel:
         self._progress_key = progress_key
         self._budget_key = budget_key
         self._budget_total = max(0, budget_total)
+        self._meta_store = RedisReviewMetaStore(url=url, client=self._client)
+
+    def journal(self, review_key: str) -> list[str]:
+        try:
+            raw = self._client.lrange(f"{JOURNAL_PREFIX}{review_key}", 0, -1)
+        except redis.exceptions.RedisError as exc:
+            logger.warning("panel: Redis no respondio en el log de %s (%s)", review_key, exc)
+            return []
+        return [text for item in raw if (text := _as_text(item).strip())]
 
     def state(self) -> PanelState:
-        return PanelState(
+        panel_state = PanelState(
             generated_at=datetime.now(UTC),
             queue=self._guard("cola", self._read_queue, []),
             active=self._guard("en vuelo", self._read_active, []),
             paused=self._guard("pausas", self._read_paused, PausedGroups()),
+            parked=self._guard("aparcados", self._read_parked, []),
             dead=self._guard("descartes", self._read_dead, []),
             budget=self._guard("presupuesto", self._read_budget, []),
         )
+        return self._enrich_with_meta(panel_state)
+
+    def _enrich_with_meta(self, state: PanelState) -> PanelState:
+        """Añade el título del PR a los items del estado."""
+        review_keys = [q.review_key for q in state.queue]
+        review_keys.extend(a.review_key for a in state.active)
+        review_keys.extend(p.review_key for p in state.paused.human)
+        review_keys.extend(p.review_key for p in state.paused.fix)
+        review_keys.extend(pk.review_key for pk in state.parked)
+        review_keys.extend(d.review_key for d in state.dead)
+        if not review_keys:
+            return state
+        metas = self._meta_store.get_many(review_keys)
+        if not metas:
+            return state
+        for queue_item in state.queue:
+            if (meta := metas.get(queue_item.review_key)) is not None:
+                queue_item.pr_title = meta.pr_title
+        for active_item in state.active:
+            if (meta := metas.get(active_item.review_key)) is not None:
+                active_item.pr_id = meta.pr_id
+                active_item.pr_title = meta.pr_title
+        for human_item in state.paused.human:
+            if (meta := metas.get(human_item.review_key)) is not None:
+                human_item.pr_id = meta.pr_id
+                human_item.pr_title = meta.pr_title
+        for fix_item in state.paused.fix:
+            if (meta := metas.get(fix_item.review_key)) is not None:
+                fix_item.pr_id = meta.pr_id
+                fix_item.pr_title = meta.pr_title
+        for parked_item in state.parked:
+            if (meta := metas.get(parked_item.review_key)) is not None:
+                parked_item.pr_title = meta.pr_title
+        for dead_item in state.dead:
+            if (meta := metas.get(dead_item.review_key)) is not None:
+                dead_item.pr_id = meta.pr_id
+                dead_item.pr_title = meta.pr_title
+        return state
 
     def _guard(self, label: str, operation: Callable[[], _T], fallback: _T) -> _T:
         try:
@@ -221,6 +369,27 @@ class RedisPanelReadModel:
             (groups.fix if review.kind is PauseKind.FIX else groups.human).append(item)
         return groups
 
+    def _read_parked(self) -> list[ParkedItem]:
+        """Jobs aparcados por el worker, con su motivo (030).
+
+        El parse del payload es el del worker (`parked_entries`): una entrada
+        ilegible o con un motivo desconocido se descarta alli con un aviso, en vez
+        de llegar aqui como un motivo que la pantalla no sabria explicar.
+        """
+        items: list[ParkedItem] = []
+        for reason, request in parse_parked(self._client.lrange(PARKED_KEY, 0, -1)):
+            items.append(
+                ParkedItem(
+                    review_key=request.review_key,
+                    repo=request.repo,
+                    pr_id=request.pr_id,
+                    pipeline_id=request.pipeline_id,
+                    reason=reason,
+                    launch=request.launch,
+                )
+            )
+        return items
+
     def _read_dead(self) -> list[DeadLetterItem]:
         items: list[DeadLetterItem] = []
         for raw in self._client.lrange(self._dead_key, 0, -1):
@@ -233,6 +402,7 @@ class RedisPanelReadModel:
                     attempts=_as_int(entry.get("attempts")),
                     reason=str(entry.get("reason", "")),
                     discarded_at=_dt_from_epoch(entry.get("discarded_at")),
+                    error=_as_text(entry.get("error")),
                 )
             )
         return items
@@ -297,6 +467,9 @@ class PgTraceReader:
     def trace(self, review_key: str) -> ReviewTrace | None:
         return read_trace(self._reader(), review_key)
 
+    def notes(self, review_key: str) -> list[str]:
+        return read_review_notes(self._reader(), review_key)
+
     def dial_revision(self, review_key: str) -> int | None:
         """Revisión de diales que fijó el hilo, o `None` si no hay foto."""
         from agent_review.panel_config import snapshot_revision
@@ -346,6 +519,16 @@ class CompositePanelReadModel:
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._trace_reader.trace(review_key)
+
+    def notes(self, review_key: str) -> list[str]:
+        try:
+            return self._trace_reader.notes(review_key)
+        except Exception:
+            logger.exception("panel: no se pudo leer el motivo de %s", review_key)
+            return []
+
+    def journal(self, review_key: str) -> list[str]:
+        return self._state_model.journal(review_key)
 
     def dial_pins(self) -> list[tuple[str, int]] | None:
         """Reviews en curso y la revisión de diales que cada una fijó.
@@ -438,6 +621,12 @@ def _paused_item(review: PausedReview) -> PausedItem:
         command_hint=approval.command_hint,
         publication=approval.pause_kind == "publication",
     )
+
+
+def _as_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _as_int(value: object) -> int:

@@ -22,6 +22,7 @@ from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, PendingWrite
 
 from agent_review.checkpointer import pause_kind_of
+from agent_review.domain.models import DiscardedFinding
 from agent_review.domain.trace import PauseKindName, ReviewTrace, TraceNode, TraceState
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,84 @@ _NODE_END = "__end__"
 # datos del estado.
 _INTERRUPT_CHANNEL = "__interrupt__"
 _ERROR_CHANNEL = "__error__"
+
+
+def read_review_notes(saver: BaseCheckpointSaver[Any] | None, thread_id: str) -> list[str]:
+    """Hechos del estado final que el recorrido de nodos no cuenta.
+
+    Una review incompleta deja el motivo en `source_status`, no en el nombre del
+    nodo. Sin esto la ficha dice «incompleta» y no dice por qué.
+    """
+    if saver is None or not thread_id:
+        return []
+    try:
+        tup = saver.get_tuple({"configurable": {"thread_id": thread_id}})
+    except Exception:  # pragma: no cover - base caida
+        logger.exception("No se pudo leer el estado del hilo %s", thread_id)
+        return []
+    if tup is None:
+        return []
+    checkpoint = getattr(tup, "checkpoint", None)
+    values = checkpoint.get("channel_values") if isinstance(checkpoint, dict) else None
+    if not isinstance(values, dict):
+        return []
+    return notes_from_values(values)
+
+
+def notes_from_values(values: dict[str, Any]) -> list[str]:
+    """Líneas del log a partir de los canales del último checkpoint."""
+    lines: list[str] = []
+    sources = values.get("source_status") or {}
+    if isinstance(sources, dict):
+        for name, status in sorted(sources.items(), key=lambda item: str(item[0])):
+            label = _label(status)
+            if label == "present":
+                continue
+            note = _SOURCE_NOTES.get(label, "la salida no está disponible")
+            lines.append(f"Fuente estática {name}: {label}. {note}")
+    coverage = values.get("coverage")
+    skipped = getattr(coverage, "skipped", None)
+    if isinstance(coverage, dict):
+        skipped = coverage.get("skipped")
+    if isinstance(skipped, dict):
+        for path, reason in sorted(skipped.items(), key=lambda item: str(item[0])):
+            label = _label(reason)
+            if label == "ignored":
+                continue
+            lines.append(f"Sin revisar {path}: {label}.")
+    exhausted = values.get("budget_exhausted") or []
+    if exhausted:
+        names = ", ".join(sorted(str(item) for item in exhausted))
+        lines.append(f"Presupuesto agotado en: {names}.")
+    if values.get("published") and lines:
+        lines.append("Se escribió el aviso en el pull request.")
+    if values.get("silence_without_choice") and not values.get("published"):
+        merged = values.get("merged")
+        if not isinstance(merged, list):
+            merged = values.get("findings") if isinstance(values.get("findings"), list) else []
+        if not merged:
+            lines.append(
+                "Terminó sin hallazgos. El motor claude no escribe un comentario vacío "
+                "en el pull request."
+            )
+    return lines
+
+
+def _label(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+_SOURCE_NOTES = {
+    "missing": (
+        "No se encontró la salida de la herramienta. "
+        "La review no cubre ese análisis y cero hallazgos no significa un PR limpio."
+    ),
+    "unreadable": (
+        "La salida de la herramienta no se pudo leer. "
+        "La review no cubre ese análisis y cero hallazgos no significa un PR limpio."
+    ),
+}
 
 
 def read_trace(saver: BaseCheckpointSaver[Any] | None, thread_id: str) -> ReviewTrace | None:
@@ -77,8 +156,24 @@ def _build_trace(thread_id: str, tuples: list[CheckpointTuple]) -> ReviewTrace:
     # emitir los nodos en su orden real de ejecucion, saltando el checkpoint de
     # entrada (el ultimo de la lista), que no lo escribio ningun nodo.
     for index in range(len(tuples) - 1, 0, -1):
-        for name in _edge_targets(tuples[index].pending_writes):
-            nodes.append(TraceNode(name=name, index=len(nodes), started_at=_node_ts(tuples, index)))
+        targets = _edge_targets(tuples[index].pending_writes)
+        # La tarea corre desde el checkpoint siguiente y sus escrituras quedan en el.
+        ran_from = tuples[index - 1]
+        for name in targets:
+            summary, discarded = (
+                _summarize(name, ran_from, reviewer=_send_reviewer(tuples[index].pending_writes))
+                if len(targets) == 1
+                else (None, [])
+            )
+            nodes.append(
+                TraceNode(
+                    name=name,
+                    index=len(nodes),
+                    started_at=_node_ts(tuples, index),
+                    summary=summary,
+                    discarded=discarded,
+                )
+            )
 
     state, pending = _state_of(tuples, nodes)
     return ReviewTrace(
@@ -163,6 +258,83 @@ def _edge_targets(pending: list[PendingWrite] | None) -> list[str]:
         if match and match.group("node") != _NODE_END:
             targets.append(match.group("node"))
     return targets
+
+
+# Persona cuyas cifras se cuentan (034): las de `llm` corren en paralelo y sus
+# escrituras no dicen qué rama fue cada una.
+_COUNTED_PERSONA = "claude"
+
+
+def _send_reviewer(pending: list[PendingWrite] | None) -> str | None:
+    """Revisor del único `Send` del fan-out, o `None` si no hay uno solo."""
+    for _task_id, channel, value in pending or []:
+        if channel != "__pregel_tasks":
+            continue
+        sends = value if isinstance(value, (list, tuple)) else [value]
+        if len(sends) != 1:
+            return None
+        arg = getattr(sends[0], "arg", None)
+        reviewer = arg.get("reviewer") if isinstance(arg, dict) else None
+        return reviewer if isinstance(reviewer, str) else None
+    return None
+
+
+def _summarize(
+    name: str, ran_from: CheckpointTuple, *, reviewer: str | None
+) -> tuple[dict[str, int] | None, list[DiscardedFinding]]:
+    """Cifras de lo que escribió la tarea del nodo `name` (034 §4.1).
+
+    Sin escrituras el nodo no cerró: no hay cifras que dar.
+    """
+    pending = ran_from.pending_writes or []
+    if not pending:
+        return None, []
+    writes = {channel: value for _task_id, channel, value in pending}
+    if name == "scope":
+        coverage = writes.get("coverage")
+        skipped = _field(coverage, "skipped")
+        ignored = sum(1 for reason in (skipped or {}).values() if _label(reason) == "ignored")
+        total = _field(coverage, "files_total")
+        if not isinstance(total, int):
+            return None, []
+        return {"files": total, "ignored": ignored}, []
+    if name == "persona" and reviewer == _COUNTED_PERSONA:
+        found = writes.get("findings")
+        discarded = [
+            item if isinstance(item, DiscardedFinding) else DiscardedFinding.model_validate(item)
+            for item in writes.get("discarded") or []
+        ]
+        kept = len(found) if isinstance(found, list) else 0
+        contract = sum(1 for item in discarded if item.stage == "contract")
+        l0 = sum(1 for item in discarded if item.stage == "l0")
+        summary = {"returned": kept + contract + l0, "contract": contract, "l0": l0, "kept": kept}
+        return summary, discarded
+    if name == "merge":
+        merged = writes.get("merged")
+        before = (ran_from.checkpoint.get("channel_values") or {}).get("findings")
+        if not isinstance(merged, list):
+            return None, []
+        count = len(before) if isinstance(before, list) else len(merged)
+        return {"before": count, "after": len(merged)}, []
+    if name == "stamp":
+        decisions = writes.get("decisions")
+        if not isinstance(decisions, list):
+            return None, []
+        publish = sum(1 for item in decisions if _label(_field(item, "action")) == "publish")
+        return {"publish": publish, "other": len(decisions) - publish}, []
+    if name == "publish":
+        inline = writes.get("inlined_count")
+        return {
+            "published": 1 if writes.get("published") else 0,
+            "inline": inline if isinstance(inline, int) else 0,
+        }, []
+    return None, []
+
+
+def _field(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _node_ts(tuples: list[CheckpointTuple], from_index: int) -> datetime | None:

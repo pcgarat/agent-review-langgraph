@@ -14,7 +14,11 @@ from agent_review.errors import PermanentError, TransientError
 
 
 class ClaudeTimeout(TransientError):
-    """El CLI no terminó dentro del tiempo de pared."""
+    """El cliente HTTP no obtuvo respuesta. No es el techo del subproceso."""
+
+
+class ClaudeCeiling(PermanentError):
+    """Se agotaron los turnos o el tiempo de pared. No se reintenta."""
 
 
 class ClaudeProcessCrashed(TransientError):
@@ -23,6 +27,14 @@ class ClaudeProcessCrashed(TransientError):
 
 class ClaudeQuotaExceeded(PermanentError):
     """Cupo de la suscripción. No se reintenta: otra pasada volvería a gastarlo."""
+
+
+class ClaudeClusterLimited(PermanentError):
+    """El clúster siguió en 429 tras los reintentos del gateway.
+
+    No es el cupo de Anthropic ni un fallo del job: el worker lo aparca un rato
+    y lo vuelve a lanzar, sin gastar intentos ni acabar en la DLQ.
+    """
 
 
 class ClaudeInvalidOutput(TransientError):
@@ -37,4 +49,13 @@ class ClaudeRunner(Protocol):
     guardó un artefacto válido para esa clave.
     """
 
-    def run(self, *, repo: str, pr_id: int, head_sha: str) -> str: ...
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str: ...

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from diff_helpers import added_lines_diff
 
+from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
@@ -159,6 +160,42 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
 
     assert len(vcs.inlines) == 1
     assert vcs.comments
+
+
+def test_una_pasada_degradada_sin_artefacto_no_sale_completa() -> None:
+    """El #7 de punta a punta: el artefacto ausente tiene que verse en el resultado.
+
+    `build_runtime` recibe `degraded=True` y con eso el `ToolingReviewer` declara
+    `MISSING`. Sin eso, `unavailable_sources` queda vacio y `complete` da `True`:
+    el PR se publicaria como revisado entero sin que PHPStan hubiera corrido.
+    """
+    from agent_review.adapters.tooling_reviewer import ToolingReviewer
+    from agent_review.domain.models import ToolingSourceStatus
+
+    class _Missing:
+        def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str):
+            del tool, repo, pr_id, head_sha
+            return ToolingSourceStatus.MISSING, ""
+
+    vcs = FakeVcs()
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    degradada = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing(), required=True)], policy=policy
+    ).compile()
+    normal = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing())], policy=policy
+    ).compile()
+
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    outcome = process_request(degradada, request.model_copy(update={"degraded": True}))
+    assert outcome.unavailable_sources["standards"] is ToolingSourceStatus.MISSING
+    assert outcome.complete is False
+
+    # La misma ausencia en una review normal no la marca incompleta: ahi la
+    # persona simplemente no participa y empezar no exige el artefacto.
+    limpia = process_request(normal, request.model_copy(update={"head_sha": "cafe"}))
+    assert limpia.unavailable_sources == {}
+    assert limpia.complete is True
 
 
 def test_build_vcs_eligio_github_segun_el_proveedor() -> None:
@@ -816,6 +853,76 @@ def test_consume_resuelve_el_lanzamiento_y_reencola_ese_commit() -> None:
     assert retried is not None
     assert retried.head_sha == "abc123"
     assert retried.attempts == 1
+
+
+def test_consume_olvida_la_ejecucion_sin_invocar_el_grafo(tmp_path: Path) -> None:
+    class _Saver:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_thread(self, thread_id: str) -> None:
+            self.deleted.append(thread_id)
+
+    class _Graph:
+        def __init__(self) -> None:
+            self.checkpointer = _Saver()
+
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("eliminar no invoca el grafo")
+
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    store = ClaudeArtifactStore(root=tmp_path)
+    request = ReviewRequest(repo="cqm/demo", pr_id=18, head_sha="abc", pipeline_id="panel")
+    assert store.save("[]", repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    queue.dead_letter(request, reason="intentos agotados")
+    generation = queue.bump_generation(request.review_key)
+    _consume(
+        queue,
+        graph,
+        request.model_copy(update={"forget": True, "generation": generation}),
+        max_attempts=3,
+        claude_store=store,
+    )
+
+    assert request.review_key in graph.checkpointer.deleted
+    assert f"{request.review_key}:partial" in graph.checkpointer.deleted
+    assert store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha) is None
+    assert queue.dead_letter_count == 0
+
+    class _Boom:
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("un job de la generacion anterior no corre")
+
+    _consume(queue, _Boom(), request.model_copy(update={"generation": 0}), max_attempts=3)
+
+
+def test_un_lanzamiento_nuevo_adopta_la_generacion_vigente() -> None:
+    class _Stop:
+        def __init__(self) -> None:
+            self.request: ReviewRequest | None = None
+
+        def invoke(self, state: dict[str, object], config: object = None) -> None:
+            del config
+            self.request = state["request"]  # type: ignore[assignment]
+            raise RuntimeError("parar")
+
+    graph = _Stop()
+    queue = InMemoryReviewQueue()
+    resolved = "cqm/emotivoo-v2:9:abc123:panel"
+    queue.bump_generation(resolved)
+    _consume(
+        queue,
+        graph,
+        _launch(),
+        max_attempts=3,
+        vcs=_HeadVcs(),
+        expected_repo="cqm/emotivoo-v2",
+    )
+
+    assert graph.request is not None
+    assert graph.request.review_key == resolved
+    assert graph.request.generation == 1
 
 
 def test_consume_no_resuelve_un_lanzamiento_ya_cancelado() -> None:
@@ -1700,7 +1807,7 @@ def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
     store.publish(expected=0, overrides={"llm_max_findings": 2}, actor="ana")
     request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
 
-    graph, snapshot = _review_runtime(
+    graph, snapshot, ceilings = _review_runtime(
         Settings(_env_file=None),
         store,
         None,
@@ -1714,7 +1821,37 @@ def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
     )
 
     assert snapshot == {"revision": 1, "overrides": {"llm_max_findings": 2}}
+    assert ceilings == (None, None)
     assert graph is not None
+
+
+def test_el_montaje_de_claude_manda_el_techo_publicado_sin_sellar_la_foto() -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(
+        expected=0,
+        overrides={"claude_max_turns": 400, "claude_timeout_s": 7200},
+        actor="ana",
+    )
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    _graph, snapshot, ceilings = _review_runtime(
+        Settings(_env_file=None, review_engine="claude", database_url=""),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot is None
+    assert ceilings == (400, 7200.0)
 
 
 class _SaverRoto:
@@ -1781,3 +1918,47 @@ def test_un_reencolado_por_fallo_de_trabajo_quita_repin() -> None:
     retried = queue.dequeue()
     assert retried is not None
     assert retried.repin_dials is False
+
+
+def test_una_review_incompleta_se_vuelve_a_ejecutar() -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from agent_review.domain.models import ToolingSourceStatus
+    from agent_review.graph.build import build_graph
+
+    class _UnaVezIncompleta:
+        name = "standards"
+        calls = 0
+
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+            context=None,
+        ) -> ReviewerResult:
+            del repo, pr_id, diff, head_sha, review_key, context
+            self.calls += 1
+            status = ToolingSourceStatus.MISSING if self.calls == 1 else None
+            return ReviewerResult(findings=[], tooling_status=status)
+
+    reviewer = _UnaVezIncompleta()
+    graph = build_graph(
+        vcs=FakeVcs(),
+        reviewers=[reviewer],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile(checkpointer=InMemorySaver())
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="panel")
+
+    first = process_request(graph, request)
+    second = process_request(graph, request)
+    third = process_request(graph, request)
+
+    assert first.complete is False
+    assert reviewer.calls == 2
+    assert second.complete is True
+    assert third.complete is True
+    assert reviewer.calls == 2

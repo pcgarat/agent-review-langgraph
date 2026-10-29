@@ -1,0 +1,46 @@
+{
+  "name": "agent-review-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Panel de operacion del agente de review",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@coreui/coreui": "^5.9.0",
+    "@coreui/icons": "^3.1.0",
+    "@coreui/icons-react": "^2.3.0",
+    "@coreui/react": "^5.13.0",
+    "@tanstack/react-query": "^5.90.2",
+    "@testing-library/user-event": "^14.6.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-redux": "^9.3.0",
+    "react-router-dom": "^7.18.4",
+    "redux": "^5.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^25.0.1",
+    "sass": "^1.105.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.46.0",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.5"
+  }
+}

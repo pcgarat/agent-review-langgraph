@@ -42,6 +42,8 @@ docs/
 - `README.md` de una carpeta de código (`bin/`, `contracts/`) que explica esa carpeta.
 - Contratos versionados (`contracts/*.md`).
 - Skills de agentes (`.agents/skills/**`).
+- Copia de la skill del runner (`image/claude/skills/**`). No se edita: la imagen
+  la vuelca tal cual.
 
 **Prohibido:**
 

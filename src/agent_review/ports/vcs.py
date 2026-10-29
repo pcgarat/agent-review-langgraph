@@ -14,8 +14,8 @@ class PullRequestInfo(BaseModel):
     destination_branch: str
     author: str
     head_sha: str
-    # SHA de la base del PR (merge-base / destino). Vacío si el host no lo trae;
-    # L0 de 008 lo usa para `pre_existing` sin depender del nombre de la rama.
+    # Punta de la rama destino, no la bifurcación. Vacío si el host no lo trae.
+    # El lado `base` de una lectura usa `VcsPort.merge_base`, no este SHA.
     base_sha: str = ""
     state: str = "OPEN"
     url: str = ""
@@ -48,6 +48,14 @@ class VcsPort(Protocol):
 
     def get_diff(self, repo: str, pr_id: int) -> str:
         """Diff unificado del PR, acotado. Es la entrada de las personas."""
+        ...
+
+    def merge_base(self, repo: str, *, head_sha: str, base_sha: str) -> str | None:
+        """Ancestro común de `head_sha` y `base_sha`. `None` si el host no lo da.
+
+        `base_sha` es la punta viva de destino: leer el lado `base` ahí enseña
+        como «antes del PR» lo que entró en destino después de la bifurcación.
+        """
         ...
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
