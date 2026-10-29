@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -827,6 +828,104 @@ def test_prepare_checkout_deja_el_arbol_en_el_sha_sin_remotos(tmp_path: Path) ->
     )
     assert again.stdout.strip() == "review"
     assert (dest / "f.txt").read_text(encoding="utf-8") == "head\n"
+
+
+def _origen(tmp_path: Path) -> tuple[Path, Callable[..., str]]:
+    """Repo de origen que acepta fetch por SHA. Devuelve la ruta y un `git` contra él."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b.c"}
+    env["GIT_COMMITTER_NAME"] = "a"
+    env["GIT_COMMITTER_EMAIL"] = "a@b.c"
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(origin), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "uploadpack.allowReachableSHA1InWant", "true")
+    return origin, git
+
+
+def test_el_diff_es_contra_el_merge_base_aunque_destino_haya_avanzado(tmp_path: Path) -> None:
+    """La rama toca un fichero; `main` avanza después con otros. El diff solo ve el del PR.
+
+    Con `--depth 1` y sin merge-base, el diff contra la punta de `main` metía
+    lo que entró en `main` tras la bifurcación, invertido, como si fuera del PR.
+    """
+    origin, git = _origen(tmp_path)
+    for name in ("pr.txt", "a.txt", "b.txt"):
+        (origin / name).write_text("base\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "fork")
+    fork = git("rev-parse", "HEAD")
+    for i in range(3):
+        (origin / "pr.txt").write_text(f"rama {i}\n", encoding="utf-8")
+        git("commit", "-q", "-am", f"rama {i}")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", fork)
+    for i in range(5):
+        (origin / "a.txt").write_text(f"main {i}\n", encoding="utf-8")
+        (origin / "b.txt").write_text(f"main {i}\n", encoding="utf-8")
+        git("commit", "-q", "-am", f"main {i}")
+    tip = git("rev-parse", "HEAD")
+    dest = tmp_path / "checkout"
+    merge_base = prepare_checkout(
+        dest,
+        repo="cqm/demo",
+        head_sha=head,
+        base_sha=tip,
+        git_token="secreto-de-clonado",
+        remote_url=origin.as_uri(),
+        timeout_s=20,
+    )
+    assert merge_base == fork
+    changed = subprocess.run(
+        ["git", "-C", str(dest), "diff", "--name-only", merge_base],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert changed == ["pr.txt"]
+    # La skill recibe `base:<merge_base>` y su `git merge-base HEAD` resuelve.
+    resolved = subprocess.run(
+        ["git", "-C", str(dest), "merge-base", "HEAD", merge_base],
+        capture_output=True,
+        text=True,
+    )
+    assert resolved.returncode == 0
+    assert resolved.stdout.strip() == fork
+
+
+def test_sin_ancestro_comun_el_checkout_falla_cerrado(tmp_path: Path) -> None:
+    """Historias sin relación: no se cae a la punta de destino, el CLI no arranca."""
+    origin, git = _origen(tmp_path)
+    (origin / "f.txt").write_text("uno\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "uno")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--orphan", "otra")
+    (origin / "f.txt").write_text("otra\n", encoding="utf-8")
+    git("commit", "-q", "-am", "otra")
+    base = git("rev-parse", "HEAD")
+    dest = tmp_path / "checkout"
+    token = "secreto-de-clonado"
+    with pytest.raises(CheckoutError, match="ancestro"):
+        prepare_checkout(
+            dest,
+            repo="cqm/demo",
+            head_sha=head,
+            base_sha=base,
+            git_token=token,
+            remote_url=origin.as_uri(),
+            timeout_s=20,
+        )
+    assert token not in (dest / ".git" / "config").read_text(encoding="utf-8")
 
 
 def test_sin_base_sha_el_checkout_no_arranca(tmp_path: Path) -> None:

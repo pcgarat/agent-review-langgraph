@@ -208,7 +208,7 @@ def _settings_de_pasada(tmp_path: Path, **extra: object) -> Settings:
 
 
 def _post_run(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    monkeypatch.setattr(runner_main, "prepare_checkout", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner_main, "prepare_checkout", lambda *args, **kwargs: "fork")
     monkeypatch.setattr(runner_main, "ensure_bundled_skill", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner_main, "SubprocessClaudeRunner", _Captura)
     _Captura.kwargs = {}
@@ -231,6 +231,8 @@ def test_anthropic_conserva_el_argv_y_el_entorno_del_hijo(
     assert visto["quota_is_cluster"] is False
     run = visto["run"]
     assert isinstance(run, dict)
+    # El CLI diffea contra el merge-base del checkout, no contra la punta de destino.
+    assert run["base_sha"] == "fork"
     argv = claude_argv(visto["argv_prefix"], max_turns=visto["max_turns"], base_sha=run["base_sha"])
     assert "--model" not in argv
     assert "ANTHROPIC" not in " ".join(str(item) for item in argv)
@@ -515,7 +517,7 @@ def test_el_runner_responde_503_si_el_cluster_limita(
         claude_gateway_url="http://nan-gateway:4000",
         claude_gateway_token="sk-gateway-local-1234",
     )
-    monkeypatch.setattr(runner_main, "prepare_checkout", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner_main, "prepare_checkout", lambda *args, **kwargs: "fork")
     monkeypatch.setattr(runner_main, "ensure_bundled_skill", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner_main, "SubprocessClaudeRunner", _Limitado)
     with TestClient(build_app(settings)) as client:

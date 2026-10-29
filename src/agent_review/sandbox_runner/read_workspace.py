@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 
 from agent_review.errors import PermanentError, TransientError
+from agent_review.git_merge_base import DeepenFailed, deepen_to_merge_base
 from agent_review.globs import path_matches
 from agent_review.outline import outline_text
 from agent_review.ports.context import (
@@ -405,15 +406,16 @@ class ReadWorkspaceManager:
         url = self._url_template.format(token=self._token, repo=repo)
         self._init_bare(directory, url)
         self._fetch(directory, head_sha, required=True)
-        if base_sha:
-            # El `base_sha` puede no estar en el remoto (squash, force-push): su
-            # ausencia no invalida el workspace, solo deja `ref="base"` sin servir.
-            self._fetch(directory, base_sha, required=False)
+        base = ""
+        # El `base_sha` puede no estar en el remoto (squash, force-push): su
+        # ausencia no invalida el workspace, solo deja `ref="base"` sin servir.
+        if base_sha and self._fetch(directory, base_sha, required=False):
+            base = self._merge_base(directory, head_sha=head_sha, base_sha=base_sha)
         return ReadWorkspace(
             directory,
             repo=repo,
             head_sha=head_sha,
-            base_sha=base_sha,
+            base_sha=base,
             git_bin=self._git,
             denylist=self._denylist,
             timeout_s=self._timeout,
@@ -429,7 +431,7 @@ class ReadWorkspaceManager:
             shutil.rmtree(directory, ignore_errors=True)
             raise ReadWorkspaceUnavailable(f"git remote fallo: {_tail(remote)}")
 
-    def _fetch(self, directory: str, sha: str, *, required: bool) -> None:
+    def _fetch(self, directory: str, sha: str, *, required: bool) -> bool:
         result = self._run(directory, ["fetch", "-q", "--depth", "1", "origin", sha])
         if result is None or result.returncode != 0:
             if required:
@@ -438,6 +440,36 @@ class ReadWorkspaceManager:
             logger.info(
                 "workspace de lectura: base_sha %s no disponible; ref=base no se sirve", sha
             )
+            return False
+        return True
+
+    def _merge_base(self, directory: str, *, head_sha: str, base_sha: str) -> str:
+        """El lado `base` es la bifurcación, no la punta viva de destino.
+
+        Leer a la punta enseñaría como «antes del PR» lo que entró en destino
+        después. Sin merge-base, `ref="base"` no se sirve.
+        """
+        try:
+            merge_base = deepen_to_merge_base(
+                lambda args: self._run(directory, args), head_sha=head_sha, base_sha=base_sha
+            )
+        except DeepenFailed as exc:
+            # El remoto lleva el token en la URL: el `stderr` puede citarlo.
+            detail = str(exc).strip()[-_TAIL_CHARS:]
+            if self._token:
+                detail = detail.replace(self._token, "***")
+            logger.info(
+                "workspace de lectura: fetch --deepen fallo (%s); ref=base no se sirve", detail
+            )
+            return ""
+        if merge_base is None:
+            logger.info(
+                "workspace de lectura: sin merge-base entre %s y %s; ref=base no se sirve",
+                head_sha[:12],
+                base_sha[:12],
+            )
+            return ""
+        return merge_base
 
     def _run(self, cwd: str, args: list[str]) -> subprocess.CompletedProcess[str] | None:
         try:

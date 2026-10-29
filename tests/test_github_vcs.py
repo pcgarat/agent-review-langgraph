@@ -238,3 +238,20 @@ def test_fallo_de_red_es_transitorio() -> None:
 
     with pytest.raises(GithubUnavailable):
         _adapter(handler).get_pull_request("", 417)
+
+
+def test_merge_base_sale_del_compare_de_tres_puntos() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"merge_base_commit": {"sha": "fork123"}})
+
+    sha = _adapter(handler).merge_base("cqm/emotivoo-v2", head_sha="head1", base_sha="tip1")
+    assert sha == "fork123"
+    assert seen[0].url.path == "/repos/cqm/emotivoo-v2/compare/tip1...head1"
+
+
+def test_merge_base_sin_campo_es_none() -> None:
+    adapter = _adapter(lambda r: httpx.Response(200, json={}))
+    assert adapter.merge_base("cqm/emotivoo-v2", head_sha="h", base_sha="b") is None

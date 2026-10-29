@@ -169,6 +169,16 @@ class GithubVcsAdapter:
         self._diff_cache[pr_id] = text
         return text
 
+    def merge_base(self, repo: str, *, head_sha: str, base_sha: str) -> str | None:
+        """`merge_base_commit` de `compare/{base}...{head}`."""
+        del repo
+        data = self._get_json(
+            self._repo_path(f"/compare/{base_sha}...{head_sha}"), params={"per_page": 1}
+        )
+        commit = data.get("merge_base_commit") if isinstance(data, dict) else None
+        sha = str((commit or {}).get("sha", "")) if isinstance(commit, dict) else ""
+        return sha or None
+
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         del repo
         if unsafe_repo_path(path):

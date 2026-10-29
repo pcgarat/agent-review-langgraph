@@ -605,7 +605,7 @@ puertos). Una petición sin bearer —cuando hay uno configurado— da `401`.
 
 | Método | Ruta | Cuerpo / query | Respuestas |
 |---|---|---|---|
-| `POST` | `/workspaces` | `{repo, head_sha, base_sha}` | `200 {workspace_id, expires_at}`. Idempotente por `(repo, head_sha)` |
+| `POST` | `/workspaces` | `{repo, head_sha, base_sha}` | `200 {workspace_id, expires_at}`. Idempotente por `(repo, head_sha)`. `ref=base` se sirve en el merge-base de `head_sha` y `base_sha`, no en `base_sha`; sin merge-base no se sirve |
 | `GET` | `/workspaces/{id}/file` | `path`, `ref=head\|base`, `start`, `end` | `200 {content}`; `404` si no existe; `403` si la ruta está vetada |
 | `POST` | `/workspaces/{id}/grep` | `{pattern, glob?, max_matches?}` | `200 {matches}` (`path:line: texto`) |
 | `GET` | `/workspaces/{id}/tree` | `path` | `200 {entries}` |

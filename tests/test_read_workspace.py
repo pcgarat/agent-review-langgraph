@@ -643,3 +643,42 @@ def test_endpoints_exigen_token_cuando_esta_configurado(monkeypatch, remote) -> 
             "/workspaces", json={"repo": remote["repo"], "head_sha": remote["head"]}
         )
     assert response.status_code == 401
+
+
+def test_la_base_es_la_bifurcacion_aunque_destino_haya_avanzado(
+    tmp_path: Path,
+) -> None:
+    """`ref="base"` lee el fichero como estaba al abrir la rama, no la punta de destino.
+
+    Con `--depth 1` no hay ancestro común; leer a la punta enseñaría como «antes del
+    PR» lo que entró en destino después.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, "config", "user.email", "t@example.test")
+    _git(work, "config", "user.name", "Tests")
+    (work / "src").mkdir()
+    (work / APP).write_text("fork\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "fork")
+    fork = _git(work, "rev-parse", "HEAD")
+    (work / README).write_text("rama\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "rama")
+    head = _git(work, "rev-parse", "HEAD")
+    _git(work, "checkout", "-q", fork)
+    for i in range(3):
+        (work / APP).write_text(f"main {i}\n", encoding="utf-8")
+        _git(work, "commit", "-qam", f"main {i}")
+    tip = _git(work, "rev-parse", "HEAD")
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(work), str(bare))
+    manager = ReadWorkspaceManager(git_bin=GIT, url_template="file://{repo}")
+    try:
+        info = manager.open(repo=str(bare), head_sha=head, base_sha=tip)
+        workspace = manager.get(info.workspace_id)
+        assert workspace.base_sha == fork
+        assert _text(workspace, APP, ref="base") == "fork\n"
+    finally:
+        manager.close()
