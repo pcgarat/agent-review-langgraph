@@ -160,7 +160,11 @@ worker lo llama en `ensure_claude_artifact` antes de `invoke`, y no vuelve a
 llamar si el artefacto de ese `head_sha` ya es válido. El tiempo agotado, el
 cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
 de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
-convierte en «cero hallazgos». El techo de turnos y el cupo se clasifican por
+convierte en «cero hallazgos». El objeto `mode:agent` lo traduce
+`adapters/agent_mode.py`: un `evidence` que llega como texto se envuelve en
+lista y, si falta, se usa `first_evidence`. Un hallazgo que no cumple el
+contrato se descarta, y el log del worker dice cuál y por qué (`#1: evidence:
+…`). Si se descartan todos, la salida es inválida. El techo de turnos y el cupo se clasifican por
 el **desenlace estructurado** del CLI (`type: result` y su `subtype`), nunca por
 buscar palabras en el texto: el informe de una review puede citar
 `error_max_turns` o `quota` sin haberlos agotado, y una review de este repo los

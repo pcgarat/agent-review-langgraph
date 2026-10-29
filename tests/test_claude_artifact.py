@@ -10,7 +10,10 @@ import pytest
 from agent_review.adapters.agent_mode import AgentModeRejected, adapt_agent_mode
 from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.domain.contracts import validate_finding
+from agent_review.domain.models import ReviewRequest
+from agent_review.ports.claude import ClaudeInvalidOutput
 from agent_review.settings import Settings
+from agent_review.worker.main import ensure_claude_artifact
 
 _REPO = "cqm/emotivoo-v2"
 _PR = 12
@@ -173,6 +176,32 @@ def test_pre_existing_entra_aunque_no_este_en_actionable() -> None:
     assert review.findings[0].pre_existing is True
 
 
+def test_evidence_como_texto_se_envuelve_en_lista() -> None:
+    cuerpo = _agente(evidence="src/Transfer.php:14 throw new InsufficientBalance();")
+
+    review = adapt_agent_mode(cuerpo)
+
+    assert review.discarded == 0
+    assert review.findings[0].evidence == ["src/Transfer.php:14 throw new InsufficientBalance();"]
+
+
+def test_sin_evidence_usa_first_evidence() -> None:
+    cuerpo = _agente(evidence=None, first_evidence="throw new InsufficientBalance();")
+
+    review = adapt_agent_mode(cuerpo)
+
+    assert review.findings[0].evidence == ["throw new InsufficientBalance();"]
+
+
+def test_sin_evidence_ni_first_evidence_no_entra() -> None:
+    cuerpo = _agente(evidence="  ")
+
+    with pytest.raises(AgentModeRejected) as exc:
+        adapt_agent_mode(cuerpo)
+
+    assert exc.value.discarded == 1
+
+
 def test_p0_sin_escenario_copia_why_it_matters() -> None:
     cuerpo = _agente(
         **{
@@ -279,3 +308,51 @@ def test_complete_con_todos_los_hallazgos_descartados_falla() -> None:
         adapt_agent_mode(cuerpo)
 
     assert exc.value.discarded == 1
+
+    assert exc.value.reasons == ("#4: sin why_it_matters",)
+
+
+def test_el_motivo_del_contrato_nombra_el_campo() -> None:
+    bueno = _agente()["findings"][0]
+    cuerpo = _agente()
+    cuerpo["findings"] = [bueno, {**bueno, "#": 8, "confidence": "alta"}]  # type: ignore[dict-item]
+
+    review = adapt_agent_mode(cuerpo)
+
+    assert len(review.findings) == 1
+    assert len(review.reasons) == 1
+    assert review.reasons[0].startswith("#8: confidence: ")
+
+
+class _StdoutRunner:
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+    def run(
+        self,
+        *,
+        repo: str,
+        pr_id: int,
+        head_sha: str,
+        base_sha: str,
+        max_turns: int | None = None,
+        timeout_s: float | None = None,
+    ) -> str:
+        del repo, pr_id, head_sha, base_sha, max_turns, timeout_s
+        return self.stdout
+
+
+def test_el_log_dice_por_que_se_descarto_cada_hallazgo(tmp_path: Path) -> None:
+    cuerpo = _agente(why_it_matters="")
+    notas: list[str] = []
+    request = ReviewRequest(repo=_REPO, pr_id=_PR, head_sha=_SHA, pipeline_id="7")
+
+    with pytest.raises(ClaudeInvalidOutput, match="todos los hallazgos se descartaron"):
+        ensure_claude_artifact(
+            request,
+            runner=_StdoutRunner(json.dumps(cuerpo)),
+            store=_store(tmp_path),
+            note=notas.append,
+        )
+
+    assert "Claude: se descartaron 1 hallazgos (#7: sin why_it_matters)." in notas

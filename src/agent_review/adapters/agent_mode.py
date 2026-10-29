@@ -23,15 +23,24 @@ _SCENARIO_SEVERITIES = frozenset({"P0", "P1", "P2"})
 class AgentModeRejected(Exception):
     """La salida no es una review terminada que se pueda guardar."""
 
-    def __init__(self, message: str, *, discarded: int = 0) -> None:
+    def __init__(self, message: str, *, reasons: tuple[str, ...] = ()) -> None:
         super().__init__(message)
-        self.discarded = discarded
+        self.reasons = reasons
+
+    @property
+    def discarded(self) -> int:
+        return len(self.reasons)
 
 
 @dataclass(frozen=True)
 class AgentModeReview:
     findings: list[Finding]
-    discarded: int
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def discarded(self) -> int:
+        """Un motivo por hallazgo descartado."""
+        return len(self.reasons)
 
 
 def adapt_agent_mode(payload: object) -> AgentModeReview:
@@ -51,22 +60,17 @@ def adapt_agent_mode(payload: object) -> AgentModeReview:
         raise AgentModeRejected("pre_existing_findings no es una lista")
 
     kept: list[Finding] = []
-    discarded = 0
-    for item in findings:
-        mapped = _map_finding(item, force_pre_existing=False)
-        if mapped is None:
-            discarded += 1
-        else:
-            kept.append(mapped)
-    for item in prior:
-        mapped = _map_finding(item, force_pre_existing=True)
-        if mapped is None:
-            discarded += 1
-        else:
-            kept.append(mapped)
+    reasons: list[str] = []
+    for items, force in ((findings, False), (prior, True)):
+        for item in items:
+            mapped = _map_finding(item, force_pre_existing=force)
+            if isinstance(mapped, str):
+                reasons.append(f"{_label(item)}: {mapped}")
+            else:
+                kept.append(mapped)
     if not kept and (findings or prior):
-        raise AgentModeRejected("todos los hallazgos se descartaron", discarded=discarded)
-    return AgentModeReview(findings=kept, discarded=discarded)
+        raise AgentModeRejected("todos los hallazgos se descartaron", reasons=tuple(reasons))
+    return AgentModeReview(findings=kept, reasons=tuple(reasons))
 
 
 def _object(payload: object) -> dict[str, Any]:
@@ -80,21 +84,22 @@ def _object(payload: object) -> dict[str, Any]:
     return payload
 
 
-def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
+def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | str:
+    """El hallazgo validado, o el motivo por el que no entra."""
     if not isinstance(item, dict):
-        return None
+        return "no es un objeto"
     ident = _identifier(item.get("#"))
     if ident is None:
-        return None
+        return "sin identificador #"
     why = _text(item.get("why_it_matters"))
     if not why:
-        return None
+        return "sin why_it_matters"
     scenario = _text(item.get("failure_scenario"))
     severity = item.get("severity")
     if not scenario and severity in _SCENARIO_SEVERITIES:
         scenario = why
     if severity in _SCENARIO_SEVERITIES and not scenario:
-        return None
+        return "sin failure_scenario"
     flag = True if force_pre_existing else item.get("pre_existing", False)
     body: dict[str, Any] = {
         "id": ident,
@@ -106,7 +111,7 @@ def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
         "autofix_class": item.get("autofix_class"),
         "owner": item.get("owner"),
         "confidence": item.get("confidence"),
-        "evidence": item.get("evidence"),
+        "evidence": _evidence(item),
         "pre_existing": flag,
     }
     suggested = item.get("suggested_fix")
@@ -119,8 +124,33 @@ def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | None:
         body["failure_scenario"] = scenario
     try:
         return validate_finding(body)
-    except (ContractError, ValidationError):
-        return None
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first["loc"]) or "hallazgo"
+        return f"{field}: {first['msg']}"
+    except ContractError as exc:
+        return str(exc)
+
+
+def _label(item: object) -> str:
+    ident = _identifier(item.get("#")) if isinstance(item, dict) else None
+    return f"#{ident}" if ident is not None else "hallazgo sin #"
+
+
+def _evidence(item: dict[str, Any]) -> object:
+    """La skill promete una lista, pero en `lite` a veces la emite como texto.
+
+    Un texto se envuelve en una lista y, si falta, `first_evidence` (la cita
+    de la línea) sirve de evidencia. Cualquier otra forma pasa tal cual y la
+    rechaza el contrato.
+    """
+    value = item.get("evidence")
+    if isinstance(value, str):
+        value = [value.strip()] if value.strip() else []
+    if value in (None, []):
+        quote = _text(item.get("first_evidence"))
+        return [quote] if quote else value
+    return value
 
 
 def _identifier(value: object) -> str | None:

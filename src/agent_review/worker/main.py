@@ -756,13 +756,13 @@ def ensure_claude_artifact(
         try:
             adapted = adapt_agent_mode(stdout)
         except AgentModeRejected as exc:
-            if exc.discarded:
-                _say(note, f"Claude: se descartaron {exc.discarded} hallazgos.")
+            if exc.reasons:
+                _say(note, _discarded_line(exc.reasons))
             raise ClaudeInvalidOutput(
-                f"stdout de claude no es una review terminada para {request.review_key}"
+                f"stdout de claude no es una review terminada para {request.review_key}: {exc}"
             ) from exc
-        if adapted.discarded:
-            _say(note, f"Claude: se descartaron {adapted.discarded} hallazgos.")
+        if adapted.reasons:
+            _say(note, _discarded_line(adapted.reasons))
         body = json.dumps(
             [item.model_dump(mode="json") for item in adapted.findings],
             ensure_ascii=False,
@@ -771,6 +771,13 @@ def ensure_claude_artifact(
             raise ClaudeInvalidOutput(
                 f"stdout de claude no es una lista de hallazgos para {request.review_key}"
             )
+
+
+def _discarded_line(reasons: tuple[str, ...]) -> str:
+    """Cuántos y por qué, para no tener que abrir el contenedor del runner."""
+    shown = "; ".join(reason[:200] for reason in reasons[:3])
+    more = f"; y {len(reasons) - 3} más" if len(reasons) > 3 else ""
+    return f"Claude: se descartaron {len(reasons)} hallazgos ({shown}{more})."
 
 
 def process_request(
