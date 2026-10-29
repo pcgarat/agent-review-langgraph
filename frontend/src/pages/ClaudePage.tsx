@@ -2,7 +2,9 @@ import { CAlert } from '@coreui/react'
 
 import { useSession } from '@/session/session'
 
+import { ClaudeBackendForm } from './claude/ClaudeBackendForm'
 import { ClaudeTokenForm } from './claude/ClaudeTokenForm'
+import { useClaudeBackend } from './claude/useClaudeBackend'
 import './claude/claude.scss'
 
 /**
@@ -12,6 +14,13 @@ import './claude/claude.scss'
  * `403`, pero la ruta sigue siendo accesible por URL: si alguien llega, se le
  * dice por qué no hay formulario en vez de enseñarle un campo que no puede usar.
  */
+function SessionForm() {
+  const query = useClaudeBackend()
+  const needsSession = query.data?.needs_session ?? true
+  if (!needsSession) return null
+  return <ClaudeTokenForm />
+}
+
 export function ClaudePage() {
   const { isOperador } = useSession()
 
@@ -26,10 +35,12 @@ export function ClaudePage() {
   return (
     <>
       <p className="eyebrow mb-3">
-        Solo el rol operador. Sustituir el token no cancela nada: las reviews paradas por
-        falta de sesión vuelven a la cola en cuanto se guarda.
+        Solo el rol operador. El modelo de la siguiente review se lee al lanzarla: cambiarlo
+        no reinicia nada. Con Claude, las reviews paradas por falta de sesión vuelven a la
+        cola al guardar el token. Con un modelo del clúster no hay token.
       </p>
-      <ClaudeTokenForm />
+      <ClaudeBackendForm />
+      <SessionForm />
     </>
   )
 }

@@ -14,6 +14,7 @@ import os
 import pwd
 import shutil
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 import uvicorn
@@ -22,6 +23,15 @@ from pydantic import BaseModel, Field
 
 from agent_review.adapters.claude_cli import CHILD_USER, SubprocessClaudeRunner, redact_text
 from agent_review.claude_activity import ClaudeActivity
+from agent_review.claude_backend import (
+    backend_path,
+    child_gateway_env,
+    gateway_domain,
+    gateway_healthy,
+    load_gateway_token,
+    read_choice,
+    resolve_backend,
+)
 from agent_review.claude_runner.checkout import CheckoutError, checkout_directory, prepare_checkout
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
 from agent_review.ports.claude import ClaudeCeiling, ClaudeProcessCrashed, ClaudeQuotaExceeded
@@ -45,6 +55,7 @@ logger = logging.getLogger(__name__)
 # hijo no sea root (ver `CHILD_USER` en `adapters/claude_cli.py`).
 _SECRET_ENV = (
     "CLAUDE_GIT_TOKEN",
+    "CLAUDE_GATEWAY_TOKEN",
     "CLAUDE_RUNNER_TOKEN",
     "TWG_BBC_TOKEN",
     "GITHUB_TOKEN",
@@ -87,7 +98,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
     def session(authorization: str | None = Header(default=None)) -> dict[str, bool]:
         """Sí o no. Si el fichero caducó, lo retira. No devuelve el token."""
         _verify_token(current, authorization)
-        return {"active": session_active(_session_path(current))}
+        return {"active": _session_ready(current)}
 
     @app.post("/run", response_model=RunResponse)
     def run(body: RunBody, authorization: str | None = Header(default=None)) -> RunResponse:
@@ -97,6 +108,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         credential = clone_token(current)
         secrets = [credential, current.claude_runner_token, token or ""]
         try:
+            upstream_env, domains, upstream_secrets = _upstream(current, token)
+            secrets = [credential, current.claude_runner_token, *upstream_secrets]
             directory = checkout_directory(
                 _workspace_root(current), repo=body.repo, head_sha=body.head_sha
             )
@@ -113,9 +126,13 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                     provider=current.vcs_provider,
                     timeout_s=timeout_s,
                 )
-                extra = {CHILD_TOKEN_ENV: token} if token else {}
+                extra = dict(upstream_env)
                 config_dir = _config_dir(current)
-                write_runner_settings(config_dir, workspace_root=_workspace_root(current))
+                write_runner_settings(
+                    config_dir,
+                    workspace_root=_workspace_root(current),
+                    allowed_domains=domains,
+                )
                 ensure_bundled_skill(config_dir)
                 # El hijo no es root: necesita poder leer la config (la skill) y
                 # escribir su estado de sesión. El checkout lo sigue escribiendo
@@ -200,6 +217,37 @@ def _session_path(settings: Settings) -> Path:
     return Path(settings.claude_session_path)
 
 
+def _session_ready(settings: Settings) -> bool:
+    """Anthropic mira el token. El clúster mira el health del gateway."""
+    choice = read_choice(backend_path(_session_path(settings)))
+    backend = resolve_backend(choice, settings)
+    if backend.kind == "gateway":
+        return gateway_healthy(settings.claude_gateway_url)
+    return session_active(_session_path(settings))
+
+
+def _upstream(settings: Settings, token: str | None) -> tuple[dict[str, str], list[str], list[str]]:
+    """Entorno de auth, dominio de la jaula y secretos a redactar.
+
+    Con el clúster el hijo no recibe el token OAuth aunque el fichero exista.
+    """
+    choice = read_choice(backend_path(_session_path(settings)))
+    backend = resolve_backend(choice, settings)
+    if backend.kind == "anthropic":
+        extra = {CHILD_TOKEN_ENV: token} if token else {}
+        return extra, ["api.anthropic.com"], [token or ""]
+    url = settings.claude_gateway_url.strip()
+    gateway_token = load_gateway_token(settings)
+    if not url or not gateway_token:
+        raise ClaudeProcessCrashed("el destino del cluster no tiene URL o token")
+    try:
+        domain = gateway_domain(url)
+    except ValueError as exc:
+        raise ClaudeProcessCrashed("CLAUDE_GATEWAY_URL no tiene host") from exc
+    extra = child_gateway_env(url=url, token=gateway_token, model=backend.model)
+    return extra, [domain], [gateway_token]
+
+
 def _verify_token(settings: Settings, authorization: str | None) -> None:
     token = settings.claude_runner_token.strip()
     if is_missing(token):
@@ -263,8 +311,12 @@ def _grant_child(path: Path) -> None:
             logger.warning("no se pudo ceder %s al hijo (%s)", target, CHILD_USER)
 
 
-def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
-    """Sandbox obligatorio: solo Anthropic, sin salir, checkout no escribible."""
+def runner_sandbox_settings(
+    *,
+    workspace_root: Path,
+    allowed_domains: Sequence[str] = ("api.anthropic.com",),
+) -> dict[str, object]:
+    """Sandbox obligatorio: un dominio, sin salir, checkout no escribible."""
     return {
         "sandbox": {
             "enabled": True,
@@ -284,17 +336,25 @@ def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
                 "denyRead": ["/proc/1/environ", "/proc/1/cmdline"],
             },
             "network": {
-                "allowedDomains": ["api.anthropic.com"],
+                "allowedDomains": list(allowed_domains),
                 "strictAllowlist": True,
             },
         }
     }
 
 
-def write_runner_settings(config_dir: Path, *, workspace_root: Path) -> Path:
+def write_runner_settings(
+    config_dir: Path,
+    *,
+    workspace_root: Path,
+    allowed_domains: Sequence[str] = ("api.anthropic.com",),
+) -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "settings.json"
-    payload = json.dumps(runner_sandbox_settings(workspace_root=workspace_root), indent=2)
+    payload = json.dumps(
+        runner_sandbox_settings(workspace_root=workspace_root, allowed_domains=allowed_domains),
+        indent=2,
+    )
     path.write_text(payload + "\n", encoding="utf-8")
     return path
 

@@ -95,14 +95,17 @@ def review_prompt(base_sha: str) -> str:
 
 
 def claude_argv(prefix: Sequence[str], *, max_turns: int, base_sha: str) -> list[str]:
-    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos."""
-    if max_turns < 1:
-        raise ValueError("el tope de turnos tiene que ser al menos 1")
+    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos.
+
+    `max_turns` 0 no manda `--max-turns`: el único tope es el tiempo de pared.
+    """
+    if max_turns < 0:
+        raise ValueError("el tope de turnos no puede ser negativo")
+    turns = ["--max-turns", str(max_turns)] if max_turns else []
     return [
         *prefix,
         "-p",
-        "--max-turns",
-        str(max_turns),
+        *turns,
         "--allowedTools",
         _READ_TOOLS,
         "--disallowedTools",

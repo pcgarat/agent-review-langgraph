@@ -154,6 +154,8 @@ def test_el_argv_pide_la_skill_y_no_abre_un_shell_libre() -> None:
     assert "Revisa el árbol de trabajo" not in " ".join(argv)
     with pytest.raises(ValueError, match="base_sha"):
         claude_argv([sys.executable, "claude"], max_turns=7, base_sha=" ")
+    sin_turnos = claude_argv([sys.executable, "claude"], max_turns=0, base_sha="abc123")
+    assert "--max-turns" not in sin_turnos
 
 
 def test_el_subproceso_no_hereda_credenciales(tmp_path: Path) -> None:
@@ -934,10 +936,10 @@ def test_solo_la_imagen_del_runner_instala_el_cli() -> None:
 
 
 def test_los_techos_por_defecto_cubren_el_fan_out() -> None:
-    assert Settings.model_fields["claude_max_turns"].default == 200
+    assert Settings.model_fields["claude_max_turns"].default == 0
     assert Settings.model_fields["claude_timeout_s"].default == 3600.0
     compose = _COMPOSE.read_text(encoding="utf-8")
-    assert "CLAUDE_MAX_TURNS:-200" in compose
+    assert "CLAUDE_MAX_TURNS:-0" in compose
     assert "CLAUDE_TIMEOUT_S:-3600" in compose
 
 

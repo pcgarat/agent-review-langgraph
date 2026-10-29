@@ -32,7 +32,7 @@ make status                       # contenedores, URLs y prueba de credenciales
   resultante se copia a `src/agent_review/web/static` **antes** del `pip install`, de
   modo que viaja dentro del wheel. La imagen final no lleva Node, ni `node_modules`,
   ni el código de `frontend/`; `docker compose config` no cambia y no hay un segundo
-  servicio ([029](iniciativas/029-panel-en-react/spec.md), P14). Esa etapa es
+  servicio ([029](iniciativas/archivo/029-panel-en-react/spec.md), P14). Esa etapa es
   la única que necesita red en el build. Un despliegue sin build (por ejemplo,
   `pip install` desde el checkout con `dist` borrado) arranca igual pero las rutas
   del panel responden `503` con el motivo.
@@ -168,7 +168,7 @@ ficheros versionados:
 | Tema | Variables (valor por defecto) |
 |---|---|
 | Entorno | `ENVIRONMENT` (`development`; `production` activa el *fail-closed*), `LOG_LEVEL` (`INFO`) |
-| Motor | `REVIEW_ENGINE` (`llm` \| `claude`, por defecto `llm`; [ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)). Se lee al arrancar: cambiarlo es reiniciar el worker. `llm` compila el grafo de personas. `claude` compila el otro ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md)): el worker llama al `claude-runner` antes del grafo, guarda el stdout si es una lista de hallazgos y no vuelve a llamar si ese `head_sha` ya es válido. Sin sesión, el job pasa a `reviews:claude:parked` y el bucle sigue (una reanudación con decisión no). El job que agota el cupo parkea y no se reintenta; los siguientes esperan como `quota-wait` hasta que caduca el aviso. Cualquier otro valor aborta al construir `Settings`. `CLAUDE_ARTIFACT_ROOT` (`var/claude`): JSON ya validado. `CLAUDE_RUNNER_URL` (vacío en `llm`). `CLAUDE_TIMEOUT_S` (3600) y `CLAUDE_MAX_TURNS` (200): techos del subproceso, no de tokens. Son diales de la sección Claude en `/config` (1–21600 s y 1–2000 turnos). El worker manda el valor publicado en `POST /run`; sin override, el runner usa el suyo. Agotarlos parkea con motivo `ceiling` y no reintenta: ese job no se suelta al subir el dial; hay que eliminarlo y volver a lanzarlo. El sandbox de red es obligatorio (solo `api.anthropic.com`). La ficha sigue la conversación por SSE y la descarga entera con sesión ([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)). `CLAUDE_BIN` (`claude`; la imagen lo instala con el paquete apt `claude-code`). `CLAUDE_WORKSPACE_ROOT`: árbol del servicio, distinto del clon *bare*. `CLAUDE_SESSION_PATH` y `CLAUDE_SESSION_TTL_S` (43200): fichero de sesión y caducidad que anota el panel. `PANEL_PUBLIC_URL`: enlace del aviso |
+| Motor | `REVIEW_ENGINE` (`llm` \| `claude`, por defecto `llm`; [ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)). Se lee al arrancar: cambiarlo es reiniciar el worker. `llm` compila el grafo de personas. `claude` compila el otro ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md)): el worker llama al `claude-runner` antes del grafo, guarda el stdout si es una lista de hallazgos y no vuelve a llamar si ese `head_sha` ya es válido. Sin sesión, el job pasa a `reviews:claude:parked` y el bucle sigue (una reanudación con decisión no). El job que agota el cupo parkea y no se reintenta; los siguientes esperan como `quota-wait` hasta que caduca el aviso. Cualquier otro valor aborta al construir `Settings`. `CLAUDE_ARTIFACT_ROOT` (`var/claude`): JSON ya validado. `CLAUDE_RUNNER_URL` (vacío en `llm`). `CLAUDE_TIMEOUT_S` (3600) y `CLAUDE_MAX_TURNS` (0, apagado): techos del subproceso, no de tokens. Son diales de la sección Claude en `/config`. El tiempo (1–21600 s) no se apaga. Los turnos (1–2000) sí: 0 quita `--max-turns` y solo corta el reloj. Vale igual con Anthropic y con el clúster. El worker manda el valor publicado en `POST /run`; sin override, el runner usa el suyo. Agotarlos parkea con motivo `ceiling` y no reintenta: ese job no se suelta al subir el dial; hay que eliminarlo y volver a lanzarlo. El sandbox de red es obligatorio (solo `api.anthropic.com`). La ficha sigue la conversación por SSE y la descarga entera con sesión ([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)). `CLAUDE_BIN` (`claude`; la imagen lo instala con el paquete apt `claude-code`). `CLAUDE_WORKSPACE_ROOT`: árbol del servicio, distinto del clon *bare*. `CLAUDE_SESSION_PATH` y `CLAUDE_SESSION_TTL_S` (43200): fichero de sesión y caducidad que anota el panel. `PANEL_PUBLIC_URL`: enlace del aviso |
 | VCS | `VCS_PROVIDER` (`twg` \| `github`). Bitbucket: `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO`, `TWG_BIN`, `TWG_BBC_TOKEN`, `TWG_SITE`, `TWG_USER`, `TWG_TOKEN` (Jira), `TWG_TIMEOUT_S` (60). GitHub: `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_API_URL` |
 | Infraestructura | `REDIS_URL`, `DATABASE_URL`, `POSTGRES_PASSWORD` |
 | Ingesta | `TOOLING_WEBHOOK_SECRET`, `TOOLING_OUTPUT_TEMPLATE` (`var/tooling/{pr_id}/{head_sha}/{tool}.json`), `TOOLING_OUTPUT_ROOT` (`.`), `EXPECTED_TOOLS` (`phpstan`; manda el perfil salvo override explícito), `INGEST_TTL_READY_S` (1200), `INGEST_TTL_PENDING_S` (86400), `MAX_TOOLING_PAYLOAD_BYTES` (5 MiB) |
@@ -325,6 +325,7 @@ encapsula la lista `settings.PLACEHOLDER_VALUES`.
 | `SANDBOX_CONSOLE_TOKEN` | Bearer de **solo lectura** de la consola del runner: lo usa el `web` y solo abre `GET /verify/{run_key}/console`, no `POST /verify` | Para la consola en vivo del panel | Agente |
 | `SANDBOX_GIT_TOKEN` | Token de Bitbucket de **solo lectura** para clonar en el runner | Si `SANDBOX_ENABLED` | Agente |
 | `CLAUDE_RUNNER_TOKEN` | Bearer entre el worker y `claude-runner` | Si `REVIEW_ENGINE=claude` | Agente |
+| `NAN_API_KEY` | Clave de `api.nan.builders` para `nan-gateway`. Vacía: ese proceso usa `LLM_API_KEY`. No entra en el runner | No, si `LLM_API_KEY` ya está | Agente |
 | `CLAUDE_GIT_TOKEN` | Override de solo lectura para el checkout. Vacío: el runner reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN` ([ADR-0032](adr/0032-clonado-claude-con-el-token-de-vcs.md)). El subproceso `claude` no lo hereda | No, si el token de VCS ya está | Agente |
 | `SANDBOX_REGISTRY_USER` / `_TOKEN` | `pull` de la imagen del CI (`crg.apkg.io`) | Para verificar | Infra |
 | `TWG_TOKEN` | API token de Atlassian para `twg jira` | Fase 4 | Agente |
@@ -333,6 +334,13 @@ encapsula la lista `settings.PLACEHOLDER_VALUES`.
 La sesión de Claude no es una variable de entorno. El panel la escribe en
 `CLAUDE_SESSION_PATH` con modo `0600` y `claude-runner` la lee para
 `GET /session` y para inyectarla al subproceso. El worker no monta el volumen.
+En el mismo volumen, `backend.json` guarda la elección de `/claude`: `claude`,
+`deepseek-v4-flash` o `glm5.3-flash`. Sin ese fichero manda `CLAUDE_UPSTREAM`.
+Con un modelo del clúster el diff deja de ir a Anthropic y va a `api.nan.builders`
+a través de `nan-gateway`; la clave del clúster no entra en el runner ni en el
+worker. El `master_key` de esa pasarela lo crea `nan-gateway-token` la primera
+vez, en el volumen `gateway_token`. No es una variable del `.env`. Borrar el
+volumen lo rota.
 El aviso de Teams lleva el enlace al panel y no el token. Al guardarla, los
 jobs parqueados por falta de sesión vuelven a `reviews:jobs`; los del cupo se
 quedan, porque soltarlos volvería a gastarlo.

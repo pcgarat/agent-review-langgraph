@@ -1,0 +1,22 @@
+# Pasarela Anthropic → OpenAI del clúster (032). La clave de NaN no está aquí:
+# el proceso la lee de NAN_API_KEY. El master_key es CLAUDE_GATEWAY_TOKEN.
+model_list:
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://api.nan.builders/v1
+      api_key: os.environ/NAN_API_KEY
+  - model_name: glm5.3-flash
+    litellm_params:
+      model: openai/glm5.3-flash
+      api_base: https://api.nan.builders/v1
+      api_key: os.environ/NAN_API_KEY
+
+litellm_settings:
+  drop_params: true
+  success_callback: []
+  failure_callback: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_spend_logs: true

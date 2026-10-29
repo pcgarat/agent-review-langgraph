@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-24
+Última modificación: 2026-10-29 | Creado: 2026-10-24
 
 # Claude revisa con la skill y el panel sigue la conversación
 
@@ -34,13 +34,13 @@ sesión (`lector` u `operador`), igual que la ficha de hoy.
 - **Parsear el markdown** de la skill, ni pedir a un modelo que lo reescriba.
 - **Meter la skill en un nodo del grafo.** Un reintento de nodo no vuelve a
   lanzar el CLI. El artefacto validado sigue siendo la frontera
-  ([025](../archivo/025-revisor-claude-cli/spec.md)).
+  ([025](../025-revisor-claude-cli/spec.md)).
 - **El peer de otro modelo.** No se envía el diff fuera. Las personas y el
   validador locales de la skill sí corren. Un peer externo, si se quiere, es
   otra decisión.
 - **Forzar la profundidad `full`.** Manda la compuerta de la skill.
-- **Reescribir** [ADR-0002](../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)
-  **ni** [ADR-0028](../../adr/0028-cli-claude-fuera-del-worker.md). Hace falta un
+- **Reescribir** [ADR-0002](../../../adr/0002-contrato-de-ce-code-review-sin-su-runtime.md)
+  **ni** [ADR-0028](../../../adr/0028-cli-claude-fuera-del-worker.md). Hace falta un
   ADR nuevo: el núcleo sigue validando `contracts/findings-schema.json`, y el
   CLI sigue fuera del worker. Cambia qué prompt y qué herramientas usa el
   runner, y que la conversación se conserva.

@@ -175,8 +175,9 @@ proceso no arranca. El subproceso recibe `DISABLE_UPDATES=1` y
 `--setting-sources user`. El argv pide `/ce-code-review mode:agent base:<sha>`,
 permite `Read`, `Grep`, `Glob` y `Bash`, deniega edición, `WebFetch` y
 `WebSearch`, y usa `--permission-mode dontAsk`. Los techos por defecto son
-`CLAUDE_MAX_TURNS` 200 y `CLAUDE_TIMEOUT_S` 3600. El panel los publica (sección
-Claude, entre 1–2000 turnos y 1–21600 s) y el worker los manda en `POST /run`;
+`CLAUDE_MAX_TURNS` 0 (apagado) y `CLAUDE_TIMEOUT_S` 3600. El panel los publica
+(sección Claude: el tiempo entre 1 y 21600 s no se apaga; los turnos, 0 o
+1–2000) y el worker los manda en `POST /run`;
 sin override, el runner usa su entorno. El `settings.json` del config
 dir exige el sandbox: lista estricta `api.anthropic.com`, sin salir de él,
 checkout no escribible, `/tmp` sí y `enableWeakerNestedSandbox`
@@ -212,7 +213,7 @@ Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
 sale una vez (`claim_notice`). `POST /api/claude/session`
 (`require_command_session`) escribe el fichero `0600` y suelta solo el motivo
 `session`. El job que agota el cupo parkea con `quota` y no se reintenta. El
-que agota turnos o tiempo de pared parkea con `ceiling`; el login no lo suelta.
+que agota el tiempo de pared parkea con `ceiling`; si el tope de turnos está activo y se agota, también. El login no lo suelta.
 Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
 `quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
 artefacto ya válido no espera.

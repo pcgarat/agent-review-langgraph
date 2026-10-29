@@ -25,6 +25,13 @@ from agent_review.claude_activity import (
     review_target,
     transcript_events,
 )
+from agent_review.claude_backend import (
+    PANEL_CHOICES,
+    backend_path,
+    read_choice,
+    resolve_backend,
+    write_choice,
+)
 from agent_review.claude_session import write_session
 from agent_review.decision import require_decision_item
 from agent_review.domain.history import ReviewSummary
@@ -37,6 +44,7 @@ from agent_review.web.auth import (
     Session,
     clear_session_cookie,
     require_command_session,
+    require_operador,
     require_session,
     session_payload,
     set_session_cookie,
@@ -244,9 +252,13 @@ class ClaudeLogin:
 
     def save(self, token: str) -> int:
         write_session(self._path, token, ttl_s=self._ttl)
+        return self.release_waiting_session()
+
+    def release_waiting_session(self) -> int:
+        """Suelta lo parqueado por falta de sesión. No toca el cupo."""
         released = self._queue.release_parked(reason="session")
         self._queue.clear_notice("session")
-        logger.info("sesion de claude guardada; %d reviews vuelven a la cola", len(released))
+        logger.info("%d reviews paradas por sesion vuelven a la cola", len(released))
         return len(released)
 
 
@@ -264,6 +276,70 @@ def get_claude_login(request: Request) -> ClaudeLogin:
         login = build_claude_login(_settings())
         request.app.state.claude_login = login
     return login
+
+
+def _backend_file(request: Request) -> Path:
+    override = getattr(request.app.state, "claude_backend_path", None)
+    if override is not None:
+        return Path(override)
+    return backend_path(Path(_settings().claude_session_path))
+
+
+def _backend_payload(request: Request) -> dict[str, object]:
+    path = _backend_file(request)
+    choice = read_choice(path)
+    backend = resolve_backend(choice, _settings())
+    effective = "claude" if backend.kind == "anthropic" else backend.model
+    return {
+        "choice": choice,
+        "effective": effective,
+        "needs_session": backend.kind == "anthropic",
+    }
+
+
+@app.get("/api/claude/backend")
+def read_claude_backend(
+    request: Request,
+    session: Annotated[Session, Depends(require_operador)],
+) -> dict[str, object]:
+    """La elección vigente. Sin fichero, manda el entorno."""
+    del session
+    return _backend_payload(request)
+
+
+@app.post("/api/claude/backend")
+async def save_claude_backend(
+    request: Request,
+    session: Annotated[Session, Depends(require_command_session)],
+    login: Annotated[ClaudeLogin, Depends(get_claude_login)],
+) -> dict[str, object]:
+    """Guarda Claude, DeepSeek o GLM. Un modelo del clúster no pide token."""
+    del session
+    choice = await _backend_choice(request)
+    try:
+        write_choice(_backend_file(request), choice)
+    except OSError as exc:
+        logger.exception("No se pudo guardar el destino de Claude")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "No se pudo guardar el destino"
+        ) from exc
+    payload = _backend_payload(request)
+    if payload["needs_session"] is False:
+        login.release_waiting_session()
+    return payload
+
+
+async def _backend_choice(request: Request) -> str:
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "El cuerpo no es JSON")
+    choice = body.get("choice")
+    if not isinstance(choice, str) or choice not in PANEL_CHOICES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Destino desconocido")
+    return choice
 
 
 @app.post("/api/claude/session")
