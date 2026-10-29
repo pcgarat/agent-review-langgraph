@@ -52,6 +52,7 @@ export function ParkedSection({ items }: { items: ParkedItem[] }) {
   return (
     <PanelSection
       title="Aparcados"
+      tone="warning"
       hint={items.length === 0 ? null : plural(items.length, 'job esperando', 'jobs esperando')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">

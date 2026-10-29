@@ -1,8 +1,137 @@
 // Ajustes propios del cuadro de mando. Solo lo que CoreUI no da: el resto son
 // clases de la plantilla (`.eyebrow` y `.num` viven en `styles/panel.scss`).
 
+// Cada tarjeta de cifra tiene un acento superior, un tinte en su superficie
+// y color de valor según la naturaleza de lo que mide: cola (info), en vuelo
+// (primary), esperando persona (warning) y descartes (danger).
 .figure-card {
+  --figure-accent: var(--cui-primary);
   min-height: 100%;
+  border-color: color-mix(in srgb, var(--figure-accent) 45%, var(--panel-border-color));
+  border-top: 4px solid var(--figure-accent);
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--figure-accent) 16%, var(--panel-surface-bg)) 0%,
+      var(--panel-surface-bg) 80%
+    );
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    box-shadow: var(--panel-card-hover-shadow);
+  }
+
+  .eyebrow {
+    color: var(--cui-emphasis-color);
+  }
+
+  .figure-value {
+    font-weight: 700;
+    color: var(--figure-accent);
+  }
+}
+
+.figure-card--queue {
+  --figure-accent: var(--cui-info);
+}
+
+.figure-card--active {
+  --figure-accent: var(--cui-primary);
+}
+
+.figure-card--human {
+  --figure-accent: var(--cui-warning);
+}
+
+.figure-card--dead {
+  --figure-accent: var(--cui-danger);
+}
+
+// Tarjeta de lanzamiento destacada con un borde lateral índigo y tinte propio.
+.launch-card {
+  border-color: color-mix(in srgb, var(--cui-primary) 45%, var(--panel-border-color));
+  border-left: 4px solid var(--cui-primary);
+  background:
+    linear-gradient(
+      115deg,
+      color-mix(in srgb, var(--cui-primary) 14%, var(--panel-surface-bg)) 0%,
+      var(--panel-surface-bg) 65%
+    );
+
+  .eyebrow {
+    color: var(--cui-primary);
+  }
+}
+
+// Cada sección del cuadro de mando lleva un indicador cromático y una cabecera
+// tintada para distinguir de un vistazo cola, en vuelo, pausas, aparcados,
+// descartes y presupuesto.
+.panel-section {
+  --section-accent: var(--cui-primary);
+  border-color: color-mix(in srgb, var(--section-accent) 38%, var(--panel-border-color));
+
+  > .card-header {
+    border-left: 4px solid var(--section-accent);
+    border-bottom-color: color-mix(in srgb, var(--section-accent) 32%, var(--panel-border-color));
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--section-accent) 20%, var(--panel-surface-header-bg)) 0%,
+        color-mix(in srgb, var(--section-accent) 5%, var(--panel-surface-header-bg)) 70%
+      );
+
+    h2.h6 {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      color: var(--cui-emphasis-color);
+
+      &::before {
+        content: '';
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background-color: var(--section-accent);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--section-accent) 75%, transparent);
+      }
+    }
+  }
+}
+
+.panel-section--info {
+  --section-accent: var(--cui-info);
+}
+
+.panel-section--primary {
+  --section-accent: var(--cui-primary);
+}
+
+.panel-section--warning {
+  --section-accent: var(--cui-warning);
+}
+
+.panel-section--danger {
+  --section-accent: var(--cui-danger);
+}
+
+.panel-section--success {
+  --section-accent: var(--cui-success);
+}
+
+.panel-section--secondary {
+  --section-accent: var(--cui-secondary);
+}
+
+.section-hint-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--cui-emphasis-color);
+  background-color: color-mix(in srgb, var(--section-accent) 22%, var(--panel-surface-bg));
+  border: 1px solid color-mix(in srgb, var(--section-accent) 55%, var(--panel-border-color));
 }
 
 // La tabla es la superficie principal de la pantalla: sin un borde superior suave
@@ -12,5 +141,5 @@
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--cui-secondary-color);
+  color: var(--cui-body-color);
 }

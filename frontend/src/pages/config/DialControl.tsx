@@ -34,8 +34,14 @@ export function DialControl({
   const controlId = `dial-${name}`
   const helpId = `dial-${name}-help`
 
+  const stateClass = locked
+    ? 'config-dial config-dial--locked'
+    : !pristine
+      ? 'config-dial config-dial--modified'
+      : 'config-dial'
+
   return (
-    <div className="config-dial" data-testid={`dial-${name}`}>
+    <div className={stateClass} data-testid={`dial-${name}`}>
       <div className="config-dial-head">
         <label className="config-dial-name" htmlFor={controlId}>
           {name}

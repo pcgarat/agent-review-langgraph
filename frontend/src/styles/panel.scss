@@ -1,15 +1,131 @@
-// Ajustes del panel sobre el tema oscuro de CoreUI. Nada de reinventar el sistema
-// visual de la plantilla: se ajusta lo que el panel necesita y se deja el resto.
+// Paleta y sistema de superficies del panel sobre CoreUI.
+// Se definen tres capas claramente diferenciadas (lienzo -> superficie de tarjeta ->
+// cabecera/superficie hundida) tanto en tema oscuro como claro, junto con tintes
+// cromáticos por sección y tarjeta para que todos los bloques se distingan de un
+// vistazo.
 @use '@coreui/coreui/scss/coreui' with (
-  $enable-deprecation-messages: false
+  $enable-deprecation-messages: false,
+  $primary: #4f46e5,
+  $secondary: #64748b,
+  $success: #059669,
+  $info: #0284c7,
+  $warning: #d97706,
+  $danger: #dc2626,
+  $border-radius: 0.5rem,
+  $border-radius-sm: 0.375rem,
+  $border-radius-lg: 0.625rem
 );
 
-:root {
-  --panel-rail: 1px solid var(--cui-border-color);
+// --- Tokens de superficie y acento por tema ----------------------------------
+
+:root,
+[data-coreui-theme='light'] {
+  // En modo claro el lienzo tiene un tono pizarra medio (#dbe4f0) y los bordes son
+  // marcados (#94a3b8) para que las tarjetas blancas (#ffffff), las cabeceras y los
+  // controles hundidos tengan contraste alto y claro.
+  --panel-canvas-bg: #dbe4f0;
+  --panel-surface-bg: #ffffff;
+  --panel-surface-header-bg: #eef2f8;
+  --panel-surface-sunken-bg: #f1f5f9;
+  --panel-surface-elevated-bg: #ffffff;
+  --panel-sidebar-bg: #0f172a;
+  --panel-sidebar-header-bg: #090e1a;
+  --panel-sidebar-border: #1e293b;
+  --panel-header-bg: #ffffff;
+  --panel-border-color: #94a3b8;
+  --panel-border-strong: #64748b;
+  --panel-border-subtle: #cbd5e1;
+  --panel-card-shadow: 0 3px 10px -2px rgb(15 23 42 / 12%), 0 1px 4px -1px rgb(15 23 42 / 8%);
+  --panel-card-hover-shadow: 0 10px 22px -4px rgb(15 23 42 / 16%), 0 4px 8px -2px rgb(15 23 42 / 10%);
+  --panel-code-bg: #e0e7ff;
+  --panel-code-color: #312e81;
+  --panel-code-border: #818cf8;
+  --panel-table-head-bg: #e2e8f0;
+  --panel-table-stripe-bg: #f1f5f9;
+  --panel-table-hover-bg: rgb(79 70 229 / 9%);
+  --panel-rail: 1px solid var(--panel-border-color);
+
+  --cui-body-bg: #dbe4f0;
+  --cui-body-color: #0f172a;
+  --cui-emphasis-color: #020617;
+  --cui-secondary-color: #334155;
+  --cui-tertiary-color: #475569;
+  --cui-secondary-bg: #cbd5e1;
+  --cui-tertiary-bg: #e2e8f0;
+  --cui-border-color: #94a3b8;
+  --cui-border-color-translucent: rgb(15 23 42 / 20%);
+  --cui-primary: #4338ca;
+  --cui-primary-rgb: 67, 56, 202;
+  --cui-success: #047857;
+  --cui-success-rgb: 4, 120, 87;
+  --cui-info: #0369a1;
+  --cui-info-rgb: 3, 105, 161;
+  --cui-warning: #b45309;
+  --cui-warning-rgb: 180, 83, 9;
+  --cui-danger: #b91c1c;
+  --cui-danger-rgb: 185, 28, 28;
+  --cui-link-color: #3730a3;
+  --cui-link-hover-color: #1e1b4b;
+}
+
+[data-coreui-theme='dark'] {
+  // En modo oscuro el lienzo es pizarra profunda (#0b1120) y las tarjetas suben a
+  // un azul-pizarra elevado (#1e293b) con cabeceras (#26354d), bordes definidos
+  // (#3b4f6b) y realce superior para separar claramente cada bloque del fondo.
+  --panel-canvas-bg: #0b1120;
+  --panel-surface-bg: #1e293b;
+  --panel-surface-header-bg: #26354d;
+  --panel-surface-sunken-bg: #131c2e;
+  --panel-surface-elevated-bg: #2d3f5b;
+  --panel-sidebar-bg: #090e1a;
+  --panel-sidebar-header-bg: #060911;
+  --panel-sidebar-border: #26354d;
+  --panel-header-bg: #162033;
+  --panel-border-color: #3b4f6b;
+  --panel-border-strong: #52698a;
+  --panel-border-subtle: #293850;
+  --panel-card-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 6%),
+    0 6px 16px -3px rgb(2 6 23 / 55%),
+    0 2px 6px -2px rgb(2 6 23 / 40%);
+  --panel-card-hover-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 9%),
+    0 12px 24px -4px rgb(2 6 23 / 70%),
+    0 4px 8px -2px rgb(2 6 23 / 50%);
+  --panel-code-bg: rgb(99 102 241 / 18%);
+  --panel-code-color: #c7d2fe;
+  --panel-code-border: rgb(129 140 248 / 40%);
+  --panel-table-head-bg: #19253a;
+  --panel-table-stripe-bg: rgb(15 23 42 / 35%);
+  --panel-table-hover-bg: rgb(99 102 241 / 14%);
+  --panel-rail: 1px solid var(--panel-border-color);
+
+  --cui-body-bg: #0b1120;
+  --cui-body-color: #f1f5f9;
+  --cui-emphasis-color: #ffffff;
+  --cui-secondary-color: #cbd5e1;
+  --cui-tertiary-color: #94a3b8;
+  --cui-secondary-bg: #293850;
+  --cui-tertiary-bg: #1e293b;
+  --cui-border-color: #3b4f6b;
+  --cui-border-color-translucent: rgb(148 163 184 / 25%);
+  --cui-primary: #6366f1;
+  --cui-primary-rgb: 99, 102, 241;
+  --cui-success: #10b981;
+  --cui-success-rgb: 16, 185, 129;
+  --cui-info: #38bdf8;
+  --cui-info-rgb: 56, 189, 248;
+  --cui-warning: #fbbf24;
+  --cui-warning-rgb: 251, 191, 36;
+  --cui-danger: #f87171;
+  --cui-danger-rgb: 248, 113, 113;
+  --cui-link-color: #93c5fd;
+  --cui-link-hover-color: #bfdbfe;
 }
 
 body {
-  background-color: var(--cui-body-bg);
+  background-color: var(--panel-canvas-bg);
+  color: var(--cui-body-color);
 }
 
 // CoreUI define `--cui-sidebar-occupy-start` en el hermano del sidebar, pero no
@@ -19,72 +135,309 @@ body {
   width: 100%;
   padding-inline: var(--cui-sidebar-occupy-start, 0) var(--cui-sidebar-occupy-end, 0);
   transition: padding 0.15s ease-in-out;
+  background-color: var(--panel-canvas-bg);
+}
+
+// --- Sidebar y Navegación ----------------------------------------------------
+
+.sidebar {
+  --cui-sidebar-bg: var(--panel-sidebar-bg);
+  --cui-sidebar-color: #cbd5e1;
+  --cui-sidebar-brand-color: #f8fafc;
+  --cui-sidebar-brand-bg: var(--panel-sidebar-header-bg);
+  background: var(--panel-sidebar-bg);
+  border-inline-end: 1px solid var(--panel-sidebar-border) !important;
+
+  .sidebar-header {
+    background: var(--panel-sidebar-header-bg);
+    border-bottom-color: var(--panel-sidebar-border) !important;
+  }
+
+  .sidebar-footer {
+    background: var(--panel-sidebar-header-bg);
+    border-top-color: var(--panel-sidebar-border) !important;
+  }
+
+  .sidebar-nav {
+    --cui-sidebar-nav-title-color: #94a3b8;
+    --cui-sidebar-nav-link-color: #cbd5e1;
+    --cui-sidebar-nav-link-icon-color: #94a3b8;
+    --cui-sidebar-nav-link-hover-color: #ffffff;
+    --cui-sidebar-nav-link-hover-bg: rgb(99 102 241 / 18%);
+    --cui-sidebar-nav-link-hover-icon-color: #a5b4fc;
+    --cui-sidebar-nav-link-active-color: #ffffff;
+    --cui-sidebar-nav-link-active-bg: linear-gradient(90deg, rgb(99 102 241 / 38%), rgb(99 102 241 / 16%));
+    --cui-sidebar-nav-link-active-icon-color: #a5b4fc;
+
+    .nav-link {
+      margin-inline: 0.4rem;
+      margin-block: 0.12rem;
+      border-radius: 0.4rem;
+      font-weight: 500;
+      position: relative;
+
+      &.active {
+        font-weight: 600;
+        box-shadow: inset 3px 0 0 #818cf8;
+      }
+    }
+  }
 }
 
 .panel-brand {
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 700;
   letter-spacing: 0.02em;
+  color: #f8fafc;
+
+  &::before {
+    content: '';
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #818cf8, #38bdf8);
+    box-shadow: 0 0 10px rgb(99 102 241 / 85%);
+  }
 }
 
 .eyebrow {
   font-size: 0.72rem;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cui-secondary-color);
 }
 
-// --- Login -------------------------------------------------------------------
-
-.login-shell {
-  background: var(--cui-body-bg);
-}
-
-[data-coreui-theme='dark'] .login-shell {
-  background:
-    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 14%), transparent 60%),
-    var(--cui-body-bg);
-}
-
-[data-coreui-theme='light'] .login-shell {
-  background:
-    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 8%), transparent 60%),
-    var(--cui-body-bg);
-}
-
-.login-card {
-  width: min(26rem, calc(100vw - 2rem));
-  --cui-card-bg: var(--cui-tertiary-bg);
-  background-color: var(--cui-tertiary-bg);
-  border-color: var(--cui-border-color);
-  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 25%);
-}
-
-[data-coreui-theme='dark'] .login-card {
-  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 45%);
-}
+// --- Cabecera y Pie ----------------------------------------------------------
 
 // La cabecera es una barra de herramientas, no un encabezado de documento: el
 // titulo va como texto y no como `h1`, para no meter un encabezado de nivel 1 en
 // cada pantalla ni dejar que el navegador le ponga su tamano.
-.header-slim {
+.header.header-slim {
   min-height: 3.5rem;
+  background: var(--panel-header-bg);
+  border-bottom: 1px solid var(--panel-border-color);
+  box-shadow: 0 1px 4px rgb(2 6 23 / 14%);
+
+  > .container-fluid {
+    border-bottom: 0 !important;
+  }
 }
 
 .header-title {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: 0.98rem;
+  font-weight: 700;
   letter-spacing: 0.01em;
+  color: var(--cui-emphasis-color);
 }
 
-// --- Contenido ---------------------------------------------------------------
+.footer {
+  background-color: var(--panel-header-bg);
+  border-top-color: var(--panel-border-color) !important;
+}
+
+// --- Login -------------------------------------------------------------------
+
+.login-shell {
+  background: var(--panel-canvas-bg);
+}
+
+[data-coreui-theme='dark'] .login-shell {
+  background:
+    radial-gradient(55rem 35rem at 20% -5%, rgb(99 102 241 / 22%), transparent 60%),
+    radial-gradient(45rem 30rem at 85% 105%, rgb(14 165 233 / 16%), transparent 60%),
+    var(--panel-canvas-bg);
+}
+
+[data-coreui-theme='light'] .login-shell {
+  background:
+    radial-gradient(55rem 35rem at 20% -5%, rgb(79 70 229 / 14%), transparent 60%),
+    radial-gradient(45rem 30rem at 85% 105%, rgb(14 165 233 / 10%), transparent 60%),
+    var(--panel-canvas-bg);
+}
+
+.login-card {
+  width: min(26rem, calc(100vw - 2rem));
+  --cui-card-bg: var(--panel-surface-bg);
+  background-color: var(--panel-surface-bg);
+  border-color: var(--panel-border-color);
+  border-top: 3px solid var(--cui-primary);
+  box-shadow: 0 1.5rem 3rem rgb(15 23 42 / 18%);
+}
+
+[data-coreui-theme='dark'] .login-card {
+  box-shadow: 0 1.5rem 3.5rem rgb(2 6 23 / 65%);
+}
+
+// --- Tarjetas, Tablas y Controles --------------------------------------------
 
 .body h2.h6,
 .body h1.h6 {
-  font-weight: 600;
+  font-weight: 700;
+  color: var(--cui-emphasis-color);
 }
 
 .card {
-  border-color: var(--cui-border-color);
+  --cui-card-bg: var(--panel-surface-bg);
+  --cui-card-cap-bg: var(--panel-surface-header-bg);
+  --cui-card-border-color: var(--panel-border-color);
+  background-color: var(--panel-surface-bg);
+  border: 1px solid var(--panel-border-color);
+  box-shadow: var(--panel-card-shadow);
+}
+
+.card-header {
+  background-color: var(--panel-surface-header-bg);
+  border-bottom: 1px solid var(--panel-border-color);
+  padding-block: 0.72rem;
+  color: var(--cui-emphasis-color);
+}
+
+.card-footer {
+  background-color: var(--panel-surface-header-bg);
+  border-top: 1px solid var(--panel-border-color);
+}
+
+// Las tablas dentro de tarjetas heredan la superficie de la tarjeta, separan su
+// cabecera con un tono propio y alternan sutilmente las filas.
+.table {
+  --cui-table-bg: transparent;
+  --cui-table-border-color: var(--panel-border-subtle);
+  --cui-table-hover-bg: var(--panel-table-hover-bg);
+
+  thead th {
+    background-color: var(--panel-table-head-bg);
+    border-bottom: 1px solid var(--panel-border-color);
+    padding-block: 0.58rem;
+    font-weight: 700;
+    color: var(--cui-body-color);
+  }
+
+  tbody tr:nth-of-type(even) > td {
+    background-color: var(--panel-table-stripe-bg);
+  }
+
+  tbody tr:last-child > td {
+    border-bottom-width: 0;
+  }
+}
+
+// Los badges conservan siempre contraste legible tanto en modo oscuro como claro.
+.badge {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+
+  &.bg-info {
+    background-color: #0284c7 !important;
+    color: #ffffff !important;
+  }
+
+  &.bg-warning {
+    background-color: #f59e0b !important;
+    color: #0f172a !important;
+  }
+
+  &.bg-danger {
+    background-color: #dc2626 !important;
+    color: #ffffff !important;
+  }
+
+  &.bg-secondary {
+    background-color: #475569 !important;
+    color: #ffffff !important;
+  }
+}
+
+// Las alertas tienen contraste alto y borde lateral semántico en ambos temas.
+.alert {
+  border-width: 1px;
+  border-left-width: 4px;
+  font-weight: 500;
+}
+
+[data-coreui-theme='light'] {
+  .alert-info {
+    background-color: #e0f2fe;
+    border-color: #38bdf8;
+    border-left-color: #0284c7;
+    color: #0c4a6e;
+  }
+
+  .alert-warning {
+    background-color: #fef3c7;
+    border-color: #fbbf24;
+    border-left-color: #d97706;
+    color: #78350f;
+  }
+
+  .alert-danger {
+    background-color: #fee2e2;
+    border-color: #f87171;
+    border-left-color: #dc2626;
+    color: #7f1d1d;
+  }
+
+  .alert-success {
+    background-color: #d1fae5;
+    border-color: #34d399;
+    border-left-color: #059669;
+    color: #064e3b;
+  }
+}
+
+// Los botones outline secundarios tienen fondo elevado y borde definido para que
+// «Cancelar», «Reintentar» o las opciones de la bandeja se distingan de inmediato.
+.btn-outline-secondary {
+  --cui-btn-color: var(--cui-body-color);
+  --cui-btn-bg: var(--panel-surface-sunken-bg);
+  --cui-btn-border-color: var(--panel-border-strong);
+  --cui-btn-hover-color: var(--cui-emphasis-color);
+  --cui-btn-hover-bg: var(--panel-surface-elevated-bg);
+  --cui-btn-hover-border-color: var(--cui-primary);
+  font-weight: 500;
+}
+
+// Los campos de formulario tienen una superficie hundida diferenciada de la tarjeta.
+.form-control,
+.form-select {
+  background-color: var(--panel-surface-sunken-bg);
+  border-color: var(--panel-border-strong);
+  color: var(--cui-body-color);
+
+  &::placeholder {
+    color: var(--cui-tertiary-color);
+  }
+
+  &:focus {
+    background-color: var(--panel-surface-sunken-bg);
+    border-color: var(--cui-primary);
+    box-shadow: 0 0 0 0.2rem rgb(99 102 241 / 25%);
+  }
+
+  &:disabled {
+    background-color: var(--cui-secondary-bg);
+    opacity: 0.65;
+  }
+}
+
+// El código inline (SHA, claves, diales) destaca con un pill de color técnico.
+code {
+  color: var(--panel-code-color);
+  background-color: var(--panel-code-bg);
+  border: 1px solid var(--panel-code-border);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.38rem;
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
 }
 
 // Cifras que se comparan en columna: sin `tabular-nums` los dígitos bailan.
@@ -103,7 +456,7 @@ body {
   cursor: pointer;
 
   &:hover {
-    background-color: var(--cui-tertiary-bg);
+    background-color: var(--cui-secondary-bg);
   }
 }
 

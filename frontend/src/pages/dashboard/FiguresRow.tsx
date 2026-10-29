@@ -17,10 +17,10 @@ export function FiguresRow({ state }: { state: PanelState }) {
     <CRow className="g-3 mb-4">
       {dashboardFigures(state).map((figure) => (
         <CCol key={figure.key} xs={6} lg={3}>
-          <CCard className="figure-card h-100">
+          <CCard className={`figure-card figure-card--${figure.key} h-100`}>
             <CCardBody className="py-3">
               <p className="eyebrow mb-1">{figure.label}</p>
-              <p className="num display-6 lh-1 mb-2" data-testid={`figure-${figure.key}`}>
+              <p className="num figure-value display-6 lh-1 mb-2" data-testid={`figure-${figure.key}`}>
                 {formatNumber(figure.value)}
               </p>
               <p className="small text-body-secondary mb-0">{figure.detail}</p>

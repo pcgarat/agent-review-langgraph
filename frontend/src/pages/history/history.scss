@@ -11,5 +11,9 @@
 }
 
 .history-filters {
-  max-width: 34rem;
+  max-width: 38rem;
+  padding: 0.75rem 0.9rem;
+  background-color: var(--panel-surface-sunken-bg);
+  border: 1px solid var(--panel-border-subtle);
+  border-radius: 0.45rem;
 }
