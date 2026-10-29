@@ -763,6 +763,13 @@ def ensure_claude_artifact(
             ) from exc
         if adapted.reasons:
             _say(note, _discarded_line(adapted.reasons))
+        # Antes que el artefacto: si existe el artefacto, existen sus descartes.
+        store.save_discarded(
+            list(adapted.rejected),
+            repo=request.repo,
+            pr_id=request.pr_id,
+            head_sha=request.head_sha,
+        )
         body = json.dumps(
             [item.model_dump(mode="json") for item in adapted.findings],
             ensure_ascii=False,

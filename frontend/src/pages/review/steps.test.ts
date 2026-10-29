@@ -49,4 +49,49 @@ describe('pasos del grafo', () => {
     ).find((step) => step.name === 'merge')
     expect(merge).toMatchObject({ phase: 'skipped', caption: 'No se ejecutó' })
   })
+
+  it('un paso terminado dice sus cifras y los descartes (034)', () => {
+    const descarte = {
+      stage: 'l0' as const,
+      id: '1',
+      title: 'Las horas se calculan en minutos',
+      file: 'frontend/src/pages/dashboard/format.ts',
+      reason: 'la cita no aparece en el diff',
+    }
+    const node = (name: string, index: number, summary: Record<string, number>) => ({
+      name,
+      index,
+      started_at: null,
+      writes: [],
+      summary,
+      discarded: name === 'persona' ? [descarte] : [],
+    })
+    const steps = graphSteps(
+      trace({
+        state: 'completed',
+        next: [],
+        pause_kind: null,
+        nodes: [
+          node('scope', 0, { files: 1, ignored: 0 }),
+          node('persona', 1, { returned: 1, contract: 0, l0: 1, kept: 0 }),
+          node('merge', 2, { before: 3, after: 2 }),
+          node('stamp', 3, { publish: 0, other: 0 }),
+          node('publish', 4, { published: 0, inline: 0 }),
+        ],
+      }),
+      [],
+    )
+    const caption = (name: string) => steps.find((step) => step.name === name)?.caption
+    expect(caption('scope')).toBe('1 fichero en el diff')
+    expect(caption('persona')).toBe('La skill devolvió 1 · 1 descartado por L0')
+    expect(caption('merge')).toBe('2 tras juntar · 1 duplicado')
+    expect(caption('stamp')).toBe('0 para publicar')
+    expect(caption('publish')).toBe('No se escribió en el PR')
+    expect(steps.find((step) => step.name === 'persona')?.discarded).toEqual([descarte])
+  })
+
+  it('sin cifras, un paso terminado conserva el texto fijo', () => {
+    const scope = graphSteps(REVIEW.trace!, []).find((step) => step.name === 'scope')
+    expect(scope).toMatchObject({ caption: 'Diff filtrado y contexto preparado', discarded: [] })
+  })
 })

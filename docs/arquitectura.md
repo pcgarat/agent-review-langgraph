@@ -214,7 +214,11 @@ flowchart TD
 ```
 
 No hay `verify`, `policy` ni `fix_dispatch`. El cargador lee el artefacto ya
-validado y tira con L0 la cita que no está en el diff. El sello marca cada
+validado y tira con L0 la cita que no está en el diff. Escribe en `discarded`
+cada hallazgo tirado, con su filtro y su motivo: los de L0 y los que el worker
+rechazó por contrato al adaptar el objeto `mode:agent`, que deja en
+`<sha>.discarded.json` junto al artefacto. La tarjeta «Pasos» los cuenta
+([034](iniciativas/034-cifras-de-cada-paso/spec.md)). El sello marca cada
 hallazgo que pasó con acción `publish` y `publication=full`; no ejecuta la
 política. `dropped` no se publica (ni inline ni resumen) y no es `rejected`.
 Con `silence_without_choice`, solo un `approved` se publica. `dropped`,
@@ -266,6 +270,7 @@ LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
 | `request`, `diff`, `reviewer` | Sustituye | `reviewer` solo existe en cada rama del `Send` |
 | `review_context` | Sustituye | `ReviewContext` de L1 (008): ficheros al head y docs del perfil; lo escribe `scope` y el fan-out lo reenvía |
 | `findings` | `operator.add` | Lo escriben las personas en paralelo |
+| `discarded` | `operator.add` | Hallazgos que la persona `claude` tiró antes del merge, con `stage` (`contract` o `l0`) y motivo (034). El motor `llm` no lo escribe |
 | `finding_sources`, `source_status`, `fixes` | Merge de dict | Por `finding_id` o por persona |
 | `budget_exhausted` | `operator.or_` | Personas que se cortaron por presupuesto (017); cada rama escribe la suya en paralelo |
 | `tokens_spent` | Suma de dict | Tokens confirmados por persona: el gasto real de la review |
@@ -451,6 +456,7 @@ vencimiento vive en `sweep_fix_expired`
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
 | Postgres | `panel_config` / `panel_config_history` | Documento vigente de diales del panel (027, [ADR-0031](adr/0031-configuracion-desde-el-panel.md)): overrides, revisión, actor. El historial guarda cada foto. Sin fila, la review usa `Settings` | — |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
+| Disco | `CLAUDE_ARTIFACT_ROOT/<repo>/<pr>/<sha>.json` y `<sha>.discarded.json` | Artefacto del motor `claude`: hallazgos validados y, al lado, los que el contrato rechazó (034). `forget` borra los dos | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 
 ### Workspaces de lectura (memoria del `sandbox-runner`)

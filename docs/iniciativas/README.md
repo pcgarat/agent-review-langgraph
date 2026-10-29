@@ -20,12 +20,13 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | aprobada | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) · [plan](024-contexto-conversacional-del-bucle/plan.md) · [todo](024-contexto-conversacional-del-bucle/todo.md) | 023 (K0 y K3) · S1–S5 (medida) van antes de las corridas *live* de 023 · A tras K3 · B solo con número · S–D pendientes |
 | 031 | [Progreso en vivo del panel](031-progreso-en-vivo-del-panel/spec.md) | borrador | 🟠 Panel que se refresca solo, diagrama de pasos en la ficha, panel en vivo maximizable y tiempo en «En vuelo» | 029 · 030 · 3 preguntas abiertas |
 | 033 | [La transcripción del CLI se lee como en Claude Code](033-transcripcion-legible-del-cli/spec.md) | borrador | 🟠 Actividad del CLI: prosa, titular por herramienta que se abre al pulsar, código con canal y diff. El pie no enseña el coste | 029 · convive con 031 (no cambia el maximizado) · Q2 cerrada con transcripciones reales · 1 pregunta abierta (Q3) |
+| 034 | [Cada paso dice cuántos hallazgos entraron, salieron y por qué](034-cifras-de-cada-paso/spec.md) | aprobada | 🔵 La tarjeta «Pasos» cuenta lo que devolvió la skill, lo que descartaron el contrato y L0 (con motivo), lo que quedó tras juntar y lo que se publicó · [plan](034-cifras-de-cada-paso/plan.md) · [todo](034-cifras-de-cada-paso/todo.md) | Concreta V6 de 031 · preguntas cerradas |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **034**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **035**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from agent_review.adapters.agent_mode import AgentModeRejected, adapt_agent_mode
-from agent_review.adapters.claude_artifact import ClaudeArtifactStore
+from agent_review.adapters.claude_artifact import ClaudeArtifactReviewer, ClaudeArtifactStore
 from agent_review.domain.contracts import validate_finding
-from agent_review.domain.models import ReviewRequest
+from agent_review.domain.models import DiscardedFinding, ReviewRequest
 from agent_review.ports.claude import ClaudeInvalidOutput
 from agent_review.settings import Settings
 from agent_review.worker.main import ensure_claude_artifact
@@ -382,3 +382,79 @@ def test_el_log_dice_por_que_se_descarto_cada_hallazgo(tmp_path: Path) -> None:
         )
 
     assert "Claude: se descartaron 1 hallazgos (#7: sin why_it_matters)." in notas
+
+
+def test_el_descarte_del_contrato_lleva_id_titulo_y_fichero() -> None:
+    bueno = _agente()["findings"][0]
+    cuerpo = _agente()
+    cuerpo["findings"] = [bueno, {**bueno, "#": 8, "confidence": "alta"}]  # type: ignore[dict-item]
+
+    review = adapt_agent_mode(cuerpo)
+
+    [descarte] = review.rejected
+    assert descarte.stage == "contract"
+    assert descarte.id == "8"
+    assert descarte.title == "Saldo negativo no validado antes de retirar"
+    assert descarte.file == "src/Transfer.php"
+    assert descarte.reason.startswith("confidence: ")
+
+
+def test_los_descartes_viven_junto_al_artefacto_y_se_olvidan_con_el(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert store.load_discarded(repo=_REPO, pr_id=_PR, head_sha=_SHA) == []
+    descarte = DiscardedFinding(stage="contract", id="8", reason="sin why_it_matters")
+    store.save_discarded([descarte], repo=_REPO, pr_id=_PR, head_sha=_SHA)
+    assert store.save("[]", repo=_REPO, pr_id=_PR, head_sha=_SHA)
+
+    assert store.load_discarded(repo=_REPO, pr_id=_PR, head_sha=_SHA) == [descarte]
+    assert store.load_discarded(repo=_REPO, pr_id=_PR, head_sha=_SHA_NUEVA) == []
+
+    store.discard(repo=_REPO, pr_id=_PR, head_sha=_SHA)
+
+    assert store.load_discarded(repo=_REPO, pr_id=_PR, head_sha=_SHA) == []
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+def test_el_worker_guarda_los_descartes_del_contrato(tmp_path: Path) -> None:
+    bueno = _agente()["findings"][0]
+    cuerpo = _agente()
+    cuerpo["findings"] = [bueno, {**bueno, "#": 8, "why_it_matters": ""}]  # type: ignore[dict-item]
+    request = ReviewRequest(repo=_REPO, pr_id=_PR, head_sha=_SHA, pipeline_id="7")
+    store = _store(tmp_path)
+
+    ensure_claude_artifact(request, runner=_StdoutRunner(json.dumps(cuerpo)), store=store)
+
+    [descarte] = store.load_discarded(repo=_REPO, pr_id=_PR, head_sha=_SHA)
+    assert (descarte.stage, descarte.id, descarte.reason) == ("contract", "8", "sin why_it_matters")
+
+
+_DIFF = """diff --git a/src/Transfer.php b/src/Transfer.php
+--- a/src/Transfer.php
++++ b/src/Transfer.php
+@@ -13,1 +13,2 @@
+ function withdraw() {
++    throw new InsufficientBalance('no funds');
+"""
+
+
+def test_l0_dice_por_que_tira_cada_hallazgo(tmp_path: Path) -> None:
+    # Caso PR 27: la primera evidencia es prosa y no está en el diff.
+    store = _store(tmp_path)
+    hallazgos = [
+        _hallazgo(id="dentro"),
+        _hallazgo(id="prosa", evidence=["Transfer.php:14. Con saldo 0 se rompe."]),
+        _hallazgo(id="otro", file="src/Otro.php"),
+    ]
+    assert store.save(json.dumps(hallazgos), repo=_REPO, pr_id=_PR, head_sha=_SHA)
+    contrato = DiscardedFinding(stage="contract", id="8", reason="sin why_it_matters")
+    store.save_discarded([contrato], repo=_REPO, pr_id=_PR, head_sha=_SHA)
+
+    result = ClaudeArtifactReviewer(store).review(repo=_REPO, pr_id=_PR, head_sha=_SHA, diff=_DIFF)
+
+    assert [item.id for item in result.findings] == ["dentro"]
+    assert [(item.stage, item.id, item.reason) for item in result.discarded] == [
+        ("contract", "8", "sin why_it_matters"),
+        ("l0", "prosa", "la cita no aparece en el diff"),
+        ("l0", "otro", "el fichero no está en el diff"),
+    ]
+    assert result.discarded[1].title == "Saldo negativo no validado antes de retirar"

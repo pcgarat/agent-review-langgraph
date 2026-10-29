@@ -1,6 +1,6 @@
 import { CCard, CCardBody, CCardHeader } from '@coreui/react'
 
-import type { ReviewTrace } from '@/api/types/review'
+import type { DiscardedFinding, ReviewTrace } from '@/api/types/review'
 import type { ActiveNode } from '@/api/types/state'
 
 import { graphSteps, type StepView } from './steps'
@@ -55,6 +55,36 @@ function StepRow({ step }: { step: StepView }) {
           {step.caption}
         </p>
       )}
+      {step.discarded.length === 0 ? null : <DiscardedList items={step.discarded} />}
     </li>
+  )
+}
+
+const STAGE: Record<DiscardedFinding['stage'], string> = {
+  contract: 'contrato',
+  l0: 'L0',
+}
+
+/** Qué se tiró y por qué. Cerrado: un motivo de contrato puede ser largo (034 CP6). */
+function DiscardedList({ items }: { items: readonly DiscardedFinding[] }) {
+  return (
+    <details className="step-discarded">
+      <summary>
+        {items.length === 1 ? 'Ver el descartado' : `Ver los ${items.length} descartados`}
+      </summary>
+      <ul>
+        {items.map((item, position) => (
+          <li key={`${item.stage}-${item.id ?? position}`}>
+            <span className="step-discarded-title">
+              {item.id === null ? '' : `#${item.id} · `}
+              {item.title ?? 'Sin título'}
+            </span>
+            <span className="step-discarded-reason">
+              {STAGE[item.stage]}: {item.reason.slice(0, 200)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }

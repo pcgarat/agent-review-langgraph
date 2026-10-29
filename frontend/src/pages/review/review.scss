@@ -206,6 +206,37 @@
   line-height: 1.35;
 }
 
+.step-discarded {
+  grid-column: 3;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+
+  summary {
+    cursor: pointer;
+    color: var(--cui-secondary-color);
+  }
+
+  ul {
+    margin: 0.3rem 0 0;
+    padding-left: 1rem;
+  }
+
+  li + li {
+    margin-top: 0.3rem;
+  }
+}
+
+.step-discarded-title {
+  display: block;
+  color: var(--cui-emphasis-color);
+}
+
+.step-discarded-reason {
+  display: block;
+  color: var(--cui-secondary-color);
+  overflow-wrap: anywhere;
+}
+
 .step-row.running .step-caption {
   color: var(--cui-primary);
   font-weight: 500;

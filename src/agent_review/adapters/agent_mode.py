@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_review.domain.contracts import ContractError, validate_finding
-from agent_review.domain.models import Finding
+from agent_review.domain.models import DiscardedFinding, Finding
 
 _COMPLETE = "complete"
 _SCENARIO_SEVERITIES = frozenset({"P0", "P1", "P2"})
@@ -23,24 +23,33 @@ _SCENARIO_SEVERITIES = frozenset({"P0", "P1", "P2"})
 class AgentModeRejected(Exception):
     """La salida no es una review terminada que se pueda guardar."""
 
-    def __init__(self, message: str, *, reasons: tuple[str, ...] = ()) -> None:
+    def __init__(self, message: str, *, rejected: tuple[DiscardedFinding, ...] = ()) -> None:
         super().__init__(message)
-        self.reasons = reasons
+        self.rejected = rejected
 
     @property
     def discarded(self) -> int:
-        return len(self.reasons)
+        return len(self.rejected)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return _reasons(self.rejected)
 
 
 @dataclass(frozen=True)
 class AgentModeReview:
     findings: list[Finding]
-    reasons: tuple[str, ...] = ()
+    rejected: tuple[DiscardedFinding, ...] = ()
 
     @property
     def discarded(self) -> int:
-        """Un motivo por hallazgo descartado."""
-        return len(self.reasons)
+        """Un descarte por hallazgo que no cumple el contrato."""
+        return len(self.rejected)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """`#id: motivo`, una línea por descarte, para el diario."""
+        return _reasons(self.rejected)
 
 
 def adapt_agent_mode(payload: object) -> AgentModeReview:
@@ -60,17 +69,17 @@ def adapt_agent_mode(payload: object) -> AgentModeReview:
         raise AgentModeRejected("pre_existing_findings no es una lista")
 
     kept: list[Finding] = []
-    reasons: list[str] = []
+    rejected: list[DiscardedFinding] = []
     for items, force in ((findings, False), (prior, True)):
         for item in items:
             mapped = _map_finding(item, force_pre_existing=force)
             if isinstance(mapped, str):
-                reasons.append(f"{_label(item)}: {mapped}")
+                rejected.append(_rejected(item, mapped))
             else:
                 kept.append(mapped)
     if not kept and (findings or prior):
-        raise AgentModeRejected("todos los hallazgos se descartaron", reasons=tuple(reasons))
-    return AgentModeReview(findings=kept, reasons=tuple(reasons))
+        raise AgentModeRejected("todos los hallazgos se descartaron", rejected=tuple(rejected))
+    return AgentModeReview(findings=kept, rejected=tuple(rejected))
 
 
 def _object(payload: object) -> dict[str, Any]:
@@ -132,9 +141,24 @@ def _map_finding(item: object, *, force_pre_existing: bool) -> Finding | str:
         return str(exc)
 
 
-def _label(item: object) -> str:
-    ident = _identifier(item.get("#")) if isinstance(item, dict) else None
-    return f"#{ident}" if ident is not None else "hallazgo sin #"
+def _rejected(item: object, reason: str) -> DiscardedFinding:
+    data = item if isinstance(item, dict) else {}
+    title = _text(data.get("title"))
+    file = _text(data.get("file"))
+    return DiscardedFinding(
+        stage="contract",
+        id=_identifier(data.get("#")),
+        title=title[:200] or None,
+        file=file or None,
+        reason=reason[:300],
+    )
+
+
+def _reasons(rejected: tuple[DiscardedFinding, ...]) -> tuple[str, ...]:
+    return tuple(
+        f"#{item.id}: {item.reason}" if item.id is not None else f"hallazgo sin #: {item.reason}"
+        for item in rejected
+    )
 
 
 def _evidence(item: dict[str, Any]) -> object:

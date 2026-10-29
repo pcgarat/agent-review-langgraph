@@ -22,6 +22,7 @@ from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, PendingWrite
 
 from agent_review.checkpointer import pause_kind_of
+from agent_review.domain.models import DiscardedFinding
 from agent_review.domain.trace import PauseKindName, ReviewTrace, TraceNode, TraceState
 
 logger = logging.getLogger(__name__)
@@ -155,8 +156,24 @@ def _build_trace(thread_id: str, tuples: list[CheckpointTuple]) -> ReviewTrace:
     # emitir los nodos en su orden real de ejecucion, saltando el checkpoint de
     # entrada (el ultimo de la lista), que no lo escribio ningun nodo.
     for index in range(len(tuples) - 1, 0, -1):
-        for name in _edge_targets(tuples[index].pending_writes):
-            nodes.append(TraceNode(name=name, index=len(nodes), started_at=_node_ts(tuples, index)))
+        targets = _edge_targets(tuples[index].pending_writes)
+        # La tarea corre desde el checkpoint siguiente y sus escrituras quedan en el.
+        ran_from = tuples[index - 1]
+        for name in targets:
+            summary, discarded = (
+                _summarize(name, ran_from, reviewer=_send_reviewer(tuples[index].pending_writes))
+                if len(targets) == 1
+                else (None, [])
+            )
+            nodes.append(
+                TraceNode(
+                    name=name,
+                    index=len(nodes),
+                    started_at=_node_ts(tuples, index),
+                    summary=summary,
+                    discarded=discarded,
+                )
+            )
 
     state, pending = _state_of(tuples, nodes)
     return ReviewTrace(
@@ -241,6 +258,83 @@ def _edge_targets(pending: list[PendingWrite] | None) -> list[str]:
         if match and match.group("node") != _NODE_END:
             targets.append(match.group("node"))
     return targets
+
+
+# Persona cuyas cifras se cuentan (034): las de `llm` corren en paralelo y sus
+# escrituras no dicen qué rama fue cada una.
+_COUNTED_PERSONA = "claude"
+
+
+def _send_reviewer(pending: list[PendingWrite] | None) -> str | None:
+    """Revisor del único `Send` del fan-out, o `None` si no hay uno solo."""
+    for _task_id, channel, value in pending or []:
+        if channel != "__pregel_tasks":
+            continue
+        sends = value if isinstance(value, (list, tuple)) else [value]
+        if len(sends) != 1:
+            return None
+        arg = getattr(sends[0], "arg", None)
+        reviewer = arg.get("reviewer") if isinstance(arg, dict) else None
+        return reviewer if isinstance(reviewer, str) else None
+    return None
+
+
+def _summarize(
+    name: str, ran_from: CheckpointTuple, *, reviewer: str | None
+) -> tuple[dict[str, int] | None, list[DiscardedFinding]]:
+    """Cifras de lo que escribió la tarea del nodo `name` (034 §4.1).
+
+    Sin escrituras el nodo no cerró: no hay cifras que dar.
+    """
+    pending = ran_from.pending_writes or []
+    if not pending:
+        return None, []
+    writes = {channel: value for _task_id, channel, value in pending}
+    if name == "scope":
+        coverage = writes.get("coverage")
+        skipped = _field(coverage, "skipped")
+        ignored = sum(1 for reason in (skipped or {}).values() if _label(reason) == "ignored")
+        total = _field(coverage, "files_total")
+        if not isinstance(total, int):
+            return None, []
+        return {"files": total, "ignored": ignored}, []
+    if name == "persona" and reviewer == _COUNTED_PERSONA:
+        found = writes.get("findings")
+        discarded = [
+            item if isinstance(item, DiscardedFinding) else DiscardedFinding.model_validate(item)
+            for item in writes.get("discarded") or []
+        ]
+        kept = len(found) if isinstance(found, list) else 0
+        contract = sum(1 for item in discarded if item.stage == "contract")
+        l0 = sum(1 for item in discarded if item.stage == "l0")
+        summary = {"returned": kept + contract + l0, "contract": contract, "l0": l0, "kept": kept}
+        return summary, discarded
+    if name == "merge":
+        merged = writes.get("merged")
+        before = (ran_from.checkpoint.get("channel_values") or {}).get("findings")
+        if not isinstance(merged, list):
+            return None, []
+        count = len(before) if isinstance(before, list) else len(merged)
+        return {"before": count, "after": len(merged)}, []
+    if name == "stamp":
+        decisions = writes.get("decisions")
+        if not isinstance(decisions, list):
+            return None, []
+        publish = sum(1 for item in decisions if _label(_field(item, "action")) == "publish")
+        return {"publish": publish, "other": len(decisions) - publish}, []
+    if name == "publish":
+        inline = writes.get("inlined_count")
+        return {
+            "published": 1 if writes.get("published") else 0,
+            "inline": inline if isinstance(inline, int) else 0,
+        }, []
+    return None, []
+
+
+def _field(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _node_ts(tuples: list[CheckpointTuple], from_index: int) -> datetime | None:
