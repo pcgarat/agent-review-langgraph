@@ -118,26 +118,38 @@ def transcript_events(
     head_sha: str,
     poll_s: float = 0.2,
     sleep: Callable[[float], None] = time.sleep,
+    start_offset: int = 0,
 ) -> Iterator[str]:
     """SSE: lo ya escrito y después cada línea nueva, hasta `finished_at`.
 
     Una línea a medias no se emite. Cortar el directo no borra el fichero.
+
+    Cada evento lleva `id:` con el byte del fichero donde empieza su línea, y
+    `start_offset` reanuda desde ahí. Sin eso, el navegador reconecta solo y el
+    panel recibe el transcript entero otra vez, duplicando lo ya pintado.
     """
     status_path, log_path = activity_paths(session_file, repo=repo, pr_id=pr_id, head_sha=head_sha)
-    offset = 0
+    offset = max(0, start_offset)
     pending = ""
     while True:
         if log_path.is_file():
             with log_path.open("r", encoding="utf-8") as handle:
                 handle.seek(offset)
                 chunk = handle.read()
-                offset = handle.tell()
+                end = handle.tell()
             if chunk:
+                # El evento se identifica por el byte donde *empieza*, no por
+                # donde acaba: reanudar ahí repite esa línea una vez como mucho
+                # si el corte cayó justo en medio.
+                cursor = offset
+                offset = end
                 pending += chunk
                 while "\n" in pending:
                     line, pending = pending.split("\n", 1)
+                    start = cursor
+                    cursor += len(line.encode("utf-8")) + 1
                     if line:
-                        yield _sse("line", line)
+                        yield _sse("line", line, event_id=start)
         if _is_finished(status_path) and not pending:
             yield _sse("end", {})
             return
@@ -156,6 +168,9 @@ def _is_finished(status_path: Path) -> bool:
     return isinstance(raw.get("finished_at"), str)
 
 
-def _sse(name: str, payload: object) -> str:
+def _sse(name: str, payload: object, *, event_id: int | None = None) -> str:
+    """Un frame SSE. Con `event_id`, el navegador manda `Last-Event-ID` al
+    reconectar y el panel puede reanudar en vez de repetirlo todo."""
     data = json.dumps(payload, ensure_ascii=False)
-    return f"event: {name}\ndata: {data}\n\n"
+    head = "" if event_id is None else f"id: {event_id}\n"
+    return f"{head}event: {name}\ndata: {data}\n\n"

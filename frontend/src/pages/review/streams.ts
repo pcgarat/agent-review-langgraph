@@ -38,6 +38,19 @@ export interface StreamOptions {
   /** Evento con el que el servidor cierra el stream correctamente. */
   endEvent: string
   onEvent: (name: string, data: string) => void
+  /**
+   * El servidor repite todo desde el principio en cada conexión. Sin reiniciar
+   * el estado, el panel duplica cada línea. Hay dos casos distintos:
+   *
+   * - `'clean'`: el servidor emite `id:` y reanuda con `Last-Event-ID`. Solo
+   *   hay que reiniciar cuando la conexión llega limpia (una recarga), porque
+   *   tras un corte el navegador reanuda y lo pintado sigue siendo válido.
+   * - `'always'`: el servidor no emite `id:`, así que **toda** conexión (también
+   *   la que el navegador reabre tras un fallo) repite el buffer entero.
+   */
+  resetOnOpen?: false | 'clean' | 'always'
+  /** Vacía el estado que pinta el panel. Solo se llama si `resetOnOpen`. */
+  onReset?: () => void
 }
 
 interface Progress {
@@ -67,8 +80,22 @@ export function useServerStream(url: string | null, options: StreamOptions): Str
     if (url === null) return
     let received = false
     let ended = false
+    // Se rearma en cada `onopen`: una conexión nueva que el navegador no reanuda
+    // (sin `Last-Event-ID`) vuelve a recibir el stream desde el principio.
+    let canReset = true
     const source = new EventSource(url)
     const update = (next: StreamStatus) => setProgress({ url, status: next })
+
+    source.onopen = () => {
+      const mode = optionsRef.current.resetOnOpen
+      if (!mode) return
+      // `always`: el servidor repite siempre, así que también hay que reiniciar
+      // tras un fallo. `clean`: solo cuando no es una reanudación del navegador.
+      if (mode === 'clean' && !canReset) return
+      canReset = false
+      received = false
+      optionsRef.current.onReset?.()
+    }
 
     const listen = (name: string, handler: (data: string) => void) => {
       source.addEventListener(name, (event) => {
@@ -94,6 +121,9 @@ export function useServerStream(url: string | null, options: StreamOptions): Str
     source.onerror = () => {
       if (ended) return
       if (source.readyState !== EVENT_SOURCE_CLOSED) {
+        // El navegador reconecta por su cuenta, así que la próxima conexión es
+        // reanudación, no una apertura limpia: lo pintado sigue siendo válido.
+        canReset = false
         update('error')
         return
       }

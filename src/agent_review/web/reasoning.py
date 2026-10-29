@@ -62,15 +62,21 @@ def reasoning_stream(
     block_ms: int = BLOCK_MS,
     idle_s: float = IDLE_S,
     clock: Callable[[], float] = time.monotonic,
+    resume_from: str | None = None,
 ) -> Iterator[str]:
     progress = _Progress()
+    resume = resume_from.strip() if resume_from and resume_from.strip() else None
+    # 1) Lo guardado, de una vez (por paginas). Con `resume`, recorre desde el
+    # principio para reconstruir `_Progress` pero solo **emite** lo que va despues
+    # del evento que el navegador ya tenia: sin los totales vistos, la condicion
+    # de cierre se cumpliria antes de tiempo y el stream cortaria a media review.
     after = "0-0"
-    # 1) Lo guardado, de una vez (por paginas).
     while True:
         page = reader.read(review_key, after=after)
         for entry_id, event in page:
             progress.see(event)
-            yield sse_event(entry_id, event)
+            if resume is None or entry_id > resume:
+                yield sse_event(entry_id, event)
             after = entry_id
         if not page:
             break

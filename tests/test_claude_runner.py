@@ -1128,3 +1128,50 @@ def test_el_evento_stream_json_llega_entero(tmp_path: Path) -> None:
     ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base", on_line=seen.append)
     assert seen
     assert largo in seen[0]
+
+
+def test_el_sse_reanuda_desde_last_event_id(tmp_path: Path) -> None:
+    """Un `Last-Event-ID` reanuda sin repetir lo ya recibido.
+
+    Sin esto, cada reconexión del `EventSource` (o una recarga de la ficha)
+    reemite el transcript entero y el panel duplica cada línea.
+    """
+    session = tmp_path / "session.json"
+    sha = "c" * 40
+    activity = ClaudeActivity(session, repo="acme/app", pr_id=3, head_sha=sha)
+    activity.start()
+    activity.append('{"primera": 1}')
+    activity.append('{"segunda": 2}')
+    activity.finish()
+
+    frames = list(
+        transcript_events(session, repo="acme/app", pr_id=3, head_sha=sha, sleep=lambda _s: None)
+    )
+    primera = next(frame for frame in frames if "primera" in frame)
+    assert "id: " in primera, "sin id el navegador no puede reanudar"
+    ident = primera.split("id: ", 1)[1].split("\n", 1)[0]
+
+    reanudado = list(
+        transcript_events(
+            session,
+            repo="acme/app",
+            pr_id=3,
+            head_sha=sha,
+            sleep=lambda _s: None,
+            start_offset=int(ident),
+        )
+    )
+    texto = "".join(reanudado)
+    assert "primera" in texto, "el byte del id es el inicio de su propia linea"
+    assert "segunda" in texto
+    assert reanudado[-1].startswith("event: end")
+
+
+def test_un_last_event_id_que_no_es_un_byte_empieza_del_principio() -> None:
+    """Otra version del contrato no puede romper el stream: se repite entero."""
+    from agent_review.web.main import _resume_offset
+
+    assert _resume_offset(None) == 0
+    assert _resume_offset("  123 ") == 123
+    assert _resume_offset("no-es-un-numero") == 0
+    assert _resume_offset("-5") == 0

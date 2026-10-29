@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,12 +33,19 @@ class FakeEventSource {
 
   readonly url: string
   readyState = 0
+  onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   readonly listeners = new Map<string, ((event: MessageEvent<string>) => void)[]>()
 
   constructor(url: string) {
     this.url = url
     FakeEventSource.instances.push(this)
+  }
+
+  /** El servidor aceptó la conexión: es cuando el hook decide si reinicia. */
+  open(): void {
+    this.readyState = 1
+    this.onopen?.()
   }
 
   addEventListener(name: string, handler: (event: MessageEvent<string>) => void): void {
@@ -236,6 +243,39 @@ describe('ficha de review', () => {
     console_?.emit('end', {})
     expect(await screen.findByText('Transmisión terminada')).toBeInTheDocument()
     expect(console_?.readyState).toBe(2)
+  })
+
+  it('una reconexión limpia no duplica las líneas de la consola', async () => {
+    // El servidor repite el buffer entero en cada conexión. Si el panel no se
+    // reinicia al abrir, las líneas ya pintadas se suman a las del replay. La
+    // regla del hook se prueba en `streams.test.tsx`; aquí se comprueba que la
+    // ficha la usa de verdad.
+    stubFetch({ ...REVIEW, console_available: true })
+    renderReview()
+
+    await screen.findByRole('heading', { name: 'Consola en vivo' })
+    const primera = stream('/console')
+    primera?.open()
+    primera?.emit('line', { seq: 1, stream: 'stdout', text: 'npm test' })
+    expect(await screen.findByTestId('review-console')).toHaveTextContent('npm test')
+
+    // Una segunda apertura (recarga o vuelta a la ventana que remonta el panel)
+    // trae el mismo buffer desde el principio.
+    primera?.close()
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    const segunda = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+    if (segunda === undefined) throw new Error('no se abrió el stream tras el focus')
+    segunda.open()
+    segunda.emit('line', { seq: 0, stream: 'stdout', text: 'npm test' })
+
+    // `npm test` aparece una sola vez, aunque el panel se haya remontado: no se
+    // acumula lo viejo con el replay.
+    const panel = await screen.findByTestId('review-console')
+    await waitFor(() => expect(panel).toHaveTextContent('npm test'))
+    expect(panel.textContent?.match(/npm test/g)).toHaveLength(1)
   })
 
   it('un `404` del SSE se cuenta en pantalla sin romper la ficha', async () => {

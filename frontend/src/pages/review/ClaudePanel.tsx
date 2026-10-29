@@ -30,10 +30,16 @@ export function ClaudePanel({ availability, eventsEndpoint, downloadEndpoint }: 
     setLines((previous) => [...previous, formatClaudeLine(data)])
   }, [])
 
+  const onReset = useCallback(() => setLines([]), [])
+
   const status = useServerStream(availability.events_available ? eventsEndpoint : null, {
     events: ['line'],
     endEvent: 'end',
     onEvent,
+    // El transcript emite `id:` y el servidor reanuda por `Last-Event-ID`; solo
+    // hay que limpiar en una apertura limpia (una recarga de la ficha).
+    resetOnOpen: 'clean',
+    onReset,
   })
   const autoScroll = useAutoScroll<HTMLPreElement>(lines.length)
   const { scrollRef, onScroll } = autoScroll

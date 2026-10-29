@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from agent_review.claude_activity import (
@@ -478,6 +478,7 @@ def claude_activity(
 def claude_transcript(
     review_key: str,
     session: Annotated[Session, Depends(require_session)],
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
     """Líneas ya escritas y las que lleguen, hasta que la ejecución termine."""
     del session
@@ -489,10 +490,25 @@ def claude_transcript(
             repo=repo,
             pr_id=pr_id,
             head_sha=head_sha,
+            start_offset=_resume_offset(last_event_id),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _resume_offset(last_event_id: str | None) -> int:
+    """El byte desde el que reanudar, o `0` si el navegador no manda nada.
+
+    Un `Last-Event-ID` que no es un entero es de otra versión del contrato: se
+    ignora y se repite el transcript entero, que es lo que hacía antes.
+    """
+    if last_event_id is None:
+        return 0
+    try:
+        return max(0, int(last_event_id.strip()))
+    except ValueError:
+        return 0
 
 
 @app.get("/api/reviews/{review_key:path}/claude/download")
@@ -570,12 +586,14 @@ def review_reasoning(
     review_key: str,
     session: Annotated[Session, Depends(require_session)],
     reader: Annotated[ReasoningReader | None, Depends(get_reasoning)],
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
     """Razonamiento de los revisores de una review, en vivo (021 R5).
 
     Cualquier sesion del panel puede leerlo (Q3): no ejecuta nada. Repite lo
     guardado y sigue mientras la review razona; `404` si no hay razonamiento (TTL
-    vencido, sink desactivado o una review sin persona LLM).
+    vencido, sink desactivado o una review sin persona LLM). Con `Last-Event-ID`
+    del navegador reanuda tras ese evento en vez de repetirlo.
     """
     del session
     if reader is None or not reader.exists(review_key):
@@ -583,7 +601,7 @@ def review_reasoning(
             status.HTTP_404_NOT_FOUND, f"No hay razonamiento guardado de {review_key}"
         )
     return StreamingResponse(
-        reasoning_stream(reader, review_key),
+        reasoning_stream(reader, review_key, resume_from=last_event_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

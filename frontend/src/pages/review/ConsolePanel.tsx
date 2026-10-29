@@ -40,7 +40,17 @@ export function ConsolePanel({ endpoint, runKeys }: ConsolePanelProps) {
     if (line !== null) setLines((previous) => [...previous, line])
   }, [])
 
-  const status = useServerStream(endpoint, { events: ['line'], endEvent: 'end', onEvent })
+  const onReset = useCallback(() => setLines([]), [])
+
+  const status = useServerStream(endpoint, {
+    events: ['line'],
+    endEvent: 'end',
+    onEvent,
+    // El proxy del sandbox no emite `id:`: el runner repite su buffer en cada
+    // conexión, también en la que el navegador reabre tras un fallo.
+    resetOnOpen: 'always',
+    onReset,
+  })
   const autoScroll = useAutoScroll<HTMLPreElement>(lines.length)
   const { scrollRef, onScroll } = autoScroll
 

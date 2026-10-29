@@ -101,10 +101,16 @@ export function ReasoningPanel({ endpoint }: ReasoningPanelProps) {
     }
   }, [])
 
+  const onReset = useCallback(() => setBlocks([]), [])
+
   const status = useServerStream(endpoint, {
     events: ['start', 'reasoning', 'end', 'fallo'],
     endEvent: 'fin',
     onEvent,
+    // El servidor emite `id:` y reanuda por `Last-Event-ID`: en un corte no se
+    // repite nada, así que solo se limpia en una apertura limpia.
+    resetOnOpen: 'clean',
+    onReset,
   })
   // La señal de contenido nuevo es el texto acumulado: `blocks.length` no cambia
   // cuando un lote sigue escribiendo dentro del suyo.
