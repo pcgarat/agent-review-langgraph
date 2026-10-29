@@ -2,7 +2,19 @@
 
 # Configuración desde el panel
 
-> **Estado:** aprobada
+> **Estado:** implementada
+>
+> **Aprobada:** 2026-10-23.
+>
+> **Implementada:** 2026-10-29. El catálogo vive en `panel_config.py`, la fila y el
+> historial en `config_store.py` (Postgres; sin `DATABASE_URL`, en memoria), el
+> contrato HTTP en `web/config_api.py` (`GET /api/config` y `POST /config`) y la
+> página en `frontend/src/pages/config/`. El worker monta cada review con la foto
+> y un reanudado no relee la tabla. La cobertura está en
+> `tests/test_panel_config.py`, `tests/test_web_config_api.py`,
+> `tests/test_config_store_postgres.py` y `ConfigPage.test.tsx`; el formulario HTML
+> que describía el plan lo retiró la [029](../029-panel-en-react/spec.md) en
+> su bloque R.
 >
 > **Entrega objetivo:** el rol `operador` edita, en una página del panel, los diales
 > que cambian una review. Cada control muestra el valor con el que el sistema trabaja
@@ -15,7 +27,7 @@
 
 Hoy esos diales viven en el entorno y en `Settings`. Cambiarlos es editar `.env` y
 reiniciar procesos que no comparten memoria: `get_settings()` está cacheado en cada
-uno. El panel ([019](../archivo/019-panel-de-operacion/spec.md)) ya distingue
+uno. El panel ([019](../019-panel-de-operacion/spec.md)) ya distingue
 `lector` y `operador`, pero no tiene dónde tocar un tope.
 
 Se quiere:
@@ -31,7 +43,7 @@ Se quiere:
 ## 2. No-objetivos
 
 - **Secretos.** Tokens, claves y `PANEL_SESSION_SECRET` no se muestran ni se
-  escriben. Siguen solo en el entorno ([ADR-0013](../../adr/0013-secretos-por-entorno-fail-closed.md)).
+  escriben. Siguen solo en el entorno ([ADR-0013](../../../adr/0013-secretos-por-entorno-fail-closed.md)).
   La página no dice su valor; como mucho, en otro sitio, «configurado» o «falta».
 - **Arranque.** URLs, puertos, `REDIS_URL`, `DATABASE_URL`, proveedor de VCS,
   motor, rutas de YAML, identidad del bot y `LOG_LEVEL` (se aplica en
@@ -127,6 +139,14 @@ servido es el de hoy. Ninguna bandera quita del *prompt* una capacidad anunciada
 | `review_tools_precache_context` | `true` | Precarga el contexto L1 en el bucle. Apagado, el modelo tiene que leerlo y gasta turnos. |
 | `review_tools_io_cache` | `false` | Reutiliza lecturas de la misma review. Ahorra lectura del repo, no tokens del *prompt*. |
 
+**Claude.** Techos del CLI. El runner no lee el documento: el worker manda el
+valor publicado en `POST /run`; sin override, el runner sigue con su entorno.
+
+| Campo | Default | Ayuda |
+|---|---|---|
+| `claude_timeout_s` | `3600` | Segundos de pared del CLI y del checkout, entre 1 y 21600. Si se agotan, el job se parkea (`ceiling`) y no se reintenta. |
+| `claude_max_turns` | `0` | Turnos del CLI (`--max-turns`), entre 1 y 2000. `0` lo apaga: solo corta el tiempo. Si se agotan, el job se parkea (`ceiling`) y no se reintenta. |
+
 **Política.**
 
 | Campo | Default | Ayuda |
@@ -204,7 +224,7 @@ make ci
 Los tests viven en `tests/test_panel_config.py` (resolución, restauración, candado,
 conflicto de revisión y foto en el estado) y en `tests/test_web_config_api.py` (el
 contrato HTTP de `GET /api/config` y `POST /config`). El formulario HTML que cubría
-`tests/test_web_ui.py` se retiró en el bloque R de la [029](../archivo/029-panel-en-react/spec.md);
+`tests/test_web_ui.py` se retiró en el bloque R de la [029](../029-panel-en-react/spec.md);
 su cobertura vive ahora en la API y en `ConfigPage.test.tsx`.
 
 ## 6. Riesgos
@@ -242,8 +262,7 @@ es otra revisión de esta spec.
 
 ## Enmienda 2026-10-24
 
-La sección **Claude** añade `claude_max_turns` (200, entre 1 y 2000) y
-`claude_timeout_s` (3600, entre 1 y 21600). El runner no lee el documento: el
-worker manda el valor publicado en `POST /run`. Sin override, sigue el entorno
-del runner. Un valor inicial que el despliegue dejó fuera del rango se conserva
-si el formulario no lo cambia.
+La sección **Claude** añade `claude_max_turns` y `claude_timeout_s` (§5.1). El
+runner no lee el documento: el worker manda el valor publicado en `POST /run`. Sin
+override, sigue el entorno del runner. Un valor inicial que el despliegue dejó
+fuera del rango se conserva si el formulario no lo cambia.
