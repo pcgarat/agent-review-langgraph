@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PanelState } from '@/api/types/state'
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { ToastProvider } from '@/components/ToastProvider'
 import { SessionContext, type SessionContextValue } from '@/session/session'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -29,9 +30,11 @@ function renderDashboard() {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SessionContext.Provider value={OPERADOR}>
-          <ToastProvider>
-            <DashboardPage />
-          </ToastProvider>
+          <AutoRefreshProvider>
+            <ToastProvider>
+              <DashboardPage />
+            </ToastProvider>
+          </AutoRefreshProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,

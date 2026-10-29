@@ -9,6 +9,7 @@
 import { CAlert, CButton, CCard, CCardBody } from '@coreui/react'
 
 import { useStateQuery } from '@/api/queries/useStateQuery'
+import { useRefetchInterval } from '@/components/AutoRefreshContext'
 import { useSession } from '@/session/session'
 
 import { FiguresRow } from './dashboard/FiguresRow'
@@ -26,7 +27,8 @@ import { ParkedSection } from './dashboard/ParkedSection'
 import './dashboard/dashboard.scss'
 
 export function DashboardPage() {
-  const { data, isPending, isError, error, refetch, isFetching } = useStateQuery()
+  const refetchInterval = useRefetchInterval()
+  const { data, isPending, isError, error, refetch } = useStateQuery({ refetchInterval })
   const { isOperador } = useSession()
 
   if (isPending) {
@@ -51,20 +53,7 @@ export function DashboardPage() {
 
   return (
     <>
-      <div className="d-flex flex-wrap align-items-baseline gap-2 mb-3">
-        <p className="eyebrow mb-0">Estado generado el {formatDateTime(data.generated_at)}</p>
-        <CButton
-          type="button"
-          color="secondary"
-          variant="ghost"
-          size="sm"
-          className="ms-auto"
-          disabled={isFetching}
-          onClick={() => void refetch()}
-        >
-          {isFetching ? 'Actualizando…' : 'Actualizar'}
-        </CButton>
-      </div>
+      <p className="eyebrow mb-3">Estado generado el {formatDateTime(data.generated_at)}</p>
 
       <FiguresRow state={data} />
 

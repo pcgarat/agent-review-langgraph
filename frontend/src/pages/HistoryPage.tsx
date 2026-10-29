@@ -1,6 +1,7 @@
 import { CAlert, CButton, CCard, CCardBody } from '@coreui/react'
 import { useSearchParams } from 'react-router-dom'
 
+import { useRefetchInterval } from '@/components/AutoRefreshContext'
 import { PanelSection } from '@/pages/dashboard/PanelSection'
 import { explainError } from '@/pages/dashboard/errors'
 import { formatNumber } from '@/pages/dashboard/format'
@@ -21,8 +22,10 @@ import './history/history.scss'
 export function HistoryPage() {
   const [search, setSearch] = useSearchParams()
   const params = readParams(search)
-  const { data, isPending, isError, error, refetch, isFetching } = useHistoryQuery(
+  const refetchInterval = useRefetchInterval()
+  const { data, isPending, isError, error, refetch } = useHistoryQuery(
     readFilters(params),
+    { refetchInterval },
   )
 
   if (isPending) {
@@ -62,18 +65,6 @@ export function HistoryPage() {
         page.total === 0
           ? 'Ninguna coincide'
           : `${formatNumber(page.total)} en total · página ${page.page} de ${page.pages} · filas ${formatNumber(page.from)}–${formatNumber(page.to)}`
-      }
-      actions={
-        <CButton
-          type="button"
-          color="secondary"
-          variant="ghost"
-          size="sm"
-          disabled={isFetching}
-          onClick={() => void refetch()}
-        >
-          {isFetching ? 'Actualizando…' : 'Actualizar'}
-        </CButton>
       }
     >
       <div className="px-3 pt-3">

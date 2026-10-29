@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AutoRefreshProvider } from '@/components/AutoRefreshContext'
 import { ToastProvider } from '@/components/ToastProvider'
 import { ConfigPage } from '@/pages/ConfigPage'
 import { SessionContext, type SessionContextValue } from '@/session/session'
@@ -39,9 +40,11 @@ function renderConfig(session: SessionContextValue = OPERADOR) {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SessionContext.Provider value={session}>
-          <ToastProvider>
-            <ConfigPage />
-          </ToastProvider>
+          <AutoRefreshProvider>
+            <ToastProvider>
+              <ConfigPage />
+            </ToastProvider>
+          </AutoRefreshProvider>
         </SessionContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,

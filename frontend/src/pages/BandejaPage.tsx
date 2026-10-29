@@ -1,5 +1,6 @@
 import { CAlert, CButton, CCard, CCardBody } from '@coreui/react'
 
+import { useRefetchInterval } from '@/components/AutoRefreshContext'
 import { useSession } from '@/session/session'
 import { explainError } from '@/pages/dashboard/errors'
 
@@ -15,7 +16,8 @@ import './bandeja/bandeja.scss'
  * cuenta: tras responder invalida la caché y vuelve a leer lo que el servidor diga.
  */
 export function BandejaPage() {
-  const { data, isPending, isError, error, refetch, isFetching } = useBandejaQuery()
+  const refetchInterval = useRefetchInterval()
+  const { data, isPending, isError, error, refetch } = useBandejaQuery({ refetchInterval })
   const { isOperador } = useSession()
 
   if (isPending) {
@@ -40,24 +42,11 @@ export function BandejaPage() {
 
   return (
     <>
-      <div className="d-flex flex-wrap align-items-baseline gap-2 mb-3">
-        <p className="eyebrow mb-0">
-          {data.items.length === 0
-            ? 'No hay decisiones pendientes'
-            : `${data.items.length} ${data.items.length === 1 ? 'pausa esperando' : 'pausas esperando'}`}
-        </p>
-        <CButton
-          type="button"
-          color="secondary"
-          variant="ghost"
-          size="sm"
-          className="ms-auto"
-          disabled={isFetching}
-          onClick={() => void refetch()}
-        >
-          {isFetching ? 'Actualizando…' : 'Actualizar'}
-        </CButton>
-      </div>
+      <p className="eyebrow mb-3">
+        {data.items.length === 0
+          ? 'No hay decisiones pendientes'
+          : `${data.items.length} ${data.items.length === 1 ? 'pausa esperando' : 'pausas esperando'}`}
+      </p>
 
       <p className="small text-body-secondary">
         {data.teams_enabled

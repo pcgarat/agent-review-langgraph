@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 
 import { reviewPath } from '@/api/client'
 import type { ReviewDetail } from '@/api/types/review'
+import { useRefetchInterval } from '@/components/AutoRefreshContext'
 import { useSession } from '@/session/session'
 import { explainError } from '@/pages/dashboard/errors'
 import { formatDateTime } from '@/pages/dashboard/format'
@@ -34,10 +35,9 @@ import './review/review.scss'
  */
 export function ReviewPage({ reviewKey }: { reviewKey: string }) {
   const { isOperador } = useSession()
-  const { data, isPending, isError, error, refetch, isFetching } = useReviewDetail(reviewKey)
+  const refetchInterval = useRefetchInterval()
+  const { data, isPending, isError, error, refetch } = useReviewDetail(reviewKey, { refetchInterval })
 
-  // La clave se pinta siempre, incluso mientras carga: es la identidad de la
-  // pantalla y un enlace publicado que no la enseña parece roto.
   const header = (
     <div className="d-flex flex-wrap align-items-baseline gap-2 mb-3">
       <p className="eyebrow mb-0 text-break">{reviewKey}</p>
@@ -47,17 +47,6 @@ export function ReviewPage({ reviewKey }: { reviewKey: string }) {
           {formatDateTime(data.trace.updated_at)}
         </span>
       ) : null}
-      <CButton
-        type="button"
-        color="secondary"
-        variant="ghost"
-        size="sm"
-        className="ms-auto"
-        disabled={isFetching}
-        onClick={() => void refetch()}
-      >
-        {isFetching ? 'Actualizando…' : 'Actualizar'}
-      </CButton>
     </div>
   )
 
