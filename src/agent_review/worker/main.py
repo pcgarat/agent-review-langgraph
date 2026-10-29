@@ -101,6 +101,11 @@ from agent_review.profile import (
     scope_classes,
 )
 from agent_review.queue import FixQueue, InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
+from agent_review.review_meta_store import (
+    InMemoryReviewMetaStore,
+    RedisReviewMetaStore,
+    ReviewMetaStore,
+)
 from agent_review.settings import (
     Settings,
     get_settings,
@@ -425,6 +430,13 @@ def build_history(settings: Settings) -> ReviewHistory | None:
     return RedisReviewHistory(
         url=settings.redis_url, retention_days=settings.checkpoint_retention_days
     )
+
+
+def build_meta_store(settings: Settings) -> ReviewMetaStore:
+    """Almacén de metadatos de review (título del PR, etc.)."""
+    if not settings.redis_url.strip():
+        return InMemoryReviewMetaStore()
+    return RedisReviewMetaStore(url=settings.redis_url)
 
 
 def node_retry_policy(settings: Settings) -> RetryPolicy:
@@ -1374,6 +1386,23 @@ def _with_base_sha(request: ReviewRequest, vcs: VcsPort | None) -> ReviewRequest
     return request.model_copy(update={"base_sha": base_sha})
 
 
+def _save_pr_meta(
+    request: ReviewRequest, vcs: VcsPort | None, meta_store: ReviewMetaStore | None
+) -> None:
+    """Guarda el título del PR en el almacén de metadatos (una vez por review).
+
+    Best-effort: un fallo no aborta la review. Los metadatos se leen en el panel
+    para mostrar el ID y título en lugar de la review_key técnica.
+    """
+    if meta_store is None or vcs is None:
+        return
+    try:
+        info = vcs.get_pull_request(request.repo, request.pr_id)
+        meta_store.save(request.review_key, pr_id=request.pr_id, pr_title=info.title)
+    except Exception:
+        logger.debug("No se pudo guardar metadatos del PR %s#%s", request.repo, request.pr_id)
+
+
 def _with_code_links(approval: ApprovalRequest, *, vcs: VcsPort | None) -> ApprovalRequest:
     """Anade a cada pendiente el permalink a su trozo de codigo.
 
@@ -1663,6 +1692,7 @@ def dispatch_job(
     progress: ProgressPort | None = None,
     cancel: CancellationPort | None = None,
     history: ReviewHistory | None = None,
+    meta_store: ReviewMetaStore | None = None,
     reasoning: bool = False,
     claude_runner: ClaudeRunner | None = None,
     claude_store: ClaudeArtifactStore | None = None,
@@ -1700,6 +1730,7 @@ def dispatch_job(
         progress=progress,
         cancel=cancel,
         history=history,
+        meta_store=meta_store,
         reasoning=reasoning,
         claude_runner=claude_runner,
         claude_store=claude_store,
@@ -1724,6 +1755,7 @@ def _consume(
     fix_ttl_s: float | None = None,
     progress: ProgressPort | None = None,
     cancel: CancellationPort | None = None,
+    meta_store: ReviewMetaStore | None = None,
     history: ReviewHistory | None = None,
     reasoning: bool = False,
     claude_runner: ClaudeRunner | None = None,
@@ -1797,6 +1829,7 @@ def _consume(
                 logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
             return
         request = _with_base_sha(request, vcs)
+        _save_pr_meta(request, vcs, meta_store)
         _journal(queue, request.review_key, f"Intento {request.attempts + 1}")
         outcome = process_request(
             graph,
@@ -2407,6 +2440,7 @@ def run_forever(
     pending_store = pending if pending is not None else build_pending(settings)
     paused_store = paused if paused is not None else build_paused(settings)
     history = build_history(settings)
+    meta_store = build_meta_store(settings)
     claude_runner: ClaudeRunner | None = None
     claude_store: ClaudeArtifactStore | None = None
     claude_session: Callable[[], bool] | None = None
@@ -2461,6 +2495,7 @@ def run_forever(
                     progress=progress,
                     cancel=cancellation,
                     history=history,
+                    meta_store=meta_store,
                     reasoning=settings.reasoning_stream_enabled,
                     claude_runner=claude_runner,
                     claude_store=claude_store,
