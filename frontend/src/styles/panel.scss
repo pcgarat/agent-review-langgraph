@@ -82,3 +82,22 @@ body {
 .num {
   font-variant-numeric: tabular-nums;
 }
+
+// --- Selector de auto-refresh ------------------------------------------------
+
+.refresh-selector-toggle {
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  color: var(--cui-body-color);
+  border-radius: var(--cui-border-radius);
+  cursor: pointer;
+
+  &:hover {
+    background-color: var(--cui-tertiary-bg);
+  }
+}
+
+.refresh-selector-menu {
+  min-width: 10rem;
+}

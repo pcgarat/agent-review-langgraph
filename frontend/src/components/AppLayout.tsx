@@ -15,6 +15,7 @@ import CIcon from '@coreui/icons-react'
 import { cilMenu, cilMoon } from '@coreui/icons'
 
 import { useSession } from '@/session/session'
+import { RefreshSelector } from './RefreshSelector'
 import { SidebarNav } from './SidebarNav'
 import { UserMenu } from './UserMenu'
 import { useSidebar } from './useSidebar'
@@ -58,6 +59,10 @@ export function AppLayout({ title, children }: AppLayoutProps) {
             </CHeaderToggler>
             <span className="header-title text-truncate">{title}</span>
             <CHeaderNav className="ms-auto align-items-center">
+              <RefreshSelector />
+              <li className="nav-item py-1">
+                <div className="vr h-100 mx-2 text-body text-opacity-75" />
+              </li>
               <CNavItem className="text-body-secondary small d-none d-sm-block">
                 {session.user?.user ?? '—'}
                 {session.user ? <span className="ms-1 opacity-75">({session.user.role})</span> : null}
