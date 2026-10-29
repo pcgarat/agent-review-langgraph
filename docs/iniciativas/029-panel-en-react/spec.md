@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-24
+Última modificación: 2026-10-29 | Creado: 2026-10-24
 
 # Panel en React
 
@@ -14,6 +14,15 @@
 > Los tests que afirmaban sobre HTML se reubicaron en la API o en el componente;
 > ninguno se perdió. Q3 (un e2e con Playwright) y Q5 (paginación por servidor)
 > siguen fuera de esta entrega, como se propuso.
+>
+> **Enmienda (2026-10-29):** el código se adelantó a P16 y a §3.2. El panel tiene
+> selector de tema claro / oscuro / automático (persistido en `localStorage`,
+> claro por defecto, como la plantilla) y el armazón adopta el aspecto de la demo
+> de CoreUI: sidebar oscuro en los dos temas, cabecera de dos filas con contadores
+> y migas, contenido en `container-lg` sobre fondo terciario, y las cuatro cifras
+> del cuadro de mando como `CWidgetStatsA` de color. Los gráficos siguen fuera:
+> donde la demo pinta una serie, la cifra pinta su detalle, porque `/api/state` no
+> trae series temporales.
 >
 > **Entrega objetivo:** el panel de operación deja de ser HTML servido en el
 > servidor y pasa a ser una aplicación React que consume la misma API JSON. Se
@@ -105,13 +114,13 @@ La plantilla es una demo de componentes; el panel usa una parte.
 |---|---|
 | `DefaultLayout`, `AppSidebar`, `AppHeader`, `AppFooter`, `_nav` | Se conservan como armazón |
 | `views/authentication/login` | Se conserva como base del login (un solo campo: el token) |
-| `views/dashboard`, `widgets`, `charts`, `forms`, `components`, `icons`, `error-pages` y sus assets (808 KB) | Fuera: son demos. Se usan como referencia visual |
+| `views/dashboard`, `widgets`, `charts`, `forms`, `components`, `icons`, `error-pages` y sus assets (808 KB) | Fuera: son demos. Se usan como referencia visual. *Enmendado 2026-10-29: las cifras usan `CWidgetStatsA` sin gráfico* |
 | `@coreui/react-chartjs`, `chart.js`, `@coreui/chartjs` | Fuera: el panel no dibuja gráficos de líneas |
 | Redux (`store.js`) con `sidebarShow` | Se conserva: el sidebar lo necesita y ya está montado |
 | `HashRouter` | **Se sustituye por `BrowserRouter`**: las rutas publicadas son `/review/…` (§3.5) |
 | `base: './'` del `vite.config.mjs` | Se cambia a `/`: el panel no se sirve desde un subdirectorio |
 | JavaScript sin tipos | Se convierte a **TypeScript estricto** en lo que se conserva |
-| Selector de tema (claro / oscuro / auto) | Fuera: el panel es oscuro |
+| Selector de tema (claro / oscuro / auto) | Fuera: el panel es oscuro. *Enmendado 2026-10-29: el selector entró (ver cabecera)* |
 
 ### 3.3 Lo que hay que conservar: inventario de pantallas
 
@@ -169,7 +178,7 @@ embebidos en constantes de Python. No hay `StaticFiles`, ni build, ni `package.j
 | P13 | Cero `dangerouslySetInnerHTML`. Los logs y transcripciones se pintan como texto | React escapa por defecto; el panel enseña datos de terceros (§2) |
 | P14 | El build de la SPA entra en la imagen `web` con una etapa de Node; en local, `make panel-dev` levanta Vite con proxy a `web` | El despliegue no gana un servicio: el `web` sigue siendo el único proceso |
 | P15 | Tests de UI con **Vitest + Testing Library**; los tests de HTML de `tests/test_web_ui.py` se retiran al retirar el SSR | Los tests actuales afirman sobre cadenas HTML; con la SPA, el contrato que se prueba es la API más el componente |
-| P16 | **Tema oscuro fijo**, sin selector `light`/`auto` | Es una herramienta de operación que se mira de noche; un selector es una opción que nadie cambia y una combinación visual que habría que probar |
+| P16 | **Tema oscuro fijo**, sin selector `light`/`auto`. *Enmendado 2026-10-29: hay selector y el tema por defecto es claro (ver cabecera)* | Es una herramienta de operación que se mira de noche; un selector es una opción que nadie cambia y una combinación visual que habría que probar |
 
 ### 4.1 Riesgo de la plantilla: el arnés de CoreUI no es el del panel
 
@@ -182,7 +191,7 @@ adoptarla, no después:
 | `base: './'` | `base: '/'` |
 | `eslint` + `prettier` con su configuración | Se alinea con el repo; no se añade un segundo estilo |
 | Demo de componentes, gráficos y assets (808 KB) | Se borra en el primer bloque de trabajo |
-| `useColorModes` y su selector | Fuera: tema oscuro fijo (P16) |
+| `useColorModes` y su selector | Fuera: tema oscuro fijo (P16). *Enmendado 2026-10-29: selector propio en `useColorMode`* |
 | Textos en inglés | Todo en español, como el resto del panel |
 
 ## 5. Diseño o contrato
