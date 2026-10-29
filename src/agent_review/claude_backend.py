@@ -88,6 +88,16 @@ def resolve_backend(choice: str | None, settings: Settings) -> ResolvedBackend:
     return ResolvedBackend("anthropic", "")
 
 
+def current_backend(settings: Settings, *, path: Path | None = None) -> ResolvedBackend:
+    """Destino de la siguiente pasada: el fichero junto a la sesión, o el entorno.
+
+    El panel y el runner lo resuelven aquí para no enseñar un destino y usar otro.
+    """
+    if path is None:
+        path = backend_path(Path(settings.claude_session_path))
+    return resolve_backend(read_choice(path), settings)
+
+
 def load_gateway_token(settings: Settings) -> str:
     """El valor explícito gana. Si no hay, el fichero que crea el arranque."""
     explicit = settings.claude_gateway_token.strip()

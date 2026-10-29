@@ -64,7 +64,8 @@ function sessionPost(fetchMock: ReturnType<typeof vi.fn>): [string, RequestInit]
 
 async function saveToken(token = 'sk-ant-oauth') {
   const user = userEvent.setup()
-  await user.type(screen.getByLabelText('Token'), token)
+  // El formulario sale cuando `/api/claude/backend` dice que hace falta sesión.
+  await user.type(await screen.findByLabelText('Token'), token)
   await user.click(screen.getByRole('button', { name: 'Guardar' }))
   return user
 }
@@ -78,8 +79,9 @@ describe('sesión de Claude', () => {
     vi.unstubAllGlobals()
   })
 
-  it('tiene un solo campo y el botón está deshabilitado mientras está vacío', () => {
+  it('tiene un solo campo y el botón está deshabilitado mientras está vacío', async () => {
     renderPage()
+    await screen.findByLabelText('Token')
 
     // `type="password"` no expone el rol `textbox`, así que el único campo se
     // busca por etiqueta y se comprueba que no hay un segundo `input` en la tarjeta.

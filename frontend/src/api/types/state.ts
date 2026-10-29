@@ -68,7 +68,13 @@ export interface BudgetItem {
  * cupo. `reason` dice cuál, y es lo único que distingue esperar un token de
  * haber agotado el cupo.
  */
-export type ParkReason = 'session' | 'quota' | 'quota-wait' | 'ceiling'
+export type ParkReason =
+  | 'session'
+  | 'quota'
+  | 'quota-wait'
+  | 'ceiling'
+  | 'gateway'
+  | 'cluster-wait'
 
 export interface ParkedItem {
   review_key: string

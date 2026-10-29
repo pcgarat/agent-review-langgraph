@@ -128,7 +128,7 @@ omitido hasta que exista su baseline.
 | Adaptadores | `test_twg_vcs`, `test_github_vcs`, `test_openai_llm`, `test_llm_reviewer`, `test_tooling_reviewer`, `test_tooling_source`, `test_text_utils` |
 | Canal (chat) | `test_chat_outbox` (contrato `ChatNotice`, incluido `withdraw`, y outbox), `test_teams` (tarjeta, estado por usuario, `build_decision`), `test_claude_card` (lote de publicación y la tarjeta de `llm` sin `pause_kind`), `test_teams_threads` (hilo por PR y borrado de la tarjeta), `test_teams_bot_service` (consumo de la outbox, `withdraw`, pausa ya sellada y barrido), `test_teams_bot_settings` (secretos y Compose), `test_teams_bot_ingress` (acciones de tarjeta → encolado y borrado del mensaje; wiring del SDK con fakes), `test_hitl_e2e` (ciclo pausa → tarjeta → reanudación → aviso, bot caído, pausa vencida, CLI) |
 | Modelos | `test_models_config` (contrato del YAML), `test_models_registry` (bindings y `probe`) |
-| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio, paridad del argv con Anthropic y 429 del clúster), `test_claude_backend` (elección del panel y destino de cada `POST /run`), `test_claude_parking` (parking, aviso único, login del operador, cupo de Anthropic y reencolado del 429), `test_compose` (egress de `nan-gateway`: el sidecar tiene `NET_ADMIN`, LiteLLM no) |
+| Perfil y worker | `test_profile`, `test_worker`, `test_claude_runner` (puerto del CLI, entorno del subproceso, una llamada por `head_sha`, aislamiento del servicio, paridad del argv con Anthropic y 429 del clúster), `test_claude_backend` (elección del panel y destino de cada `POST /run`), `test_claude_parking` (parking, aviso único, login del operador, cupo de Anthropic, espera del 429 del clúster y gateway caído), `test_compose` (egress de `nan-gateway`: el sidecar tiene `NET_ADMIN`, LiteLLM no) |
 | Real (opt-in) | `test_live_twg` (`-m live`, `REVIEWS_LIVE_PR`), `test_live_models` (`-m live`, `LLM_API_KEY`; comprueba las capacidades declaradas) |
 | Operación | `test_status` (`make status`: puertos, credencial aceptada o rechazada, módulo apagado sin prueba; sin red ni Docker), `test_ensure_dev_secrets` (rellena una vez los secretos locales y no inventa `CLAUDE_GIT_TOKEN`) |
 | Evaluación (gold set) | `test_eval_harness` (matcher, métricas, dominancia, desglose de gasto y omisiones, replay), `test_eval_pr_3` (regresión del caso PR #3, *replay* sin herramientas y, cuando exista su baseline, con herramientas), `test_live_eval` (`-m live`, `LLM_API_KEY`; corrida real comparativa) |
@@ -216,10 +216,17 @@ sale una vez (`claim_notice`). `POST /api/claude/session`
 que agota el tiempo de pared parkea con `ceiling`; si el tope de turnos está activo y se agota, también. El login no lo suelta.
 Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
 `quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
-artefacto ya válido no espera.
+artefacto ya válido no espera. Con el clúster
+([ADR-0038](adr/0038-el-cluster-se-espera.md)) la sonda es
+`HttpClaudeRunner.blocker()`: devuelve `None`, `session` o `gateway`, y
+`claude_blocker` aparca con ese motivo. `ClaudeClusterLimited` (el `503` del
+runner) aparca como `cluster-wait` y pone `reviews:claude:notice:cluster-wait`;
+mientras siga, los jobs siguientes esperan igual que con `quota-wait`.
 
 El aviso de parqueo que se manda a Teams **caduca siempre**: 900 s para `quota`
-(el enfriamiento) y 24 h para `session` y `ceiling`. `ceiling` no se desbloquea
+y 300 s para `cluster-wait` (los enfriamientos), y 24 h para `session`,
+`gateway` y `ceiling`. El de `gateway` se borra además en cuanto el gateway
+responde. `ceiling` no se desbloquea
 solo, así que sin fecha el aviso no volvería a salir nunca, ni tras subir el
 techo y volver a chocarlo. Caducado, el siguiente parqueo vuelve a avisar.
 

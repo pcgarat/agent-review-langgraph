@@ -1,6 +1,6 @@
 # ADR-0037 — La skill corre contra un backend que no es Anthropic
 
-- **Estado:** Aceptado
+- **Estado:** Aceptado (punto 5 sustituido por [ADR-0038](0038-el-cluster-se-espera.md))
 - **Fecha:** 2026-10-29
 
 Amplía [ADR-0033](0033-skill-fuera-del-nucleo.md): la jaula deja de ser de un
@@ -63,6 +63,17 @@ No es el sitio donde se juzga si la skill aguanta otro modelo.
   reintenta. Para el worker da igual que haya caído LiteLLM o el CLI.
 - El *gold set* no gana una tercera configuración. La calidad de este
   destino se juzga leyendo el artefacto del spike.
+
+### Riesgos aceptados (matiz del 2026-10-29)
+
+- **DNS.** El egress acepta DNS hacia el resolver de Docker (`127.0.0.11`,
+  en loopback), que reenvía cualquier nombre. Un LiteLLM comprometido podría
+  sacar `NAN_API_KEY` codificada en consultas DNS. No se cierra: el stack corre
+  en un entorno privado y controlado, y la defensa es la imagen pineada.
+- **`master_key` en el hijo.** Con el clúster, el hijo del CLI recibe el
+  `master_key` de LiteLLM, no una clave virtual con alcance. Las claves
+  virtuales exigen darle a LiteLLM una base de datos. Sin ella, ese key solo
+  sirve para lo que el hijo ya hace: llamar a los dos modelos del clúster.
 
 ## Alternativas descartadas
 

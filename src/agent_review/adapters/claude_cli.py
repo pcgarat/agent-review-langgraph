@@ -17,6 +17,7 @@ from pathlib import Path
 
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
 )
@@ -163,7 +164,7 @@ class SubprocessClaudeRunner:
         cwd: str | Path | None = None,
         redact: Sequence[str] = (),
         user: str | None = None,
-        quota_is_crash: bool = False,
+        quota_is_cluster: bool = False,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("el tiempo de pared tiene que ser positivo")
@@ -178,8 +179,8 @@ class SubprocessClaudeRunner:
         self._cwd = None if cwd is None else str(cwd)
         self._redact = tuple(redact)
         self._user = user
-        # Con el clúster un 429 no es el cupo de la suscripción: se reencola.
-        self._quota_is_crash = quota_is_crash
+        # Con el clúster un 429 no es el cupo de la suscripción: se espera.
+        self._quota_is_cluster = quota_is_cluster
 
     def run(
         self,
@@ -233,8 +234,8 @@ class SubprocessClaudeRunner:
             # Con desenlace estructurado se cree al CLI; sin él (caída antes del
             # evento `result`) queda el texto de stderr para reconocer el cupo.
             if not captured.outcome and _is_quota(detail):
-                if self._quota_is_crash:
-                    raise ClaudeProcessCrashed("el cluster limito la llamada")
+                if self._quota_is_cluster:
+                    raise ClaudeClusterLimited("el cluster limito la llamada")
                 raise ClaudeQuotaExceeded("cupo de claude agotado")
             raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {code}")
         return out

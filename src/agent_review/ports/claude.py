@@ -29,6 +29,14 @@ class ClaudeQuotaExceeded(PermanentError):
     """Cupo de la suscripción. No se reintenta: otra pasada volvería a gastarlo."""
 
 
+class ClaudeClusterLimited(PermanentError):
+    """El clúster siguió en 429 tras los reintentos del gateway.
+
+    No es el cupo de Anthropic ni un fallo del job: el worker lo aparca un rato
+    y lo vuelve a lanzar, sin gastar intentos ni acabar en la DLQ.
+    """
+
+
 class ClaudeInvalidOutput(TransientError):
     """El stdout no es una lista de hallazgos. Lo decide el caller, no el CLI."""
 

@@ -7,6 +7,17 @@ import { ClaudeTokenForm } from './claude/ClaudeTokenForm'
 import { useClaudeBackend } from './claude/useClaudeBackend'
 import './claude/claude.scss'
 
+/** El token solo hace falta si el destino es Anthropic. */
+function SessionForm() {
+  const query = useClaudeBackend()
+  // Sin respuesta todavía no se pinta nada: con un modelo del clúster el
+  // formulario aparecería y desaparecería. Si la lectura falla, se enseña.
+  if (query.isPending) return null
+  const needsSession = query.data?.needs_session ?? true
+  if (!needsSession) return null
+  return <ClaudeTokenForm />
+}
+
 /**
  * Sesión de Claude (029, S8).
  *
@@ -14,13 +25,6 @@ import './claude/claude.scss'
  * `403`, pero la ruta sigue siendo accesible por URL: si alguien llega, se le
  * dice por qué no hay formulario en vez de enseñarle un campo que no puede usar.
  */
-function SessionForm() {
-  const query = useClaudeBackend()
-  const needsSession = query.data?.needs_session ?? true
-  if (!needsSession) return null
-  return <ClaudeTokenForm />
-}
-
 export function ClaudePage() {
   const { isOperador } = useSession()
 

@@ -44,6 +44,7 @@ from agent_review.domain.models import ReviewRequest
 from agent_review.errors import PermanentError, TransientError
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeInvalidOutput,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
@@ -318,15 +319,15 @@ def _sale_por_rate_limit(tmp_path: Path) -> Path:
 
 
 def test_un_rate_limit_del_cluster_no_es_cupo(tmp_path: Path) -> None:
-    """Agotados los reintentos del gateway, el 429 se reencola. No parkea."""
+    """Agotados los reintentos del gateway, el 429 espera el enfriamiento (ADR-0038)."""
     script = _sale_por_rate_limit(tmp_path)
-    with pytest.raises(ClaudeProcessCrashed, match="cluster"):
+    with pytest.raises(ClaudeClusterLimited, match="cluster"):
         SubprocessClaudeRunner(
             argv_prefix=[sys.executable, str(script)],
             max_turns=1,
             timeout_s=5,
             environ={"PATH": "/usr/bin"},
-            quota_is_crash=True,
+            quota_is_cluster=True,
         ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
 
 

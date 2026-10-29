@@ -10,6 +10,7 @@ import httpx
 
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
     ClaudeTimeout,
@@ -74,6 +75,8 @@ class HttpClaudeRunner:
                 raise ClaudeProcessCrashed("el servicio claude-runner no esta alcanzable") from exc
             if response.status_code == 429:
                 raise ClaudeQuotaExceeded(_with_detail("cupo de claude agotado", response))
+            if response.status_code == 503:
+                raise ClaudeClusterLimited(_with_detail("el cluster limito la llamada", response))
             if response.status_code == 504:
                 raise ClaudeCeiling(_with_detail("claude llego al techo", response))
             if response.status_code == 408:
@@ -96,6 +99,14 @@ class HttpClaudeRunner:
 
     def active(self) -> bool:
         """`GET /session`: sí o no. Un fallo de red cuenta como no."""
+        return self.blocker() is None
+
+    def blocker(self) -> str | None:
+        """`GET /session`: `None` si se puede correr, o el motivo para aparcar.
+
+        Un fallo de red o una respuesta sin `reason` cuenta como `session`, que
+        es lo que el worker hacía antes de que el runner dijera el motivo.
+        """
         headers: dict[str, str] = {}
         if self._token and not is_missing(self._token):
             headers["Authorization"] = f"Bearer {self._token}"
@@ -105,14 +116,18 @@ class HttpClaudeRunner:
             try:
                 response = client.get(f"{self._url}/session", headers=headers, timeout=5)
             except httpx.HTTPError:
-                return False
+                return "session"
             if response.status_code != 200:
-                return False
+                return "session"
             try:
                 payload = response.json()
             except ValueError:
-                return False
-            return bool(payload.get("active")) if isinstance(payload, dict) else False
+                return "session"
+            if not isinstance(payload, dict):
+                return "session"
+            if payload.get("active"):
+                return None
+            return "gateway" if payload.get("reason") == "gateway" else "session"
         finally:
             if own:
                 client.close()

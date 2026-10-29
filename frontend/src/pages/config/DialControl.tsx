@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { CButton, CFormInput, CFormSelect, CFormSwitch } from '@coreui/react'
 
 import { dialKind, dialSpec } from './catalog'
@@ -32,7 +32,10 @@ export function DialControl({
   const spec = dialSpec(name)
   const bounds = spec?.bounds
   const canDisable = spec?.canDisable === true && kind === 'number'
-  const off = canDisable && value === '0'
+  // Mientras se escribe, un «0» no apaga el tope: desmontaría el campo con el
+  // foco dentro. Al salir del campo, 0 sí significa apagado.
+  const [editing, setEditing] = useState(false)
+  const off = canDisable && value === '0' && !editing
   const remembered = useRef(positiveSeed(off ? initial : value))
   const pristine = isPristine(kind, value, initial)
   const controlId = `dial-${name}`
@@ -113,6 +116,8 @@ export function DialControl({
                 value={typeof value === 'string' ? value : ''}
                 disabled={locked || disabled}
                 aria-describedby={helpId}
+                onFocus={() => setEditing(true)}
+                onBlur={() => setEditing(false)}
                 onChange={(event) => onChange(event.target.value)}
               />
             )}

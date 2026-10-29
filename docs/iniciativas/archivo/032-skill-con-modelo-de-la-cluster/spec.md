@@ -45,6 +45,9 @@ del mismo CLI.
    que cambia es a qué dominio apunta cuando el destino es el gateway.
 5. **Sin sesión OAuth no hay parking por `session`.** Con `gateway`,
    `active()` responde por el health del gateway.
+   *Enmienda 2026-10-29 ([ADR-0038](../../../adr/0038-el-cluster-se-espera.md)):*
+   con el gateway caído el job se aparca como `gateway`, con su propio aviso,
+   y vuelve solo cuando el gateway responde.
 6. **LiteLLM va pineado a una versión conocida.** 1.82.7 y 1.82.8 están
    descartadas: se publicaron con código de exfiltración de credenciales
    (lo advierte la propia documentación del clúster).
@@ -59,6 +62,10 @@ del mismo CLI.
    veces dentro de la misma llamada. Si sigue, el runner lo devuelve como
    fallo transitorio y el worker reencola el job. El parking `quota` queda
    solo para el desenlace de cupo de Claude Code, en el destino Anthropic.
+   *Enmienda 2026-10-29 ([ADR-0038](../../../adr/0038-el-cluster-se-espera.md)):*
+   reencolar sin espera llevaba la review a la DLQ en tres pasadas. Ahora el
+   runner responde `503` y el worker aparca como `cluster-wait` durante 300 s;
+   no gasta intentos.
 10. **La página `/claude` elige el modelo, no el motor.** Tres opciones:
     `claude` (sesión de Anthropic), `deepseek-v4-flash` y `glm5.3-flash`.
     Las dos últimas son el gateway. `llm` no aparece: `REVIEW_ENGINE` sigue

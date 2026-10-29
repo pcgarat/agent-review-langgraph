@@ -28,8 +28,8 @@ from agent_review.claude_activity import (
 from agent_review.claude_backend import (
     PANEL_CHOICES,
     backend_path,
+    current_backend,
     read_choice,
-    resolve_backend,
     write_choice,
 )
 from agent_review.claude_session import write_session
@@ -261,6 +261,33 @@ class ClaudeLogin:
         logger.info("%d reviews paradas por sesion vuelven a la cola", len(released))
         return len(released)
 
+    def release_for_cluster(self) -> int:
+        """Al pasar al clúster ni la sesión ni el cupo de Anthropic paran nada.
+
+        Suelta lo parado por sesión y la espera de cupo (`quota-wait`), y borra
+        el enfriamiento. El job que agotó el cupo (`quota`) se queda: se lanzó
+        contra Anthropic y relanzarlo lo decide el operador.
+        """
+        released = self.release_waiting_session()
+        self._queue.clear_notice("quota")
+        waiting = self._queue.release_parked(reason="quota-wait")
+        logger.info("%d reviews en espera de cupo vuelven a la cola", len(waiting))
+        return released + len(waiting)
+
+    def release_for_anthropic(self) -> int:
+        """Al volver a Anthropic, lo que esperaba al clúster deja de esperar.
+
+        Suelta lo parado por el gateway caído y por el enfriamiento del clúster,
+        y borra ese enfriamiento (ADR-0038). Sin token, el worker los volverá a
+        aparcar como `session`.
+        """
+        self._queue.clear_notice("cluster-wait")
+        self._queue.clear_notice("gateway")
+        released = self._queue.release_parked(reason="gateway")
+        released += self._queue.release_parked(reason="cluster-wait")
+        logger.info("%d reviews que esperaban al cluster vuelven a la cola", len(released))
+        return len(released)
+
 
 def build_claude_login(settings: Settings) -> ClaudeLogin:
     return ClaudeLogin(
@@ -288,7 +315,7 @@ def _backend_file(request: Request) -> Path:
 def _backend_payload(request: Request) -> dict[str, object]:
     path = _backend_file(request)
     choice = read_choice(path)
-    backend = resolve_backend(choice, _settings())
+    backend = current_backend(_settings(), path=path)
     effective = "claude" if backend.kind == "anthropic" else backend.model
     return {
         "choice": choice,
@@ -325,7 +352,9 @@ async def save_claude_backend(
         ) from exc
     payload = _backend_payload(request)
     if payload["needs_session"] is False:
-        login.release_waiting_session()
+        login.release_for_cluster()
+    else:
+        login.release_for_anthropic()
     return payload
 
 

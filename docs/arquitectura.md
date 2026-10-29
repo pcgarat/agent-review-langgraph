@@ -244,7 +244,12 @@ los jobs siguientes salen a la misma lista con `reason` `quota-wait` y vuelven
 a la cola cuando el aviso caduca; un artefacto ya válido de ese `head_sha` no
 espera. El login del operador suelta solo lo parqueado por la sesión. El
 barrido de cola vacía vuelve a mirar la sesión y suelta `quota-wait` si el
-aviso ya no está.
+aviso ya no está. Con un modelo del clúster
+([ADR-0038](adr/0038-el-cluster-se-espera.md)), `GET /session` dice también
+el motivo: con el gateway caído el job sale con `reason` `gateway` y vuelve en
+cuanto el gateway responde. Un 429 que el gateway no absorbe llega como `503`
+(`ClaudeClusterLimited`): ese job y los siguientes esperan como
+`cluster-wait` 300 s, sin gastar intentos ni ir a la DLQ.
 
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
@@ -421,7 +426,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
 | Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
 | Redis | `reviews:meta:<review_key>` | **Metadatos del PR**: `pr_id` y `pr_title`. El worker los guarda al iniciar cada review; el panel los lee para mostrar `#ID - título` en lugar de la `review_key` técnica | 30 días |
-| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait` o `ceiling` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/archivo/030-panel-ensena-los-aparcados/spec.md)) | — |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait`, `ceiling`, `gateway` o `cluster-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` y `cluster-wait` vuelven al caducar su aviso; `gateway`, cuando el gateway responde; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/archivo/030-panel-ensena-los-aparcados/spec.md)) | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
 | Redis | `reviews:claude:notice:session`, `reviews:claude:notice:ceiling` | Aviso único de cada motivo. `session` además se borra al iniciar sesión. El de `ceiling` no se desbloquea solo: su fecha es lo que permite volver a avisar al chocar de nuevo el techo | 86400 s |
@@ -507,8 +512,9 @@ fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
 `/claude` elige `claude`, `deepseek-v4-flash` o `glm5.3-flash`, y
 `claude-runner` lo aplica en cada `POST /run`. El gateway del perfil
 `claude` traduce los dos modelos del clúster; su egress solo llega a
-`api.nan.builders` y un 429, agotados tres reintentos, se reencola en vez de
-parquearse como cupo
+`api.nan.builders` y un 429, agotados tres reintentos, espera como
+`cluster-wait` en vez de parquearse como cupo
+([ADR-0038](adr/0038-el-cluster-se-espera.md))
 ([ADR-0037](adr/0037-la-skill-con-un-backend-ajeno.md)). El *gold
 set* no entra: sigue midiendo solo el motor `llm`.
 

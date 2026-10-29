@@ -16,7 +16,9 @@ import {
 export function ClaudeBackendForm() {
   const query = useClaudeBackend()
   const save = useSaveClaudeBackend()
-  const selected = (save.data ?? query.data)?.effective ?? 'claude'
+  // Solo la consulta: `onSuccess` ya la actualiza y un refetch trae lo que
+  // haya guardado otro operador.
+  const selected = query.data?.effective ?? 'claude'
 
   const choose = (choice: ClaudeBackendId) => {
     if (choice === selected || save.isPending) return

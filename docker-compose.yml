@@ -191,11 +191,11 @@ services:
       - claude_checkout:/var/claude-checkout
       - claude_session:/var/claude-session
       - gateway_token:/run/gateway:ro
+    # Sin esperar al gateway: con Anthropic no hace falta, y con el clúster
+    # GET /session ya mira su health antes de cada review.
     depends_on:
       nan-gateway-token:
         condition: service_completed_successfully
-      nan-gateway:
-        condition: service_healthy
     # bwrap necesita un user namespace anidado. El seccomp y el AppArmor por
     # defecto de Docker lo impiden, y con uno solo sigue fallando. La jaula
     # de Bash es el sandbox del CLI (ADR-0033), no este perfil. Un /proc
@@ -383,6 +383,10 @@ services:
       # Misma ruta que claude-runner. El token no es una variable de entorno.
       CLAUDE_SESSION_PATH: /var/claude-session/session.json
       CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
+      # Mismo destino por defecto que claude-runner: sin elección guardada, el
+      # panel enseña el modelo que de verdad corre.
+      CLAUDE_UPSTREAM: ${CLAUDE_UPSTREAM:-anthropic}
+      CLAUDE_GATEWAY_MODEL: ${CLAUDE_GATEWAY_MODEL:-deepseek-v4-flash}
     volumes:
       - claude_session:/var/claude-session
       # Solo lectura: el techo de autonomia de un override publicado se valida

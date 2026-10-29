@@ -1,5 +1,6 @@
 # Pasarela Anthropic → OpenAI del clúster (032). La clave de NaN no está aquí:
-# el proceso la lee de NAN_API_KEY. El master_key es CLAUDE_GATEWAY_TOKEN.
+# el proceso la lee de NAN_API_KEY. El master_key es LITELLM_MASTER_KEY, que el
+# entrypoint lee de /run/gateway/token: el mismo fichero que usa claude-runner.
 model_list:
   - model_name: deepseek-v4-flash
     litellm_params:
