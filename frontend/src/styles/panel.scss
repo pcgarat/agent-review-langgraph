@@ -8,8 +8,6 @@
   --panel-rail: 1px solid var(--cui-border-color);
 }
 
-// El panel se mira de noche y en una pantalla de operación: el tema oscuro es
-// fijo y se declara en `index.html`, sin selector (029, P16).
 body {
   background-color: var(--cui-body-bg);
 }
@@ -38,19 +36,30 @@ body {
 // --- Login -------------------------------------------------------------------
 
 .login-shell {
+  background: var(--cui-body-bg);
+}
+
+[data-coreui-theme='dark'] .login-shell {
   background:
     radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 14%), transparent 60%),
     var(--cui-body-bg);
 }
 
-// La tarjeta de login se apoya sobre el mismo fondo que el body: sin una
-// superficie distinta y una sombra, el borde de 1px es todo lo que la separa y a
-// pantalla completa se lee como un bloque de texto suelto.
+[data-coreui-theme='light'] .login-shell {
+  background:
+    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 8%), transparent 60%),
+    var(--cui-body-bg);
+}
+
 .login-card {
   width: min(26rem, calc(100vw - 2rem));
-  --cui-card-bg: #272d3b;
-  background-color: #272d3b;
-  border-color: #39415a;
+  --cui-card-bg: var(--cui-tertiary-bg);
+  background-color: var(--cui-tertiary-bg);
+  border-color: var(--cui-border-color);
+  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 25%);
+}
+
+[data-coreui-theme='dark'] .login-card {
   box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 45%);
 }
 
