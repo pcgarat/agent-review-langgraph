@@ -51,6 +51,8 @@ class VcsContextReader:
         self._repo = repo
         self._head = head_sha
         self._base = base_sha
+        # Se resuelve en la primera lectura de `base`. `None`: aún no se pidió.
+        self._merge_base: str | None = None
         self._denylist = denylist
         self._max_matches = max_grep_matches
         self._diff_files = changed_files(diff)
@@ -197,7 +199,24 @@ class VcsContextReader:
             self.read_file(finding.file)
 
     def _ref_sha(self, ref: Ref) -> str:
-        return self._base if ref == "base" else self._head
+        if ref != "base":
+            return self._head
+        if self._merge_base is None:
+            self._merge_base = self._resolve_merge_base()
+        return self._merge_base
+
+    def _resolve_merge_base(self) -> str:
+        """El lado `base` es la bifurcación. Sin merge-base, no se sirve."""
+        if not self._base:
+            return ""
+        try:
+            found = self._vcs.merge_base(self._repo, head_sha=self._head, base_sha=self._base)
+        except Exception as exc:  # noqa: BLE001 - el lector nunca tumba la review (W8)
+            logger.warning("lector VCS: sin merge-base de %s (%s)", self._base[:12], exc)
+            return ""
+        if not found:
+            logger.info("lector VCS: el host no da merge-base; ref=base no se sirve")
+        return found or ""
 
 
 def _normalize_dir(path: str | None) -> str:

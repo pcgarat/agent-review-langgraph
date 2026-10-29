@@ -58,9 +58,15 @@ DIFF = (
 
 
 class FakeVcs:
-    """`VcsPort.get_file` sobre un mapa `(path, sha) -> contenido`."""
+    """`VcsPort.get_file` sobre un mapa `(path, sha) -> contenido`.
 
-    def __init__(self, files: dict[tuple[str, str], str] | None = None) -> None:
+    `merge_base` es lo que el host devuelve como bifurcación; `None`, que no la da.
+    """
+
+    def __init__(
+        self, files: dict[tuple[str, str], str] | None = None, *, merge_base: str | None = BASE
+    ) -> None:
+        self._merge_base = merge_base
         self.files = (
             files
             if files is not None
@@ -71,6 +77,10 @@ class FakeVcs:
             }
         )
         self.calls: list[tuple[str, str, str]] = []
+
+    def merge_base(self, repo: str, *, head_sha: str, base_sha: str) -> str | None:
+        del repo, head_sha, base_sha
+        return self._merge_base
 
     def get_file(self, repo: str, path: str, *, ref: str) -> str:
         self.calls.append((repo, path, ref))

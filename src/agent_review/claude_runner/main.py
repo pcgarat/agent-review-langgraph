@@ -125,7 +125,9 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                 max_turns, timeout_s = resolve_ceilings(
                     current, max_turns=body.max_turns, timeout_s=body.timeout_s
                 )
-                prepare_checkout(
+                # La skill diffea contra el merge-base, no contra la punta de
+                # la rama destino que manda el worker.
+                merge_base = prepare_checkout(
                     directory,
                     repo=body.repo,
                     head_sha=body.head_sha,
@@ -189,7 +191,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                         repo=body.repo,
                         pr_id=body.pr_id,
                         head_sha=body.head_sha,
-                        base_sha=body.base_sha,
+                        base_sha=merge_base,
                         on_line=_line,
                     )
                 finally:

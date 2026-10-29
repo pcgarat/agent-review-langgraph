@@ -4,6 +4,7 @@
 - **Fecha:** 2026-10-24
 - **Corrección:** 2026-10-24 — el contenedor de `claude-runner` no lleva el seccomp ni el AppArmor por defecto. Esos perfiles impiden el user namespace que `bwrap` necesita, y sin él cada `Bash` falla. La jaula sigue siendo el sandbox del CLI.
 - **Corrección:** 2026-10-24 — dentro de Docker, `bwrap` tampoco puede montar un `/proc` nuevo. El `settings.json` activa `enableWeakerNestedSandbox`: la jaula reutiliza el `/proc` del contenedor.
+- **Corrección:** 2026-10-29 — el `base:` del prompt no es el `base_sha` del PR (la punta viva de destino) sino el merge-base de `review` y `base`, que el checkout resuelve profundizando la historia. Con dos commits `--depth 1` la skill no encontraba ancestro común y diffeaba contra la punta: la review incluía, invertido, lo que había entrado en destino tras la bifurcación. Sin merge-base, el checkout falla.
 - **Corrección:** 2026-10-24 — 200 turnos y 3600 s son el valor inicial. El panel puede publicar otros, entre 1 y 2000 turnos y entre 1 y 21600 s. El worker los envía en `POST /run`. Sin override, el runner sigue con su entorno.
 - **Corrección:** 2026-10-29 — el techo de turnos se lee del `subtype` del evento `result` (`error_max_turns`), no de una mención en el texto. El informe de una review de este repo cita ese marcador y el job se parkeaba como `ceiling` sin haberlo agotado.
 - **Corrección:** 2026-10-29 — con `CLAUDE_UPSTREAM=gateway` el dominio de la jaula deja de ser solo `api.anthropic.com`. Lo decide [ADR-0037](0037-la-skill-con-un-backend-ajeno.md). El valor por defecto no cambia.

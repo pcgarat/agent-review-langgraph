@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from agent_review.adapters.tooling_source import safe_segment
 from agent_review.errors import TransientError
+from agent_review.git_merge_base import DEEPEN_STEPS, DeepenFailed, deepen_to_merge_base
 from agent_review.sandbox_runner.read_workspace import BARE_CLONE_PREFIX
 
 
@@ -45,8 +46,13 @@ def prepare_checkout(
     timeout_s: float = 120,
     remote_url: str | None = None,
     provider: str = "twg",
-) -> None:
+) -> str:
     """Deja `review` en `head_sha`, `base` en `base_sha` y quita el remoto.
+
+    Devuelve el merge-base de `review` y `base`: la base del diff del PR.
+    `base_sha` es la punta viva de la rama destino; diffear contra ella mete
+    en la review lo que entró en destino después de la bifurcación. Si el
+    ancestro común no aparece al profundizar, el checkout falla cerrado.
 
     Sin `base_sha` no se llega a `git`: una review del árbol entero no es
     una review del PR. El token solo viaja en el `remote add` de este
@@ -73,6 +79,7 @@ def prepare_checkout(
         _require_no_remote(directory, git_bin=git_bin, timeout_s=timeout_s)
         raise CheckoutError(_redact(added.stderr, git_token) or "no se pudo añadir el remoto")
     fetch_error: CheckoutError | None = None
+    merge_base = ""
     try:
         _git(
             directory,
@@ -101,6 +108,14 @@ def prepare_checkout(
             git_token=git_token,
             what="la base",
         )
+        merge_base = _resolve_merge_base(
+            directory,
+            head_sha=head_sha,
+            base_sha=base_sha,
+            git_bin=git_bin,
+            timeout_s=timeout_s,
+            git_token=git_token,
+        )
         checked = _git(
             directory,
             ["-c", "core.symlinks=false", "checkout", "-q", "review"],
@@ -117,6 +132,34 @@ def prepare_checkout(
         raise CheckoutError("no se pudo quitar el remoto; el CLI no arranca")
     if fetch_error is not None:
         raise fetch_error
+    return merge_base
+
+
+def _resolve_merge_base(
+    directory: Path,
+    *,
+    head_sha: str,
+    base_sha: str,
+    git_bin: str,
+    timeout_s: float,
+    git_token: str,
+) -> str:
+    """Merge-base de `head_sha` y `base_sha`. Sin él, el CLI no arranca."""
+
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return _git(directory, args, git_bin, timeout_s=timeout_s)
+
+    try:
+        merge_base = deepen_to_merge_base(run, head_sha=head_sha, base_sha=base_sha)
+    except DeepenFailed as exc:
+        detail = _redact(str(exc), git_token)
+        raise CheckoutError(f"git fetch --deepen fallo: {detail}".rstrip(": ").rstrip()) from None
+    if merge_base is None:
+        raise CheckoutError(
+            f"sin ancestro común entre {head_sha[:12]} y {base_sha[:12]} "
+            f"tras {sum(DEEPEN_STEPS)} commits; el CLI no arranca"
+        )
+    return merge_base
 
 
 def _detach_head(

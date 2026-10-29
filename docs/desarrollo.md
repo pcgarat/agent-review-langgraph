@@ -172,7 +172,7 @@ servicio `claude-runner`, no en el worker. La etapa `claude-runner` del
 `Dockerfile` instala `claude-code`, `bubblewrap` y `socat`, y copia la skill
 `ce-code-review`. El ejecutable es `claude`. Sin `claude`, `bwrap` o `socat` el
 proceso no arranca. El subproceso recibe `DISABLE_UPDATES=1` y
-`--setting-sources user`. El argv pide `/ce-code-review mode:agent base:<sha>`,
+`--setting-sources user`. El argv pide `/ce-code-review mode:agent base:<merge-base>`,
 permite `Read`, `Grep`, `Glob` y `Bash`, deniega edición, `WebFetch` y
 `WebSearch`, y usa `--permission-mode dontAsk`. Los techos por defecto son
 `CLAUDE_MAX_TURNS` 0 (apagado) y `CLAUDE_TIMEOUT_S` 3600. El panel los publica
@@ -197,7 +197,12 @@ a ese usuario y el hijo recibe `HOME` y `TMPDIR` propios dentro de ella; el
 checkout lo sigue escribiendo `git` como root. Si el proceso es root y el usuario
 no existe, el runner no arranca. El checkout (`claude_runner/checkout.py`) deja `review` en
 el `head_sha` y `base` en el `base_sha`, quita los remotos y no arranca el CLI
-sin base o si el fetch de la base falla. Un reintento sobre el mismo árbol
+sin base o si el fetch de la base falla. `base_sha` es la punta viva de la rama
+destino, no la bifurcación: los dos fetch son `--depth 1` y después se
+profundiza por pasos (`--deepen` 50, 200 y 1000) hasta que `git merge-base
+review base` resuelve. Ese merge-base es el `base:` que recibe la skill. Sin él,
+el diff contra la punta mete invertido lo que entró en destino tras la
+bifurcación. Si no aparece, el checkout falla cerrado. Un reintento sobre el mismo árbol
 suelta HEAD antes del fetch: Git no actualiza la rama que está checked out.
 `core.symlinks` queda en falso. Git
 corre con un entorno sin los tokens del proceso. La transcripción es el fichero
@@ -467,9 +472,18 @@ Hay tres adaptadores y todos pasan el mismo test de contrato:
    y el que usa el gold set (`fixtures/head`, `fixtures/base`).
 2. **`VcsContextReader`** (`adapters/context_vcs.py`): modo degradado por
    `VcsPort.get_file`. Sin árbol, `grep` y `list_dir` solo ven lo ya servido y los
-   ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`).
+   ficheros del diff; conviene sembrarlo (`seed`/`seed_findings`). El lado `base` lo
+   lee en `VcsPort.merge_base`: GitHub lo da con `compare`; `twg` no, y entonces
+   `ref="base"` no se sirve.
 3. **`WorkspaceContextReader`** (`adapters/context_workspace.py`): HTTP contra los
    `/workspaces` del `sandbox-runner`; es el único que hace `grep` del árbol completo.
+   El runner profundiza el clon hasta el merge-base (`git_merge_base.py`) y sirve
+   ahí `ref="base"`; si no aparece, no lo sirve.
+
+**El lado `base` es la bifurcación.** El `base_sha` del PR es la punta viva de la
+rama destino. Leer o diffear ahí hace pasar por «antes del PR» lo que entró en
+destino después de abrir la rama. Ningún lector sirve la punta como `base`: o el
+merge-base, o nada.
 
 Encima de cualquiera de ellos puede ir un **`CachingReader`**
 (`adapters/context_cache.py`, 023 C1): un decorador que comparte un caché **por

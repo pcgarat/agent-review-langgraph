@@ -134,8 +134,8 @@ claude: ensure-dev-secrets ## Levanta el stack con el runner de Claude (perfil `
 panel-claude: ensure-dev-secrets ## Panel y runner de Claude (perfiles `panel` y `claude`)
 	$(COMPOSE) --profile panel --profile claude up --build -d
 
-down: ## Para el stack
-	$(COMPOSE) down
+down: ## Para el stack entero, perfiles incluidos (`panel`, `claude`)
+	$(COMPOSE) --profile '*' down
 
 # `S=` elige el servicio: `make logs S=api`.
 logs: ## Sigue los logs (S=<servicio>, por defecto worker)
