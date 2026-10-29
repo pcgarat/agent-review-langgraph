@@ -116,6 +116,20 @@
   max-height: 16rem;
 }
 
+// El razonamiento crece por lotes, así que su scroll es el del contenedor y no el
+// de cada `<pre>`: dos barras anidadas son dos sitios donde mirar y el autoscroll
+// solo puede seguir a una. El `<pre>` de dentro no scrollea.
+.review-reasoning-scroll {
+  max-height: 22rem;
+  overflow: auto;
+  padding-right: 0.25rem;
+
+  .review-reasoning {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 // Un lote fallido se marca con el borde, no con color de fondo: el texto sigue
 // siendo legible y el aviso está en su pie.
 .reasoning {

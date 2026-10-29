@@ -228,6 +228,10 @@ describe('ficha de review', () => {
     console_?.emit('line', { seq: 1, stream: 'stdout', text: 'npm test' })
     expect(await screen.findByTestId('review-console')).toHaveTextContent('npm test')
 
+    // El check de seguir el final: sin él la consola no se mueve y el operador
+    // solo vería las primeras líneas de una verificación larga.
+    expect(screen.getByRole('checkbox', { name: 'Seguir el final' })).toBeChecked()
+
     // El servidor cierra al terminar la verificación: no es un fallo.
     console_?.emit('end', {})
     expect(await screen.findByText('Transmisión terminada')).toBeInTheDocument()

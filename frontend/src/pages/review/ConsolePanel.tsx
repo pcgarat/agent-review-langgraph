@@ -7,6 +7,8 @@ import {
   streamStatusText,
   useServerStream,
 } from './streams'
+import { FollowToggle } from './FollowToggle'
+import { useAutoScroll } from './useAutoScroll'
 
 interface ConsolePanelProps {
   /** Endpoint SSE de la consola: solo se monta si el contrato dice que hay canal. */
@@ -39,11 +41,14 @@ export function ConsolePanel({ endpoint, runKeys }: ConsolePanelProps) {
   }, [])
 
   const status = useServerStream(endpoint, { events: ['line'], endEvent: 'end', onEvent })
+  const autoScroll = useAutoScroll<HTMLPreElement>(lines.length)
+  const { scrollRef, onScroll } = autoScroll
 
   return (
     <CCard className="review-card">
       <CCardHeader className="d-flex flex-wrap align-items-baseline gap-2">
         <h2 className="h6 mb-0 me-auto">Consola en vivo</h2>
+        <FollowToggle id="console-follow" autoScroll={autoScroll} />
         <span className="small text-body-secondary">
           {runKeys.length > 0 ? `Run keys: ${runKeys.join(', ')}` : 'Sin run keys'}
         </span>
@@ -52,7 +57,12 @@ export function ConsolePanel({ endpoint, runKeys }: ConsolePanelProps) {
         <p className="small text-body-secondary" role="status">
           {streamStatusText(status, CONSOLE_SUBJECT)}
         </p>
-        <pre className="review-console mb-0" data-testid="review-console">
+        <pre
+          className="review-console mb-0"
+          data-testid="review-console"
+          ref={scrollRef}
+          onScroll={onScroll}
+        >
           {lines.join('\n')}
         </pre>
       </CCardBody>

@@ -1,7 +1,9 @@
 import { CCard, CCardBody, CCardHeader } from '@coreui/react'
 import { useCallback, useState } from 'react'
 
+import { FollowToggle } from './FollowToggle'
 import { parseJson, REASONING_SUBJECT, streamStatusText, useServerStream } from './streams'
+import { useAutoScroll } from './useAutoScroll'
 
 interface ReasoningPanelProps {
   /** Endpoint SSE del razonamiento: solo se monta si el contrato dice que hay. */
@@ -104,11 +106,17 @@ export function ReasoningPanel({ endpoint }: ReasoningPanelProps) {
     endEvent: 'fin',
     onEvent,
   })
+  // La señal de contenido nuevo es el texto acumulado: `blocks.length` no cambia
+  // cuando un lote sigue escribiendo dentro del suyo.
+  const totalChars = blocks.reduce((total, block) => total + block.text.length, 0)
+  const autoScroll = useAutoScroll<HTMLDivElement>(totalChars)
+  const { scrollRef, onScroll } = autoScroll
 
   return (
     <CCard className="review-card">
       <CCardHeader className="d-flex flex-wrap align-items-baseline gap-2">
         <h2 className="h6 mb-0 me-auto">Razonamiento</h2>
+        <FollowToggle id="reasoning-follow" autoScroll={autoScroll} />
         <span className="small text-body-secondary" role="status">
           {streamStatusText(status, REASONING_SUBJECT)}
         </span>
@@ -119,25 +127,34 @@ export function ReasoningPanel({ endpoint }: ReasoningPanelProps) {
             Todavía no hay razonamiento de los revisores.
           </p>
         ) : (
-          blocks.map((block) => (
-            <section key={block.key} className={block.failed ? 'reasoning failed' : 'reasoning'}>
-              <p className="small mb-1">
-                <strong>
-                  {block.role} · lote {block.batch}
-                  {block.total > 0 ? `/${block.total}` : ''}
-                </strong>
-                {block.files.length > 0 ? (
-                  <span className="text-body-secondary ms-2">{block.files.join(', ')}</span>
-                ) : null}
-              </p>
-              <pre className="review-reasoning mb-1">{block.text}</pre>
-              {block.footer !== null ? (
-                <p className={`small mb-2 ${block.failed ? 'text-danger' : 'text-body-secondary'}`}>
-                  {block.footer}
+          <div
+            className="review-reasoning-scroll"
+            data-testid="review-reasoning"
+            ref={scrollRef}
+            onScroll={onScroll}
+          >
+            {blocks.map((block) => (
+              <section key={block.key} className={block.failed ? 'reasoning failed' : 'reasoning'}>
+                <p className="small mb-1">
+                  <strong>
+                    {block.role} · lote {block.batch}
+                    {block.total > 0 ? `/${block.total}` : ''}
+                  </strong>
+                  {block.files.length > 0 ? (
+                    <span className="text-body-secondary ms-2">{block.files.join(', ')}</span>
+                  ) : null}
                 </p>
-              ) : null}
-            </section>
-          ))
+                <pre className="review-reasoning mb-1">{block.text}</pre>
+                {block.footer !== null ? (
+                  <p
+                    className={`small mb-2 ${block.failed ? 'text-danger' : 'text-body-secondary'}`}
+                  >
+                    {block.footer}
+                  </p>
+                ) : null}
+              </section>
+            ))}
+          </div>
         )}
       </CCardBody>
     </CCard>

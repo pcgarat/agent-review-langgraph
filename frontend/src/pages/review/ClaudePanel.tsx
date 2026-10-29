@@ -4,7 +4,9 @@ import { useCallback, useState } from 'react'
 import type { ClaudeAvailability } from '@/api/types/review'
 
 import { formatClaudeLine } from './claude'
+import { FollowToggle } from './FollowToggle'
 import { CLAUDE_SUBJECT, streamStatusText, useServerStream } from './streams'
+import { useAutoScroll } from './useAutoScroll'
 
 interface ClaudePanelProps {
   availability: ClaudeAvailability
@@ -33,11 +35,16 @@ export function ClaudePanel({ availability, eventsEndpoint, downloadEndpoint }: 
     endEvent: 'end',
     onEvent,
   })
+  const autoScroll = useAutoScroll<HTMLPreElement>(lines.length)
+  const { scrollRef, onScroll } = autoScroll
 
   return (
     <CCard className="review-card">
       <CCardHeader className="d-flex flex-wrap align-items-baseline gap-2">
         <h2 className="h6 mb-0 me-auto">Actividad del CLI</h2>
+        {availability.events_available ? (
+          <FollowToggle id="claude-follow" autoScroll={autoScroll} />
+        ) : null}
         {availability.events_available ? (
           <span className="small text-body-secondary" role="status">
             {streamStatusText(status, CLAUDE_SUBJECT)}
@@ -47,7 +54,12 @@ export function ClaudePanel({ availability, eventsEndpoint, downloadEndpoint }: 
         )}
       </CCardHeader>
       <CCardBody>
-        <pre className="review-console mb-2" data-testid="claude-events">
+        <pre
+          className="review-console mb-2"
+          data-testid="claude-events"
+          ref={scrollRef}
+          onScroll={onScroll}
+        >
           {lines.join('\n')}
         </pre>
         {availability.download_available ? (
