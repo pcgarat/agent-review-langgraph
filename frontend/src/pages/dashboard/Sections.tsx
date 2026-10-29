@@ -25,6 +25,7 @@ import { EmptyRow } from './EmptyRow'
 import { budgetByReview, spentTokens } from './figures'
 import { formatDateTime, formatElapsed, formatNumber, plural } from './format'
 import { PanelSection } from './PanelSection'
+import { SECTION_ID } from './sections'
 
 /** Nombre legible del nodo en curso; el resto se pinta tal cual lo da el worker. */
 const NODE_LABEL: Record<string, string> = { claude: 'CLI de Claude' }
@@ -46,9 +47,10 @@ export function QueueSection({ items, isOperador }: SectionProps & { items: Queu
   return (
     <PanelSection
       title="Cola"
+      id={SECTION_ID.queue}
       hint={items.length === 0 ? null : plural(items.length, 'review esperando', 'reviews esperando')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>
@@ -106,9 +108,10 @@ export function ActiveSection({
   return (
     <PanelSection
       title="En vuelo"
+      id={SECTION_ID.active}
       hint={items.length === 0 ? null : plural(items.length, 'review corriendo', 'reviews corriendo')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>
@@ -210,16 +213,18 @@ function pausedDetail(item: PausedItem) {
  */
 export function PausedSection({
   title,
+  id,
   hint,
   items,
   isOperador,
-}: SectionProps & { title: string; hint: string; items: PausedItem[] }) {
+}: SectionProps & { title: string; id?: string; hint: string; items: PausedItem[] }) {
   return (
     <PanelSection
       title={title}
+      id={id}
       hint={items.length === 0 ? null : plural(items.length, 'pausa', 'pausas')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>
@@ -264,9 +269,10 @@ export function DeadSection({ items, isOperador }: SectionProps & { items: DeadL
   return (
     <PanelSection
       title="Descartes"
+      id={SECTION_ID.dead}
       hint={items.length === 0 ? null : plural(items.length, 'review descartada', 'reviews descartadas')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>
@@ -329,7 +335,7 @@ export function BudgetSection({ items }: { items: BudgetItem[] }) {
       title="Presupuesto"
       hint={items.length === 0 ? null : plural(items.length, 'review con gasto', 'reviews con gasto')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>
@@ -337,8 +343,8 @@ export function BudgetSection({ items }: { items: BudgetItem[] }) {
             <CTableHeaderCell scope="col" className="text-end">Reservado</CTableHeaderCell>
             <CTableHeaderCell scope="col" className="text-end">Total</CTableHeaderCell>
             <CTableHeaderCell scope="col" className="text-end">Restante</CTableHeaderCell>
-            <CTableHeaderCell scope="col" style={{ width: '18%' }}>
-              <span className="visually-hidden">Consumo</span>
+            <CTableHeaderCell scope="col" style={{ width: '22%' }}>
+              Consumo
             </CTableHeaderCell>
           </CTableRow>
         </CTableHead>
@@ -367,6 +373,12 @@ export function BudgetSection({ items }: { items: BudgetItem[] }) {
                     {formatNumber(item.remaining)}
                   </CTableDataCell>
                   <CTableDataCell>
+                    <div className="d-flex justify-content-between text-nowrap">
+                      <span className="num fw-semibold">{Math.round(percent)}%</span>
+                      <small className="num text-body-secondary ms-3">
+                        {formatNumber(spent)} / {formatNumber(item.total)}
+                      </small>
+                    </div>
                     <CProgress
                       thin
                       color={percent >= 90 ? 'danger' : percent >= 70 ? 'warning' : 'success'}

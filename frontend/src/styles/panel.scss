@@ -1,30 +1,101 @@
-// Ajustes del panel sobre el tema oscuro de CoreUI. Nada de reinventar el sistema
-// visual de la plantilla: se ajusta lo que el panel necesita y se deja el resto.
-@use '@coreui/coreui/scss/coreui' with (
+// El armazón replica `src/scss/style.scss` de coreui-free-react-admin-template:
+// fondo gris claro (o `dark-bg-subtle` en oscuro) con tarjetas blancas encima,
+// cabecera y sidebar de 4rem y footer de 3rem. Lo demás son ajustes del panel.
+@use '@coreui/coreui/scss/coreui' as * with (
   $enable-deprecation-messages: false
 );
 
-:root {
-  --panel-rail: 1px solid var(--cui-border-color);
-}
-
 body {
-  background-color: var(--cui-body-bg);
+  background-color: var(--cui-tertiary-bg);
 }
 
 // CoreUI define `--cui-sidebar-occupy-start` en el hermano del sidebar, pero no
-// aplica el hueco: eso lo hace esta regla en el `style.scss` de la plantilla. Sin
-// ella el contenido se dibuja debajo del sidebar (el sidebar es `fixed`).
+// aplica el hueco: el sidebar es `fixed` y sin esta regla el contenido se dibuja
+// debajo.
 .wrapper {
   width: 100%;
   padding-inline: var(--cui-sidebar-occupy-start, 0) var(--cui-sidebar-occupy-end, 0);
-  transition: padding 0.15s ease-in-out;
+  will-change: auto;
+  @include transition(padding 0.15s);
 }
 
-.panel-brand {
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.header > .container-fluid,
+.sidebar-header {
+  min-height: calc(4rem + 1px);
 }
+
+.sidebar-toggler {
+  margin-inline-start: auto;
+}
+
+.sidebar-narrow,
+.sidebar-narrow-unfoldable:not(:hover) {
+  .sidebar-toggler {
+    margin-inline-end: auto;
+  }
+}
+
+.header > .container-fluid + .container-fluid {
+  min-height: 3rem;
+}
+
+.footer {
+  min-height: calc(3rem + 1px);
+}
+
+@include color-mode(dark) {
+  body {
+    background-color: var(--cui-dark-bg-subtle);
+  }
+
+  .footer {
+    --cui-footer-bg: var(--cui-body-bg);
+  }
+}
+
+// --- Marca del sidebar ---------------------------------------------------------
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--cui-sidebar-brand-color);
+  text-decoration: none;
+}
+
+.sidebar-sygnet {
+  display: inline-flex;
+  flex: 0 0 2rem;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  color: #fff;
+  background-color: var(--cui-primary);
+  border-radius: var(--cui-border-radius);
+}
+
+.sidebar-brand-full {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+// --- Cabecera ------------------------------------------------------------------
+
+// `position="top-end"` centra la insignia en la esquina del enlace, que lleva
+// padding; se baja a la esquina del icono como en la demo. Los `!important`
+// vencen a las utilidades `top-0`/`start-100` que pone CoreUI.
+.header-counter {
+  --cui-badge-font-size: 0.625rem;
+  --cui-badge-padding-x: 0.45em;
+  --cui-badge-padding-y: 0.3em;
+  top: 0.55rem !important;
+  left: calc(100% - 0.45rem) !important;
+}
+
+// --- Contenido ---------------------------------------------------------------
 
 .eyebrow {
   font-size: 0.72rem;
@@ -33,58 +104,9 @@ body {
   color: var(--cui-secondary-color);
 }
 
-// --- Login -------------------------------------------------------------------
-
-.login-shell {
-  background: var(--cui-body-bg);
-}
-
-[data-coreui-theme='dark'] .login-shell {
-  background:
-    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 14%), transparent 60%),
-    var(--cui-body-bg);
-}
-
-[data-coreui-theme='light'] .login-shell {
-  background:
-    radial-gradient(60rem 40rem at 20% -10%, rgb(50 120 200 / 8%), transparent 60%),
-    var(--cui-body-bg);
-}
-
-.login-card {
-  width: min(26rem, calc(100vw - 2rem));
-  --cui-card-bg: var(--cui-tertiary-bg);
-  background-color: var(--cui-tertiary-bg);
-  border-color: var(--cui-border-color);
-  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 25%);
-}
-
-[data-coreui-theme='dark'] .login-card {
-  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 45%);
-}
-
-// La cabecera es una barra de herramientas, no un encabezado de documento: el
-// titulo va como texto y no como `h1`, para no meter un encabezado de nivel 1 en
-// cada pantalla ni dejar que el navegador le ponga su tamano.
-.header-slim {
-  min-height: 3.5rem;
-}
-
-.header-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-// --- Contenido ---------------------------------------------------------------
-
 .body h2.h6,
 .body h1.h6 {
   font-weight: 600;
-}
-
-.card {
-  border-color: var(--cui-border-color);
 }
 
 // Cifras que se comparan en columna: sin `tabular-nums` los dígitos bailan.
@@ -92,20 +114,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-// --- Selector de auto-refresh ------------------------------------------------
-
-.refresh-selector-toggle {
-  display: flex;
-  align-items: center;
-  padding: 0.4rem 0.6rem;
-  color: var(--cui-body-color);
-  border-radius: var(--cui-border-radius);
-  cursor: pointer;
-
-  &:hover {
-    background-color: var(--cui-tertiary-bg);
-  }
+// Cabecera de tabla como la de la plantilla: fondo terciario y sin mayúsculas.
+// Se fija la variable y no `background-color` porque Bootstrap pinta la celda con
+// `--cui-table-bg` y un `box-shadow` encima.
+.panel-table > thead > tr > th {
+  --cui-table-bg: var(--cui-tertiary-bg);
+  font-weight: 600;
+  white-space: nowrap;
 }
+
+// --- Selector de auto-refresh ------------------------------------------------
 
 .refresh-selector-menu {
   min-width: 10rem;

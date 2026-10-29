@@ -1,16 +1,19 @@
 // Ajustes propios del cuadro de mando. Solo lo que CoreUI no da: el resto son
-// clases de la plantilla (`.eyebrow` y `.num` viven en `styles/panel.scss`).
+// clases de la plantilla (`.eyebrow`, `.num` y `.panel-table` viven en
+// `styles/panel.scss`).
 
-.figure-card {
-  min-height: 100%;
+// El hueco que en la demo ocupa el gráfico del widget lo llena el detalle de la
+// cifra; el icono, translúcido, hace de marca de la tarjeta.
+.figure-foot {
+  min-height: 4.5rem;
 }
 
-// La tabla es la superficie principal de la pantalla: sin un borde superior suave
-// entre cabecera y filas, el `hover` de CoreUI es lo único que separa la cabecera
-// del primer registro.
-.dashboard-table thead th {
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--cui-secondary-color);
+.figure-icon {
+  opacity: 0.35;
+}
+
+// La cabecera es `sticky`: sin margen, al saltar a una sección desde su cifra el
+// título quedaría tapado.
+.panel-section {
+  scroll-margin-top: 8.5rem;
 }

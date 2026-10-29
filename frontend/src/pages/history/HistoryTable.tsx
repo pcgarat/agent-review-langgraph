@@ -39,7 +39,7 @@ function severityText(bySeverity: Record<string, number>): string {
 /** Tabla densa del histórico: una fila por review terminada (029, B3). */
 export function HistoryTable({ page }: { page: Page<HistoryItem> }) {
   return (
-    <CTable small responsive hover align="middle" className="history-table mb-0">
+    <CTable small responsive hover align="middle" className="panel-table mb-0">
       <CTableHead>
         <CTableRow>
           <CTableHeaderCell scope="col">Terminada</CTableHeaderCell>

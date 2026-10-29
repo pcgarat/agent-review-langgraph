@@ -54,7 +54,7 @@ export function ParkedSection({ items }: { items: ParkedItem[] }) {
       title="Aparcados"
       hint={items.length === 0 ? null : plural(items.length, 'job esperando', 'jobs esperando')}
     >
-      <CTable small responsive hover align="middle" className="dashboard-table mb-0">
+      <CTable responsive hover align="middle" className="panel-table mb-0">
         <CTableHead>
           <CTableRow>
             <CTableHeaderCell scope="col">Review</CTableHeaderCell>

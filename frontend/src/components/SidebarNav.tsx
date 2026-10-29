@@ -1,14 +1,14 @@
 import { NavLink } from 'react-router-dom'
 import { CBadge, CNavItem, CNavLink, CNavTitle, CSidebarNav } from '@coreui/react'
 import CIcon from '@coreui/icons-react'
-import { cilHistory, cilList, cilSettings, cilSpeedometer } from '@coreui/icons'
+import { cilHistory, cilInbox, cilLockLocked, cilSettings, cilSpeedometer } from '@coreui/icons'
 
 import { useStateQuery } from '@/api/queries/useStateQuery'
 import { useSession } from '@/session/session'
 
 const BASE_ITEMS = [
   { to: '/', label: 'Cuadro de mando', icon: cilSpeedometer },
-  { to: '/bandeja', label: 'Bandeja', icon: cilList },
+  { to: '/bandeja', label: 'Bandeja', icon: cilInbox },
   { to: '/history', label: 'Histórico', icon: cilHistory },
   { to: '/config', label: 'Configuración', icon: cilSettings },
 ] as const
@@ -32,7 +32,7 @@ export function SidebarNav() {
             {item.to === '/bandeja' && waiting > 0 ? (
               <CBadge
                 color="warning"
-                shape="rounded-pill"
+                size="sm"
                 className="ms-auto"
                 aria-label={`${waiting} ${waiting === 1 ? 'pausa esperando' : 'pausas esperando'} a una persona`}
                 data-testid="sidebar-bandeja-badge"
@@ -48,7 +48,7 @@ export function SidebarNav() {
           <CNavTitle>Sesión de Claude</CNavTitle>
           <CNavItem>
             <CNavLink to="/claude" as={NavLink}>
-              <CIcon icon={cilSettings} className="nav-icon" />
+              <CIcon icon={cilLockLocked} className="nav-icon" />
               Token del CLI
             </CNavLink>
           </CNavItem>
