@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 # Desarrollo
 
@@ -160,7 +160,12 @@ worker lo llama en `ensure_claude_artifact` antes de `invoke`, y no vuelve a
 llamar si el artefacto de ese `head_sha` ya es válido. El tiempo agotado, el
 cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
 de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
-convierte en «cero hallazgos».
+convierte en «cero hallazgos». El techo de turnos y el cupo se clasifican por
+el **desenlace estructurado** del CLI (`type: result` y su `subtype`), nunca por
+buscar palabras en el texto: el informe de una review puede citar
+`error_max_turns` o `quota` sin haberlos agotado, y una review de este repo los
+cita. La prosa de `stderr` solo decide el cupo cuando el CLI se cayó antes de
+emitir su `result`.
 
 El adaptador `SubprocessClaudeRunner` (`adapters/claude_cli.py`) vive en el
 servicio `claude-runner`, no en el worker. La etapa `claude-runner` del

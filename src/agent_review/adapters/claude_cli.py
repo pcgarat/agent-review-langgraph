@@ -56,6 +56,11 @@ _QUOTA_MARKERS = (
     "insufficient credit",
 )
 
+# El desenlace del CLI es un evento `result` con su `subtype`. El estado de
+# agotamiento es ese campo, no una mención en prosa: el informe de una review
+# puede citar `error_max_turns` o `quota` sin haberlos agotado.
+_CEILING_SUBTYPES = frozenset({"error_max_turns"})
+
 
 def redact_text(text: str, secrets: Sequence[str]) -> str:
     """Sustituye secretos en texto que puede salir del proceso o del checkout."""
@@ -177,11 +182,13 @@ class SubprocessClaudeRunner:
             thread.join(timeout=2)
         out = redact_text(captured.text(), self._redact)
         err = redact_text("".join(stderr), self._redact)
-        if _hit_turn_ceiling(out) or _hit_turn_ceiling(err):
+        if captured.ceiling() or _hit_turn_ceiling(err):
             raise ClaudeCeiling("claude llego al tope de turnos")
         if code != 0:
             detail = (err or out).strip()
-            if _is_quota(detail):
+            # Con desenlace estructurado se cree al CLI; sin él (caída antes del
+            # evento `result`) queda el texto de stderr para reconocer el cupo.
+            if not captured.outcome and _is_quota(detail):
                 raise ClaudeQuotaExceeded("cupo de claude agotado")
             raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {code}")
         return out
@@ -213,6 +220,8 @@ class _LiveStdout:
         self._result: str | None = None
         self._saw = False
         self._on_line = on_line
+        # Desenlace estructurado del CLI: `subtype` del último evento `result`.
+        self.outcome: str | None = None
 
     def add(self, line: str) -> None:
         self._raw.append(line)
@@ -229,7 +238,11 @@ class _LiveStdout:
         if self._on_line is not None:
             with contextlib.suppress(Exception):
                 self._on_line(text)
-        if event.get("type") == "result" and isinstance(event.get("result"), str):
+        if event.get("type") != "result":
+            return
+        if isinstance(event.get("subtype"), str):
+            self.outcome = event["subtype"]
+        if isinstance(event.get("result"), str):
             self._result = event["result"]
 
     def text(self) -> str:
@@ -237,9 +250,26 @@ class _LiveStdout:
             return self._result
         return "".join(self._raw)
 
+    def ceiling(self) -> bool:
+        """El CLI dijo que agotó los turnos. Su desenlace manda en los dos casos:
+        el código de salida de un techo es 1, igual que el de una caída."""
+        return self.outcome in _CEILING_SUBTYPES
+
 
 def _hit_turn_ceiling(text: str) -> bool:
-    return "error_max_turns" in text
+    """Busca el desenlace estructurado en un texto de líneas. Una mención en
+    prosa no cuenta: el stderr de un CLI que cita el marcador no agotó turnos."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("subtype") in _CEILING_SUBTYPES:
+            return True
+    return False
 
 
 def _is_quota(text: str) -> bool:

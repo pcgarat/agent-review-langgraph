@@ -237,6 +237,70 @@ def test_el_proceso_caido_el_cupo_y_el_tiempo_son_errores_distintos(tmp_path: Pa
         lanzar(tope, 5)
 
 
+def test_un_informe_que_cita_el_marcador_no_es_un_techo(tmp_path: Path) -> None:
+    """El techo se lee del `subtype`, no de la prosa.
+
+    Una review de este repo cita `error_max_turns` al describir este mismo
+    adaptador. Con la comprobación por substring, el CLI terminaba con
+    `subtype: success` y el job se parkeaba como `ceiling`.
+    """
+    informe = "claude_cli.py:241 _hit_turn_ceiling busca 'error_max_turns' en el texto"
+    script = tmp_path / "cita.py"
+    script.write_text(
+        "import json\n"
+        f"hallazgos = {json.dumps(informe)}\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success',"
+        " 'is_error': False, 'result': hallazgos}))\n",
+        encoding="utf-8",
+    )
+    stdout = SubprocessClaudeRunner(
+        argv_prefix=[sys.executable, str(script)],
+        max_turns=200,
+        timeout_s=5,
+        environ={"PATH": "/usr/bin"},
+    ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+    assert stdout == informe
+
+
+def test_el_techo_se_detecta_aunque_el_cli_salga_con_cero(tmp_path: Path) -> None:
+    """El `subtype` basta: no se depende del código de salida ni de stderr."""
+    script = tmp_path / "techo_cero.py"
+    script.write_text(
+        "import json\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'error_max_turns',"
+        " 'is_error': True}))\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ClaudeCeiling, match="tope de turnos"):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
+def test_un_desenlace_estructurado_manda_sobre_la_prosa_del_cupo(tmp_path: Path) -> None:
+    """Un fallo con `subtype` de error no se reetiqueta como cupo por citar
+    'quota' en el texto: eso publicaría un cupo agotado que no existe."""
+    script = tmp_path / "cita_cupo.py"
+    script.write_text(
+        "import sys, json\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'error_invalid_request',"
+        " 'is_error': True}))\n"
+        "print('el informe menciona quota y rate limit sin agotarlos', file=sys.stderr)\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ClaudeProcessCrashed):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
 def test_mientras_corre_el_cli_la_review_esta_en_vuelo(tmp_path: Path) -> None:
     class _Progress:
         def __init__(self) -> None:

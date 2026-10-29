@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-24
+Última modificación: 2026-10-29 | Creado: 2026-10-24
 
 # 14 — El grafo por motor, y los módulos que intervienen
 
@@ -221,6 +221,11 @@ Errores que el worker distingue antes de entrar al grafo (`ports/claude.py`):
 | `408` tiempo de pared | `ClaudeTimeout` (transitorio) | reintento del job |
 | `502`, binario ausente | `ClaudeProcessCrashed` (transitorio) | reintento del job |
 | stdout no validable | `ClaudeInvalidOutput` (transitorio) | no guarda artefacto, reintenta y avisa la primera vez |
+
+El techo y el cupo salen del **desenlace estructurado** del CLI: el evento
+`result` y su `subtype`. No se buscan palabras en el texto, porque el informe de
+la review puede citarlas: una review de este repo nombra `error_max_turns` y se
+parkeaba como `ceiling` con el CLI en `subtype: success`.
 
 El runner no escribe el artefacto ni conoce el grafo: quien lo guarda es el
 worker, con el stdout redactado que le devuelve `POST /run`.

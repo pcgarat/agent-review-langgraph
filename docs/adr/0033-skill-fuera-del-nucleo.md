@@ -5,6 +5,7 @@
 - **Corrección:** 2026-10-24 — el contenedor de `claude-runner` no lleva el seccomp ni el AppArmor por defecto. Esos perfiles impiden el user namespace que `bwrap` necesita, y sin él cada `Bash` falla. La jaula sigue siendo el sandbox del CLI.
 - **Corrección:** 2026-10-24 — dentro de Docker, `bwrap` tampoco puede montar un `/proc` nuevo. El `settings.json` activa `enableWeakerNestedSandbox`: la jaula reutiliza el `/proc` del contenedor.
 - **Corrección:** 2026-10-24 — 200 turnos y 3600 s son el valor inicial. El panel puede publicar otros, entre 1 y 2000 turnos y entre 1 y 21600 s. El worker los envía en `POST /run`. Sin override, el runner sigue con su entorno.
+- **Corrección:** 2026-10-29 — el techo de turnos se lee del `subtype` del evento `result` (`error_max_turns`), no de una mención en el texto. El informe de una review de este repo cita ese marcador y el job se parkeaba como `ceiling` sin haberlo agotado.
 
 ## Contexto
 
@@ -42,6 +43,10 @@ hace que el grafo interprete el markdown de la skill.
    1–2000 turnos y 1–21600 s; el worker los manda en el cuerpo de `POST /run`.
    Agotar los turnos o el tiempo de pared parkea el job con motivo `ceiling` y
    no lo reencola. Una caída anterior a ese techo sigue siendo reintentable.
+   El techo de turnos se reconoce por el `subtype: error_max_turns` del evento
+   `result` del CLI, no por buscar el texto: un informe puede citarlo. El cupo,
+   igual: si el CLI llegó a emitir su desenlace, manda ese campo y la prosa de
+   `stderr` solo se mira cuando no hay desenlace (caída antes del `result`).
    La transcripción de esa pasada se queda y se descarga entera, con sesión
    del panel.
 
