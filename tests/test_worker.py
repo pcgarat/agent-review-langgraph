@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from diff_helpers import added_lines_diff
 
+from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.adapters.diff_parser import best_line, file_key, parse_unified_diff
 from agent_review.adapters.llm_reviewer import LlmReviewer
 from agent_review.adapters.tooling_reviewer import ToolingReviewer
@@ -23,6 +24,7 @@ from agent_review.domain.models import (
     Severity,
 )
 from agent_review.domain.pending import InMemoryPendingStore
+from agent_review.errors import PermanentError
 from agent_review.graph.build import build_approval as graph_build_approval
 from agent_review.graph.build import build_graph, render_pause_notice
 from agent_review.models_config import ModelsConfig
@@ -34,12 +36,15 @@ from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.worker.main import (
     _consume,
+    _mount_or_requeue,
+    _requeue_or_drop,
     _with_base_sha,
     build_registry,
     build_reviewers,
     build_runtime,
     build_verifier,
     process_request,
+    resolve_launch,
     start_heartbeat,
     sweep_expired,
     sweep_pending,
@@ -155,6 +160,42 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
 
     assert len(vcs.inlines) == 1
     assert vcs.comments
+
+
+def test_una_pasada_degradada_sin_artefacto_no_sale_completa() -> None:
+    """El #7 de punta a punta: el artefacto ausente tiene que verse en el resultado.
+
+    `build_runtime` recibe `degraded=True` y con eso el `ToolingReviewer` declara
+    `MISSING`. Sin eso, `unavailable_sources` queda vacio y `complete` da `True`:
+    el PR se publicaria como revisado entero sin que PHPStan hubiera corrido.
+    """
+    from agent_review.adapters.tooling_reviewer import ToolingReviewer
+    from agent_review.domain.models import ToolingSourceStatus
+
+    class _Missing:
+        def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str):
+            del tool, repo, pr_id, head_sha
+            return ToolingSourceStatus.MISSING, ""
+
+    vcs = FakeVcs()
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    degradada = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing(), required=True)], policy=policy
+    ).compile()
+    normal = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing())], policy=policy
+    ).compile()
+
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    outcome = process_request(degradada, request.model_copy(update={"degraded": True}))
+    assert outcome.unavailable_sources["standards"] is ToolingSourceStatus.MISSING
+    assert outcome.complete is False
+
+    # La misma ausencia en una review normal no la marca incompleta: ahi la
+    # persona simplemente no participa y empezar no exige el artefacto.
+    limpia = process_request(normal, request.model_copy(update={"head_sha": "cafe"}))
+    assert limpia.unavailable_sources == {}
+    assert limpia.complete is True
 
 
 def test_build_vcs_eligio_github_segun_el_proveedor() -> None:
@@ -400,11 +441,24 @@ def test_build_reviewers_herramientas_opt_in_por_rol(tmp_path: Path) -> None:
         if isinstance(r, LlmReviewer)
     )
 
-    con = build_reviewers(Settings(**base, review_tools_roles="correctness"))
+    con = build_reviewers(
+        Settings(
+            **base,
+            review_tools_roles="correctness",
+            review_tools_calls_per_turn=5,
+            review_tools_strict_calls=True,
+        ),
+        vcs=FakeVcs(),
+    )
     by_name = {r.name: r for r in con if isinstance(r, LlmReviewer)}
     assert by_name["correctness"]._reader_factory is not None
     assert by_name["correctness"]._tool_limits is not None
     assert by_name["correctness"]._tool_limits.max_turns == 4
+    # 023 F1: los topes y las palancas llegan al reviewer desde `Settings`, no se
+    # leen dentro del bucle.
+    assert by_name["correctness"]._tool_limits.calls_per_turn == 5
+    assert by_name["correctness"]._tool_options.strict_calls is True
+    assert by_name["correctness"]._tool_options.grep_mode == "literal"
     assert by_name["security"]._reader_factory is None
 
 
@@ -718,6 +772,174 @@ def test_with_base_sha_rellena_desde_el_vcs_si_falta() -> None:
     assert filled.base_sha == "base123"
     assert _with_base_sha(filled, _Vcs()).base_sha == "base123"
     assert _with_base_sha(request, None).base_sha == ""
+
+
+class _HeadVcs:
+    def __init__(self, *, head: str = "abc123", base: str = "base123") -> None:
+        self.calls = 0
+        self._head = head
+        self._base = base
+
+    def get_pull_request(self, repo: str, pr_id: int) -> PullRequestInfo:
+        self.calls += 1
+        return PullRequestInfo(
+            repo=repo,
+            pr_id=pr_id,
+            title="t",
+            source_branch="f",
+            destination_branch="main",
+            author="a",
+            head_sha=self._head,
+            base_sha=self._base,
+        )
+
+
+def _launch(repo: str = "cqm/emotivoo-v2") -> ReviewRequest:
+    return ReviewRequest(repo=repo, pr_id=9, head_sha="", pipeline_id="panel", launch=True)
+
+
+def test_resolve_launch_lee_el_commit_y_no_repite_si_ya_lo_tiene() -> None:
+    vcs = _HeadVcs()
+    resolved = resolve_launch(_launch(), vcs, expected_repo="cqm/emotivoo-v2")
+    assert resolved.head_sha == "abc123"
+    assert resolved.base_sha == "base123"
+    assert resolved.review_key == "cqm/emotivoo-v2:9:abc123:panel"
+    assert resolve_launch(resolved, vcs).head_sha == "abc123"
+    assert vcs.calls == 1
+
+
+def test_resolve_launch_ignora_un_job_que_no_es_lanzamiento() -> None:
+    normal = ReviewRequest(repo="r", pr_id=1, head_sha="")
+    assert resolve_launch(normal, _HeadVcs()) is normal
+
+
+def test_resolve_launch_rechaza_otro_repo_sin_llamar_al_vcs() -> None:
+    vcs = _HeadVcs()
+    with pytest.raises(PermanentError, match="no admitido"):
+        resolve_launch(_launch("otro/repo"), vcs, expected_repo="cqm/emotivoo-v2")
+    assert vcs.calls == 0
+
+
+def test_resolve_launch_sin_vcs_o_sin_commit_es_permanente() -> None:
+    with pytest.raises(PermanentError, match="No hay VCS"):
+        resolve_launch(_launch(), None)
+    with pytest.raises(PermanentError, match="no tiene commit"):
+        resolve_launch(_launch(), _HeadVcs(head=""))
+
+
+def test_consume_resuelve_el_lanzamiento_y_reencola_ese_commit() -> None:
+    class _Stop:
+        def __init__(self) -> None:
+            self.request: ReviewRequest | None = None
+
+        def invoke(self, state: dict[str, object], config: object = None) -> None:
+            del config
+            self.request = state["request"]  # type: ignore[assignment]
+            raise RuntimeError("parar")
+
+    graph = _Stop()
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        graph,
+        _launch(),
+        max_attempts=3,
+        vcs=_HeadVcs(),
+        expected_repo="cqm/emotivoo-v2",
+    )
+    assert graph.request is not None
+    assert graph.request.head_sha == "abc123"
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.head_sha == "abc123"
+    assert retried.attempts == 1
+
+
+def test_consume_olvida_la_ejecucion_sin_invocar_el_grafo(tmp_path: Path) -> None:
+    class _Saver:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete_thread(self, thread_id: str) -> None:
+            self.deleted.append(thread_id)
+
+    class _Graph:
+        def __init__(self) -> None:
+            self.checkpointer = _Saver()
+
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("eliminar no invoca el grafo")
+
+    graph = _Graph()
+    queue = InMemoryReviewQueue()
+    store = ClaudeArtifactStore(root=tmp_path)
+    request = ReviewRequest(repo="cqm/demo", pr_id=18, head_sha="abc", pipeline_id="panel")
+    assert store.save("[]", repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
+    queue.dead_letter(request, reason="intentos agotados")
+    generation = queue.bump_generation(request.review_key)
+    _consume(
+        queue,
+        graph,
+        request.model_copy(update={"forget": True, "generation": generation}),
+        max_attempts=3,
+        claude_store=store,
+    )
+
+    assert request.review_key in graph.checkpointer.deleted
+    assert f"{request.review_key}:partial" in graph.checkpointer.deleted
+    assert store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha) is None
+    assert queue.dead_letter_count == 0
+
+    class _Boom:
+        def invoke(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("un job de la generacion anterior no corre")
+
+    _consume(queue, _Boom(), request.model_copy(update={"generation": 0}), max_attempts=3)
+
+
+def test_un_lanzamiento_nuevo_adopta_la_generacion_vigente() -> None:
+    class _Stop:
+        def __init__(self) -> None:
+            self.request: ReviewRequest | None = None
+
+        def invoke(self, state: dict[str, object], config: object = None) -> None:
+            del config
+            self.request = state["request"]  # type: ignore[assignment]
+            raise RuntimeError("parar")
+
+    graph = _Stop()
+    queue = InMemoryReviewQueue()
+    resolved = "cqm/emotivoo-v2:9:abc123:panel"
+    queue.bump_generation(resolved)
+    _consume(
+        queue,
+        graph,
+        _launch(),
+        max_attempts=3,
+        vcs=_HeadVcs(),
+        expected_repo="cqm/emotivoo-v2",
+    )
+
+    assert graph.request is not None
+    assert graph.request.review_key == resolved
+    assert graph.request.generation == 1
+
+
+def test_consume_no_resuelve_un_lanzamiento_ya_cancelado() -> None:
+    class _Cancel:
+        def is_cancelled(self, key: str) -> bool:
+            return key.endswith("::panel")
+
+    class _Stop:
+        def invoke(self, state: object, config: object = None) -> None:
+            del state, config
+            raise AssertionError("no debe invocar el grafo")
+
+    vcs = _HeadVcs()
+    queue = InMemoryReviewQueue()
+    _consume(queue, _Stop(), _launch(), max_attempts=3, vcs=vcs, cancel=_Cancel())
+    assert vcs.calls == 0
+    assert queue.dequeue() is None
 
 
 def test_consume_reencola_con_intento_incremental_ante_excepcion() -> None:
@@ -1164,6 +1386,7 @@ def test_aviso_de_pausa_sin_marca_de_dedupe() -> None:
     config = {"configurable": {"thread_id": request.thread_id}}
     approval = graph_build_approval(graph.get_state(config).values)
     assert approval is not None
+    assert approval.pause_kind is None
     notice = render_pause_notice(approval)
     assert request.dedupe_token not in notice
     assert ":ok" not in notice and ":partial" not in notice
@@ -1212,6 +1435,43 @@ def test_sweep_expired_reencola_sin_decision() -> None:
     assert job.decision.actor == "system:ttl"
     assert job.decision.items[0].outcome is DecisionOutcome.EXPIRED
     assert paused.get(request.review_key) is not None, "el sweep no borra; lo limpia el resume"
+
+
+def test_sweep_expired_en_publicacion_es_dropped() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_review.domain.models import ApprovalRequest, FindingAction, PendingDecision, Severity
+    from agent_review.paused_store import InMemoryPausedStore
+
+    paused = InMemoryPausedStore(ttl_s=60.0)
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    approval = ApprovalRequest(
+        review_key=request.review_key,
+        repo=request.repo,
+        pr_id=request.pr_id,
+        head_sha=request.head_sha,
+        pause_kind="publication",
+        pending=[
+            PendingDecision(
+                finding_id="w1",
+                proposed_action=FindingAction.PUBLISH,
+                reason="publicar",
+                matched_rule="claude",
+                policy_version="1",
+                title="T",
+                file="a.php",
+                line=1,
+                severity=Severity.P1,
+            )
+        ],
+    )
+    paused.pause(request, approval)
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    sweep_expired(paused, queue, now=future)
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.items[0].outcome is DecisionOutcome.DROPPED
 
 
 # ---------------------------------------------------------------------------
@@ -1536,3 +1796,169 @@ def test_sweep_fix_expired_es_idempotente() -> None:
 
     assert len(first) == 1
     assert second == [], "ya encolada; no se duplica el barrido"
+
+
+def test_el_montaje_por_review_lleva_la_foto_publicada_al_grafo() -> None:
+    """La costura que hace que lo publicado llegue a una review (027 W1)."""
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(expected=0, overrides={"llm_max_findings": 2}, actor="ana")
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    graph, snapshot, ceilings = _review_runtime(
+        Settings(_env_file=None),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot == {"revision": 1, "overrides": {"llm_max_findings": 2}}
+    assert ceilings == (None, None)
+    assert graph is not None
+
+
+def test_el_montaje_de_claude_manda_el_techo_publicado_sin_sellar_la_foto() -> None:
+    from agent_review.config_store import MemoryConfigStore
+    from agent_review.worker.main import _review_runtime
+
+    store = MemoryConfigStore()
+    store.publish(
+        expected=0,
+        overrides={"claude_max_turns": 400, "claude_timeout_s": 7200},
+        actor="ana",
+    )
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+
+    _graph, snapshot, ceilings = _review_runtime(
+        Settings(_env_file=None, review_engine="claude", database_url=""),
+        store,
+        None,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+    assert snapshot is None
+    assert ceilings == (400, 7200.0)
+
+
+class _SaverRoto:
+    """Checkpointer que no contesta: `prepare_review` falla al leer el hilo."""
+
+    def get_tuple(self, config: object) -> object:
+        del config
+        raise ConnectionError("postgres caido")
+
+
+def _mount(queue: InMemoryReviewQueue, request: ReviewRequest) -> object:
+    from agent_review.config_store import MemoryConfigStore
+
+    return _mount_or_requeue(
+        Settings(_env_file=None, database_url=""),
+        MemoryConfigStore(),
+        _SaverRoto(),
+        queue,
+        request,
+        vcs=FakeVcs(),
+        chat=None,
+        progress=None,
+        registry=None,
+        cancellation=None,
+        budget_client=None,
+    )
+
+
+def test_un_fallo_al_montar_la_review_reencola_en_vez_de_tumbar_el_bucle() -> None:
+    """El job ya salio de la cola: montar mal no puede perderlo (027 F2).
+
+    `_mount_or_requeue` es el paso que usa `run_forever`: devuelve `None` y el
+    bucle sigue con el siguiente job, sin propagar la excepcion.
+    """
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a")
+
+    assert _mount(queue, request) is None
+
+    retried = queue.dequeue()
+    assert retried is not None, "un fallo al montar no puede perder el job"
+    assert retried.attempts == 1
+
+
+def test_un_reintento_del_panel_que_no_monta_conserva_repin() -> None:
+    """Montar no toca el hilo: quitar `repin_dials` dejaria el reintento con la foto vieja."""
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", repin_dials=True)
+
+    assert _mount(queue, request) is None
+
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.repin_dials is True
+
+
+def test_un_reencolado_por_fallo_de_trabajo_quita_repin() -> None:
+    """Tras invocar, la foto nueva ya esta en el hilo: re-fijarla la sellaria otra vez."""
+    queue = InMemoryReviewQueue()
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a", repin_dials=True)
+
+    _requeue_or_drop(queue, request, max_attempts=3)
+
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.repin_dials is False
+
+
+def test_una_review_incompleta_se_vuelve_a_ejecutar() -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from agent_review.domain.models import ToolingSourceStatus
+    from agent_review.graph.build import build_graph
+
+    class _UnaVezIncompleta:
+        name = "standards"
+        calls = 0
+
+        def review(
+            self,
+            *,
+            repo: str,
+            pr_id: int,
+            diff: str,
+            head_sha: str = "",
+            review_key: str = "",
+            context=None,
+        ) -> ReviewerResult:
+            del repo, pr_id, diff, head_sha, review_key, context
+            self.calls += 1
+            status = ToolingSourceStatus.MISSING if self.calls == 1 else None
+            return ReviewerResult(findings=[], tooling_status=status)
+
+    reviewer = _UnaVezIncompleta()
+    graph = build_graph(
+        vcs=FakeVcs(),
+        reviewers=[reviewer],
+        policy=PolicyEngine.from_file("config/autonomy.yaml"),
+    ).compile(checkpointer=InMemorySaver())
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="abc", pipeline_id="panel")
+
+    first = process_request(graph, request)
+    second = process_request(graph, request)
+    third = process_request(graph, request)
+
+    assert first.complete is False
+    assert reviewer.calls == 2
+    assert second.complete is True
+    assert third.complete is True
+    assert reviewer.calls == 2

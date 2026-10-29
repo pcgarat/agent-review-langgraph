@@ -40,10 +40,21 @@ services:
       # Credencial de servicio de twg (Bitbucket/Jira). Llega por `env_file: .env`
       # como TWG_BBC_TOKEN/TWG_SITE/TWG_USER/TWG_TOKEN: no hay fichero de auth en
       # el contenedor ni montaje del ~/.config/twg del host.
+      # La credencial de clonado del motor claude vive en `claude-runner`.
+      # Vaciarla aquí gana a `env_file`: el proceso que publica no la tiene.
+      CLAUDE_GIT_TOKEN: ""
+      CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-http://claude-runner:8098}
+      # Enlace del aviso si falta la sesión. El worker no monta el fichero.
+      PANEL_PUBLIC_URL: ${PANEL_PUBLIC_URL:-http://localhost:8090}
+      # Fuera de `./var`: ese bind es :ro y runc no puede crear un punto de
+      # montaje dentro. El default `var/claude` vale fuera de compose.
+      CLAUDE_ARTIFACT_ROOT: /var/claude-artifacts
     volumes:
       - ./config:/app/config:ro
       # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
       - ./var:/app/var:ro
+      # JSON ya validado del motor claude. Volumen propio, no anidado en `./var`.
+      - claude_artifacts:/var/claude-artifacts
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +146,56 @@ services:
       - reviews
     # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
 
+  # Motor claude (025, ADR-0028). Opt-in: sin el perfil, `docker compose up`
+  # sigue siendo el motor llm. Checkout en un volumen propio, no el clon bare
+  # del sandbox-runner. Sin `env_file`: no hereda el token con el que el
+  # worker publica. El subproceso `claude` tampoco recibe la credencial de
+  # clonado (el proceso la usa para el fetch y luego quita el remoto).
+  claude-runner:
+    build:
+      context: .
+      target: claude-runner
+    restart: unless-stopped
+    profiles: ["claude"]
+    command: python -m agent_review.claude_runner.main
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REVIEW_ENGINE: claude
+      CLAUDE_BIN: ${CLAUDE_BIN:-claude}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-200}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
+      CLAUDE_WORKSPACE_ROOT: /var/claude-checkout
+      CLAUDE_RUNNER_PORT: ${CLAUDE_RUNNER_PORT:-8098}
+      CLAUDE_RUNNER_TOKEN: ${CLAUDE_RUNNER_TOKEN:-}
+      # Vacio: el fetch reutiliza el token de VCS (ADR-0032). Un valor propio
+      # es el override de solo lectura y es lo unico que ve este proceso con
+      # ese nombre. El worker lo recibe vacio.
+      CLAUDE_GIT_TOKEN: ${CLAUDE_GIT_TOKEN:-}
+      VCS_PROVIDER: ${VCS_PROVIDER:-twg}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      TWG_BBC_TOKEN: ${TWG_BBC_TOKEN:-}
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+    volumes:
+      - claude_checkout:/var/claude-checkout
+      - claude_session:/var/claude-session
+    # bwrap necesita un user namespace anidado. El seccomp y el AppArmor por
+    # defecto de Docker lo impiden, y con uno solo sigue fallando. La jaula
+    # de Bash es el sandbox del CLI (ADR-0033), no este perfil. Un /proc
+    # nuevo sigue prohibido: el settings.json usa enableWeakerNestedSandbox.
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; port=os.environ.get('CLAUDE_RUNNER_PORT','8098'); urllib.request.urlopen(f'http://localhost:{port}/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: solo el worker, en la red interna.
+
   # Canal de Teams (iniciativa 013): el bot con hilo por PR. Consume la outbox
   # (`reviews:notices`) y sirve el *messaging endpoint* `POST /api/messages` del
   # Bot Framework. Vive aislado del worker: NO tiene credencial de VCS ni clave del
@@ -177,7 +238,9 @@ services:
   # por el perfil `panel`: sin el perfil, `docker compose up` arranca lo de siempre
   # (R7). Como el `fix-worker` y el `teams-bot`, NO hereda el `.env` entero (nada de
   # `env_file`): el panel lee estado y encola comandos, asi que no recibe credencial
-  # de VCS ni clave del LLM (§5.8). Solo Redis, Postgres (lectura) y su sesion.
+  # de VCS ni clave del LLM (§5.8). Si recibe el nombre del repo (sin token) para
+  # rechazar la URL de otro repositorio al lanzar una review (ADR-0029). Solo Redis,
+  # Postgres (lectura) y su sesion.
   web:
     build: .
     restart: unless-stopped
@@ -187,6 +250,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PANEL_ENABLED: ${PANEL_ENABLED:-true}
+      REVIEW_ENGINE: ${REVIEW_ENGINE:-llm}
       PANEL_PORT: ${PANEL_PORT:-8090}
       PANEL_SESSION_SECRET: ${PANEL_SESSION_SECRET:-}
       REDIS_URL: redis://redis:6379/0
@@ -199,7 +263,56 @@ services:
       # Sin URL o sin token, la consola responde `404`.
       SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
       SANDBOX_CONSOLE_TOKEN: ${SANDBOX_CONSOLE_TOKEN:-}
+      # Los diales del panel se comparan contra el valor inicial del worker, que
+      # lee el `.env` entero. Compose interpola estas variables del mismo `.env`,
+      # asi que los dos procesos resuelven el mismo inicial y el mismo candado.
+      # Un dial que falte aqui pinta el default del codigo mientras el worker usa
+      # el del `.env`: `tests/test_compose.py` exige el catalogo entero (027,
+      # ADR-0031). Ninguno es un secreto.
+      PANEL_CONFIG_LOCK: ${PANEL_CONFIG_LOCK:-}
+      AUTONOMY_CONFIG: ${AUTONOMY_CONFIG:-config/autonomy.yaml}
+      CLAUDE_TIMEOUT_S: ${CLAUDE_TIMEOUT_S:-3600}
+      CLAUDE_MAX_TURNS: ${CLAUDE_MAX_TURNS:-200}
+      MAX_AUTONOMY_OVERRIDE: ${MAX_AUTONOMY_OVERRIDE:-}
+      SCOPE_IGNORE: ${SCOPE_IGNORE:-}
+      LLM_MAX_FINDINGS: ${LLM_MAX_FINDINGS:-10}
       LLM_BUDGET_TOKENS_PER_PR: ${LLM_BUDGET_TOKENS_PER_PR:-2000000}
+      LLM_BATCH_MAX_CHARS: ${LLM_BATCH_MAX_CHARS:-20000}
+      LLM_BATCH_RETRIES: ${LLM_BATCH_RETRIES:-2}
+      LLM_CONTEXT_MAX_CHARS: ${LLM_CONTEXT_MAX_CHARS:-40000}
+      VERIFIER_MAX_FINDINGS: ${VERIFIER_MAX_FINDINGS:-5}
+      VERIFIER_MAX_TOOL_CALLS: ${VERIFIER_MAX_TOOL_CALLS:-8}
+      VERIFIER_MAX_CONTEXT_BYTES: ${VERIFIER_MAX_CONTEXT_BYTES:-60000}
+      VERIFIER_REQUIRE_VERIFIED_FOR: ${VERIFIER_REQUIRE_VERIFIED_FOR:-P0,P1}
+      REVIEW_TOOLS_ROLES: ${REVIEW_TOOLS_ROLES:-}
+      REVIEW_TOOLS_MAX_TURNS: ${REVIEW_TOOLS_MAX_TURNS:-4}
+      REVIEW_TOOLS_MAX_CALLS: ${REVIEW_TOOLS_MAX_CALLS:-8}
+      REVIEW_TOOLS_MAX_BYTES: ${REVIEW_TOOLS_MAX_BYTES:-60000}
+      REVIEW_TOOLS_GREP_MODE: ${REVIEW_TOOLS_GREP_MODE:-literal}
+      REVIEW_TOOLS_READ_OUTLINE: ${REVIEW_TOOLS_READ_OUTLINE:-false}
+      REVIEW_TOOLS_READ_STATE: ${REVIEW_TOOLS_READ_STATE:-false}
+      REVIEW_TOOLS_TRUNCATION_NOTICE: ${REVIEW_TOOLS_TRUNCATION_NOTICE:-true}
+      REVIEW_TOOLS_STRICT_CALLS: ${REVIEW_TOOLS_STRICT_CALLS:-false}
+      REVIEW_TOOLS_CALLS_PER_TURN: ${REVIEW_TOOLS_CALLS_PER_TURN:-3}
+      REVIEW_TOOLS_PRECACHE_CONTEXT: ${REVIEW_TOOLS_PRECACHE_CONTEXT:-true}
+      REVIEW_TOOLS_IO_CACHE: ${REVIEW_TOOLS_IO_CACHE:-false}
+      # Identidad del repo, sin el token: el panel rechaza la URL de otro repo
+      # y el worker es quien lee el commit (ADR-0029).
+      VCS_PROVIDER: ${VCS_PROVIDER:-twg}
+      BITBUCKET_WORKSPACE: ${BITBUCKET_WORKSPACE:-}
+      BITBUCKET_REPO: ${BITBUCKET_REPO:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-}
+      GITHUB_REPO: ${GITHUB_REPO:-}
+      # Misma ruta que claude-runner. El token no es una variable de entorno.
+      CLAUDE_SESSION_PATH: /var/claude-session/session.json
+      CLAUDE_SESSION_TTL_S: ${CLAUDE_SESSION_TTL_S:-43200}
+    volumes:
+      - claude_session:/var/claude-session
+      # Solo lectura: el techo de autonomia de un override publicado se valida
+      # contra `config/autonomy.yaml`. Sin este montaje, cualquier guardado con
+      # `MAX_AUTONOMY_OVERRIDE` responde 400. Los YAML siguen siendo de git: el
+      # panel no los edita (ADR-0031).
+      - ./config:/app/config:ro
     ports:
       # Solo se publica cuando el perfil `panel` esta activo.
       - "${PANEL_PORT:-8090}:${PANEL_PORT:-8090}"
@@ -249,6 +362,9 @@ services:
 
 volumes:
   pg_data:
+  claude_artifacts:
+  claude_checkout:
+  claude_session:
 
 networks:
   reviews:

@@ -6,7 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_review.adapters.diff_parser import parse_unified_diff
 from agent_review.domain.models import CommandResult
-from agent_review.errors import PermanentError
+from agent_review.errors import PermanentError, TransientError
 from agent_review.ports.sandbox import VerifyReport, VerifyRequest
 from agent_review.profile import resolve_ci_image
 from agent_review.sandbox_runner.console import ConsoleBuffer
@@ -49,6 +49,10 @@ class FixedProfileSource:
 
     def load(self) -> dict[str, Any]:
         return self._profile
+
+
+class RunnerBusy(TransientError):
+    """Otra verificacion con el mismo `run_key` sigue en curso. Reintentable."""
 
 
 class RunnerError(PermanentError):
@@ -99,7 +103,7 @@ class Verifier:
             if request.run_key in self._running:
                 # Concurrencia 1 en v1: una reentrega se rechaza en vez de lanzar un
                 # segundo contenedor sobre el mismo parche.
-                raise RunnerError(f"la verificacion {request.run_key} ya esta en curso")
+                raise RunnerBusy(f"la verificacion {request.run_key} ya esta en curso")
             self._running.add(request.run_key)
         # La consola se abre antes de tocar el sandbox y se cierra pase lo que pase,
         # para que el SSE deje de esperar cuando la verificacion termina.

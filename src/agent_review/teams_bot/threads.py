@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -103,6 +104,18 @@ class ChannelStore(Protocol):
         """Guarda el mensaje de la tarjeta recien publicada."""
         ...
 
+    def forget_card(self, review_key: str) -> None:
+        """Olvida el mensaje de la tarjeta: ya se borro del canal."""
+        ...
+
+    def open_card_keys(self) -> list[str]:
+        """`review_key` de las tarjetas que el canal aun tiene publicadas.
+
+        Las entradas antiguas, sin `review_key` en el valor, no salen: un aviso
+        `withdraw` con la clave sigue pudiendo borrarlas por el hash.
+        """
+        ...
+
 
 def thread_field(repo: str, pr_id: int) -> str:
     """Campo del hash de hilos para un PR. Ver `THREADS_KEY`."""
@@ -156,6 +169,19 @@ def _parse_thread(raw: object) -> ThreadRef | None:
         logger.warning("root_message_id no numerico (%r); hilo no iniciado", ref.root_message_id)
         return None
     return ref
+
+
+def _review_keys(raw_values: Iterable[object]) -> list[str]:
+    """Saca `review_key` de cada valor del hash. Omite los que no lo traen."""
+    keys: list[str] = []
+    for raw in raw_values:
+        payload = _load(raw)
+        if payload is None:
+            continue
+        review_key = str(payload.get("review_key", "")).strip()
+        if review_key:
+            keys.append(review_key)
+    return keys
 
 
 def _parse_card(raw: object) -> CardRef | None:
@@ -246,8 +272,23 @@ class RedisChannelStore:
                 conversation_id=ref.conversation_id,
                 message_id=ref.message_id,
                 service_url=ref.service_url,
+                review_key=review_key,
             ),
         )
+
+    def forget_card(self, review_key: str) -> None:
+        try:
+            self._client.hdel(self._cards_key, card_field(review_key))
+        except redis.exceptions.RedisError as exc:
+            logger.warning("No se pudo olvidar la tarjeta de %s: %s", review_key, exc)
+
+    def open_card_keys(self) -> list[str]:
+        try:
+            raw = self._client.hgetall(self._cards_key)
+        except redis.exceptions.RedisError as exc:
+            logger.warning("No se pudieron listar las tarjetas del canal: %s", exc)
+            return []
+        return _review_keys(raw.values())
 
     def _hget(self, key: str, field: str) -> bytes | str | None:
         try:
@@ -291,4 +332,11 @@ class InMemoryChannelStore:
             conversation_id=ref.conversation_id,
             message_id=ref.message_id,
             service_url=ref.service_url,
+            review_key=review_key,
         )
+
+    def forget_card(self, review_key: str) -> None:
+        self._cards.pop(card_field(review_key), None)
+
+    def open_card_keys(self) -> list[str]:
+        return _review_keys(self._cards.values())

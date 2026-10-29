@@ -2,12 +2,13 @@
 
 Cancelar es una accion con consecuencias. El bearer de servicio de la API autoriza a
 un servicio, no identifica a una persona, asi que el panel usa una cabecera propia,
-`X-Panel-Session`, con la forma `<usuario>:<rol>`; **no** reutiliza
-`REVIEWS_DECISION_TOKEN` (son superficies distintas).
+`X-Panel-Session`; **no** reutiliza `REVIEWS_DECISION_TOKEN` (son superficies distintas).
 
-El valor de la cabecera se contrasta con `PANEL_SESSION_SECRET` mediante
-`hmac.compare_digest`, igual que el bearer de decision de la API. Sin secreto
-configurado (o con el valor de ejemplo) la sesion se relaja para dev/test.
+Con secreto real, la cabecera es un token opaco que se contrasta con
+`PANEL_SESSION_SECRET` mediante `hmac.compare_digest`. Quien actua y su rol salen de
+`PANEL_SESSION_USER` y `PANEL_SESSION_ROLE`, no del secreto: el actor se publica en
+el PR y no puede ser parte de la credencial. Sin secreto (o con el de ejemplo) la
+sesion se relaja y la cabecera, si viene, se lee como `<usuario>:<rol>`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from enum import StrEnum
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from agent_review.settings import Settings, get_settings, is_missing
@@ -29,9 +30,6 @@ logger = logging.getLogger(__name__)
 # aceptan las dos vias (cabecera y cookie) porque `curl` y los tests mandan cabecera
 # y una navegacion normal, solo cookie.
 SESSION_COOKIE = "panel_session"
-# Cookie de rol legible por el servidor para pintar los botones sin repetir el
-# secreto en el HTML. No autoriza nada por si sola: la sesion se valida aparte.
-ROLE_COOKIE = "panel_role"
 # Usuario que se asume cuando no hay secreto ni cabecera (dev/test).
 _DEV_USER = "dev"
 # Valores de `Sec-Fetch-Site` que no delatan una peticion cruzada: el propio origen,
@@ -76,9 +74,10 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     Sin secreto configurado (o con el de ejemplo) se relaja como
     `_verify_decision_token`: la cabecera es opcional y, sin ella, la sesion es la
     local de operador. Con un secreto real, la cabecera es obligatoria y debe
-    coincidir **exactamente** con el secreto, que a su vez es la sesion
-    `<usuario>:<rol>`: el rol lo fija el despliegue, no quien llama, para que un
-    `lector` no pueda reclamar ser `operador`.
+    coincidir **exactamente** con el token. El rol lo fija el despliegue
+    (`PANEL_SESSION_ROLE`, o el sufijo legado `<usuario>:<rol>` del secreto si no
+    hay rol explicito), nunca quien llama, para que un `lector` no pueda reclamar
+    ser `operador`. El usuario publicado no se lee del secreto.
     """
     secret = settings.panel_session_secret.strip()
     relaxed = is_missing(secret)
@@ -94,11 +93,20 @@ def verify_session(settings: Settings, header: str | None) -> Session:
     # `compare_digest` sobre bytes: con `str` no ASCII lanzaria `TypeError`.
     if not hmac.compare_digest(header.encode(), secret.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesion del panel invalida")
-    session = parse_session(secret)
-    if session is None:
-        logger.error("PANEL_SESSION_SECRET no tiene la forma <usuario>:<lector|operador>")
+    return _deployed_session(settings, secret)
+
+
+def _deployed_session(settings: Settings, secret: str) -> Session:
+    """Identidad del despliegue. El secreto solo se usa para el rol legado."""
+    user = settings.panel_session_user.strip() or "panel"
+    role_name = settings.panel_session_role.strip()
+    if not role_name:
+        legacy = parse_session(secret)
+        role_name = legacy.role.value if legacy is not None else Role.OPERADOR.value
+    if role_name not in {item.value for item in Role}:
+        logger.error("PANEL_SESSION_ROLE no es lector ni operador: %s", role_name)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesion del panel mal configurada")
-    return session
+    return Session(user=user, role=Role(role_name))
 
 
 def require_session(
@@ -111,6 +119,49 @@ def require_session(
     `panel_session` (navegador: una navegacion normal no puede mandar cabeceras).
     """
     return verify_session(get_settings(), x_panel_session or panel_session)
+
+
+# --- La cookie de sesion (029, P6/P7) --------------------------------------------
+
+
+def cookie_secure(settings: Settings) -> bool:
+    """`Secure` cuando el panel se sirve por HTTPS.
+
+    Se mira `PANEL_PUBLIC_URL` y no el esquema de la peticion: detras de un proxy
+    TLS el `web` ve `http` y marcaria la cookie como insegura, con lo que el
+    navegador la aceptaria y el despliegue creeria estar protegido.
+    """
+    return settings.panel_public_url.strip().lower().startswith("https://")
+
+
+def set_session_cookie(response: Response, settings: Settings) -> None:
+    """Deja la cookie de sesion en la respuesta.
+
+    `HttpOnly` para que el JavaScript del panel no pueda leerla (el rol se
+    pregunta por `GET /api/session`), `SameSite=Lax` porque el panel no se embebe
+    en otro sitio, y `Secure` si el despliegue es HTTPS. Sin `Max-Age`: es una
+    cookie de sesion del navegador.
+    """
+    response.set_cookie(
+        SESSION_COOKIE,
+        settings.panel_session_secret.strip(),
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure(settings),
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+
+
+def session_payload(session: Session) -> dict[str, str]:
+    """Lo que la SPA necesita para saber quién es y qué puede.
+
+    Nunca lleva el token: es la identidad, no la credencial.
+    """
+    return {"user": session.user, "role": session.role.value}
 
 
 def require_operador(session: Annotated[Session, Depends(require_session)]) -> Session:

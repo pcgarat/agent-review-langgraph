@@ -1,4 +1,4 @@
-Última modificación: 2026-10-17 | Creado: 2026-10-11
+Última modificación: 2026-10-24 | Creado: 2026-10-11
 
 # Registro de decisiones (ADR)
 
@@ -33,6 +33,18 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0022](0022-contrato-de-secretos-declarado.md) | El contrato de secretos se declara en el modelo, no en listas a mano | Aceptado |
 | [0023](0023-razonamiento-por-streaming-y-stream-de-redis.md) | El razonamiento de los revisores se captura por *streaming* y viaja por un *stream* de Redis por review | Aceptado |
 | [0024](0024-gate-de-severidad-en-la-politica.md) | La severidad publicada la decide un gate de política, no el modelo | Aceptado |
+| [0025](0025-matcher-del-gold-set-mide-el-defecto.md) | El matcher del *gold set* mide el defecto (localización + fragmento discriminante), no la redacción | Aceptado |
+| [0026](0026-contrato-de-lectura-con-tamano-real.md) | La lectura devuelve un value object con el tamaño real, no un `str` | Aceptado |
+| [0027](0027-dialecto-portable-de-grep.md) | `grep` habla un dialecto portable y rechaza lo que cada motor lee distinto | Aceptado |
+| [0028](0028-cli-claude-fuera-del-worker.md) | El CLI de Claude corre fuera del worker; el núcleo solo ve hallazgos ya validados | Aceptado |
+| [0029](0029-lanzamiento-desde-el-panel.md) | Una review se lanza desde el panel con la URL del pull request; el worker lee el commit | Aceptado |
+| [0030](0030-bandeja-web-de-la-decision.md) | La bandeja del panel es la otra superficie de la misma pregunta; vale la primera respuesta | Aceptado |
+| [0031](0031-configuracion-desde-el-panel.md) | Los diales de una review se publican desde el panel; el hilo fija la foto al empezar | Aceptado |
+| [0032](0032-clonado-claude-con-el-token-de-vcs.md) | El checkout de Claude reutiliza el token de VCS; `CLAUDE_GIT_TOKEN` queda como override | Aceptado |
+| [0033](0033-skill-fuera-del-nucleo.md) | La skill revisa fuera del núcleo; el sandbox cierra `Bash` y el techo no se reintenta | Aceptado |
+| [0034](0034-olvidar-una-ejecucion.md) | Olvidar una ejecución borra el estado local; los comentarios del PR se quedan | Aceptado |
+| [0035](0035-el-hijo-del-runner-no-es-root.md) | El subproceso `claude` corre con un uid sin privilegios; `/proc/1/environ` deja de ser un camino a los tokens | Aceptado |
+| [0036](0036-el-stream-de-la-transcripcion-termina.md) | El SSE de la transcripción cierra siempre: `404` sin contenido, `finished_at` o inactividad | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

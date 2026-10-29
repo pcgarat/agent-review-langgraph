@@ -17,11 +17,19 @@ from context_fakes import APP, ENV, README, build_fixture_reader
 from agent_review.adapters.context_fixture import FixtureContextReader
 from agent_review.adapters.tool_loop import (
     LoopResult,
+    ReviewToolsOptions,
     citation_path,
     run_tool_loop,
 )
-from agent_review.ports.context import ContextLimits
-from agent_review.ports.llm import LlmReply
+from agent_review.ports.context import (
+    ContextLimits,
+    ContextReaderPort,
+    ReadingRegistry,
+    ReadResult,
+    ToolError,
+    ToolResult,
+)
+from agent_review.ports.llm import LlmReply, LlmTruncatedError
 
 
 class ScriptedLlm:
@@ -73,8 +81,8 @@ def _tools(*entries: dict[str, Any]) -> str:
     return json.dumps({"tools": list(entries)})
 
 
-def _read(path: str) -> dict[str, Any]:
-    return {"tool": "read_file", "path": path}
+def _read(path: str, **args: Any) -> dict[str, Any]:
+    return {"tool": "read_file", "path": path, **args}
 
 
 def _grep(pattern: str, glob: str | None = None) -> dict[str, Any]:
@@ -90,10 +98,12 @@ def _is_final(data: dict[str, Any]) -> bool:
 
 def _run(
     llm: ScriptedLlm,
-    reader: FixtureContextReader,
+    reader: ContextReaderPort,
     *,
     limits: ContextLimits | None = None,
+    options: ReviewToolsOptions | None = None,
     budget: MemoryBudget | None = None,
+    readings: ReadingRegistry | None = None,
 ) -> LoopResult:
     return run_tool_loop(
         llm,
@@ -101,9 +111,11 @@ def _run(
         prompt="Revisa el PR.",
         reader=reader,
         limits=limits or ContextLimits(),
+        options=options,
         is_final=_is_final,
         budget=budget,
         review_key="r:1",
+        readings=readings,
     )
 
 
@@ -181,6 +193,56 @@ def test_cuatro_peticiones_en_un_turno_atiende_tres_y_avisa(tmp_path: Path) -> N
     assert "AVISO" in llm.calls[-1]["prompt"]
 
 
+def test_el_tope_por_turno_es_configurable(tmp_path: Path) -> None:
+    # 023 F1/P1: `calls_per_turn` deja de ser constante; con 2 se atienden dos.
+    entries = [_read(APP), _read(README), _read(APP)]
+    llm = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path), limits=ContextLimits(calls_per_turn=2))
+
+    assert result.tool_calls == 2
+    assert any("1 descartadas" in note for note in result.notes)
+
+
+def test_strict_calls_pone_un_error_por_peticion_no_atendida(tmp_path: Path) -> None:
+    # 023 F1/S1: el excedente no desaparece en silencio.
+    entries = [_read(APP), _read(README), _read(APP), _read(README)]
+    llm = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    result = _run(
+        llm,
+        build_fixture_reader(tmp_path),
+        limits=ContextLimits(calls_per_turn=2),
+        options=ReviewToolsOptions(strict_calls=True),
+    )
+
+    assert result.tool_calls == 2
+    prompt = llm.calls[-1]["prompt"]
+    assert prompt.count("ERROR: no atendida") == 2
+    assert "AVISO" not in prompt
+
+
+def test_el_prompt_anuncia_las_capacidades_del_puerto(tmp_path: Path) -> None:
+    # 023 F1/E11: el anuncio no depende de los flags; sin el, el modelo no pediria
+    # los modos que el puerto si sirve.
+    llm = ScriptedLlm(json.dumps({"findings": []}))
+    _run(llm, build_fixture_reader(tmp_path))
+
+    system = llm.calls[0]["system"]
+    for capability in ('"mode"', '"files_only"', '"depth"', '"ref"'):
+        assert capability in system
+
+
+def test_los_defaults_no_cambian_lo_servido(tmp_path: Path) -> None:
+    # 023 F1 (criterio 9): mismos argumentos y mismos defaults ⇒ mismo prompt.
+    entries = [_read(APP), _grep("needle")]
+    without = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+    explicit = ScriptedLlm(_tools(*entries), json.dumps({"findings": []}))
+
+    _run(without, build_fixture_reader(tmp_path))
+    _run(explicit, build_fixture_reader(tmp_path), options=ReviewToolsOptions())
+
+    assert [call["prompt"] for call in without.calls] == [call["prompt"] for call in explicit.calls]
+
+
 def test_una_herramienta_desconocida_se_sirve_como_error(tmp_path: Path) -> None:
     llm = ScriptedLlm(
         _tools({"tool": "rm_rf", "path": "/"}),
@@ -191,9 +253,87 @@ def test_una_herramienta_desconocida_se_sirve_como_error(tmp_path: Path) -> None
     assert "ERROR" in llm.calls[-1]["prompt"]
 
 
+def test_acepta_la_forma_de_openai(tmp_path: Path) -> None:
+    # El modelo real usa `{"name": ..., "args"/"arguments": {...}}`. El bucle lo
+    # sirve igual (014 RH11): antes toda peticion caia como invalida y el lector
+    # no servia nada.
+    for key in ("args", "arguments"):
+        llm = ScriptedLlm(
+            _tools({"name": "read_file", key: {"path": APP}}),
+            json.dumps({"findings": []}),
+        )
+        result = _run(llm, build_fixture_reader(tmp_path))
+        assert result.tool_calls == 1
+        assert "needle" in llm.calls[-1]["prompt"]
+
+
+def test_traduce_los_alias_del_modelo(tmp_path: Path) -> None:
+    # `search`→`grep`/`query`→`pattern` y `start_line`/`end_line`→`start`/`end`.
+    llm = ScriptedLlm(
+        _tools({"name": "search", "args": {"query": "needle", "glob": "**/*.py"}}),
+        _tools({"name": "read_file", "args": {"path": APP, "start_line": 1, "end_line": 1}}),
+        json.dumps({"findings": []}),
+    )
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert result.tool_calls == 2
+    assert f"{APP}:3" in llm.calls[-2]["prompt"]
+    assert "import os" in llm.calls[-1]["prompt"]
+
+
+def test_un_turno_truncado_no_tumba_el_lote(tmp_path: Path) -> None:
+    # `finish_reason=length` sin contenido: se pierde el turno, no el lote (014 H6).
+
+    class Truncating(ScriptedLlm):
+        def complete(self, **kwargs: Any) -> LlmReply:  # type: ignore[override]
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise LlmTruncatedError("agoto max_tokens sin contenido")
+            return LlmReply(text=json.dumps({"findings": []}), finish_reason="stop")
+
+    llm = Truncating()
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert result.data == {"findings": []}
+    assert any("length" in note for note in result.notes)
+    assert "final" in llm.calls[-1]["prompt"].lower()
+
+
+def test_un_turno_truncado_reiterado_cierra(tmp_path: Path) -> None:
+    class AlwaysTruncating(ScriptedLlm):
+        def complete(self, **kwargs: Any) -> LlmReply:  # type: ignore[override]
+            self.calls.append(kwargs)
+            raise LlmTruncatedError("agoto max_tokens sin contenido")
+
+    result = _run(AlwaysTruncating(), build_fixture_reader(tmp_path))
+    assert result.data is None
+    assert result.forced_by_truncation is True
+
+
+def test_un_turno_en_blanco_se_repite_sin_gastar_el_correctivo(tmp_path: Path) -> None:
+    # El razonador devolvio solo espacios (23 T0c): no es una respuesta invalida, es
+    # un turno perdido. Se repite con un recordatorio y el lote no se pierde.
+    llm = ScriptedLlm("   ", _tools(_read(APP)), json.dumps({"findings": []}))
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.data == {"findings": []}
+    assert result.tool_calls == 1
+    assert "vacia" in llm.calls[1]["prompt"]
+    assert result.turns == 2, "el turno en blanco no consume el tope de turnos"
+
+
+def test_los_turnos_en_blanco_se_agotan_y_el_lote_cierra(tmp_path: Path) -> None:
+    llm = ScriptedLlm("   ", "  \n", "\t", json.dumps({"findings": []}))
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.data is None
+    assert not result.text.strip()
+    assert len(llm.calls) == 3, "dos reintentos y despues se cierra"
+
+
 def test_una_herramienta_que_falla_no_tumba_el_bucle(tmp_path: Path) -> None:
     class Exploding(FixtureContextReader):
-        def read_file(self, *args: Any, **kwargs: Any) -> str | None:
+        def read_file(self, *args: Any, **kwargs: Any) -> ReadResult | None:
             raise RuntimeError("el runner se cayo")
 
     reader = Exploding(tmp_path)
@@ -312,10 +452,48 @@ def test_cite_served_acepta_un_fichero_leido(tmp_path: Path) -> None:
     assert result.cite_served(f"{APP}:4: print(needle)")
 
 
-def test_cite_served_acepta_un_fichero_devuelto_por_grep(tmp_path: Path) -> None:
+def test_cite_served_no_acepta_un_fichero_solo_visto_por_grep(tmp_path: Path) -> None:
+    # 023 S1: `grep` devuelve coincidencias, no el cuerpo; una cita no queda probada.
     llm = ScriptedLlm(_tools(_grep("needle")), json.dumps({"findings": []}))
     result = _run(llm, build_fixture_reader(tmp_path))
+    assert not result.cite_served(f"{APP}:3: needle = 1")
+
+
+def test_cite_served_acota_a_las_lineas_del_rango_servido(tmp_path: Path) -> None:
+    # 023 S1: leer `1..2` prueba esas lineas y no las demas.
+    llm = ScriptedLlm(_tools(_read(APP, start=1, end=2)), json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert result.cite_served(f"{APP}:1 import os")
+    assert not result.cite_served(f"{APP}:3: needle = 1")
+
+
+def test_cite_served_no_mezcla_la_ref_base_con_head(tmp_path: Path) -> None:
+    # 023 S1: leer `base` no prueba lo que el hallazgo afirma de `head`.
+    llm = ScriptedLlm(_tools(_read(APP, ref="base")), json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path))
+    assert not result.cite_served(f"{APP}:1 import os")
+
+
+def test_cite_served_no_acepta_un_outline_como_cuerpo(tmp_path: Path) -> None:
+    # 023 S1: un indice de simbolos no es el fichero.
+    llm = ScriptedLlm(_tools(_read(APP, mode="outline")), json.dumps({"findings": []}))
+    result = _run(
+        llm,
+        build_fixture_reader(tmp_path),
+        options=ReviewToolsOptions(read_outline=True),
+    )
+    assert not result.cite_served(f"{APP}:3: needle = 1")
+
+
+def test_el_registro_de_lecturas_sobrevive_a_un_lote_anterior(tmp_path: Path) -> None:
+    # 023 S1: el registro lo comparte el revisor entre lotes.
+    from agent_review.ports.context import Reading, ReadingRegistry
+
+    readings = ReadingRegistry([Reading(path=APP, kind="full")])
+    llm = ScriptedLlm(_tools(_read(README)), json.dumps({"findings": []}))
+    result = _run(llm, build_fixture_reader(tmp_path), readings=readings)
     assert result.cite_served(f"{APP}:3: needle = 1")
+    assert result.cite_served(f"{README}:1 # repo")
 
 
 def test_cite_served_rechaza_un_fichero_no_servido(tmp_path: Path) -> None:
@@ -391,3 +569,436 @@ def test_el_reintento_del_modelo_no_es_del_bucle(tmp_path: Path) -> None:
 
     with pytest.raises(Boom):
         _run(Fallon(), build_fixture_reader(tmp_path))
+
+
+# --- Forwarding y errores tipados (023 C0b) ----------------------------------------
+
+
+class RecordingReader:
+    """Puerto que apunta cada argumento recibido y sirve una respuesta fija."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def read_file(
+        self,
+        path: str,
+        *,
+        ref: str = "head",
+        start: int | None = None,
+        end: int | None = None,
+        mode: str = "full",
+    ) -> ReadResult:
+        self.calls.append(
+            ("read_file", {"path": path, "ref": ref, "start": start, "end": end, "mode": mode})
+        )
+        return ReadResult(content="contenido", total_bytes=9)
+
+    def grep(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        path: str | None = None,
+        ref: str = "head",
+        mode: str = "literal",
+        files_only: bool = False,
+    ) -> ToolResult:
+        self.calls.append(
+            (
+                "grep",
+                {
+                    "pattern": pattern,
+                    "glob": glob,
+                    "path": path,
+                    "ref": ref,
+                    "mode": mode,
+                    "files_only": files_only,
+                },
+            )
+        )
+        return ToolResult(items=("src/app.py:1: needle",), total=1)
+
+    def list_dir(self, path: str, *, glob: str | None = None, depth: int = 1) -> ToolResult:
+        self.calls.append(("list_dir", {"path": path, "glob": glob, "depth": depth}))
+        return ToolResult(items=("app.py",), total=1)
+
+
+def test_cada_argumento_documentado_llega_al_adaptador() -> None:
+    # R11: el adaptador puede soportar el modo y el bucle descartarlo; este test
+    # fija el contrato argumento a argumento. `READ_OUTLINE` encendido es lo que
+    # hace que `mode="outline"` llegue al lector (apagado se sirve `full` y se avisa).
+    reader = RecordingReader()
+    llm = ScriptedLlm(
+        _tools(
+            {
+                "tool": "read_file",
+                "path": APP,
+                "ref": "base",
+                "start": 2,
+                "end": 4,
+                "mode": "outline",
+            },
+            {
+                "tool": "grep",
+                "pattern": "needle",
+                "glob": "**/*.py",
+                "path": "src",
+                "ref": "base",
+                "mode": "regex",
+                "files_only": True,
+            },
+            {"tool": "list_dir", "path": "src", "glob": "*.py", "depth": 2},
+        ),
+        json.dumps({"findings": []}),
+    )
+    _run(llm, reader, options=ReviewToolsOptions(read_outline=True))
+
+    assert reader.calls == [
+        (
+            "read_file",
+            {"path": APP, "ref": "base", "start": 2, "end": 4, "mode": "outline"},
+        ),
+        (
+            "grep",
+            {
+                "pattern": "needle",
+                "glob": "**/*.py",
+                "path": "src",
+                "ref": "base",
+                "mode": "regex",
+                "files_only": True,
+            },
+        ),
+        ("list_dir", {"path": "src", "glob": "*.py", "depth": 2}),
+    ]
+
+
+def test_search_es_alias_de_grep_y_query_de_pattern() -> None:
+    reader = RecordingReader()
+    llm = ScriptedLlm(
+        _tools({"tool": "search", "query": "needle"}),
+        json.dumps({"findings": []}),
+    )
+    _run(llm, reader)
+    assert reader.calls[0][0] == "grep"
+    assert reader.calls[0][1]["pattern"] == "needle"
+
+
+def test_un_tool_error_llega_al_modelo_con_su_mensaje() -> None:
+    class SoloLiterales(RecordingReader):
+        def grep(self, pattern: str, **kwargs: Any) -> ToolResult:
+            raise ToolError("`mode=regex` no esta soportado; usa `literal`")
+
+    llm = ScriptedLlm(
+        _tools({"tool": "grep", "pattern": "needle", "mode": "regex"}),
+        json.dumps({"findings": []}),
+    )
+    result = _run(llm, SoloLiterales())
+    assert result.tool_calls == 0, "una peticion no servida no cuenta como llamada"
+    assert "ERROR: `mode=regex` no esta soportado" in llm.calls[-1]["prompt"]
+
+
+def test_el_flag_grep_mode_fija_el_default_y_el_modelo_puede_cambiarlo() -> None:
+    # E11b: el flag decide el comportamiento por defecto; no oculta la capacidad.
+    reader = RecordingReader()
+    llm = ScriptedLlm(
+        _tools(
+            {"tool": "grep", "pattern": "needle"},
+            {"tool": "grep", "pattern": "needle", "mode": "literal"},
+        ),
+        json.dumps({"findings": []}),
+    )
+    _run(llm, reader, options=ReviewToolsOptions(grep_mode="regex"))
+    assert [call[1]["mode"] for call in reader.calls] == ["regex", "literal"]
+
+
+# --- Aviso de corte y `outline` (023 R1) -------------------------------------------
+
+
+class FixedReader:
+    """Lector que devuelve un resultado fijo y apunta el `mode` recibido."""
+
+    def __init__(
+        self,
+        *,
+        reading: ReadResult | None = None,
+        found: ToolResult | None = None,
+        listing: ToolResult | None = None,
+    ) -> None:
+        self.reading = reading or ReadResult(content="uno\ndos", total_bytes=5000)
+        self.found = found or ToolResult(items=("a.py:1: x",), total=1)
+        self.listing = listing or ToolResult(items=("a.py",), total=1)
+        self.modes: list[str] = []
+
+    def read_file(self, path: str, **kwargs: Any) -> ReadResult | None:
+        self.modes.append(str(kwargs.get("mode", "full")))
+        return self.reading
+
+    def grep(self, pattern: str, **kwargs: Any) -> ToolResult:
+        return self.found
+
+    def list_dir(self, path: str, **kwargs: Any) -> ToolResult:
+        return self.listing
+
+
+def test_el_aviso_de_corte_lleva_el_tamano_real() -> None:
+    reader = FixedReader(reading=ReadResult(content="uno\ndos", total_bytes=5000, truncated=True))
+    llm = ScriptedLlm(_tools({"tool": "read_file", "path": "big.py"}), json.dumps({"findings": []}))
+    _run(llm, reader)
+    prompt = llm.calls[-1]["prompt"]
+    assert "cortado a 7 de 5000 bytes" in prompt, "7 son los bytes servidos, no los caracteres"
+    assert "start/end" in prompt
+
+
+def test_el_aviso_de_corte_se_calla_si_se_apaga_el_flag() -> None:
+    reader = FixedReader(reading=ReadResult(content="uno", total_bytes=5000, truncated=True))
+    llm = ScriptedLlm(_tools({"tool": "read_file", "path": "big.py"}), json.dumps({"findings": []}))
+    _run(llm, reader, options=ReviewToolsOptions(truncation_notice=False))
+    assert "cortado" not in llm.calls[-1]["prompt"]
+
+
+def test_el_aviso_de_corte_declara_mostrando_n_de_m_en_grep() -> None:
+    reader = FixedReader(
+        found=ToolResult(items=("a.py:1: x", "b.py:2: y"), total=340, truncated=True)
+    )
+    llm = ScriptedLlm(_tools({"tool": "grep", "pattern": "x"}), json.dumps({"findings": []}))
+    _run(llm, reader)
+    prompt = llm.calls[-1]["prompt"]
+    assert "mostrando 2 de 340" in prompt
+    assert "path/glob/files_only" in prompt
+
+
+def test_el_aviso_de_corte_declara_mostrando_n_de_m_en_list_dir() -> None:
+    reader = FixedReader(listing=ToolResult(items=("a.py",), total=9, truncated=True))
+    llm = ScriptedLlm(_tools({"tool": "list_dir", "path": "src"}), json.dumps({"findings": []}))
+    _run(llm, reader)
+    prompt = llm.calls[-1]["prompt"]
+    assert "mostrando 1 de 9" in prompt
+    assert "glob/depth" in prompt
+
+
+def test_un_corte_del_tope_del_lote_tambien_se_anuncia() -> None:
+    reader = FixedReader(reading=ReadResult(content="x" * 40, total_bytes=40))
+    llm = ScriptedLlm(_tools({"tool": "read_file", "path": "big.py"}), json.dumps({"findings": []}))
+    _run(llm, reader, limits=ContextLimits(max_bytes=10))
+    assert "tope del lote a 10 bytes" in llm.calls[-1]["prompt"]
+
+
+def test_outline_apagado_sirve_full_y_lo_avisa() -> None:
+    reader = FixedReader()
+    llm = ScriptedLlm(
+        _tools({"tool": "read_file", "path": "a.py", "mode": "outline"}),
+        json.dumps({"findings": []}),
+    )
+    _run(llm, reader, options=ReviewToolsOptions(read_outline=False))
+    assert reader.modes == ["full"]
+    assert "outline esta desactivado" in llm.calls[-1]["prompt"]
+
+
+def test_outline_encendido_llega_al_lector() -> None:
+    reader = FixedReader()
+    llm = ScriptedLlm(
+        _tools({"tool": "read_file", "path": "a.py", "mode": "outline"}),
+        json.dumps({"findings": []}),
+    )
+    _run(llm, reader, options=ReviewToolsOptions(read_outline=True))
+    assert reader.modes == ["outline"]
+    assert "desactivado" not in llm.calls[-1]["prompt"]
+
+
+def test_un_mode_de_read_file_desconocido_es_error() -> None:
+    reader = FixedReader()
+    llm = ScriptedLlm(
+        _tools({"tool": "read_file", "path": "a.py", "mode": "toc"}),
+        json.dumps({"findings": []}),
+    )
+    result = _run(llm, reader)
+    assert result.tool_calls == 0
+    assert reader.modes == []
+    assert "`mode=toc` no existe" in llm.calls[-1]["prompt"]
+
+
+def test_las_operaciones_se_cuentan_por_herramienta_y_modo(tmp_path: Path) -> None:
+    # 023 M1: `operations` dice cuantas veces el modelo pidio cada modo; es lo que
+    # permite saber si la palanca (`outline`, `regex`) se usa de verdad.
+    llm = ScriptedLlm(
+        _tools(
+            _grep("needle"),
+            {"tool": "grep", "pattern": "needle", "mode": "regex"},
+            _read(APP),
+            _read(APP, start=1, end=2),
+            _read(APP, mode="outline"),
+            {"tool": "list_dir", "path": "src"},
+        ),
+        json.dumps({"findings": []}),
+    )
+    result = _run(
+        llm,
+        build_fixture_reader(tmp_path),
+        limits=ContextLimits(calls_per_turn=6),
+        options=ReviewToolsOptions(read_outline=True),
+    )
+
+    assert result.operations == {
+        "grep:literal": 1,
+        "grep:regex": 1,
+        "list_dir": 1,
+        "read_file:full": 1,
+        "read_file:outline": 1,
+        "read_file:range": 1,
+    }
+
+
+def test_un_grep_sin_coincidencias_tambien_cuenta_como_uso_del_modo() -> None:
+    # Gasto la peticion aunque no encuentre nada: esconderla maquillaria el uso.
+    reader = FixedReader(found=ToolResult(items=()))
+    llm = ScriptedLlm(_tools({"tool": "grep", "pattern": "nada"}), json.dumps({"findings": []}))
+
+    result = _run(llm, reader)
+
+    assert result.operations == {"grep:literal": 1}
+
+
+def test_outline_apagado_cuenta_lo_que_de_verdad_se_sirvio() -> None:
+    # Cae a `full`: el modelo no recibio un indice, asi que no se anota `outline`.
+    reader = FixedReader()
+    llm = ScriptedLlm(
+        _tools({"tool": "read_file", "path": "a.py", "mode": "outline"}),
+        json.dumps({"findings": []}),
+    )
+
+    result = _run(llm, reader, options=ReviewToolsOptions(read_outline=False))
+
+    assert result.operations == {"read_file:full": 1}
+
+
+class _UsageLlm:
+    """Devuelve respuestas con `usage` distinto por turno (024 E9)."""
+
+    def __init__(self, *replies: LlmReply) -> None:
+        self._replies = list(replies)
+        self.calls = 0
+
+    def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        json_mode: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> LlmReply:
+        del system, prompt, max_tokens, json_mode, response_schema
+        reply = self._replies[min(self.calls, len(self._replies) - 1)]
+        self.calls += 1
+        return reply
+
+
+def _turn(text: str, *, prompt: int, completion: int, reasoning: int, cached: int | None):
+    return LlmReply(
+        text=text,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        reasoning_tokens=reasoning,
+        cached_tokens=cached,
+    )
+
+
+def test_el_bucle_separa_prompt_completion_razonamiento_y_cache(tmp_path: Path) -> None:
+    # 024 E9: `usage` sigue siendo la suma para el presupuesto, pero el informe
+    # necesita ver que parte es razonamiento y cuanto descuenta el proveedor.
+    llm = _UsageLlm(
+        _turn(_tools(_read(APP)), prompt=100, completion=20, reasoning=8, cached=40),
+        _turn(json.dumps({"findings": []}), prompt=120, completion=30, reasoning=10, cached=50),
+    )
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert (result.prompt_tokens, result.completion_tokens, result.reasoning_tokens) == (
+        220,
+        50,
+        18,
+    )
+    assert result.usage == 270
+    assert result.cached_tokens == 90
+
+
+def test_un_turno_sin_cache_deja_la_medida_en_none(tmp_path: Path) -> None:
+    # Sumar solo los turnos que lo reportan daria un numero incompleto con aspecto
+    # de medido: `None` es la respuesta honesta (024 E3).
+    llm = _UsageLlm(
+        _turn(_tools(_read(APP)), prompt=100, completion=20, reasoning=8, cached=40),
+        _turn(json.dumps({"findings": []}), prompt=120, completion=30, reasoning=10, cached=None),
+    )
+
+    result = _run(llm, build_fixture_reader(tmp_path))
+
+    assert result.cached_tokens is None
+
+
+def test_sin_turnos_no_hay_medida_de_cache() -> None:
+    result = LoopResult()
+
+    assert result.cached_tokens is None
+
+
+def test_read_state_aparece_tras_el_tool_result_y_no_en_el_prompt_inicial(
+    tmp_path: Path,
+) -> None:
+    # 023 S1: el bloque va al final del ultimo mensaje de usuario, no en el inicial.
+    llm = ScriptedLlm(_tools(_read(APP)), json.dumps({"findings": []}))
+    _run(llm, build_fixture_reader(tmp_path), options=ReviewToolsOptions(read_state=True))
+    first, last = llm.calls[0]["prompt"], llm.calls[-1]["prompt"]
+    assert "LECTURAS" not in first
+    assert "LECTURAS (esta review):" in last
+    assert last.index("</tool_result>") < last.index("LECTURAS")
+
+
+def test_read_state_apagado_no_anade_bloque(tmp_path: Path) -> None:
+    llm = ScriptedLlm(_tools(_read(APP)), json.dumps({"findings": []}))
+    _run(llm, build_fixture_reader(tmp_path))
+    assert "LECTURAS" not in llm.calls[-1]["prompt"]
+
+
+def test_read_state_declara_tipo_y_ref_de_cada_lectura(tmp_path: Path) -> None:
+    llm = ScriptedLlm(
+        _tools(
+            _grep("needle"),
+            _read(APP, start=1, end=2),
+            _read(APP, mode="outline"),
+            _read(APP, ref="base"),
+        ),
+        json.dumps({"findings": []}),
+    )
+    _run(
+        llm,
+        build_fixture_reader(tmp_path),
+        limits=ContextLimits(calls_per_turn=4),
+        options=ReviewToolsOptions(read_state=True, read_outline=True),
+    )
+    prompt = llm.calls[-1]["prompt"]
+    assert f"- {APP} (head): coincidencias" in prompt
+    assert f"- {APP} (head): lineas 1-2" in prompt
+    assert f"- {APP} (head): indice" in prompt
+    assert f"- {APP} (base): completo" in prompt
+
+
+def test_read_state_no_crece_sin_limite(tmp_path: Path) -> None:
+    # 023 S1: el bloque muestra las ultimas lecturas y declara cuantas omite.
+    reader = build_fixture_reader(tmp_path)
+    for index in range(25):
+        (tmp_path / f"f{index}.py").write_text("x = 1\n", encoding="utf-8")
+    llm = ScriptedLlm(
+        _tools(*(_read(f"f{index}.py") for index in range(25))),
+        json.dumps({"findings": []}),
+    )
+    _run(
+        llm,
+        reader,
+        limits=ContextLimits(calls_per_turn=25, max_calls=30, max_turns=5),
+        options=ReviewToolsOptions(read_state=True),
+    )
+    prompt = llm.calls[-1]["prompt"]
+    assert prompt.count("\n- ") == 20
+    assert "5 lecturas anteriores omitidas" in prompt

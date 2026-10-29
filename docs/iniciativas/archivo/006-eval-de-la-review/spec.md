@@ -228,6 +228,15 @@ acceptable:
   fichero y a ≤ 5 líneas (misma tolerancia que el merge entre personas,
   [ADR-0014](../../../adr/0014-criterio-de-merge-entre-personas.md)). Cuando no están,
   casa por contenido: es lo que permite etiquetar los `#1`–`#7`, que no tienen línea.
+
+> **Enmienda (2026-10-17, 023 T1).** La regla «`match` conjuntivo siempre» cambió al
+> medir con dos configuraciones: el mismo defecto redactado distinto puntuaba
+> distinto y un `file` sin línea casaba dos defectos del mismo fichero. El matcher
+> vigente está en [ADR-0025](../../../adr/0025-matcher-del-gold-set-mide-el-defecto.md):
+> `file`+`line` (≤ 5) es ancla primaria y basta **un** fragmento discriminante;
+> sin línea, o sin fichero, siguen siendo conjuntivos. Un hallazgo que casa a la vez
+> `expected` y `must_not_report` es **error** (al cargar si las etiquetas son
+> indistinguibles, al medir si ocurre con un hallazgo), no prioridad de `expected`.
 - `subset` agrupa para reportar (`correctness`, `integracion`, `no_detectado`,
   `tooling`…) y permite el `recall` por subconjunto sin duplicar casos.
 - `must_mention` es opcional y solo lo usa el caso **A**: captura que el fallo se

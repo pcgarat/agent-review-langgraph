@@ -14,9 +14,15 @@ from agent_review.sandbox_runner.runtime import (
     ContainerOutcome,
     ContainerSpec,
     ContainerTimeout,
+    ContainerUnavailable,
     LineSink,
 )
-from agent_review.sandbox_runner.verifier import FixedProfileSource, RunnerError, Verifier
+from agent_review.sandbox_runner.verifier import (
+    FixedProfileSource,
+    RunnerBusy,
+    RunnerError,
+    Verifier,
+)
 
 _PROFILE = {
     "repo": "cqm/x",
@@ -242,6 +248,32 @@ def test_endpoint_verify_rechaza_sin_digest_con_409(monkeypatch, tmp_path) -> No
     assert "ci_image_digest" in response.json()["detail"]
 
 
+def test_endpoint_verify_en_curso_y_pull_son_reintentables(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from agent_review.sandbox_runner import main as runner_main
+
+    class _Falla:
+        def __init__(self, exc: Exception) -> None:
+            self._exc = exc
+
+        def verify(self, request: VerifyRequest) -> None:
+            del request
+            raise self._exc
+
+    settings = runner_main.get_settings()
+    monkeypatch.setattr(settings, "sandbox_runner_token", "change-me")
+    runner_main._verifier = _Falla(RunnerBusy("ya esta en curso"))  # type: ignore[assignment]
+    busy = TestClient(runner_main.app).post("/verify", json=_REQUEST.model_dump(mode="json"))
+    assert busy.status_code == 503
+    assert busy.headers["retry-after"] == "30"
+
+    runner_main._verifier = _Falla(ContainerUnavailable("docker pull fallo"))  # type: ignore[assignment]
+    pull = TestClient(runner_main.app).post("/verify", json=_REQUEST.model_dump(mode="json"))
+    assert pull.status_code == 503
+    runner_main._verifier = None
+
+
 def test_endpoint_verify_exige_token_si_esta_configurado(monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
@@ -297,3 +329,31 @@ def test_sin_targets_explicitos_el_runner_los_deriva_del_parche(tmp_path) -> Non
     _verifier(runtime, _TmpWorkspace()).verify(request)
     targeted = next(spec for spec in runtime.created if spec.argv[:1] == ["bin/phpunit"])
     assert targeted.argv == ["bin/phpunit", "tests/Unit/FooTest.php"]
+
+
+def test_prepare_no_deja_el_token_en_git_config(tmp_path) -> None:
+    from pathlib import Path
+
+    from agent_review.sandbox_runner.workspace import GitWorkspace, WorkspaceUnavailable
+
+    git = Path(tmp_path) / "git"
+    git.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = init ]; then mkdir -p .git; printf '[core]\\n' > .git/config; exit 0; fi\n"
+        'if [ "$1" = remote ]; then printf \'url = %s\\n\' "$4" >> .git/config; exit 0; fi\n'
+        'if [ "$1" = fetch ]; then echo "fatal: token sekreto-sandbox" >&2; exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+    before = set(Path("/tmp").glob("sandbox-*"))
+    workspace = GitWorkspace(git_bin=str(git), git_token="sekreto-sandbox")
+    with pytest.raises(WorkspaceUnavailable, match="\\*\\*\\*") as exc:
+        workspace.prepare(repo="o/r", head_sha="abc", patch="")
+    assert "sekreto-sandbox" not in str(exc.value)
+    created = set(Path("/tmp").glob("sandbox-*")) - before
+    assert len(created) == 1
+    path = created.pop()
+    config = (path / ".git" / "config").read_text(encoding="utf-8")
+    assert "sekreto-sandbox" not in config
+    workspace.cleanup(str(path))

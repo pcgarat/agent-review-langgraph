@@ -98,6 +98,29 @@ def _lower_cap(configured: FindingAction, override: str | None) -> FindingAction
     return configured
 
 
+def reject_if_cap_raised(ceiling: str, override: str) -> None:
+    """El panel no puede guardar un override que suba el techo del YAML.
+
+    `_lower_cap` lo ignora en silencio. Publicar tiene que rechazarlo: si no, la
+    página diría que quedó guardado y la review seguiría con el techo del fichero.
+    Vacío es válido (manda el YAML). Con techo `escalate` cualquier override es
+    un no-op del motor, así que también se rechaza.
+    """
+    text = override.strip()
+    if not text:
+        return
+    try:
+        configured = FindingAction(ceiling.strip())
+        candidate = FindingAction(text)
+    except ValueError:
+        raise PolicyError(f"max_autonomy invalido: {override!r}") from None
+    above = _AUTONOMY_RANK[candidate] > _AUTONOMY_RANK[configured]
+    if configured is FindingAction.ESCALATE or above:
+        raise PolicyError(
+            f"max_autonomy_override {candidate.value!r} supera el techo {configured.value!r}"
+        )
+
+
 def _match_condition(condition: dict[str, Any], finding: Finding) -> bool:
     """Casa una condicion. Todas las claves del `when` deben cumplirse."""
     for key, expected in condition.items():

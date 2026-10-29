@@ -19,6 +19,10 @@ __pycache__/
 # Runtime
 var/
 
+# Frontend (029): el build es de la imagen y las dependencias se reinstalan.
+node_modules/
+frontend/dist/
+
 # Binario local de twg (se copia a mano; ver bin/README.md)
 bin/twg
 

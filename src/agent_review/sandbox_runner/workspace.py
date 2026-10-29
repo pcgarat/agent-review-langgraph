@@ -71,14 +71,18 @@ class GitWorkspace:
         workspace = tempfile.mkdtemp(prefix="sandbox-")
         init = self._git_run(workspace, ["init", "-q"])
         if init.returncode != 0:
-            raise WorkspaceError(f"git init fallo: {init.stderr.strip()}")
-        self._git_run(workspace, ["remote", "add", "origin", self._auth_url(repo)])
-        fetch = self._git_run(workspace, ["fetch", "-q", "--depth", "1", "origin", head_sha])
+            raise WorkspaceError(f"git init fallo: {self._redact(init.stderr)}")
+        # La URL con token va en el argumento de este fetch, no en un remoto:
+        # `remote add` la dejaría en `.git/config`, montado dentro del contenedor
+        # que ejecuta el código del PR.
+        fetch = self._git_run(
+            workspace, ["fetch", "-q", "--depth", "1", self._auth_url(repo), head_sha]
+        )
         if fetch.returncode != 0:
-            raise WorkspaceUnavailable(f"git fetch fallo: {fetch.stderr.strip()}")
+            raise WorkspaceUnavailable(f"git fetch fallo: {self._redact(fetch.stderr)}")
         checkout = self._git_run(workspace, ["checkout", "-q", "FETCH_HEAD"])
         if checkout.returncode != 0:
-            raise WorkspaceError(f"git checkout fallo: {checkout.stderr.strip()}")
+            raise WorkspaceError(f"git checkout fallo: {self._redact(checkout.stderr)}")
         self._apply(workspace, patch)
         return workspace
 
@@ -89,10 +93,16 @@ class GitWorkspace:
             handle.write(patch)
         check = self._git_run(workspace, ["apply", "--check", patch_file])
         if check.returncode != 0:
-            raise WorkspaceError(f"el parche no aplica: {check.stderr.strip()}")
+            raise WorkspaceError(f"el parche no aplica: {self._redact(check.stderr)}")
         applied = self._git_run(workspace, ["apply", patch_file])
         if applied.returncode != 0:
-            raise WorkspaceError(f"git apply fallo: {applied.stderr.strip()}")
+            raise WorkspaceError(f"git apply fallo: {self._redact(applied.stderr)}")
+
+    def _redact(self, text: str) -> str:
+        cleaned = text.strip()
+        if self._token:
+            cleaned = cleaned.replace(self._token, "***")
+        return cleaned
 
     def cleanup(self, workspace: str) -> None:
         import shutil

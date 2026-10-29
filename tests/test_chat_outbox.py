@@ -88,6 +88,13 @@ def test_aviso_de_pausa_sin_approval_falla_al_construirlo() -> None:
         ChatNotice(kind="pause", review_key="k", repo="r", pr_id=1)
 
 
+def test_un_aviso_withdraw_no_necesita_titulo_ni_approval() -> None:
+    notice = ChatNotice(kind="withdraw", review_key="k", repo="r", pr_id=1)
+    assert notice.kind == "withdraw"
+    assert notice.approval is None
+    assert notice.title == ""
+
+
 def test_aviso_de_review_sin_titulo_falla_al_construirlo() -> None:
     with pytest.raises(ValueError, match="titulo"):
         ChatNotice(kind="published", review_key="k", repo="r", pr_id=1, body="x")

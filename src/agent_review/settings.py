@@ -12,9 +12,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # falla al construir `Settings` (arranque), no en la primera review.
 _VCS_PROVIDERS = {"twg", "github"}
 
+# Motores de review (025, ADR-0028). Se elige al arrancar el worker. Un valor
+# distinto aborta el proceso: no hay interruptor por PR ni caida silenciosa.
+_REVIEW_ENGINES = {"llm", "claude"}
+
 # Procesos que tienen contrato de secretos propio (I3). Un `required_in` con otro
 # nombre es un error al construir el descriptor: un secreto que nadie exige nunca.
-PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot"})
+PROCESSES = frozenset({"api", "worker", "fix-worker", "web", "teams-bot", "claude-runner"})
 
 # Condiciones de activacion del contrato (020 §5.3). Lo unico que la declaracion de
 # un campo no puede capturar: el nombre se declara en el `Secret` y aqui vive como se
@@ -30,6 +34,8 @@ _FEATURES: Mapping[str, Callable[[Settings, str], bool]] = {
     "vcs_github": lambda s, _process: s.vcs_provider == "github",
     "llm_legacy": lambda s, _process: s.llm_reviewer_enabled and not s.models_config.strip(),
     "llm_registry": lambda s, _process: s.llm_reviewer_enabled and bool(s.models_config.strip()),
+    # El servicio que clona la exige siempre. El worker, solo en el motor claude.
+    "claude_engine": lambda s, process: process == "claude-runner" or s.review_engine == "claude",
 }
 
 # Contrato extra por proceso que no cabe en el descriptor: el registro declarativo de
@@ -80,6 +86,28 @@ class Secret:
             raise ValueError("un campo `inventory_only` no declara proceso ni condicion")
 
 
+@dataclass(frozen=True)
+class Dial:
+    """Dial que el panel puede publicar (027, ADR-0031).
+
+    Vive en el `metadata` del campo, junto al default. La ayuda es el texto del
+    control. Un `Secret` no puede llevar `Dial`: el panel no publica secretos.
+    """
+
+    section: str
+    help: str
+
+
+# Rango que el panel acepta al publicar los techos del CLI. El entorno puede
+# arrancar fuera de él: ese valor es el inicial del control y se conserva si
+# no se toca. Un guardado nuevo tiene que caer dentro, para que un cero o un
+# typo no deje el worker ocupado días.
+CLAUDE_PANEL_TURNS_MIN = 1
+CLAUDE_PANEL_TURNS_MAX = 2000
+CLAUDE_PANEL_TIMEOUT_MIN_S = 1.0
+CLAUDE_PANEL_TIMEOUT_MAX_S = 21600.0
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -89,6 +117,63 @@ class Settings(BaseSettings):
     # o `github` (API REST). El grafo no lo conoce; solo el `build_vcs` del worker
     # y la verificacion de repo de la API leen esta clave.
     vcs_provider: str = "twg"
+
+    # Motor de la review (025, ADR-0028). `llm` compila el grafo de personas.
+    # `claude` no lo reutiliza: su grafo es otro builder. Se lee al arrancar.
+    review_engine: str = "llm"
+    # Raiz de los artefactos ya validados del motor claude. La ruta relativa
+    # (repo + pr + head_sha) la elige el worker; el CLI no escribe el fichero.
+    claude_artifact_root: str = "var/claude"
+    # Techos del subproceso. Una review corta no los gasta. No es un
+    # presupuesto de tokens: el motor llm sigue midiendose como hasta ahora.
+    # El panel los publica; el worker los manda en POST /run. Sin override,
+    # el runner usa estos valores de su propio entorno.
+    claude_timeout_s: Annotated[
+        float,
+        Dial(
+            "Claude",
+            "Segundos de pared del CLI y del checkout. "
+            f"Entre {CLAUDE_PANEL_TIMEOUT_MIN_S:g} y {CLAUDE_PANEL_TIMEOUT_MAX_S:g}. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 3600.0
+    claude_max_turns: Annotated[
+        int,
+        Dial(
+            "Claude",
+            "Turnos del CLI (--max-turns). "
+            f"Entre {CLAUDE_PANEL_TURNS_MIN} y {CLAUDE_PANEL_TURNS_MAX}. "
+            "Si se agotan, el job se parkea (ceiling) y no se reintenta.",
+        ),
+    ] = 200
+    claude_bin: str = "claude"
+    # Arbol de trabajo del servicio. Distinto del clon bare (`read-ws-`) y de
+    # la raiz donde el worker guarda el JSON ya validado.
+    claude_workspace_root: str = "var/claude-checkout"
+    claude_runner_port: int = 8098
+    # El worker llama a este URL antes del grafo. Vacio en el motor llm.
+    claude_runner_url: Annotated[
+        str,
+        Secret(required_in=frozenset({"worker"}), feature="claude_engine", expect="plain"),
+    ] = ""
+    # Bearer worker → claude-runner. La credencial de clonado es otra.
+    claude_runner_token: Annotated[
+        str,
+        Secret(required_in=frozenset({"worker", "claude-runner"}), feature="claude_engine"),
+    ] = ""
+    # Solo el servicio que clona. Vacio: reutiliza `GITHUB_TOKEN` o `TWG_BBC_TOKEN`
+    # (ADR-0032). Un valor propio sigue siendo el override de solo lectura.
+    claude_git_token: Annotated[
+        str,
+        Secret(inventory_only="vacio: el runner clona con el token de VCS ya configurado"),
+    ] = ""
+    # Fichero 0600 de la sesión. Lo escriben el panel y lo lee el runner.
+    # El worker no lo abre: pregunta GET /session.
+    claude_session_path: str = "var/claude-session/session.json"
+    # Caducidad que pone el panel al guardar. El runner retira el fichero vencido.
+    claude_session_ttl_s: float = 43200.0
+    # Enlace del aviso de Teams. Vacío: el aviso sale sin URL.
+    panel_public_url: str = "http://localhost:8090"
 
     bitbucket_workspace: str = ""
     bitbucket_repo: str = ""
@@ -189,13 +274,20 @@ class Settings(BaseSettings):
     panel_enabled: bool = False
     # Puerto del panel dentro del contenedor; lo publica el perfil `panel`.
     panel_port: int = 8090
-    # Sesion del panel: NO es el bearer de decision. Identifica a la persona y su
-    # rol en la forma `<usuario>:<lector|operador>`; un `lector` puede mirar pero
-    # no ejecutar comandos. Un secreto real por despliegue. Lo exige el `web`
-    # siempre (`panel_always`) y el `api`/`worker` con el panel desplegado.
+    # Nombres de dial, separados por comas, que el panel muestra y no deja cambiar
+    # (027 CFG3). Vacio: el operador puede publicar cualquiera del catalogo.
+    panel_config_lock: str = ""
+    # Token opaco de la sesion del panel: NO es el bearer de decision ni el nombre
+    # de quien actua. La cabecera `X-Panel-Session` debe coincidir con el. Quien
+    # actua es `panel_session_user` y el rol, `panel_session_role` (si el rol esta
+    # vacio y el token legado tiene forma `<usuario>:<rol>`, se usa solo el rol).
+    # Un `lector` puede mirar pero no ejecutar comandos. Lo exige el `web` siempre
+    # (`panel_always`) y el `api`/`worker` con el panel desplegado.
     panel_session_secret: Annotated[
         str, Secret(required_in=frozenset({"api", "worker", "web"}), feature="panel")
     ] = ""
+    panel_session_user: str = ""
+    panel_session_role: str = ""
     # Tope de la consola en vivo por verificacion (lineas del buffer del runner).
     sandbox_console_buffer_lines: int = 2000
 
@@ -251,7 +343,14 @@ class Settings(BaseSettings):
     repo_profile_config: str = "config/repo_profile.emotivoo-v2.yaml"
     # Override del techo de autonomia (D1): solo puede BAJAR el `max_autonomy` del
     # YAML, nunca subirlo. Vacio = manda el YAML versionado.
-    max_autonomy_override: str = ""
+    max_autonomy_override: Annotated[
+        str,
+        Dial(
+            "Política",
+            "Techo de autonomía por debajo del YAML. Vacío: manda "
+            "config/autonomy.yaml. No puede subirlo.",
+        ),
+    ] = ""
     # Plantilla del artefacto con la salida de la herramienta estatica por review.
     # Placeholders: {tool}, {pr_id}, {head_sha}. Debe coincidir con la ruta que
     # publica el CI (emotivoo-v2: var/tooling/<pr_id>/<commit>/phpstan.json).
@@ -299,7 +398,14 @@ class Settings(BaseSettings):
     expected_tools: str = "phpstan"
     # Patrones extra (coma-separados) de ficheros que el scope ignora, ademas de
     # los por defecto (lockfiles, generados, vendor...).
-    scope_ignore: str = ""
+    scope_ignore: Annotated[
+        str,
+        Dial(
+            "Política",
+            "Patrones extra, separados por comas, de ficheros que el alcance ignora "
+            "además de lockfiles, generados y vendor.",
+        ),
+    ] = ""
     # Reintentos de una review ante un fallo transitorio (twg, Teams). Agotados,
     # el job se descarta con el `review_key` en el log para reencolarlo a mano.
     max_review_attempts: int = 3
@@ -335,37 +441,179 @@ class Settings(BaseSettings):
     llm_api_key: Annotated[
         str, Secret(required_in=frozenset({"api", "worker"}), feature="llm_legacy")
     ] = ""
-    llm_max_findings: int = 10
-    llm_budget_tokens_per_pr: int = 2000000
+    llm_max_findings: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope de hallazgos que una persona LLM puede emitir en la review.",
+        ),
+    ] = 10
+    llm_budget_tokens_per_pr: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope de tokens de esa review, compartido por personas, fixer y "
+            "verificador. Al llegar, lo que falte queda budget_exhausted.",
+        ),
+    ] = 2000000
     # Tamano maximo de un lote del `LlmReviewer`, en caracteres de diff (012 C2): se
     # revisan ficheros enteros por lotes; uno que solo no cabe se declara `too_large`.
     # 20 000 con razonamiento (021 R12/R15): con 60 000 el proveedor corta antes de
     # que el modelo responda, y con 30 000 una llamada puede pasar del tope de
     # duracion del stream (~3 min). Un fichero mayor se trocea por hunks (R16).
-    llm_batch_max_chars: int = 20000
+    llm_batch_max_chars: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tamaño de un lote, en caracteres de diff. Un fichero que no cabe se trocea por hunks.",
+        ),
+    ] = 20000
     # Reintentos de un lote ante un fallo transitorio (021 R14): se repite ese lote,
     # no la persona entera; agotados, el lote sale `failed` y se sigue.
-    llm_batch_retries: int = 2
+    llm_batch_retries: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Reintentos de un lote si el proveedor corta, cierra vacío o cierra sin "
+            "JSON. Agotados, el lote sale failed y la review sigue.",
+        ),
+    ] = 2
     # Tope de caracteres del bloque L1 (fichero completo + docs del perfil) por
     # lote (008 CX8 / D12). El diff del lote no se recorta; lo que no cabe se omite.
-    llm_context_max_chars: int = 40000
+    llm_context_max_chars: Annotated[
+        int,
+        Dial(
+            "Presupuesto y lotes",
+            "Tope del bloque de contexto (fichero completo y documentos del perfil) "
+            "por lote. El diff no se recorta.",
+        ),
+    ] = 40000
 
     # Verificador adversarial L2 (009 V8/V11): topes por review y por bucle.
     # Sin binding `verifier` el nodo es paso directo y estos ajustes no se usan.
-    verifier_max_findings: int = 5
-    verifier_max_tool_calls: int = 8
-    verifier_max_context_bytes: int = 60_000
+    verifier_max_findings: Annotated[
+        int,
+        Dial(
+            "Verificador",
+            "Cuántos hallazgos de la review pasa el verificador, los más graves "
+            "primero. El resto queda unverified.",
+        ),
+    ] = 5
+    verifier_max_tool_calls: Annotated[
+        int,
+        Dial("Verificador", "Llamadas a herramientas del verificador por hallazgo."),
+    ] = 8
+    verifier_max_context_bytes: Annotated[
+        int,
+        Dial("Verificador", "Bytes de contexto que el verificador puede pedir por hallazgo."),
+    ] = 60_000
     # Umbral de candidatos mientras 011 no declare `severity_gate` (Q10). Lista
     # separada por comas; el nodo prefiere la clave de la política si existe.
-    verifier_require_verified_for: str = "P0,P1"
+    verifier_require_verified_for: Annotated[
+        str,
+        Dial(
+            "Verificador",
+            "Severidades que exigen veredicto positivo. Si autonomy.yaml declara "
+            "severity_gate.require_verified_for, manda el YAML.",
+        ),
+    ] = "P0,P1"
 
     # Revisor con herramientas de lectura (014 H4/H5): opt-in por rol. Vacío =
     # una llamada por lote como en 008 (cero cambio de coste). Topes por lote del
     # bucle *ReAct*; el primero que se activa al medir es `correctness` (Q1).
-    review_tools_roles: str = ""
-    review_tools_max_turns: int = 4
-    review_tools_max_calls: int = 8
-    review_tools_max_bytes: int = 60_000
+    review_tools_roles: Annotated[
+        str,
+        Dial(
+            "Bucle de lectura",
+            "Roles LLM que pueden leer y hacer grep mientras revisan. "
+            "Vacío: una llamada por lote, sin herramientas.",
+        ),
+    ] = ""
+    review_tools_max_turns: Annotated[
+        int,
+        Dial(
+            "Bucle de lectura",
+            "Turnos con herramientas por lote, sin contar el turno final forzado.",
+        ),
+    ] = 4
+    review_tools_max_calls: Annotated[
+        int, Dial("Bucle de lectura", "Peticiones de herramientas por lote.")
+    ] = 8
+    review_tools_max_bytes: Annotated[int, Dial("Bucle de lectura", "Bytes servidos por lote.")] = (
+        60_000
+    )
+    # Palancas del bucle de lectura (023 F1). Ninguna cambia lo que el *prompt*
+    # anuncia que existe (E11): deciden coste y forma de servir. Con todas en su
+    # default, el comportamiento servido es el de hoy.
+    # Modo por defecto de `grep`: `literal` sirve lo de hoy; `regex` interpreta el
+    # patrón (con el subconjunto portable de G1).
+    review_tools_grep_mode: Annotated[
+        Literal["literal", "regex"],
+        Dial(
+            "Bucle de lectura",
+            "Modo por defecto de grep: literal o regex. Un regex pedido explícito "
+            "se atiende igual con el default literal.",
+        ),
+    ] = "literal"
+    # Habilita `mode="outline"` en `read_file` (R1). Apagado, pedirlo se sirve como
+    # `full` y se avisa: el modelo no gasta una llamada en balde sin saberlo.
+    review_tools_read_outline: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Permite mode=outline en read_file. Apagado, ese modo se sirve como full y se avisa.",
+        ),
+    ] = False
+    # Bloque de lecturas de la review en el bucle (S1). Apagado, no viaja al prompt;
+    # las citas se siguen validando con el registro.
+    review_tools_read_state: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Incluye en el prompt el bloque de lecturas ya hechas en la review.",
+        ),
+    ] = False
+    # Aviso de corte con el tamaño real (R1). Apagado, el corte se aplica igual pero
+    # no se anuncia: solo válido para reproducir el *prompt* viejo.
+    review_tools_truncation_notice: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Al cortar un fichero, el aviso incluye el tamaño real.",
+        ),
+    ] = True
+    # S1: una petición no atendida recibe un error explícito. Apagado, el excedente
+    # se descarta con un AVISO (comportamiento de hoy).
+    review_tools_strict_calls: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Una petición no atendida es un error. Apagado, se descarta con un aviso.",
+        ),
+    ] = False
+    # Peticiones por turno (P1/E14). Se sube junto con `review_tools_max_calls`: con 5
+    # por turno y 8 totales el lote se agota en dos turnos.
+    review_tools_calls_per_turn: Annotated[
+        int, Dial("Bucle de lectura", "Peticiones atendidas en un mismo turno.")
+    ] = 3
+    # Precarga L1 en el bucle (C1/E8). Apagada, el *prompt* base del lote baja y el
+    # modelo debe leer lo que necesite (cuesta turnos).
+    review_tools_precache_context: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Precarga el contexto L1 en el bucle. "
+            "Apagado, el modelo tiene que leerlo y gasta turnos.",
+        ),
+    ] = True
+    # Caché de E/S por review (C1/E13). Ahorra E/S, no *prompt*.
+    review_tools_io_cache: Annotated[
+        bool,
+        Dial(
+            "Bucle de lectura",
+            "Reutiliza lecturas de la misma review. Ahorra lectura del repo, no tokens del prompt.",
+        ),
+    ] = False
 
     @property
     def fix_recipes_list(self) -> list[str]:
@@ -381,6 +629,32 @@ class Settings(BaseSettings):
     def review_tools_roles_list(self) -> list[str]:
         return [item.strip() for item in self.review_tools_roles.split(",") if item.strip()]
 
+    @field_validator("review_tools_grep_mode", mode="before")
+    @classmethod
+    def _normalize_grep_mode(cls, value: object) -> object:
+        """Normaliza el modo de `grep` y falla en el arranque si no es válido."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in {"literal", "regex"}:
+                raise ValueError(
+                    f"REVIEW_TOOLS_GREP_MODE debe ser `literal` o `regex`, no {value!r}"
+                )
+            return normalized
+        return value
+
+    @field_validator("review_engine", mode="before")
+    @classmethod
+    def _normalize_review_engine(cls, value: object) -> object:
+        """Normaliza el motor. Un valor desconocido aborta el arranque."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized not in _REVIEW_ENGINES:
+                raise ValueError(
+                    f"REVIEW_ENGINE debe ser uno de {sorted(_REVIEW_ENGINES)}, no {value!r}"
+                )
+            return normalized
+        return value
+
     @field_validator("vcs_provider", mode="before")
     @classmethod
     def _normalize_vcs_provider(cls, value: object) -> object:
@@ -394,6 +668,24 @@ class Settings(BaseSettings):
                 )
             return normalized
         return value
+
+    def configured_repo(self) -> str:
+        """Identidad `owner/repo` de este despliegue, o "" si no esta configurada.
+
+        El formato es el mismo en los dos proveedores (`workspace/repo` en
+        Bitbucket, `owner/repo` en GitHub). El panel la usa para rechazar la URL
+        de otro repo sin tener el token; el worker, para no revisar el PR con el
+        mismo numero del repo configurado.
+        """
+        if self.vcs_provider == "github":
+            owner = self.github_owner.strip()
+            name = self.github_repo.strip()
+        else:
+            owner = self.bitbucket_workspace.strip()
+            name = self.bitbucket_repo.strip()
+        if not (owner and name):
+            return ""
+        return f"{owner}/{name}"
 
 
 @lru_cache
@@ -474,7 +766,35 @@ def secrets_for(settings: Settings, process: str) -> list[str]:
     for feature in _EXTRA_BY_PROCESS.get(process, ()):
         if _FEATURES[feature](settings, process):
             insecure.extend(_unresolved_registry_secrets(settings))
+    missing_clone = _missing_clone_credential(settings, process)
+    if missing_clone:
+        insecure.append(missing_clone)
     return insecure
+
+
+def clone_token(settings: Settings) -> str:
+    """Credencial con la que el runner hace el fetch.
+
+    `CLAUDE_GIT_TOKEN` gana si está puesto: es el override de solo lectura.
+    Si no, vale el token con el que el worker ya publica (`GITHUB_TOKEN` o
+    `TWG_BBC_TOKEN`). El subproceso `claude` no lo hereda.
+    """
+    if not is_missing(settings.claude_git_token):
+        return settings.claude_git_token.strip()
+    if settings.vcs_provider == "github":
+        return settings.github_token.strip()
+    return settings.twg_bbc_token.strip()
+
+
+def _missing_clone_credential(settings: Settings, process: str) -> str | None:
+    """Nombre del token que falta para clonar, o `None` si el runner puede hacerlo."""
+    if process != "claude-runner":
+        return None
+    if not is_missing(clone_token(settings)):
+        return None
+    if settings.vcs_provider == "github":
+        return "GITHUB_TOKEN"
+    return "TWG_BBC_TOKEN"
 
 
 def _unresolved_registry_secrets(settings: Settings) -> list[str]:
@@ -581,6 +901,17 @@ def require_teams_bot_secrets(settings: Settings) -> None:
     if not is_production(settings):
         return
     _raise_if_insecure(teams_bot_insecure_secrets(settings))
+
+
+def require_claude_runner_secrets(settings: Settings) -> None:
+    """Contrato del servicio que clona y ejecuta el CLI (025 R4).
+
+    Exige el bearer y la credencial de clonado. No exige el token con el que
+    el worker publica en el PR: ese proceso no lo recibe.
+    """
+    if not is_production(settings):
+        return
+    _raise_if_insecure(secrets_for(settings, "claude-runner"))
 
 
 def _raise_if_insecure(insecure: list[str]) -> None:

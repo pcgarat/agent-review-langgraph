@@ -216,9 +216,16 @@ def test_verifications_sobrevive_pausa_hitl_y_reanudacion(caplog) -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,

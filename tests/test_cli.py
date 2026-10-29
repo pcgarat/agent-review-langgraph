@@ -9,10 +9,13 @@ from agent_review.domain.models import (
     DecisionOutcome,
     FindingAction,
     FindingDecision,
+    FixWaitRequest,
     PendingDecision,
     ReviewRequest,
     Severity,
+    VerifyJob,
 )
+from agent_review.domain.paused import PauseKind
 from agent_review.paused_store import InMemoryPausedStore
 from agent_review.queue import InMemoryReviewQueue
 
@@ -135,6 +138,93 @@ def test_build_decision_rechaza_expired() -> None:
     items = [FindingDecision(finding_id="f1", outcome=DecisionOutcome.EXPIRED)]
     with pytest.raises(DecisionError, match="expired"):
         build_decision(paused, actor="alice", items=items, reviewed_key=REVIEW_KEY)
+
+
+def test_cli_decide_drop_en_publicacion(stores) -> None:
+    paused, queue = stores
+    approval = _approval().model_copy(update={"pause_kind": "publication"})
+    paused.pause(_request(), approval)
+
+    code = cli.main(["decide", REVIEW_KEY, "--actor", "alice", "--drop", "f1"])
+
+    assert code == 0
+    job = queue.dequeue()
+    assert job is not None and job.decision is not None
+    assert job.decision.outcome_for("f1") is DecisionOutcome.DROPPED
+
+
+def test_cli_decide_reject_en_publicacion_no_encola(stores, capsys) -> None:
+    paused, queue = stores
+    approval = _approval().model_copy(update={"pause_kind": "publication"})
+    paused.pause(_request(), approval)
+
+    code = cli.main(["decide", REVIEW_KEY, "--actor", "alice", "--reject", "f1"])
+
+    assert code == 2
+    assert "no permitido" in capsys.readouterr().err
+    assert len(queue) == 0
+
+
+def test_cli_list_no_revienta_con_una_pausa_de_fix(stores, capsys) -> None:
+    paused, _queue = stores
+    paused.pause(_request(), _approval())
+    fix_request = ReviewRequest(
+        repo="cqm/emotivoo-v2", pr_id=42, head_sha="fixsha", pipeline_id="8"
+    )
+    paused.pause(
+        fix_request,
+        FixWaitRequest(
+            review_key=fix_request.review_key,
+            repo=fix_request.repo,
+            pr_id=fix_request.pr_id,
+            head_sha=fix_request.head_sha,
+            jobs=[
+                VerifyJob(
+                    run_key=f"{fix_request.review_key}:f1:1",
+                    finding_id="f1",
+                    attempt=1,
+                    repo=fix_request.repo,
+                    head_sha=fix_request.head_sha,
+                    patch="diff",
+                )
+            ],
+        ),
+        kind=PauseKind.FIX,
+    )
+    assert cli.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert REVIEW_KEY in out
+    assert "verificacion de fix" in out
+    assert "Traceback" not in out
+
+
+def test_cli_decide_una_pausa_de_fix_no_encola(stores, capsys) -> None:
+    paused, queue = stores
+    request = _request()
+    paused.pause(
+        request,
+        FixWaitRequest(
+            review_key=request.review_key,
+            repo=request.repo,
+            pr_id=request.pr_id,
+            head_sha=request.head_sha,
+            jobs=[
+                VerifyJob(
+                    run_key=f"{request.review_key}:f1:1",
+                    finding_id="f1",
+                    attempt=1,
+                    repo=request.repo,
+                    head_sha=request.head_sha,
+                    patch="diff",
+                )
+            ],
+        ),
+        kind=PauseKind.FIX,
+    )
+    code = cli.main(["decide", REVIEW_KEY, "--actor", "alice", "--approve", "f1"])
+    assert code == 2
+    assert "fix" in capsys.readouterr().err
+    assert len(queue) == 0
 
 
 def test_build_decision_rechaza_review_key_ajena() -> None:

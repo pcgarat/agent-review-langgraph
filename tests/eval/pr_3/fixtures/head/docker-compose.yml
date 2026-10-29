@@ -1,0 +1,160 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    command: uvicorn agent_review.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      # La API deposita aqui los artefactos que el worker lee (Fase 1).
+      - ./var:/app/var
+      - ./config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: python -m agent_review.worker.main
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://reviews:${POSTGRES_PASSWORD:-reviews}@postgres:5432/reviews
+      REDIS_URL: redis://redis:6379/0
+      # El worker necesita invocar twg dentro del contenedor.
+      TWG_BIN: twg
+      # Credencial de servicio de twg (Bitbucket/Jira). Llega por `env_file: .env`
+      # como TWG_BBC_TOKEN/TWG_SITE/TWG_USER/TWG_TOKEN: no hay fichero de auth en
+      # el contenedor ni montaje del ~/.config/twg del host.
+    volumes:
+      - ./config:/app/config:ro
+      # Artefactos con la salida de herramientas del CI (Fase 1, solo lectura).
+      - ./var:/app/var:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      # El worker no escucha: un hilo de latido refresca este fichero cada pocos
+      # segundos. Un fichero viejo o ausente = proceso vivo pero colgado (o muerto).
+      test: ["CMD", "python", "-c", "import os, time, sys; p='/tmp/reviews-worker-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - reviews
+
+  # Fase 3-E7: worker de fixes. Proceso aparte del worker de reviews: consume la
+  # wave de `reviews:fixes`, la verifica con el sandbox-runner y encola la
+  # reanudacion en `reviews:jobs`. Vive AISLADO: no monta `docker.sock`, no tiene
+  # `TWG_*` ni el token de decision, no habla con Postgres y NO publica nada en el
+  # PR (un unico escritor: el worker de reviews). Solo necesita Redis y el runner.
+  fix-worker:
+    build: .
+    restart: unless-stopped
+    command: python -m agent_review.fixworker.main
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # Sin acceso al proveedor de VCS ni a las credenciales de Bitbucket.
+      TWG_BBC_TOKEN: ""
+      TWG_TOKEN: ""
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      redis:
+        condition: service_started
+      sandbox-runner:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time, sys; p='/tmp/reviews-fix-worker-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 60 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - reviews
+
+  # Fase 3: verifica el parche de un fix con la imagen del CI por digest. Executa
+  # codigo de PRs de terceros, asi que vive AISLADO: no monta ningun socket de
+  # Docker del host (habla con su propio demonio rootless via el CLI `docker`),
+  # no publica puertos y solo es alcanzable por el worker en la red interna.
+  sandbox-runner:
+    build:
+      context: .
+      args:
+        SANDBOX_RUNNER: "true"
+    restart: unless-stopped
+    command: python -m agent_review.sandbox_runner.main
+    env_file: .env
+    environment:
+      # El runner no revisa nada: no necesita las credenciales de Bitbucket del
+      # worker (TWG_*). Solo clona con su token de solo lectura y ejecuta la imagen.
+      TWG_BBC_TOKEN: ""
+    volumes:
+      - ./config:/app/config:ro
+      # El socket del demonio DEDICADO del runner (rootless), en el path por
+      # defecto del CLI. Nunca el del worker ni el del host con privilegios.
+      - /run/user/1000/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/healthz').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - reviews
+    # Sin `ports`: solo alcanzable por el worker dentro de la red de compose.
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reviews
+      # Contrasena parametrizable: en local vale el default; en un despliegue se
+      # inyecta POSTGRES_PASSWORD por entorno (p. ej. desde los secretos).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reviews}
+      POSTGRES_DB: reviews
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reviews"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - reviews
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - reviews
+
+volumes:
+  pg_data:
+
+networks:
+  reviews:
+    driver: bridge

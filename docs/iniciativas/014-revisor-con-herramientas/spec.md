@@ -218,11 +218,16 @@ peticiones (Q2); las que sobran se descartan y se le avisa al modelo en el resul
   agote `REVIEW_TOOLS_MAX_CALLS`.
 - **Q3 — ¿L1 sigue precargando el fichero completo si hay herramientas?**
   *Resuelta (2026-10-16):* sí, como punto de partida. Antes de cambiarlo se compara
-  con 006 contra la variante sin precarga.
+  con 006 contra la variante sin precarga. *Actualizada (2026-10-17):* 023 C1 añade
+  `REVIEW_TOOLS_PRECACHE_CONTEXT` (default `on`) y solo afecta al camino con
+  herramientas; el default se fija con la medida de 023 M1.
 - **Q4 — ¿Qué ficheros lleva un caso del *gold set*?** *Resuelta (2026-10-16):* los
   de los **directorios tocados por el diff** más los que lea la grabación, a
   `head_sha` y a `base_sha`. Un cambio de *prompt* que lee un fichero cercano no
-  rompe el caso, y no se versiona el repo entero.
+  rompe el caso, y no se versiona el repo entero. *Actualizada (2026-10-17):* el
+  *gold set* **no** trae `review_context`, así que 023 M1 no puede medir
+  `PRECACHE_CONTEXT` con él (Q4 de 023): o se añade un caso con contexto o ese flag
+  se declara `no medido`.
 - **Q5 — ¿Reintento por turno dentro del bucle?** *Resuelta (2026-10-16):* no. Un
   fallo transitorio sube y la `RetryPolicy` repite la persona entera, como manda
   [ADR-0007](../../adr/0007-reintento-en-dos-capas.md). Si el coste de los turnos

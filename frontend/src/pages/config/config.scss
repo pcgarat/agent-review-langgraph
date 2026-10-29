@@ -1,0 +1,65 @@
+// Solo lo que CoreUI no da. `.eyebrow`, `.num` y el tema viven en
+// `styles/panel.scss`; aquí, la forma de un dial y la barra de guardado.
+
+.config-dial {
+  height: 100%;
+  padding-bottom: 0.25rem;
+}
+
+// El nombre y su Restaurar comparten línea: separarlos dejaría el botón lejos del
+// control al que pertenece y con dos columnas se pulsaría el de al lado.
+.config-dial-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.config-dial-name {
+  margin-bottom: 0;
+  font-family: var(--cui-font-monospace);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.config-dial-value {
+  font-size: 0.72rem;
+}
+
+// El ancho del control no sigue al de la columna: una caja de 600 px para «200»
+// deja el número flotando y en móvil se sale. Se queda en un ancho legible y el
+// interruptor no necesita ninguno.
+.config-dial-control {
+  max-width: 22rem;
+  margin-top: 0.35rem;
+}
+
+.config-dial-help {
+  margin-top: 0.35rem;
+}
+
+// La barra se queda pegada abajo mientras haya cambios: el formulario son cinco
+// secciones y el botón de guardar no puede quedar a dos pantallas de scroll.
+.config-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--cui-border-color);
+  border-radius: var(--cui-border-radius, 0.375rem);
+  background-color: var(--cui-card-bg);
+  box-shadow: 0 -0.5rem 1rem rgb(0 0 0 / 30%);
+
+  .small {
+    margin-inline-end: auto;
+  }
+}
+
+.config-pins code {
+  font-size: 0.78rem;
+}

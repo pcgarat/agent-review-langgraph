@@ -12,7 +12,8 @@ from agent_review.domain.models import ApprovalRequest, FixWaitRequest, ReviewRe
 logger = logging.getLogger(__name__)
 
 # Se espera una decision humana. Pasado el TTL, la review se reanuda con
-# `expired` (se publica "sin decision"), nunca se deja colgada para siempre.
+# `expired` (se publica "sin decision"), salvo la pausa de publicación, que
+# se reanuda con `dropped` y no escribe en el PR. Nunca se deja colgada.
 DEFAULT_DECISION_TTL_S = 7 * 24 * 3600.0
 
 

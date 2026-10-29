@@ -33,6 +33,10 @@ class ReviewHistory(Protocol):
 
     def prune(self, *, older_than_days: float, now: datetime | None = None) -> int: ...
 
+    def forget(self, review_key: str) -> None:
+        """Quita esa ejecucion del historico. Un borrado no es un cierre."""
+        ...
+
 
 def _matches(summary: ReviewSummary, repo: str | None, pr_id: int | None) -> bool:
     return (repo is None or summary.repo == repo) and (pr_id is None or summary.pr_id == pr_id)
@@ -57,6 +61,9 @@ class InMemoryReviewHistory:
         for key in old:
             del self._items[key]
         return len(old)
+
+    def forget(self, review_key: str) -> None:
+        self._items.pop(review_key, None)
 
 
 class RedisReviewHistory:
@@ -123,3 +130,12 @@ class RedisReviewHistory:
         except redis.RedisError as exc:
             logger.warning("No se pudo podar el histórico: %s", exc)
             return 0
+
+    def forget(self, review_key: str) -> None:
+        try:
+            pipe = self._redis.pipeline()
+            pipe.zrem(INDEX_KEY, review_key)
+            pipe.hdel(DATA_KEY, review_key)
+            pipe.execute()
+        except redis.RedisError as exc:
+            logger.warning("No se pudo quitar %s del histórico: %s", review_key, exc)

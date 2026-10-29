@@ -64,6 +64,11 @@ def _old_insecure_secrets(settings: Settings) -> list[str]:
             insecure.append("SANDBOX_GIT_TOKEN")
     if settings.panel_enabled:
         insecure.extend(_old_panel_insecure_secrets(settings))
+    if settings.review_engine == "claude":
+        if not settings.claude_runner_url.strip():
+            insecure.append("CLAUDE_RUNNER_URL")
+        if is_missing(settings.claude_runner_token):
+            insecure.append("CLAUDE_RUNNER_TOKEN")
     return insecure
 
 
@@ -79,6 +84,21 @@ def _old_fix_worker_insecure_secrets(settings: Settings) -> list[str]:
         insecure.append("SANDBOX_RUNNER_URL")
     if is_missing(settings.sandbox_runner_token):
         insecure.append("SANDBOX_RUNNER_TOKEN")
+    return insecure
+
+
+def _old_claude_runner_insecure_secrets(settings: Settings) -> list[str]:
+    """Bearer siempre. El clon usa el token de VCS salvo override `CLAUDE_GIT_TOKEN`."""
+    insecure: list[str] = []
+    if is_missing(settings.claude_runner_token):
+        insecure.append("CLAUDE_RUNNER_TOKEN")
+    if settings.vcs_provider == "github":
+        provider = settings.github_token
+    else:
+        provider = settings.twg_bbc_token
+    if is_missing(settings.claude_git_token) and is_missing(provider):
+        name = "GITHUB_TOKEN" if settings.vcs_provider == "github" else "TWG_BBC_TOKEN"
+        insecure.append(name)
     return insecure
 
 
@@ -103,6 +123,7 @@ _OLD = {
     "fix-worker": _old_fix_worker_insecure_secrets,
     "web": _old_panel_insecure_secrets,
     "teams-bot": _old_teams_bot_insecure_secrets,
+    "claude-runner": _old_claude_runner_insecure_secrets,
 }
 
 

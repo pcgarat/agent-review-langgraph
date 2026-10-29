@@ -10,9 +10,26 @@ import uuid
 from dataclasses import dataclass
 
 from agent_review.errors import PermanentError, TransientError
-from agent_review.ports.context import Ref, is_denied
+from agent_review.globs import path_matches
+from agent_review.outline import outline_text
+from agent_review.ports.context import (
+    GrepMode,
+    ReadMode,
+    ReadResult,
+    Ref,
+    ToolError,
+    ToolResult,
+    is_denied,
+    portable_pattern,
+    slice_lines,
+    truncate_bytes,
+)
 
 logger = logging.getLogger(__name__)
+
+# Prefijo del clon *bare* (ADR-0018). El checkout de Claude no puede usarlo:
+# un arbol de trabajo y un clon sin arbol son contratos distintos.
+BARE_CLONE_PREFIX = "read-ws-"
 
 # Limite de log que viaja al worker: suficiente para diagnosticar, nunca el volcado.
 _TAIL_CHARS = 4000
@@ -77,8 +94,14 @@ class ReadWorkspace:
         ref: Ref = "head",
         start: int | None = None,
         end: int | None = None,
-    ) -> str | None:
-        """`git show <sha>:<path>`; `None` si la ruta no existe en ese commit."""
+        mode: ReadMode = "full",
+    ) -> ReadResult | None:
+        """`git show <sha>:<path>`; `None` si la ruta no existe en ese commit.
+
+        El rango se aplica **antes** del recorte: pedir `start=900` de un fichero
+        grande no puede devolver vacio porque el tope se gasto en las primeras
+        lineas. `total_bytes` es el tamaño del blob completo, ya leido por `git`.
+        """
         _reject_denied(path, self._denylist)
         sha = self._sha(ref)
         if sha is None:
@@ -86,43 +109,155 @@ class ReadWorkspace:
         result = self._run(["show", f"{sha}:{path}"])
         if result is None or result.returncode != 0:
             return None
-        return _slice(result.stdout[:_MAX_READ_BYTES], start, end)
+        text = result.stdout
+        total_bytes = len(text.encode("utf-8"))
+        if mode == "outline":
+            index = outline_text(path, text)
+            if index is None:
+                raise ToolError(f"no se puede indexar {path}; pide `start`/`end` tras un `grep`")
+            return ReadResult(content=index, total_bytes=total_bytes)
+        if mode != "full":
+            raise ToolError(f"mode={mode!r} no existe; usa `full` u `outline`")
+        content, served_range = slice_lines(text, start, end)
+        content, truncated = truncate_bytes(content, self._max_bytes)
+        return ReadResult(
+            content=content,
+            total_bytes=total_bytes,
+            truncated=truncated,
+            served_range=served_range,
+        )
 
-    def grep(self, pattern: str, *, glob: str | None = None) -> list[str]:
-        """`git grep -F` literal sobre `head_sha`; vetadas fuera y tope de coincidencias."""
+    def grep(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        path: str | None = None,
+        ref: Ref = "head",
+        mode: GrepMode = "literal",
+        files_only: bool = False,
+    ) -> ToolResult:
+        """`git grep -F`/`-E` sobre el lado pedido; vetadas fuera y tope.
+
+        En `regex` el patron pasa por el dialecto portable (ADR-0027) **antes** de
+        llegar a `git grep -E`: la cadena canonica es la misma que compilan el
+        fixture y el VCS. Un patron invalido o no portable es `ToolError`, nunca
+        «sin coincidencias» (el codigo 2 de `git grep` tampoco se traga).
+        """
         if not pattern:
-            return []
-        args = ["grep", "-n", "-I", "-F", "--no-color", "-e", pattern, self.head_sha]
-        if glob:
-            args += ["--", glob]
+            return ToolResult()
+        effective = portable_pattern(pattern) if mode == "regex" else pattern
+        sha = self._sha(ref)
+        if sha is None:
+            raise ValueError(f"la ref {ref!r} no esta disponible en este workspace")
+        flag = "-E" if mode == "regex" else "-F"
+        args = ["grep", "-n", "-I", flag, "--no-color", "-e", effective, sha]
         result = self._run(args)
-        if result is None or result.returncode not in (0, 1):
-            # 1 = sin coincidencias; cualquier otro codigo es un fallo del grep.
-            return []
-        prefix = f"{self.head_sha}:"
+        if result is None:
+            raise ToolError(
+                "el grep excedio el tiempo del workspace; acota con `path`/`glob` "
+                "o usa `files_only`"
+            )
+        if result.returncode not in (0, 1):
+            # 1 es «sin coincidencias»; cualquier otro codigo es un fallo real y
+            # decirlo es mejor que devolver una lista vacia que parece un resultado.
+            detail = (result.stderr or "").strip()[:300] or f"codigo {result.returncode}"
+            raise ToolError(f"git grep no pudo buscar: {detail}")
+        prefix = f"{sha}:"
+        path_prefix = _normalize_dir(path)
         matches: list[str] = []
+        all_files: set[str] = set()
+        listed: set[str] = set()
+        total = 0
         for line in result.stdout.splitlines():
             # `git grep <sha>` prefija cada linea con `<sha>:` y no deja espacio tras
             # la linea (`path:line:texto`). Se normaliza a `path:line: texto` para que
             # la cita sea la misma en los tres adaptadores (contrato del puerto).
             normalized = line[len(prefix) :] if line.startswith(prefix) else line
-            path, _, rest = normalized.partition(":")
-            line_number, _, text = rest.partition(":")
-            if is_denied(path, self._denylist):
+            file_path, _, rest = normalized.partition(":")
+            if (
+                path_prefix
+                and file_path != path_prefix
+                and not file_path.startswith(f"{path_prefix}/")
+            ):
                 continue
-            matches.append(f"{path}:{line_number}: {text.strip()}")
-            if len(matches) >= self._max_matches:
-                break
-        return matches
+            # `glob` se mide contra la ruta relativa a `path` y lo aplica este lado:
+            # el de `git` (pathspec) no es el mismo glob (`*` cruza directorios).
+            if glob and not path_matches(_under(file_path, path_prefix), glob):
+                continue
+            line_number, _, text = rest.partition(":")
+            if is_denied(file_path, self._denylist):
+                continue
+            if files_only:
+                all_files.add(file_path)
+                if file_path in listed:
+                    continue
+                listed.add(file_path)
+                if len(matches) < self._max_matches:
+                    matches.append(file_path)
+                continue
+            total += 1
+            if len(matches) < self._max_matches:
+                matches.append(f"{file_path}:{line_number}: {text.strip()}")
+        if files_only:
+            total = len(all_files)
+        return ToolResult(
+            items=tuple(matches),
+            total=total,
+            truncated=total > len(matches),
+        )
 
-    def tree(self, path: str = "") -> list[str]:
-        """`git ls-tree` del directorio. Nombres directos, ordenados."""
+    def tree(
+        self,
+        path: str = "",
+        *,
+        glob: str | None = None,
+        depth: int = 1,
+    ) -> ToolResult:
+        """`git ls-tree` del directorio, con profundidad y glob acotados."""
+        if depth < 1:
+            raise ToolError(f"`depth` debe ser >= 1 (recibido {depth})")
         sha = self.head_sha
         target = f"{sha}:{path}" if path else sha
-        result = self._run(["ls-tree", "--name-only", target])
-        if result is None or result.returncode != 0:
-            return []
-        return sorted(result.stdout.splitlines())
+        # Con `depth > 1`, `-r -t` incluye los subarboles: el listado es el mismo
+        # arbol logico que sirven el fixture y el VCS, no solo las hojas.
+        args = ["ls-tree", "-r", "-t", target] if depth > 1 else ["ls-tree", target]
+        result = self._run(args)
+        if result is None:
+            raise ToolError(
+                "git ls-tree excedio el tiempo; "
+                f"acota con `depth` o lista el padre de {path or '.'}"
+            )
+        if result.returncode != 0:
+            # `ls-tree` falla igual para un fichero y para una ruta ausente; el
+            # tipo lo dice. Vacio e inexistente no son lo mismo (L1).
+            if path and self._is_file(target):
+                raise ToolError(f"`{path}` es un fichero, no un directorio; usa `read_file`")
+            raise ToolError(f"no se pudo listar `{path or '.'}`: {_tail(result)}")
+        prefix = _normalize_dir(path)
+        names: list[str] = []
+        for line in result.stdout.splitlines():
+            entry = _ls_tree_entry(line)
+            if not entry:
+                continue
+            # `ls-tree <sha>:<dir>` devuelve rutas relativas a `<dir>`; sobre la
+            # raiz (`<sha>`) las devuelve completas.
+            under = bool(prefix) and entry.startswith(f"{prefix}/")
+            relative = entry[len(prefix) + 1 :] if under else entry
+            if len(relative.split("/")) > depth:
+                continue
+            full = entry if under else (f"{prefix}/{relative}" if prefix else relative)
+            if is_denied(full, self._denylist):
+                continue
+            if glob and not path_matches(relative, glob):
+                continue
+            names.append(relative)
+        items = tuple(sorted(names))
+        return ToolResult(items=items, total=len(items))
+
+    def _is_file(self, target: str) -> bool:
+        probe = self._run(["cat-file", "-t", target])
+        return probe is not None and probe.returncode == 0 and probe.stdout.strip() == "blob"
 
     def cleanup(self) -> None:
         shutil.rmtree(self.directory, ignore_errors=True)
@@ -148,10 +283,6 @@ class ReadWorkspace:
         except FileNotFoundError:
             logger.error("workspace de lectura: no se encontro el binario %r", self._git)
             return None
-
-
-# Tope duro del `show` antes del recorte por rango: un fichero enorme no se lee entero.
-_MAX_READ_BYTES = 500_000
 
 
 class ReadWorkspaceManager:
@@ -270,7 +401,7 @@ class ReadWorkspaceManager:
             self._by_key.clear()
 
     def _clone(self, *, repo: str, head_sha: str, base_sha: str) -> ReadWorkspace:
-        directory = tempfile.mkdtemp(prefix="read-ws-")
+        directory = tempfile.mkdtemp(prefix=BARE_CLONE_PREFIX)
         url = self._url_template.format(token=self._token, repo=repo)
         self._init_bare(directory, url)
         self._fetch(directory, head_sha, required=True)
@@ -342,13 +473,22 @@ def _reject_denied(path: str, denylist: tuple[str, ...]) -> None:
         raise PathDenied(f"la ruta {path} esta vetada para lectura")
 
 
-def _slice(text: str, start: int | None, end: int | None) -> str:
-    if start is None and end is None:
-        return text
-    lines = text.splitlines()
-    first = max(0, (start or 1) - 1)
-    last = end if end is not None else len(lines)
-    return "\n".join(lines[first:last])
+def _normalize_dir(path: str | None) -> str:
+    normalized = (path or "").strip()
+    while normalized.startswith(("./", "/")):
+        normalized = normalized[2:] if normalized.startswith("./") else normalized[1:]
+    return normalized.rstrip("/")
+
+
+def _under(relative: str, prefix: str) -> str:
+    """Ruta `relative` vista desde `prefix`; el glob se mide ahi (ADR-0027)."""
+    return relative[len(prefix) + 1 :] if prefix else relative
+
+
+def _ls_tree_entry(line: str) -> str:
+    """Ruta de una linea `<modo> <tipo> <sha>\\t<ruta>` de `git ls-tree`."""
+    _, _, entry = line.partition("\t")
+    return entry
 
 
 def _tail(result: subprocess.CompletedProcess[str] | None) -> str:

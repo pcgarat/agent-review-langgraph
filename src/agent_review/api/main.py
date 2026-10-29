@@ -11,8 +11,8 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from agent_review.adapters.tooling_source import FileToolingOutputSource, validate_tooling_template
-from agent_review.decision import build_decision
-from agent_review.domain.models import FindingDecision, ReviewRequest
+from agent_review.decision import DecisionError, build_decision, require_decision_item
+from agent_review.domain.models import ReviewRequest
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.domain.pending import InMemoryPendingStore, PendingStatus
 from agent_review.idempotency import (
@@ -135,20 +135,8 @@ def _verify_decision_token(settings: Settings, authorization: str | None) -> Non
 
 
 def _expected_repo(settings: Settings) -> str:
-    """Identidad `owner/repo` del repo que revisa este despliegue, o "" si no hay.
-
-    El formato es el mismo en los dos proveedores (`workspace/repo` en Bitbucket,
-    `owner/repo` en GitHub), que es como lo manda el CI en el payload.
-    """
-    if settings.vcs_provider == "github":
-        owner = settings.github_owner.strip()
-        name = settings.github_repo.strip()
-    else:
-        owner = settings.bitbucket_workspace.strip()
-        name = settings.bitbucket_repo.strip()
-    if not (owner and name):
-        return ""
-    return f"{owner}/{name}"
+    """Identidad `owner/repo` del repo que revisa este despliegue, o "" si no hay."""
+    return settings.configured_repo()
 
 
 def _verify_repo(settings: Settings, repo: str) -> None:
@@ -216,21 +204,31 @@ async def tooling_webhook(
         )
     _verify_signature(settings.tooling_webhook_secret, raw, x_reviews_signature)
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON") from exc
     if not isinstance(body, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON")
 
     tool = str(body.get("tool", ""))
     payload = body.get("payload")
+    try:
+        pr_id = int(body.get("pr_id", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "pr_id no es un entero") from exc
     review_request = ReviewRequest(
         repo=str(body.get("repo", "")),
-        pr_id=int(body.get("pr_id", 0) or 0),
+        pr_id=pr_id,
         head_sha=str(body.get("head_sha", "")),
         base_sha=str(body.get("base_sha", "")),
         pipeline_id=str(body.get("pipeline_id", "")),
     )
     if not (review_request.repo and review_request.pr_id and review_request.head_sha and tool):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Faltan repo, pr_id, head_sha o tool")
+    allowed = expected_tools(settings)
+    if allowed and tool not in allowed:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tool no esperada: {tool}")
     if not isinstance(payload, str) or not payload.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "El payload del artefacto esta vacio")
     _verify_repo(settings, review_request.repo)
@@ -247,6 +245,9 @@ async def tooling_webhook(
         _persist_artifact(settings, review_request, tool, payload)
         pending = build_pending(settings)
         pending_status = pending.observe(review_request, tool, payload)
+    except ValueError as exc:
+        _release_quietly(store, ingest_key)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except Exception:
         _release_quietly(store, ingest_key)
         raise
@@ -286,11 +287,18 @@ async def tooling_webhook(
 
 @app.get("/pending")
 def list_pending() -> dict[str, object]:
-    """Aplica los TTL de la ingesta y devuelve las reviews degradadas."""
+    """Lista la ingesta vencida o ya degradada, sin aplicar el TTL.
+
+    Degradar y encolar es del barrido del worker. Si este endpoint lo hiciera,
+    `is_expired` dejaria de ver la review y el worker no la encolaria.
+    """
     settings = _settings()
     pending = build_pending(settings)
-    degraded = pending.sweep()
-    return {"degraded": [review.key for review in degraded]}
+    due = pending.due()
+    return {
+        "expired": [review.key for review in due if review.status is not PendingStatus.DEGRADED],
+        "degraded": [review.key for review in due if review.status is PendingStatus.DEGRADED],
+    }
 
 
 @app.get("/reviews/paused")
@@ -356,7 +364,10 @@ async def post_decision(
     settings = _settings()
     _verify_decision_token(settings, authorization)
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON") from exc
     if not isinstance(body, dict):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Payload no es un objeto JSON")
     actor = str(body.get("actor", ""))
@@ -368,12 +379,19 @@ async def post_decision(
     paused = store.get(review_key)
     if paused is None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"La review {review_key} no esta pausada")
+    if paused.kind is not PauseKind.HUMAN:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "La review espera la verificacion de un fix, no una decision",
+        )
 
     try:
-        items = [FindingDecision.model_validate(item) for item in raw_items]
+        items = [require_decision_item(item) for item in raw_items]
         decision = build_decision(paused, actor=actor, items=items, reviewed_key=review_key)
-    except ValueError as exc:  # incluye DecisionError y validacion pydantic de items
+    except DecisionError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     build_queue(settings).enqueue(paused.request.model_copy(update={"decision": decision}))
     logger.info(

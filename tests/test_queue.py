@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fakeredis
 import pytest
 import redis
 from redis.connection import DEFAULT_SOCKET_TIMEOUT
@@ -63,22 +64,37 @@ def test_cliente_normal_conserva_deadline() -> None:
 
 def test_dequeue_devuelve_none_si_redis_falla(monkeypatch: pytest.MonkeyPatch) -> None:
     """Un fallo transitorio de la cola no propaga: es un poll sin resultado."""
-    queue = RedisReviewQueue(url="redis://localhost:6379/0")
+    queue = RedisReviewQueue(url="redis://localhost:6379/0", worker_id="test")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise redis.exceptions.ConnectionError("servidor reiniciando")
 
-    monkeypatch.setattr(queue._client, "blpop", _boom)
+    monkeypatch.setattr(queue._client, "blmove", _boom)
     assert queue.dequeue() is None
 
 
-def test_dequeue_propaga_errores_no_transitorios(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_release_parked_mueve_solo_el_motivo() -> None:
     queue = RedisReviewQueue(url="redis://localhost:6379/0")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="sesion"), reason="session")
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="cupo"), reason="quota")
+    queue.park(ReviewRequest(repo="r", pr_id=1, head_sha="espera"), reason="quota-wait")
+    sueltos = queue.release_parked(reason="quota-wait")
+    assert [item.head_sha for item in sueltos] == ["espera"]
+    assert [item.head_sha for item in queue.parked()] == ["sesion", "cupo"]
+    job = queue.dequeue()
+    assert job is not None and job.head_sha == "espera"
+
+
+def test_dequeue_propaga_errores_no_transitorios(monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = RedisReviewQueue(url="redis://localhost:6379/0", worker_id="test")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise ValueError("payload corrupto")
 
-    monkeypatch.setattr(queue._client, "blpop", _boom)
+    monkeypatch.setattr(queue._client, "blmove", _boom)
     with pytest.raises(ValueError):
         queue.dequeue()
 
@@ -147,10 +163,39 @@ def test_done_de_fixes_es_idempotente_por_run_key() -> None:
 
 
 def test_dequeue_de_fixes_devuelve_none_si_redis_falla(monkeypatch: pytest.MonkeyPatch) -> None:
-    queue = RedisFixQueue(url="redis://localhost:6379/0")
+    queue = RedisFixQueue(url="redis://localhost:6379/0", worker_id="test")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise redis.exceptions.ConnectionError("servidor reiniciando")
 
-    monkeypatch.setattr(queue._client, "blpop", _boom)
+    monkeypatch.setattr(queue._client, "blmove", _boom)
     assert queue.dequeue() is None
+
+
+def test_un_job_sin_ack_vuelve_a_la_cola_en_el_siguiente_proceso() -> None:
+    client = fakeredis.FakeRedis(decode_responses=True)
+    first = RedisReviewQueue(url="redis://localhost:6379/0", worker_id="worker")
+    first._client = client  # type: ignore[assignment]
+    request = ReviewRequest(repo="r", pr_id=1, head_sha="a")
+    first.enqueue(request)
+    taken = first.dequeue(timeout_s=1)
+    assert taken is not None and taken.head_sha == "a"
+    assert client.llen("reviews:jobs") == 0
+
+    restarted = RedisReviewQueue(url="redis://localhost:6379/0", worker_id="worker")
+    restarted._client = client  # type: ignore[assignment]
+    assert restarted.reclaim_inflight() == 1
+    again = restarted.dequeue(timeout_s=1)
+    assert again is not None and again.head_sha == "a"
+    restarted.ack()
+    assert client.llen("reviews:jobs:processing:worker") == 0
+
+
+def test_un_payload_ilegible_va_a_la_dlq_y_no_rompe_el_dequeue() -> None:
+    queue = RedisReviewQueue(url="redis://localhost:6379/0", worker_id="worker")
+    queue._client = fakeredis.FakeRedis(decode_responses=True)  # type: ignore[assignment]
+    queue._client.rpush("reviews:jobs", "esto-no-es-json")
+    assert queue.dequeue(timeout_s=1) is None
+    assert queue.dead_letters()[0]["raw"] == "esto-no-es-json"
+    assert queue._client.llen("reviews:jobs:processing:worker") == 0

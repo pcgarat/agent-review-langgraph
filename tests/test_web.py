@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import fakeredis
@@ -23,8 +24,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from agent_review.checkpointer import build_serde
 from agent_review.domain.models import (
     ApprovalRequest,
+    FindingAction,
     FixWaitRequest,
+    PendingDecision,
     ReviewRequest,
+    Severity,
     VerifyJob,
 )
 from agent_review.domain.paused import PausedReview, PauseKind
@@ -47,6 +51,7 @@ from agent_review.web.read_model import (
     DeadLetterItem,
     PanelReadModel,
     PanelState,
+    ParkedItem,
     PausedGroups,
     PausedItem,
     QueueItem,
@@ -61,6 +66,21 @@ _MOMENT = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
 _REVIEW_KEY = "cqm/emotivoo-v2:42:abc:7"
 
 
+def _pending(finding_id: str) -> PendingDecision:
+    return PendingDecision(
+        finding_id=finding_id,
+        proposed_action=FindingAction.ESCALATE,
+        reason="r",
+        matched_rule="rule",
+        policy_version="1",
+        title=f"Hallazgo {finding_id}",
+        file="src/App.php",
+        line=10,
+        severity=Severity.P1,
+        why_it_matters="porque importa",
+    )
+
+
 class FakeReadModel:
     """Read model en memoria: aisla los endpoints de Redis y Postgres."""
 
@@ -73,6 +93,14 @@ class FakeReadModel:
 
     def trace(self, review_key: str) -> ReviewTrace | None:
         return self._traces.get(review_key)
+
+    def notes(self, review_key: str) -> list[str]:
+        del review_key
+        return []
+
+    def journal(self, review_key: str) -> list[str]:
+        del review_key
+        return []
 
 
 def _fake_state() -> PanelState:
@@ -101,7 +129,7 @@ def _fake_state() -> PanelState:
                     kind="human",
                     created_at=_MOMENT,
                     state="PAUSED",
-                    pending=[{"finding_id": "f1"}],
+                    pending=[_pending("f1")],
                     command_hint="agent_review decide …",
                 )
             ],
@@ -115,6 +143,16 @@ def _fake_state() -> PanelState:
                 )
             ],
         ),
+        parked=[
+            ParkedItem(
+                review_key="pcgarat/agent-review-langgraph:19:abc:panel",
+                repo="pcgarat/agent-review-langgraph",
+                pr_id=19,
+                pipeline_id="panel",
+                reason="session",
+                launch=True,
+            )
+        ],
         dead=[
             DeadLetterItem(
                 review_key="cqm/emotivoo-v2:38:ccc:3",
@@ -172,8 +210,16 @@ def test_state_devuelve_las_secciones_del_panel() -> None:
     assert body["paused"]["human"][0]["pending"][0]["finding_id"] == "f1"
     assert body["paused"]["human"][0]["state"] == "PAUSED"
     assert body["paused"]["fix"][0]["jobs"][0]["run_key"] == "r:f2:1"
+    assert body["parked"][0]["reason"] == "session"
+    assert body["parked"][0]["pr_id"] == 19
     assert body["dead"][0]["reason"] == "twg caido"
     assert body["budget"][0]["remaining"] == 3700
+
+
+def test_state_sin_parking_devuelve_la_lista_vacia() -> None:
+    """La sección existe siempre: una clave ausente y una vacía no son lo mismo."""
+    body = client.get("/api/state").json()
+    assert "parked" in body
 
 
 def test_state_sin_secreto_se_relaja() -> None:
@@ -247,12 +293,25 @@ def test_lector_no_ejecuta_comandos(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_operador_si_ejecuta_comandos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "token-opaco")
+    monkeypatch.setattr(get_settings(), "panel_session_user", "bob")
+    monkeypatch.setattr(get_settings(), "panel_session_role", "operador")
+    cmd = TestClient(_command_app())
+
+    response = cmd.post("/command", headers={"X-Panel-Session": "token-opaco"})
+    assert response.status_code == 200
+    assert response.json()["user"] == "bob"
+    guessed = cmd.post("/command", headers={"X-Panel-Session": "bob:operador"})
+    assert guessed.status_code == 401
+
+
+def test_el_usuario_publicado_no_sale_del_secreto(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "panel_session_secret", "bob:operador")
     cmd = TestClient(_command_app())
 
     response = cmd.post("/command", headers={"X-Panel-Session": "bob:operador"})
     assert response.status_code == 200
-    assert response.json()["user"] == "bob"
+    assert response.json()["user"] == "panel"
 
 
 # --- Contrato fail-closed del secreto (OP18) -------------------------------------
@@ -346,6 +405,7 @@ def _seed_redis() -> fakeredis.FakeRedis:
                 "review_key": "r:3:c:3",
                 "attempts": 3,
                 "reason": "twg caido",
+                "error": "intento 3\nRuntimeError: twg caido",
                 "discarded_at": 1760620000.0,
             }
         ),
@@ -371,6 +431,7 @@ def test_read_model_lee_el_estado_de_redis() -> None:
     assert [item.review_key for item in state.paused.fix] == ["r:2:def:2"]
     assert state.paused.fix[0].jobs[0]["run_key"] == "r:2:def:2:f1:1"
     assert state.dead[0].reason == "twg caido"
+    assert "twg caido" in state.dead[0].error
     assert [item.review_key for item in state.budget] == ["r:1:abc:1"], "el fix no es la review"
     assert state.budget[0].committed == 1200
     assert state.budget[0].reserved == 300
@@ -430,6 +491,27 @@ def test_pg_trace_reader_delega_en_read_trace_y_cierra_el_pool(
     assert reader.trace("no:existe") is None, "un hilo sin checkpoints no es un recorrido"
     reader.close()
     assert closed == ["close"]
+
+
+def test_pg_trace_reader_lee_la_revision_de_la_foto_de_diales() -> None:
+    """El panel no puede distinguir «guardado» de «en uso» sin esta lectura (029 P9)."""
+
+    class _Tuple:
+        checkpoint = {"channel_values": {"dial_snapshot": {"revision": 4, "overrides": {}}}}
+
+    class _Saver:
+        def get_tuple(self, config: dict[str, object]) -> _Tuple | None:
+            configurable = config["configurable"]
+            assert isinstance(configurable, dict)
+            # Un hilo `:partial` sin foto: se mira el del hilo completo.
+            if str(configurable["thread_id"]).endswith(":partial"):
+                return None
+            return _Tuple()
+
+    reader = read_model.PgTraceReader(database_url="postgresql://unused")
+    reader._resolved = True
+    reader._saver = _Saver()  # type: ignore[assignment]
+    assert reader.dial_revision("acme/app:1") == 4
 
 
 def test_build_panel_read_model_compone_las_dos_fuentes() -> None:
@@ -619,6 +701,98 @@ def test_api_history_devuelve_json_filtrado(monkeypatch: pytest.MonkeyPatch) -> 
     data = client.get("/api/history", params={"pr_id": 2}).json()
     assert [item["review_key"] for item in data] == ["b"]
     assert data[0]["end"] == "completa"
+
+
+def test_api_history_lista_la_mas_reciente_primero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El orden es contrato: la SPA pinta lo que llega (021 R9, 029 Q5)."""
+    from datetime import timedelta
+
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    for key, hours in (("vieja", 5), ("nueva", 1)):
+        history.record(
+            ReviewSummary(
+                review_key=key,
+                repo="r",
+                pr_id=42,
+                head_sha="x",
+                finished_at=_MOMENT - timedelta(hours=hours),
+                end=ReviewEnd.PARTIAL,
+            )
+        )
+    monkeypatch.setattr(app.state, "history", history, raising=False)
+
+    data = client.get("/api/history", params={"repo": "r"}).json()
+
+    assert [item["review_key"] for item in data] == ["nueva", "vieja"]
+    assert data[0]["end"] == "parcial"
+
+
+def test_api_history_sin_redis_devuelve_una_lista_vacia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin Redis el panel no inventa un error: no hay histórico, y se dice así."""
+    monkeypatch.setattr(app.state, "history", None, raising=False)
+
+    response = client.get("/api/history")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_el_historico_no_escapa_nada_porque_no_pinta_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El repositorio es de terceros: viaja crudo en JSON y lo escapa React (P13)."""
+    from agent_review.domain.history import ReviewEnd, ReviewSummary
+    from agent_review.history_store import InMemoryReviewHistory
+
+    history = InMemoryReviewHistory()
+    history.record(
+        ReviewSummary(
+            review_key="<b>malo</b>:1:x",
+            repo="<b>malo</b>",
+            pr_id=1,
+            head_sha="x",
+            finished_at=_MOMENT,
+            end=ReviewEnd.COMPLETE,
+        )
+    )
+    monkeypatch.setattr(app.state, "history", history, raising=False)
+
+    body = client.get("/api/history").json()
+
+    assert body[0]["repo"] == "<b>malo</b>"
+    assert body[0]["review_key"] == "<b>malo</b>:1:x"
+
+
+def test_la_descarga_de_claude_es_el_fichero_entero_y_exige_sesion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_review.claude_activity import ClaudeActivity
+
+    monkeypatch.setattr(get_settings(), "claude_session_path", str(tmp_path / "s.json"))
+    monkeypatch.setattr(get_settings(), "panel_session_secret", "ana:lector")
+    sha = "c" * 40
+    activity = ClaudeActivity(tmp_path / "s.json", repo="acme/app", pr_id=9, head_sha=sha)
+    activity.start()
+    activity.append("q" * 25_000)
+    activity.finish()
+    key = f"acme/app:9:{sha}"
+    assert client.get(f"/api/reviews/{key}/claude/download").status_code == 401
+    headers = {"X-Panel-Session": "ana:lector"}
+    downloaded = client.get(f"/api/reviews/{key}/claude/download", headers=headers)
+    assert downloaded.status_code == 200
+    assert "q" * 25_000 in downloaded.text
+    events = client.get(f"/api/reviews/{key}/claude/events", headers=headers)
+    assert events.status_code == 200
+    assert events.headers["content-type"].startswith("text/event-stream")
+    assert "q" * 25_000 in events.text
+    assert "event: end" in events.text
 
 
 def test_un_aviso_de_reintento_no_cierra_el_lote() -> None:

@@ -26,6 +26,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
+from agent_review.claude_activity import review_target
+from agent_review.decision import DecisionError, build_decision
 from agent_review.domain.models import (
     DecisionOutcome,
     FindingDecision,
@@ -37,6 +39,7 @@ from agent_review.domain.models import (
 from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.paused_store import PausedStore
 from agent_review.queue import ReviewQueue
+from agent_review.teams_bot.decisions import DecisionSubmitter, SubmitStatus
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,8 @@ class CommandEffect(StrEnum):
     CANCELLED_PENDING = "cancelled_pending"  # ya habia publicado: solo lo pendiente
     RETRIED = "retried"
     RESUMED = "resumed"
+    DECIDED = "decided"  # decision humana explicita encolada (022)
+    FORGOTTEN = "forgotten"  # borrado local encolado; el worker lo aplica (ADR-0034)
 
 
 class CancellationMarker(Protocol):
@@ -70,13 +75,19 @@ class CancellationMarker(Protocol):
 
 
 class ReviewCommands(Protocol):
-    """Los tres comandos del panel, ya resueltos contra el estado (W6)."""
+    """Los comandos del panel, ya resueltos contra el estado (W6)."""
 
     def cancel(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
     def retry(self, review_key: str, *, actor: str) -> CommandEffect: ...
 
+    def forget(self, review_key: str, *, actor: str) -> CommandEffect: ...
+
     def resume(self, review_key: str, *, actor: str) -> CommandEffect: ...
+
+    def decide(
+        self, review_key: str, *, actor: str, items: list[FindingDecision]
+    ) -> CommandEffect: ...
 
 
 class CommandService:
@@ -88,10 +99,13 @@ class CommandService:
         queue: ReviewQueue,
         paused: PausedStore,
         cancellation: CancellationMarker,
+        submitter: DecisionSubmitter | None = None,
     ) -> None:
         self._queue = queue
         self._paused = paused
         self._cancellation = cancellation
+        # Si esta, la decision del detalle comparte el sello con Teams y la bandeja.
+        self._submitter = submitter
 
     def cancel(self, review_key: str, *, actor: str) -> CommandEffect:
         """Cancela una review, con la semantica por estado de la spec §5.4.
@@ -136,12 +150,33 @@ class CommandService:
         request = ReviewRequest.model_validate(entry["request"])
         try:
             self._cancellation.clear(review_key)
-            self._queue.enqueue(request.model_copy(update={"attempts": 0, "cancelled": False}))
+            self._queue.enqueue(
+                request.model_copy(update={"attempts": 0, "cancelled": False, "repin_dials": True})
+            )
         except Exception:
             self._queue.dead_letter(request, reason=str(entry.get("reason", "reintento fallido")))
             raise
         logger.info("Reintento encolado para %s (actor=%s)", review_key, actor)
         return CommandEffect.RETRIED
+
+    def forget(self, review_key: str, *, actor: str) -> CommandEffect:
+        """Encola el borrado local de una ejecucion (ADR-0034).
+
+        Sube la generacion antes de encolar, y retira las copias que aun estan
+        en la cola, para que no arranquen y rehagan lo que se va a borrar. El
+        worker, al tomar el job, borra el hilo y el artefacto. Los comentarios
+        ya publicados en el PR se quedan.
+        """
+        request = _request_to_forget(review_key)
+        generation = self._queue.bump_generation(review_key)
+        self._queue.withdraw(review_key)
+        self._queue.enqueue(
+            request.model_copy(
+                update={"forget": True, "generation": generation, "attempts": 0, "cancelled": False}
+            )
+        )
+        logger.info("Borrado encolado para %s (actor=%s)", review_key, actor)
+        return CommandEffect.FORGOTTEN
 
     def resume(self, review_key: str, *, actor: str) -> CommandEffect:
         """Reencola la reanudacion de una pausa humana (spec §5.5).
@@ -171,6 +206,47 @@ class CommandService:
         logger.info("Reanudacion encolada para %s (actor=%s)", review_key, actor)
         return CommandEffect.RESUMED
 
+    def decide(self, review_key: str, *, actor: str, items: list[FindingDecision]) -> CommandEffect:
+        """Encola una decision humana explicita (022, H1).
+
+        La construye y valida con `build_decision`, la misma funcion que usan el CLI,
+        la API y el bot de Teams: el panel es un cliente mas del canal de decision, no
+        una segunda regla. `build_decision` exige que los `items` cubran **todos** los
+        pendientes y solo esos; si no, `CommandError` (`409`).
+        """
+        paused = self._paused.get(review_key)
+        if paused is None:
+            raise CommandError(f"{review_key} no esta pausada")
+        if paused.kind is not PauseKind.HUMAN:
+            raise CommandError(f"{review_key} no es una pausa humana")
+        if self._submitter is not None:
+            return self._decide_sealed(review_key, actor=actor, items=items)
+        try:
+            decision = build_decision(paused, actor=actor, items=items, reviewed_key=review_key)
+        except DecisionError as exc:
+            raise CommandError(str(exc)) from exc
+        self._queue.enqueue(paused.request.model_copy(update={"decision": decision}))
+        logger.info(
+            "Decision encolada desde el panel para %s: %d hallazgo(s), actor=%s",
+            review_key,
+            len(decision.items),
+            decision.actor,
+        )
+        return CommandEffect.DECIDED
+
+    def _decide_sealed(
+        self, review_key: str, *, actor: str, items: list[FindingDecision]
+    ) -> CommandEffect:
+        """La misma decision que la bandeja y Teams: gana la primera."""
+        assert self._submitter is not None
+        outcome = self._submitter.submit_items(review_key, actor=actor, items=items, origin="panel")
+        if outcome.status is SubmitStatus.ENQUEUED:
+            return CommandEffect.DECIDED
+        if outcome.status is SubmitStatus.ALREADY_DECIDED:
+            who = outcome.actor or "otra persona"
+            raise CommandError(f"La decision ya la tomo {who}")
+        raise CommandError(outcome.reason or "La review ya no esta pausada")
+
 
 def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
     """Reanudacion de una wave cancelada: todos los jobs como no verificables.
@@ -191,8 +267,29 @@ def _fix_cancellation(paused: PausedReview) -> ReviewRequest:
     return paused.request.model_copy(update={"fix_resolution": FixResolutions(items=items)})
 
 
+def _request_to_forget(review_key: str) -> ReviewRequest:
+    target = review_target(review_key)
+    if target is None:
+        raise CommandError(f"{review_key} no identifica un commit")
+    repo, pr_id, head_sha = target
+    prefix = f"{repo}:{pr_id}:{head_sha}"
+    pipeline = review_key[len(prefix) + 1 :] if review_key.startswith(prefix + ":") else ""
+    request = ReviewRequest(
+        repo=repo, pr_id=pr_id, head_sha=head_sha, pipeline_id=pipeline, forget=True
+    )
+    if request.review_key != review_key:
+        raise CommandError(f"{review_key} no identifica un commit")
+    return request
+
+
 def build_command_service(
-    *, queue: ReviewQueue, paused: PausedStore, cancellation: CancellationMarker
+    *,
+    queue: ReviewQueue,
+    paused: PausedStore,
+    cancellation: CancellationMarker,
+    submitter: DecisionSubmitter | None = None,
 ) -> CommandService:
     """Raiz de composicion del servicio de comandos del panel (OP29-OP32)."""
-    return CommandService(queue=queue, paused=paused, cancellation=cancellation)
+    return CommandService(
+        queue=queue, paused=paused, cancellation=cancellation, submitter=submitter
+    )

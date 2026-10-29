@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Literal
 
 from agent_review.domain.models import DecisionOutcome, FindingDecision, HitlDecision
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.paused import PausedReview, PauseKind
+
+
+def outcomes_for_pause(
+    pause_kind: Literal["publication"] | None,
+) -> frozenset[DecisionOutcome]:
+    """Resultados que una persona puede marcar en esta pausa.
+
+    En publicación, `approved` escribe el hallazgo y `dropped` lo deja fuera.
+    `rejected` y `noted` son de la pausa que autoriza un arreglo: ahí `dropped`
+    se publicaría como silencio.
+    """
+    if pause_kind == "publication":
+        return frozenset({DecisionOutcome.APPROVED, DecisionOutcome.DROPPED})
+    return frozenset({DecisionOutcome.APPROVED, DecisionOutcome.REJECTED, DecisionOutcome.NOTED})
+
+
+def require_decision_item(item: object) -> FindingDecision:
+    """Un elemento de `items` que no es objeto no es una decision: es un 400."""
+    if not isinstance(item, dict):
+        raise ValueError("Item de decision invalido")
+    return FindingDecision.model_validate(item)
 
 
 class DecisionError(ValueError):
@@ -36,11 +58,13 @@ def build_decision(
     collected = list(items)
     if not collected:
         raise DecisionError(
-            "No hay ninguna decision: indica al menos un --approve/--reject/--noted"
+            "No hay ninguna decision: indica al menos un --approve/--reject/--noted/--drop"
         )
 
     if paused.review_key != reviewed_key:
         raise DecisionError(f"La review pausada es {paused.review_key}, no {reviewed_key}")
+    if paused.kind is not PauseKind.HUMAN:
+        raise DecisionError("La review espera la verificacion de un fix, no una decision")
 
     pending_ids = {pending.finding_id for pending in paused.human_request.pending}
     unknown = [item.finding_id for item in collected if item.finding_id not in pending_ids]
@@ -54,5 +78,9 @@ def build_decision(
     if any(item.outcome is DecisionOutcome.EXPIRED for item in collected):
         # `expired` lo emite el barrido del TTL, no una persona.
         raise DecisionError("`expired` no es una decision humana valida")
+    allowed = outcomes_for_pause(paused.human_request.pause_kind)
+    forbidden = [item.finding_id for item in collected if item.outcome not in allowed]
+    if forbidden:
+        raise DecisionError("resultado no permitido en esta pausa: " + ", ".join(sorted(forbidden)))
 
     return HitlDecision(review_key=reviewed_key, actor=actor, items=collected)

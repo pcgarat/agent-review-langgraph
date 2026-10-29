@@ -20,7 +20,9 @@ from fastapi.testclient import TestClient
 
 from agent_review.domain.models import (
     ApprovalRequest,
+    DecisionOutcome,
     FindingAction,
+    FindingDecision,
     FixWaitRequest,
     PendingDecision,
     ReviewRequest,
@@ -164,6 +166,7 @@ def test_reintentar_un_descarte_lo_reencola_con_attempts_cero() -> None:
     assert effect is CommandEffect.RETRIED
     queued = queue.dequeue()
     assert queued is not None and queued.attempts == 0
+    assert queued.repin_dials is True
 
 
 def test_reintentar_saca_el_descarte_de_la_dlq_y_un_segundo_clic_da_409() -> None:
@@ -248,6 +251,110 @@ def test_reanudar_una_pausa_de_fix_falla() -> None:
 
     with pytest.raises(CommandError, match="humana"):
         service.resume(_REVIEW_KEY, actor="ana")
+
+
+# --- 022: decidir desde el panel --------------------------------------------------
+
+
+def test_decidir_cubre_los_pendientes_y_encola_la_decision() -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    effect = service.decide(
+        _REVIEW_KEY,
+        actor="ana",
+        items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.REJECTED, note="falso")],
+    )
+
+    assert effect is CommandEffect.DECIDED
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+    assert [(i.finding_id, i.outcome) for i in queued.decision.items] == [
+        ("f1", DecisionOutcome.REJECTED)
+    ]
+    assert queued.decision.items[0].note == "falso"
+
+
+def test_decidir_sin_items_falla_y_no_encola() -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="ninguna decision"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
+    assert queue.dequeue() is None
+
+
+def test_decidir_sin_cubrir_todos_los_pendientes_falla() -> None:
+    service, queue, paused, _marker = _service()
+    approval = ApprovalRequest(
+        review_key=_REVIEW_KEY,
+        repo="cqm/emotivoo-v2",
+        pr_id=42,
+        head_sha="abc",
+        pending=[
+            PendingDecision(
+                finding_id=fid,
+                proposed_action=FindingAction.ESCALATE,
+                reason="r",
+                matched_rule="rule",
+                policy_version="1",
+                title="t",
+                file="f.php",
+                line=1,
+                severity=Severity.P1,
+            )
+            for fid in ("f1", "f2")
+        ],
+    )
+    paused.pause(_request(), approval, kind=PauseKind.HUMAN)
+
+    with pytest.raises(CommandError, match="Faltan"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.APPROVED)],
+        )
+    assert queue.dequeue() is None
+
+
+def test_decidir_con_finding_ajeno_falla() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="ajeno"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="otro", outcome=DecisionOutcome.APPROVED)],
+        )
+
+
+def test_decidir_no_acepta_expired_como_decision_humana() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+
+    with pytest.raises(CommandError, match="expired"):
+        service.decide(
+            _REVIEW_KEY,
+            actor="ana",
+            items=[FindingDecision(finding_id="f1", outcome=DecisionOutcome.EXPIRED)],
+        )
+
+
+def test_decidir_una_pausa_de_fix_falla() -> None:
+    service, _queue, paused, _marker = _service()
+    _pause_fix(paused, _request())
+
+    with pytest.raises(CommandError, match="humana"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
+
+
+def test_decidir_una_review_que_no_esta_pausada_falla() -> None:
+    service, _queue, _paused, _marker = _service()
+
+    with pytest.raises(CommandError, match="pausada"):
+        service.decide(_REVIEW_KEY, actor="ana", items=[])
 
 
 # --- OP34: endpoints -------------------------------------------------------------
@@ -348,3 +455,224 @@ def test_la_ui_del_mismo_origen_ejecuta_comandos_por_cookie(client: TestClient) 
         json={"actor": "ana"},
     )
     assert status_code == 200
+
+
+# --- 022: endpoint de decision ----------------------------------------------------
+
+
+def test_decidir_por_http_encola_la_decision_y_audita_al_actor(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": [{"finding_id": "f1", "outcome": "approved", "note": "adelante"}]},
+        )
+    assert response.status_code == 200
+    assert response.json()["effect"] == "decided"
+    assert response.json()["actor"] == "ana"
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+
+
+def test_el_actor_del_cuerpo_no_suplanta_al_de_la_sesion_al_decidir(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={
+                "actor": "jefe",
+                "items": [{"finding_id": "f1", "outcome": "approved"}],
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["actor"] == "ana"
+    queued = queue.dequeue()
+    assert queued is not None and queued.decision is not None
+    assert queued.decision.actor == "ana"
+
+
+def test_decidir_una_decision_incompleta_por_http_da_409(client: TestClient) -> None:
+    service, queue, paused, _marker = _service()
+    _pause_human(paused, _request())
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": []},
+        )
+    assert response.status_code == 409
+    assert queue.dequeue() is None
+
+
+def test_decidir_con_un_cuerpo_sin_items_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"outcome": "approved"},
+        )
+    assert response.status_code == 400
+
+
+def test_decidir_con_un_item_que_no_es_objeto_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": ["x"]},
+        )
+    assert response.status_code == 400
+
+
+def test_decidir_con_un_item_invalido_da_400(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"items": [{"finding_id": "f1", "outcome": "inventado"}]},
+        )
+    assert response.status_code == 400
+
+
+def test_eliminar_sube_la_generacion_y_encola_el_borrado() -> None:
+    service, queue, _paused, _marker = _service()
+    queue.enqueue(_request())
+    queue.dead_letter(_request(), reason="intentos agotados")
+
+    effect = service.forget(_REVIEW_KEY, actor="ana")
+
+    assert effect.value == "forgotten"
+    assert queue.generation(_REVIEW_KEY) == 1
+    assert queue.dead_letter_count == 0
+    job = queue.dequeue()
+    assert job is not None
+    assert job.forget is True
+    assert job.generation == 1
+    assert job.review_key == _REVIEW_KEY
+    assert queue.dequeue() is None
+
+
+def test_eliminar_una_clave_sin_commit_no_encola() -> None:
+    service, queue, _paused, _marker = _service()
+    with pytest.raises(CommandError):
+        service.forget("sin-commit", actor="ana")
+    assert queue.dequeue() is None
+
+
+def test_el_lector_no_decide(client: TestClient) -> None:
+    service, _queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/decision",
+            headers={"X-Panel-Session": "ana:lector"},
+            json={"items": [{"finding_id": "f1", "outcome": "approved"}]},
+        )
+    assert response.status_code == 403
+
+
+# --- Olvidar por HTTP (ADR-0034): lo que solo cubre la ruta -----------------------
+
+
+def test_olvidar_por_http_retira_la_transcripcion_del_volumen(tmp_path, monkeypatch) -> None:
+    """El servicio encola el borrado; la transcripcion la retira el panel.
+
+    Es lo unico del endpoint que el `CommandService` no puede hacer: el fichero
+    vive en el volumen que monta el `web`, y el worker no lo ve.
+    """
+    from agent_review.claude_activity import ClaudeActivity, activity_paths
+    from agent_review.settings import Settings
+
+    session = tmp_path / "session.json"
+    activity = ClaudeActivity(session, repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc")
+    activity.start()
+    activity.append('{"linea": 1}')
+    status_path, log_path = activity_paths(
+        session, repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc"
+    )
+    assert log_path.is_file()
+
+    monkeypatch.setattr(
+        web_main, "_settings", lambda: Settings(_env_file=None, claude_session_path=str(session))
+    )
+    service, queue, _paused, _marker = _service()
+    client = TestClient(web_main.app)
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["effect"] == "forgotten"
+    assert not log_path.exists(), "la transcripcion tiene que desaparecer del panel"
+    assert not status_path.exists()
+    # Y el worker tiene el job para borrar hilo y artefacto.
+    job = queue.dequeue()
+    assert job is not None
+    assert job.forget is True
+
+
+def test_olvidar_por_http_no_rompe_si_no_hay_transcripcion(tmp_path, monkeypatch) -> None:
+    """Olvidar una review sin conversacion sigue devolviendo `200`."""
+    from agent_review.settings import Settings
+
+    monkeypatch.setattr(
+        web_main,
+        "_settings",
+        lambda: Settings(_env_file=None, claude_session_path=str(tmp_path / "session.json")),
+    )
+    service, queue, _paused, _marker = _service()
+    client = TestClient(web_main.app)
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 200
+    assert queue.dequeue() is not None
+
+
+def test_el_lector_no_olvida(client: TestClient) -> None:
+    """Olvidar borra estado: no es cosa de un `lector`."""
+    service, queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:lector"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 403
+    assert queue.dequeue() is None
+
+
+def test_olvidar_una_clave_sin_commit_da_409(client: TestClient) -> None:
+    service, queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            "/api/reviews/sin-commit/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 409
+    assert queue.dequeue() is None

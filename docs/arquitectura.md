@@ -26,6 +26,7 @@ flowchart LR
         FIXW["fix-worker<br/>verifica · nunca publica"]
         BOT["teams-bot<br/>outbox · POST /api/messages"]
         RUNNER["sandbox-runner :8099<br/>(sin puertos publicados)"]
+        WEB["web :8090 · perfil panel<br/>SPA + API JSON"]
         REDIS[("redis<br/>cola · DLQ · idempotencia<br/>ingesta · inbox · fixes · outbox")]
         PG[("postgres<br/>checkpoints")]
         VAR[/"./var · artefactos"/]
@@ -36,7 +37,10 @@ flowchart LR
     API --> VAR
     API --> REDIS
     HUMAN -->|"CLI agent_review / POST decision"| API
-    REDIS -->|BLPOP| WORKER
+    HUMAN -->|"navegador · SPA"| WEB
+    WEB -->|"lee estado y encola comandos"| REDIS
+    WEB -->|"recorrido (solo lectura)"| PG
+    REDIS -->|BLMOVE| WORKER
     WORKER --> VAR
     WORKER --> CFG
     WORKER <-->|checkpoint| PG
@@ -61,17 +65,22 @@ flowchart LR
 > los consume, publica/edita en el hilo del PR y traduce las acciones de la
 > tarjeta a una `HitlDecision` encolada en `reviews:jobs` (no reanuda el grafo).
 > Solo acepta acciones del canal capturado y, con `TEAMS_BOT_TENANT_ID`, de ese
-> tenant (C5): sin canal capturado, rechaza todas. El respaldo de decisión sigue
-> siendo el CLI y `POST /decision`. Pendiente humano: alta del bot en el tenant (T10).
+> tenant (C5): sin canal capturado, rechaza todas. La **bandeja** del panel
+> ([ADR-0030](adr/0030-bandeja-web-de-la-decision.md)) lista las mismas pausas
+> humanas y responde con el mismo sello: la primera respuesta borra la tarjeta
+> de Teams. Sin Teams, la bandeja es la única superficie. El CLI y
+> `POST /decision` siguen siendo respaldo. Pendiente humano: alta del bot en el
+> tenant (T10).
 
 | Proceso | Entrada | Responsabilidad |
 |---|---|---|
 | `api` (`api/main.py`) | `uvicorn agent_review.api.main:app` | Valida firma y tamaño, filtra `repo`, deposita artefactos, aplica la barrera de ingesta, encola. Expone el canal de decisión y el inbox. No construye el grafo. |
-| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. **No** toca el sandbox (E7). |
+| `worker` (`worker/main.py`) | `python -m agent_review.worker.main` | Consume la cola **de uno en uno**, ejecuta el grafo con checkpointer, gestiona pausa, reanudación, reintentos y DLQ, y lanza los barridos periódicos. Un lanzamiento del panel (`launch`, sin SHA) lo resuelve contra el VCS antes de invocar el grafo ([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)). **No** toca el sandbox (E7). |
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
-| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
-| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. |
+| `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
+| `web` (`web/main.py`) | `python -m agent_review.web.main` | Panel de operación. Sirve la **SPA** (`frontend/dist`, en la imagen `web/static`) y la API JSON: lee el estado de Redis y el recorrido del checkpointer con un pool de solo lectura, y **encola** comandos, decisiones y lanzamientos. No escribe el estado del grafo ni habla con el VCS (`launch` lo resuelve el worker). El *fallback* de `index.html` no captura `/api/*` ni `/healthz` ([029](iniciativas/029-panel-en-react/spec.md), P5). Opt-in por el perfil `panel`. |
+| CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. La **bandeja** ([026](iniciativas/archivo/026-bandeja-de-decisiones/spec.md)) es la lista de esas preguntas y comparte el sello con Teams y con el detalle. |
 
 ---
 
@@ -99,10 +108,17 @@ src/agent_review/
 ├── fixworker/     Servicio de fixes (consume la wave, verifica, reanuda)
 ├── sandbox_runner/ Servicio de verificación y workspace de lectura (verifier, workspace,
 │                  read_workspace, runtime, recipes)
+├── web/           Panel de operación: `main` (app y API), `spa` (build de la SPA y su
+│                  *fallback*), `review_detail`/`config_api`/`bandeja`/`commands`,
+│                  `read_model` (Redis + checkpointer) y `deps` (inyección)
 ├── api/  worker/  cli.py   Procesos (raíces de composición)
 └── settings.py profile.py errors.py queue.py idempotency.py pending_store.py
     paused_store.py checkpointer.py scope.py decision.py trace.py
 ```
+
+La interfaz no vive en Python: es una SPA en `frontend/` (Vite, React y TypeScript
+estricto sobre CoreUI) cuyo build se sirve desde `web` y que consume la misma API
+JSON. El servidor no sabe cómo se pinta una review.
 
 Patrones: **Ports & Adapters** (el grafo no conoce proveedores), **policy-as-data**
 (`autonomy.yaml` y `models.yaml`), **Strategy** (`FixerPort`, `DeliveryFormatter`,
@@ -130,7 +146,8 @@ flowchart LR
 ```
 
 El `LlmPort` devuelve un `LlmReply` con el `usage` real del proveedor
-(`prompt_tokens`, `completion_tokens`, `reasoning_tokens`) y acepta `json_mode`: el
+(`prompt_tokens`, `completion_tokens`, `reasoning_tokens` y `cached_tokens`, en
+`None` cuando el proveedor no reporta caché) y acepta `json_mode`: el
 adaptador pide al modelo solo la salida estructurada que su especificación declara,
 porque un `json_schema` no soportado es un 400 permanente que la `RetryPolicy` no
 recupera. Un `finish_reason: length` con contenido vacío (un razonador que gasta el
@@ -166,7 +183,7 @@ flowchart TD
 | Nodo | Reintento de nodo | Qué hace |
 |---|---|---|
 | `scope` | Sí | `get_diff`. Quita el ruido (`scope.DEFAULT_IGNORE_PATTERNS` + `SCOPE_IGNORE`) y ordena el resto por clase (configuración → código → tests → docs; `scope.classify`, ampliable con `scope.classes` del perfil) y por churn, **sin recortar** ([012](iniciativas/archivo/012-cobertura-de-la-review/spec.md)). Crea la `coverage` con los ignorados y la clase de cada fichero. Ensambla el `ReviewContext` (ficheros al `head_sha` + `context_docs` del perfil, una lectura por ruta) ([008](iniciativas/archivo/008-contexto-del-revisor/spec.md)). Vacía `findings` y `source_status`; fija `budget_total`. |
-| `persona` | Sí; degrada en el último intento | Una rama por revisor. Recibe el `ReviewContext` del fan-out. Escribe `findings`, `finding_sources`, `source_status`, `coverage` (el `LlmReviewer` revisa por lotes de ficheros enteros, añade L1 bajo `LLM_CONTEXT_MAX_CHARS` sin recortar el diff, aplica L0 al anclar, y declara lo que no leyó: `too_large`, `budget`, `failed`, `context_omitted`) y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. Una persona que declara cobertura y cae entera marca sus ficheros `failed`. Con razonamiento ([021](iniciativas/archivo/021-razonamiento-visible/spec.md)), el `LlmReviewer` pide *streaming*, manda el diff numerado en lotes de 20 000 caracteres (troceando por hunks lo que no cabe), reintenta **el lote** ante un corte del proveedor y emite su razonamiento a `reviews:reasoning:<review_key>` ([ADR-0023](adr/0023-razonamiento-por-streaming-y-stream-de-redis.md)). |
+| `persona` | Sí; degrada en el último intento | Una rama por revisor. Recibe el `ReviewContext` del fan-out. Escribe `findings`, `finding_sources`, `source_status`, `coverage` (el `LlmReviewer` revisa por lotes de ficheros enteros, añade L1 bajo `LLM_CONTEXT_MAX_CHARS` sin recortar el diff, aplica L0 al anclar, y declara lo que no leyó: `too_large`, `budget`, `failed`, `context_omitted`) y, si se corta por presupuesto, `budget_exhausted` y `tokens_spent`. Una persona que declara cobertura y cae entera marca sus ficheros `failed`. Con razonamiento ([021](iniciativas/archivo/021-razonamiento-visible/spec.md)), el `LlmReviewer` pide *streaming*, manda el diff numerado en lotes de 20 000 caracteres (troceando por hunks lo que no cabe), reintenta **el lote** ante un corte del proveedor, un contenido en blanco o un cierre sin JSON —con un aviso añadido al final del *prompt*, porque una repetición idéntica con razonamiento tiende a repetir el vacío— y, si aun así no lo cierra, lo **parte en dos** y revisa cada mitad (un razonador en blanco lo es por el contenido del lote); solo un lote de un único bloque sale `failed` y emite su razonamiento a `reviews:reasoning:<review_key>` ([ADR-0023](adr/0023-razonamiento-por-streaming-y-stream-de-redis.md)). Con herramientas ([014](iniciativas/014-revisor-con-herramientas/spec.md)), los roles de `REVIEW_TOOLS_ROLES` corren además un **bucle *ReAct*** por lote (`run_tool_loop`, 016): el modelo pide `read_file`/`grep`/`list_dir`, el lector los sirve —`WorkspaceContextReader` con el runner, `VcsContextReader` sin él— y el bucle acumula turnos, peticiones y bytes. Lo servido es el `served` de la comprobación de citas (una cita a un fichero no servido se quita de la evidencia) y el `ToolUsage` del resultado; el anclaje al diff y L0 no cambian. |
 | `merge` | No (puro) | [ADR-0014](adr/0014-criterio-de-merge-entre-personas.md). Estampa `grounded_findings` (ids cuyo grupo fusionó a una persona con `grounded=True`, p. ej. `ToolingReviewer`). |
 | `verify` | Sí (llamada externa) | Segundo juicio adversarial ([009](iniciativas/archivo/009-verificador-adversarial/spec.md)): con binding `verifier` y presupuesto compartido de la review, verifica candidatos no grounded cuya severidad esté en `require_verified_for` (del `severity_gate` de la política si existe; si no, `VERIFIER_REQUIRE_VERIFIED_FOR`), hasta `VERIFIER_MAX_FINDINGS`. Escribe `verifications` y estampa `verification` / `failure_scenario` en `merged` sin tocar `severity`. Sin puerto: paso directo. |
 | `policy` | No (puro) | Gate de severidad ([011](iniciativas/archivo/011-gate-de-severidad/spec.md), [ADR-0024](adr/0024-gate-de-severidad-en-la-politica.md)) y luego reglas: una `Decision` por hallazgo con severidad efectiva, `matched_rule` y `policy_version`. |
@@ -177,6 +194,57 @@ flowchart TD
 | `publish_fix` | Sí | Publica el resultado terminal como comentario de seguimiento (marca `:fix`, una vez). |
 | `notify_fix` | Sí | Aviso compacto del resultado del fix, a la outbox del canal. |
 | `notify` | Sí | Avisa de una review publicada, a la outbox del canal. Un fallo no transitorio se registra y no tumba la review. |
+
+El diagrama y la tabla son el motor `llm` (`REVIEW_ENGINE=llm`). El motor `claude`
+compila otro grafo ([025](iniciativas/archivo/025-revisor-claude-cli/spec.md),
+[ADR-0028](adr/0028-cli-claude-fuera-del-worker.md)):
+
+```mermaid
+flowchart TD
+    START([START]) --> scope
+    scope["scope<br/>diff para anclar"] -->|"Send"| persona
+    persona["persona<br/>cargador del artefacto de Claude"] --> merge
+    merge --> stamp
+    stamp["stamp<br/>acción publish, sin política"] --> hitl
+    hitl{"hitl<br/>¿cuáles se publican?"} -->|no| publish
+    hitl -.->|"sí: interrupt"| PAUSE(["pausa"])
+    PAUSE -.->|"Command(resume=HitlDecision)"| hitl
+    publish --> notify
+    notify --> END([END])
+```
+
+No hay `verify`, `policy` ni `fix_dispatch`. El cargador lee el artefacto ya
+validado y tira con L0 la cita que no está en el diff. El sello marca cada
+hallazgo que pasó con acción `publish` y `publication=full`; no ejecuta la
+política. `dropped` no se publica (ni inline ni resumen) y no es `rejected`.
+Con `silence_without_choice`, solo un `approved` se publica. `dropped`,
+`rejected`, `noted` y el `expired` del TTL dejan el hallazgo fuera; si no queda
+nada elegido y no hay una fuente estática sin cubrir, `publish` no escribe en
+el PR. El barrido del TTL, en esta pausa, reanuda con `dropped` (en la pausa
+del motor `llm` sigue siendo `expired`). `notify` manda entonces un aviso
+corto; si sí se publicó, el aviso cuenta publicados y dejados fuera, no los
+pendientes de la política. Una fuente estática sin cubrir sigue comentando el
+PR. `stamp`
+deja `pause_kind=publication` en el estado y `build_approval` lo copia a la
+pausa: el worker reconstruye la `ApprovalRequest` desde el estado, no desde el
+`interrupt`. La tarjeta de Teams, con ese campo, ofrece tres lotes (solo
+bloqueantes, todos, ninguno) y el marcado suelto; el bot los traduce a una
+`HitlDecision` antes de encolar. Sin el campo, la tarjeta sigue siendo Aprobar,
+Rechazar y Anotar. Antes de arrancar el grafo, el worker pide stdout al
+servicio `claude-runner` (perfil `claude`) y lo guarda si es una lista de
+hallazgos. Si ese `head_sha` ya es válido, no vuelve a llamar. Un stdout
+inválido o un proceso caído no entra al grafo y el job se reintenta. Sin
+sesión (`GET /session` responde no), el job sale a `reviews:claude:parked` y
+el bucle sigue con el resto de la cola; el primer caso encola un aviso con
+enlace al panel y el segundo no. Una reanudación que ya trae `decision` o
+`fix_resolution` no se parkea: no necesita el CLI. El token vive en un fichero
+`0600` que el worker no abre. El job que agota el cupo parkea con `reason`
+`quota`, no entra al grafo y no se reintenta. Mientras dura el aviso (900 s),
+los jobs siguientes salen a la misma lista con `reason` `quota-wait` y vuelven
+a la cola cuando el aviso caduca; un artefacto ya válido de ese `head_sha` no
+espera. El login del operador suelta solo lo parqueado por la sesión. El
+barrido de cola vacía vuelve a mirar la sesión y suelta `quota-wait` si el
+aviso ya no está.
 
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
@@ -204,6 +272,8 @@ LangGraph lee para inyectar el `Runtime` de `persona` y lo que mantiene la
 | `human_decisions` | Sustituye | Lo escribe `hitl` al reanudar |
 | `fix_wait` (wave) | Sustituye | La wave pendiente; la escribe `fix_wait` al pausar |
 | `published`, `inlined_count` | Sustituye | Señal de `publish` a `notify` |
+| `silence_without_choice` | Sustituye | Solo lo escribe el grafo `claude`. Sin él, una review parcial del motor `llm` sigue comentando el PR |
+| `pause_kind` | Sustituye | Solo lo escribe `stamp` del grafo `claude` (`publication`). `build_approval` lo copia a la tarjeta. El grafo `llm` no lo escribe |
 
 `pending_approvals` no se guarda: se deriva de `decisions`.
 
@@ -238,13 +308,22 @@ sequenceDiagram
 Si algo falla tras un `claim`, la clave se libera (`_release_quietly`) antes de
 propagar el error.
 
+El panel puede encolar una review sin artefacto
+([ADR-0029](adr/0029-lanzamiento-desde-el-panel.md)): parsea la URL, comprueba el
+repo y deja en `reviews:jobs` un `ReviewRequest` con `launch=True`,
+`pipeline_id=panel` y el SHA vacío. No llama al VCS.
+
 ### 4.2 Bucle del worker
 
 ```
 loop:
-  job = BLPOP reviews:jobs (5 s)
-  si hay job → _consume → process_request (según el estado del hilo, ADR-0007)
+  reclaim de reviews:jobs:processing:*  (un arranque distinto recupera lo suyo ya;
+                         otro host, solo si el latido supera 6 h)
+  job = BLMOVE reviews:jobs → reviews:jobs:processing:<host> (5 s)
+  si hay job → _consume: si es un lanzamiento sin SHA, lee el commit en el VCS
+                (ADR-0029) y luego process_request (según el estado del hilo, ADR-0007)
                 fallo → reencolar con attempts+1, o DLQ al agotar
+                al terminar → LREM (ack). Sin ack, el reclaim devuelve el job
   si la cola está vacía:
     cada 30 s  → sweep_pending  (TTL de ingesta → pasada degradada :partial)
                  sweep_expired  (TTL de decisión → reanudación expired)
@@ -264,17 +343,22 @@ sequenceDiagram
     participant R as Redis
     participant T as Teams
     participant H as Persona
-    participant API as API/CLI
+    participant API as API/CLI/panel
     W->>PG: invoke → hitl → interrupt(ApprovalRequest)
     W->>R: inbox reviews:paused:<review_key>
     W->>T: aviso de pausa (sin marca)
-    H->>API: agent_review decide <key> --actor … --approve/--reject/--noted …
-    API->>R: valida contra el inbox (todos los pendientes) → RPUSH job con decision
+    H->>API: agent_review decide … / POST decision / detalle o bandeja del panel
+    API->>R: build_decision (todos los pendientes) → RPUSH job con decision
     R->>W: BLPOP
     W->>PG: Command(resume=HitlDecision) sobre el mismo thread_id
     W->>W: fix → publish → notify
     W->>R: borra la entrada del inbox
 ```
+
+La bandeja y el detalle sellan la pausa antes de encolar. Si Teams está activo,
+quien gana encola `withdraw` y el bot borra el mensaje. Una pausa ya sellada no
+vuelve a publicarse si el aviso de pausa llega tarde. El CLI y la API no sellan:
+el barrido del bot retira la tarjeta cuando la pausa sale del inbox.
 
 Al publicar con una decisión humana:
 
@@ -332,25 +416,34 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `<repo:pr:sha:tool>` / `<review_key>` | Claim de idempotencia | 7 días |
 | Redis | `reviews:pending:<repo:pr:sha>` | `PendingReview` (incluye los payloads) | 7 días |
 | Redis | `reviews:jobs` | Cola de reviews (`ReviewRequest` en JSON) | — |
-| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, request | — |
+| Redis | `reviews:jobs:processing:<host>` | Job en vuelo de ese worker, hasta el `ack`. Un proceso nuevo con el mismo host lo devuelve a `reviews:jobs`; otro host, si el latido (`…:hb`) supera 6 h | latido 6 h |
+| Redis | `reviews:jobs:dead` | DLQ: `review_key`, intentos, motivo, `error` (log de los intentos) y request. Un payload ilegible llega en crudo (`raw`). El enlace del panel abre ese log cuando no hay recorrido | — |
+| Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
+| Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait` o `ceiling` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/030-panel-ensena-los-aparcados/spec.md)) | — |
+| Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
+| Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
+| Redis | `reviews:claude:notice:session`, `reviews:claude:notice:ceiling` | Aviso único de cada motivo. `session` además se borra al iniciar sesión. El de `ceiling` no se desbloquea solo: su fecha es lo que permite volver a avisar al chocar de nuevo el techo | 86400 s |
 | Redis | `reviews:fixes` | Cola de fixes (`FixJob`: wave + request) | — |
-| Redis | `reviews:fixes:dead` | DLQ de fixes | — |
+| Redis | `reviews:fixes:processing:<host>` | Fix en vuelo, misma regla que `reviews:jobs:processing` | latido 6 h |
+| Redis | `reviews:fixes:dead` | DLQ de fixes. Un payload ilegible llega en crudo (`raw`) | — |
 | Redis | `reviews:fixes:done` | Set de `run_key` ya verificados (idempotencia) | — |
 | Redis | `reviews:paused:<review_key>` | `PausedReview` (inbox; `kind` `human`/`fix`) | 8 días |
 | Redis | `reviews:active:<review_key>` | Hash de **progreso del worker** (019 W10): un campo por nodo en curso con `{node, started_at, branches}`. El panel lee de aquí qué corre ahora y pinta el tiempo de ejecución a partir de `started_at` (cierra D16). Sin `PROGRESS_ENABLED` no se escribe | `PROGRESS_TTL_S` (1 h) |
 | Redis | `reviews:reasoning:<review_key>` | *Stream* del **razonamiento de los revisores** (021): un evento por inicio, trozo de texto (agrupado), fin o fallo de cada lote, con persona, lote *i/N*, ficheros y `usage`. Lo escribe el worker con `REASONING_STREAM_ENABLED` y lo lee el panel por SSE. `MAXLEN ~` por `REASONING_MAX_BYTES` | `REASONING_TTL_S` (10 días) |
 | Redis | `reviews:history` / `reviews:history:data` | **Histórico de reviews terminadas** (021): *sorted set* `review_key` → instante de cierre y hash `review_key` → `ReviewSummary` en JSON. Lo escribe el worker al cerrar cada review (una reentrega actualiza la entrada) y lo lee el panel | Poda por fecha con `CHECKPOINT_RETENTION_DAYS` (30 días), al escribir y en el barrido |
 | Redis | `reviews:cancel:<review_key>` | Marca de **cancelación** (019 §5.4): la escribe el panel y la leen la frontera de nodo y `_consume` al desencolar, que abortan la review. Tras abortar queda como *tombstone* para abortar los jobs rezagados (sin hilo arrancarían desde `START`); solo «Reintentar» la retira. Una pausa de fix no se marca | `CANCEL_TTL_S` (7 días) |
-| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10) | — |
+| Redis | `reviews:notices` | Cola de avisos al canal (`ChatNotice` en JSON): outbox del egress (C10). `kind` `published`, `pause` o `withdraw` (retirar la tarjeta ya respondida) | — |
 | Redis | `reviews:notices:dead` | DLQ de la outbox de avisos (p. ej. pausa ya vencida: C13). Un aviso ilegible llega **en crudo** (`raw`) | — |
 | Redis | `reviews:teams:card:<review_key>` | Hash `user_id\|finding_id → outcome`: estado de la tarjeta, por usuario (C8) | 8 días |
 | Redis | `reviews:teams:card:<review_key>:final:<pause_id>` | Actor de la primera decisión de **esa pausa** (`SETNX`, C11). `pause_id` = `thread_id@created_at`: la pasada degradada y la completa comparten `review_key` y no se cierran entre sí | 8 días |
 | Redis | `reviews:teams:channel` | `conversation_id` (id base, sin `;messageid=`) + `service_url` del canal dedicado (C14). **Gana la primera captura**; mover el canal es borrar la clave | — |
 | Redis | `reviews:teams:threads` | Hash `sha256(repo:pr)[:12] → {conversation_id, root_message_id, service_url}`: hilo por PR (C6) | — |
-| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url}`: mensaje de la tarjeta editable (C7) | — |
+| Redis | `reviews:teams:cards` | Hash `sha256(review_key)[:12] → {conversation_id, message_id, service_url, review_key}`: mensaje de la tarjeta (C7). El bot lo borra al sellarse la pausa o al salir del inbox. Una entrada antigua sin `review_key` solo se borra con un `withdraw` que traiga la clave | — |
 | Redis | `budget:<review_key>` / `budget:reserved:<review_key>` | Gasto confirmado y reservado sin confirmar del presupuesto de tokens de la review (017). Contador compartido por el fan-out; el script Lua reserva y confirma de forma atómica | 8 días |
 | Redis | `budget:fix:<review_key>` / `budget:fix:reserved:<review_key>` | Mismo contador para el fix (017 B11): clave aparte para que una review cara no deje sin presupuesto lo aprobado | 8 días |
 | Postgres | `thread_id` | Checkpoints de LangGraph | Completados: 30 días; `fix_wait`: `FIX_WAIT_MAX_AGE_S` |
+| Postgres | `panel_config` / `panel_config_history` | Documento vigente de diales del panel (027, [ADR-0031](adr/0031-configuracion-desde-el-panel.md)): overrides, revisión, actor. El historial guarda cada foto. Sin fila, la review usa `Settings` | — |
 | Disco | `var/tooling/<pr>/<sha>/<tool>.json` | Artefacto del CI | — |
 | PR | `<!-- reviews:<hash>:ok\|:partial -->`, `:i:<id>`, `:fix` | Marcas de publicación | Lo que viva el PR |
 
@@ -362,7 +455,17 @@ viven en su memoria de proceso: `ReadWorkspaceManager` con
 `dict[workspace_id → (ReadWorkspace, expires_at)]` y un índice por `(repo,
 head_sha)`. **No viajan en Redis ni en Postgres**: un reinicio del runner los pierde.
 Un workspace desconocido responde `410` (y un fichero ausente, `404`): solo el `410`
-hace que el adaptador reabra, una vez, o degrade al VCS. El clon corre **fuera** del
+hace que el adaptador reabra, una vez, o degrade al VCS. `GET .../file` devuelve además
+`total_bytes` (tamaño real del blob antes del rango y del recorte), `truncated` y
+`served_range`; `grep` y `tree` devuelven `total` y `truncated`
+([ADR-0026](adr/0026-contrato-de-lectura-con-tamano-real.md)). `grep` acepta
+`mode="regex"` cuando el runner anuncia la capacidad `grep.mode`; el patrón viaja
+**ya normalizado** al dialecto portable ([ADR-0027](adr/0027-dialecto-portable-de-grep.md)),
+así que `git grep -E` y el `re` del fixture y del VCS interpretan la misma cadena, y
+un patrón no portable o inválido es `400`, nunca una lista vacía. `tree` acepta
+`glob` (relativo al directorio pedido) y `depth`: un directorio **vacío** es `200`
+con `entries` vacío; una ruta que no existe o que es un fichero es `400`, para que
+`list_dir` no confunda «no hay nada» con «no está» (L1 de 023). El clon corre **fuera** del
 lock del gestor, con una marca por `(repo, head_sha)` para que dos aperturas del mismo
 par clonen una sola vez; un clon lento no bloquea las lecturas de otros workspaces. Un TTL (`SANDBOX_WORKSPACE_TTL_S`,
 1800 s) y un tope de abiertos (`SANDBOX_MAX_WORKSPACES`, 4) con *reaper* perezoso
@@ -393,7 +496,12 @@ suscriptor vivo.
 | 4 — Autonomía por política | No empezada | `fix_auto`, Jira, memoria de aceptados, métricas, mutation testing |
 
 El estado vivo de cada iniciativa y sus tareas están en
-[`iniciativas/README.md`](iniciativas/README.md).
+[`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
+[025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
+tarjeta de lote, `claude-runner` y sesión en el panel.
+[028](iniciativas/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
+fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
+([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
 
 ---
 
@@ -422,6 +530,12 @@ Lo que el código hace distinto de lo que dice una spec, o lo que está a medias
 | D19 | **Anclaje por cercanía** | **Resuelto (008 L0):** el `LlmReviewer` ya no recoloca por cercanía; cita de contexto/borrada va al resumen y cita inventada se descarta. `ToolingReviewer` sigue con `best_line` (grounded). |
 | D20 | **Personas LLM con el mismo *prompt*** | `correctness`, `security` y `arch` son la misma clase `LlmReviewer` con el mismo `_SYSTEM`: solo cambia el modelo bindeado al rol. Los logs y el prefijo del `id` del hallazgo dicen `correctness` para las tres. El merge atribuye la fuente por `finding_sources`, así que la deduplicación no se ve afectada. Sin iniciativa. |
 | D22 | **Contrato de secretos a mano** | **Resuelta (020, [ADR-0022](adr/0022-contrato-de-secretos-declarado.md)).** El contrato se deriva de `Settings`: cada campo secreto declara un `Secret` en su `metadata` (procesos donde aplica, condición de activación y qué se espera del valor) y `secrets_for(settings, process)` es la única vía de lectura. Se borran las listas a mano y los cuatro sets de placeholders: `PLACEHOLDER_VALUES` es la única definición, y API, web y el `sandbox_runner` comparten el predicado `is_missing` que la encapsula. La causa del fallo de `92dea1e` (dos listas para el mismo secreto) ya no puede repetirse. |
+| D23 | **Una grabación caducada se lee como un resultado malo** | **Resuelta (023 T0, T0c).** `FingerprintMismatch` vive en `ports/llm.py` (hereda de `LlmError`, así que `is_transient` la clasifica como permanente) y el harness la importa de ahí. `LlmReviewer` la deja subir en los **tres** sitios (`_call_once`, `_call_with_tools` y `_call_with_retries`); un error permanente que escape de `_call_with_retries` deja el lote `FAILED` y la review parcial, sin tumbar el resto (si subiera, `persona` lo relanzaría). En el borde de la medida, `evaluate` lanza `IncompleteMeasurement` si un replay deja algún lote en `FAILED` (`BUDGET` no aborta) y `scripts/eval.py` sale con código 2: una grabación caducada termina en error ruidoso, no en un informe de recall 0. |
+| D25 | **`served` por lote y `files_read` por review** | **Resuelta (023 S1).** El registro (`ReadingRegistry` en `ports/context.py`) vive en el `LlmReviewer`, se comparte entre lotes con `run_tool_loop` y se vacía al empezar cada review: una cita a un fichero del lote 1 vale en el 3. `Reading` distingue `full`/`range`/`outline`/`grep` y la `ref`; solo `full`/`range` de la misma `ref` prueban una cita, y `files_read` (cobertura) cuenta solo cuerpos. |
+| D26 | **El `usage` agregado del bucle está mal atribuido** | **Resuelta (024 S1/S4).** `LoopResult` acumula `prompt_tokens`, `completion_tokens`, `reasoning_tokens` y `cached_tokens` (este último por turno, `None` si alguno no lo reporta) además de `usage`, que sigue siendo la suma para el presupuesto. `_call_with_tools` devuelve un `LlmReply` con esos contadores separados, no el total metido en *completion*; `LlmReply.cached_tokens` es `None` cuando el proveedor no lo reporta (tres dialectos normalizados en `openai_llm`), la grabación lo guarda y devuelve, y el informe de 006 publica `cache` (`cached_tokens / prompt_tokens`) por review y por lote. |
+| D27 | **La conversación no lleva la respuesta del modelo** | `run_tool_loop` acumula en `conversation` solo los bloques `<tool_result>`: en el turno siguiente el modelo ve los resultados sin su propia petición. No hay evidencia de que le haga repetir lecturas (22 rutas se piden en más de una llamada, `domain/models.py` en 5), pero la conversación está mal formada. Se cierra en 024 (E5, eco del *assistant*), que declara su coste en *prompt*. |
+| D28 | **La grabación pierde el orden de ejecución** | **Resuelta (023 T3).** `Recording` guarda `order`: la lista de llamadas en el orden en que ocurrieron, cada una con `seq`, `call_id`, `batch_index` y `turn`; `calls` queda como índice por *fingerprint* (la primera ocurrencia) y el *replay* consume una llamada por vez, así que dos turnos con el mismo *prompt* ya no se colapsan. `batch_index`/`turn` los aporta `BatchTracker`, que escucha el `start` que el revisor ya emite por lote. Una grabación anterior al formato (sin `order`) se reproduce por *fingerprint* y `measurable_by_batch` es `False`: no se le inventa el orden. |
+| D30 | **La grabación perdía los intentos fallidos** | **Resuelta (023 C0c).** Una llamada que el puerto lanzaba (`LlmTruncatedError` por agotar `max_tokens`, `LlmTransientError` por un corte) no dejaba entrada, así que el *replay* se saltaba un turno que en vivo ocurrió y abortaba por *fingerprint*: una corrida con un solo reintento era irreproducible. `record_call` acepta ahora `error`, `RecordedCall` lo guarda (`tipo: mensaje`) y `ReplayLlm` levanta el mismo tipo con el mismo mensaje. Los tokens de un intento fallido no se graban porque el puerto no los reporta. |
 
 ---
 

@@ -5,7 +5,9 @@ COMPOSE ?= docker compose
 
 .DEFAULT_GOAL := help
 .PHONY: help install lint format format-check typecheck fix test test-live docs-check ci \
-	eval eval-live eval-record bootstrap twg-credentials up panel down logs ps smoke clean
+	frontend-ci eval eval-live eval-record bootstrap twg-credentials ensure-dev-secrets \
+	frontend-install frontend-check frontend-build panel-dev \
+	up panel claude panel-claude down logs ps status smoke clean
 
 ##@ Dependencias
 
@@ -43,8 +45,37 @@ test-live: ## Tests marcados `live` (red y credenciales reales)
 docs-check: ## Comprueba estructura, cabeceras y enlaces de la documentacion
 	$(UV) run --extra $(EXTRAS) python scripts/check_docs.py
 
-# Mismo orden y comandos que .github/workflows/ci.yml
-ci: lint format-check typecheck test docs-check ## Lint + formato + tipos + tests + docs (igual que el CI)
+# Mismo orden y comandos que .github/workflows/ci.yml. El panel entra como una
+# comprobacion mas cuando existe `frontend/`: si los tipos, los tests o el build de
+# la SPA fallan, el `ci` falla aunque Python este verde (029, R7). Incluye el build
+# porque `tsc --noEmit` por separado no ve lo que ve Vite al empaquetar.
+#
+# `npm ci` necesita `node_modules`, que no se versiona. Se instala solo si falta:
+# en una maquina sin `make frontend-install` el `ci` instala y sigue, en vez de
+# fallar por un directorio que el repo no guarda.
+FRONTEND ?= frontend
+FRONTEND_READY := $(wildcard $(FRONTEND)/package.json)
+
+ci: lint format-check typecheck test docs-check $(if $(FRONTEND_READY),frontend-ci) ## Lint + formato + tipos + tests + docs + panel (igual que el CI)
+
+frontend-ci: ## Instala si falta y comprueba el panel (tipos, lint, tests y build)
+	@test -d $(FRONTEND)/node_modules || (cd $(FRONTEND) && npm ci)
+	cd $(FRONTEND) && npm run typecheck && npm run lint && npm test && npm run build
+
+##@ Frontend del panel (iniciativa 029)
+
+# El panel en React vive en `frontend/`. `node_modules` y `dist` no se versionan.
+frontend-install: ## Instala las dependencias del panel (npm ci)
+	cd $(FRONTEND) && npm ci
+
+frontend-check: ## Tipos, lint y tests del panel
+	cd $(FRONTEND) && npm run typecheck && npm run lint && npm test
+
+frontend-build: ## Build de produccion del panel
+	cd $(FRONTEND) && npm run build
+
+panel-dev: ## Vite en :5173 con proxy a un `web` ya levantado en :8090
+	cd $(FRONTEND) && npm run dev
 
 ##@ Evaluacion de la review (iniciativa 006)
 
@@ -55,11 +86,30 @@ EVAL_COMPARE ?=
 eval: ## Informe del gold set (replay, sin red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py report $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
 
+# `REVIEW_TOOLS_ROLES=correctness` mide la variante con herramientas; lee la
+# grabacion aparte (`--recording recorded_tools.json`) para no pisar el baseline
+# de 008 (014 RH11).
+eval-tools: ## Informe del gold set con el rol de herramientas activado (replay)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py report --recording recorded_tools.json $(if $(EVAL_COMPARE),--compare $(EVAL_COMPARE))
+
+eval-verifier: ## Informe del gold set con verificador L2 (escenario de produccion, replay)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py report --recording recorded_tools.json --verifier on
+
+eval-record-verifier: ## Regraba el gold set con el revisor y el verificador (red)
+	LLM_REVIEWER_ENABLED=true REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py record --recording recorded_tools.json --verifier on
+
 eval-live: ## Mide contra el modelo real (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py live
 
 eval-record: ## Regraba las respuestas del gold set (red)
 	$(UV) run --extra $(EXTRAS) python scripts/eval.py record
+
+eval-record-tools: ## Regraba el gold set con el rol de herramientas activado (red)
+	REVIEW_TOOLS_ROLES=correctness \
+	  $(UV) run --extra $(EXTRAS) python scripts/eval.py record --recording recorded_tools.json
 
 ##@ Entorno local (docker compose)
 
@@ -69,11 +119,20 @@ bootstrap: ## Crea .env desde .env.example y resume lo que falta
 twg-credentials: ## Copia tu sesion twg al .env (solo desarrollo)
 	scripts/sync-twg-credentials.sh
 
-up: ## Levanta el stack (build incluido)
+ensure-dev-secrets: ## Rellena URL y secretos locales si siguen en blanco
+	$(UV) run --extra $(EXTRAS) python scripts/ensure_dev_secrets.py
+
+up: ensure-dev-secrets ## Levanta el stack (build incluido)
 	$(COMPOSE) up --build -d
 
-panel: ## Levanta el stack con el panel de operacion (perfil `panel`)
+panel: ensure-dev-secrets ## Levanta el stack con el panel de operacion (perfil `panel`)
 	$(COMPOSE) --profile panel up --build -d
+
+claude: ensure-dev-secrets ## Levanta el stack con el runner de Claude (perfil `claude`)
+	$(COMPOSE) --profile claude up --build -d
+
+panel-claude: ensure-dev-secrets ## Panel y runner de Claude (perfiles `panel` y `claude`)
+	$(COMPOSE) --profile panel --profile claude up --build -d
 
 down: ## Para el stack
 	$(COMPOSE) down
@@ -84,6 +143,9 @@ logs: ## Sigue los logs (S=<servicio>, por defecto worker)
 
 ps: ## Estado de los servicios
 	$(COMPOSE) ps
+
+status: ## Contenedores, URLs y prueba de las credenciales de integracion
+	COMPOSE="$(COMPOSE)" $(UV) run --extra $(EXTRAS) python scripts/status.py
 
 # Smoke Nivel 2 real: deposita el artefacto del CI y espera la review en el PR.
 smoke: ## Smoke Nivel 2 contra un PR real (PR=<id> [PIPELINE=<id>])

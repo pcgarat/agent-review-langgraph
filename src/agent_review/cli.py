@@ -5,7 +5,7 @@ import sys
 
 from agent_review.decision import DecisionError, build_decision
 from agent_review.domain.models import DecisionOutcome, FindingDecision
-from agent_review.domain.paused import PausedReview
+from agent_review.domain.paused import PausedReview, PauseKind
 from agent_review.paused_store import InMemoryPausedStore, RedisPausedStore
 from agent_review.queue import InMemoryReviewQueue, RedisReviewQueue, ReviewQueue
 from agent_review.settings import Settings, get_settings
@@ -31,10 +31,12 @@ def _fmt_created(paused: PausedReview) -> str:
 
 def _cmd_list(settings: Settings) -> int:
     paused = build_paused(settings).all()
-    if not paused:
+    humans = [review for review in paused if review.kind is PauseKind.HUMAN]
+    fixes = [review for review in paused if review.kind is not PauseKind.HUMAN]
+    if not humans and not fixes:
         print("No hay reviews pausadas.")
         return 0
-    for review in sorted(paused, key=lambda r: r.created_at):
+    for review in sorted(humans, key=lambda r: r.created_at):
         print(f"{review.review_key}  (pausada {_fmt_created(review)})")
         for pending in review.human_request.pending:
             print(
@@ -42,6 +44,8 @@ def _cmd_list(settings: Settings) -> int:
                 f"{pending.proposed_action.value}: {pending.title} ({pending.file}:{pending.line})"
             )
         print(f"  decide: {review.human_request.command_hint}")
+    for review in sorted(fixes, key=lambda r: r.created_at):
+        print(f"{review.review_key}  (verificacion de fix, {_fmt_created(review)})")
     return 0
 
 
@@ -55,6 +59,8 @@ def _items_from_args(args: argparse.Namespace) -> list[FindingDecision]:
         )
     for finding_id in args.noted:
         items.append(FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.NOTED))
+    for finding_id in args.drop:
+        items.append(FindingDecision(finding_id=finding_id, outcome=DecisionOutcome.DROPPED))
     return items
 
 
@@ -95,13 +101,24 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("review_key", help="Clave de la review pausada (ver `agent_review list`)")
     decide.add_argument("--actor", required=True, help="Quien decide (queda auditado)")
     decide.add_argument(
-        "--approve", action="append", default=[], metavar="ID", help="Autoriza el arreglo"
+        "--approve",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Publica el hallazgo, o autoriza intentar el arreglo",
     )
     decide.add_argument(
         "--reject", action="append", default=[], metavar="ID", help="Descarta el hallazgo"
     )
     decide.add_argument(
         "--noted", action="append", default=[], metavar="ID", help="Se atiende fuera del agente"
+    )
+    decide.add_argument(
+        "--drop",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="No lo publica (pausa de publicación del motor claude)",
     )
     decide.add_argument("--note", default="", help="Nota para los hallazgos rechazados")
     decide.set_defaults(func=_cmd_decide)

@@ -4,7 +4,19 @@ import logging
 
 from agent_review.domain.models import Finding
 from agent_review.globs import path_matches
-from agent_review.ports.context import Ref, is_denied
+from agent_review.outline import outline_text
+from agent_review.ports.context import (
+    GrepMode,
+    ReadMode,
+    ReadResult,
+    Ref,
+    ToolError,
+    ToolResult,
+    is_denied,
+    line_matcher,
+    slice_lines,
+    unsafe_repo_path,
+)
 from agent_review.ports.vcs import VcsPort
 from agent_review.scope import changed_files
 
@@ -18,6 +30,10 @@ class VcsContextReader:
     (un proceso `twg` por lectura) y `grep`/`list_dir` solo pueden mirar **lo que ya
     se sirvio** y los ficheros del diff. Es el modo que queda cuando el
     `sandbox-runner` no esta disponible: da menos alcance, pero la review sigue.
+
+    Es un lector **parcial** (023 E0g): la equivalencia con las demas superficies se
+    predica sobre la interseccion visible, no sobre el arbol entero. Un `grep` que
+    aqui no ve nada puede verlo el fixture.
     """
 
     def __init__(
@@ -49,7 +65,10 @@ class VcsContextReader:
         ref: Ref = "head",
         start: int | None = None,
         end: int | None = None,
-    ) -> str | None:
+        mode: ReadMode = "full",
+    ) -> ReadResult | None:
+        if unsafe_repo_path(path):
+            raise ToolError(f"ruta no permitida: {path}")
         if is_denied(path, self._denylist):
             return None
         sha = self._ref_sha(ref)
@@ -62,33 +81,105 @@ class VcsContextReader:
             except Exception as exc:  # noqa: BLE001 - el lector nunca tumba la review (W8)
                 logger.warning("lector VCS: no se pudo leer %s@%s (%s)", path, ref, exc)
                 return None
-        return _slice(self._cache[key], start, end)
+        text = self._cache[key]
+        total_bytes = len(text.encode("utf-8"))
+        if mode == "outline":
+            index = outline_text(path, text)
+            if index is None:
+                raise ToolError(f"no se puede indexar {path}; pide `start`/`end` tras un `grep`")
+            return ReadResult(content=index, total_bytes=total_bytes)
+        if mode != "full":
+            raise ToolError(f"mode={mode!r} no existe; usa `full` u `outline`")
+        content, served_range = slice_lines(text, start, end)
+        return ReadResult(
+            content=content,
+            total_bytes=total_bytes,
+            served_range=served_range,
+        )
 
-    def grep(self, pattern: str, *, glob: str | None = None) -> list[str]:
+    def grep(
+        self,
+        pattern: str,
+        *,
+        glob: str | None = None,
+        path: str | None = None,
+        ref: Ref = "head",
+        mode: GrepMode = "literal",
+        files_only: bool = False,
+    ) -> ToolResult:
         if not pattern:
-            return []
+            return ToolResult()
+        matches_line = line_matcher(pattern, mode)
+        prefix = _normalize_dir(path)
         results: list[str] = []
-        for (path, _ref), text in self._cache.items():
-            if is_denied(path, self._denylist):
+        all_files: set[str] = set()
+        listed: set[str] = set()
+        total = 0
+        for (cached_path, cached_ref), text in self._cache.items():
+            if cached_ref != ref:
                 continue
-            if glob and not path_matches(path, glob):
+            if prefix and cached_path != prefix and not cached_path.startswith(f"{prefix}/"):
+                continue
+            if is_denied(cached_path, self._denylist):
+                continue
+            if glob and not path_matches(_under(cached_path, prefix), glob):
                 continue
             for number, line in enumerate(text.splitlines(), start=1):
-                if pattern in line:
-                    results.append(f"{path}:{number}: {line.strip()}")
-                    if len(results) >= self._max_matches:
-                        return results
-        return results
+                if not matches_line(line):
+                    continue
+                if files_only:
+                    all_files.add(cached_path)
+                    if cached_path in listed:
+                        continue
+                    listed.add(cached_path)
+                    if len(results) < self._max_matches:
+                        results.append(cached_path)
+                    continue
+                total += 1
+                if len(results) < self._max_matches:
+                    results.append(f"{cached_path}:{number}: {line.strip()}")
+        if files_only:
+            total = len(all_files)
+        return ToolResult(
+            items=tuple(results),
+            total=total,
+            truncated=total > len(results),
+        )
 
-    def list_dir(self, path: str) -> list[str]:
-        prefix = path.rstrip("/")
+    def list_dir(
+        self,
+        path: str,
+        *,
+        glob: str | None = None,
+        depth: int = 1,
+    ) -> ToolResult:
+        if depth < 1:
+            raise ToolError(f"`depth` debe ser >= 1 (recibido {depth})")
+        prefix = _normalize_dir(path)
+        under = [candidate for candidate in self._diff_files if candidate.startswith(f"{prefix}/")]
+        if prefix and not under:
+            if prefix in self._diff_files:
+                raise ToolError(f"`{prefix}` es un fichero, no un directorio; usa `read_file`")
+            # El lector es parcial: no puede afirmar que el directorio este vacio,
+            # solo que el cambio no lo toca. Decirlo evita un «vacio» falso (L1).
+            raise ToolError(
+                f"`{prefix}` no aparece en los ficheros del cambio; "
+                "este lector solo ve el diff (prueba `read_file` sobre una ruta conocida)"
+            )
         seen: set[str] = set()
-        for candidate in self._diff_files:
-            if prefix and not candidate.startswith(f"{prefix}/"):
-                continue
+        for candidate in under if prefix else self._diff_files:
             rest = candidate[len(prefix) + 1 :] if prefix else candidate
-            seen.add(rest.split("/", 1)[0])
-        return sorted(seen)
+            parts = rest.split("/")
+            for level in range(1, min(depth, len(parts)) + 1):
+                name = "/".join(parts[:level])
+                full = f"{prefix}/{name}" if prefix else name
+                if is_denied(full, self._denylist):
+                    continue
+                if glob and not path_matches(name, glob):
+                    continue
+                seen.add(name)
+        names = tuple(sorted(seen))
+        return ToolResult(items=names, total=len(names))
 
     def seed(self, paths: list[str] | None = None) -> None:
         """Precarga ficheros al `head_sha` para que `grep` tenga donde buscar.
@@ -109,10 +200,13 @@ class VcsContextReader:
         return self._base if ref == "base" else self._head
 
 
-def _slice(text: str, start: int | None, end: int | None) -> str:
-    if start is None and end is None:
-        return text
-    lines = text.splitlines()
-    first = max(0, (start or 1) - 1)
-    last = end if end is not None else len(lines)
-    return "\n".join(lines[first:last])
+def _normalize_dir(path: str | None) -> str:
+    normalized = (path or "").strip()
+    while normalized.startswith(("./", "/")):
+        normalized = normalized[2:] if normalized.startswith("./") else normalized[1:]
+    return normalized.rstrip("/")
+
+
+def _under(relative: str, prefix: str) -> str:
+    """Ruta `relative` vista desde `prefix`; el glob se mide ahi (ADR-0027)."""
+    return relative[len(prefix) + 1 :] if prefix else relative

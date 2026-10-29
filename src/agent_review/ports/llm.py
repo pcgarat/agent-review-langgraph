@@ -26,6 +26,26 @@ class LlmTransientError(LlmError, TransientError):
     """
 
 
+class LlmTruncatedError(LlmError):
+    """El modelo agoto `max_tokens` y cerro sin contenido (`finish_reason=length`).
+
+    No es un fallo del proveedor sino del presupuesto de salida de *esa* llamada
+    (un razonador que se come el turno en `reasoning_content` y devuelve
+    `content: null` con 200 OK). El bucle de herramientas lo trata como un turno
+    perdido —pide el objeto final— en vez de dar el lote entero por caido.
+    """
+
+
+class FingerprintMismatch(LlmError):
+    """La grabacion no corresponde al prompt o al caso: hay que regrabar.
+
+    Vive aqui, y no en el harness de evaluacion, porque `LlmReviewer` necesita
+    distinguirla y **no** tragarsela: un *replay* que no casa es un fallo de
+    medida, no una review vacia (ADR-0017). Hereda de `LlmError` para que
+    `is_transient` la clasifique como permanente y ningun reintento la repita.
+    """
+
+
 @dataclass(frozen=True)
 class LlmReply:
     """Respuesta del modelo, con el gasto real que reporta el proveedor.
@@ -39,6 +59,10 @@ class LlmReply:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    # Tokens del prefijo que el proveedor sirvio de su cache (024 E3). `None` es
+    # «no medido» y **no** es 0: un proveedor que no lo reporta no es un proveedor
+    # que no cachea, y confundirlos cierra la pregunta al reves.
+    cached_tokens: int | None = None
     finish_reason: str = ""
     # Lo que el modelo razono antes de responder, si el proveedor lo devuelve
     # (021). Es material de operacion: no se publica ni entra en el estado.

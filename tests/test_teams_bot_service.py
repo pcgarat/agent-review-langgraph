@@ -25,6 +25,7 @@ from agent_review.domain.models import (
 from agent_review.domain.paused import PauseKind
 from agent_review.paused_store import InMemoryPausedStore
 from agent_review.teams_bot.service import DispatchResult, TeamsBotService
+from agent_review.teams_bot.state import InMemoryCardStore
 from agent_review.teams_bot.threads import ChannelContext, InMemoryChannelStore
 from agent_review.teams_bot.transport import ChannelTransport
 
@@ -36,6 +37,7 @@ class FakeChannel:
         self.sends: list[object] = []
         self.replies: list[object] = []
         self.updates: list[object] = []
+        self.deletes: list[tuple[str, str]] = []
         self.fail = fail
         self._next = 200
 
@@ -67,6 +69,12 @@ class FakeChannel:
             raise ConnectionError("Teams caido")
         self.updates.append(payload)
 
+    async def delete(self, conversation_id: str, message_id: str, *, service_url: str = "") -> None:
+        del service_url
+        if self.fail:
+            raise ConnectionError("Teams caido")
+        self.deletes.append((conversation_id, message_id))
+
 
 def _approval(review_key: str) -> ApprovalRequest:
     return ApprovalRequest(
@@ -95,6 +103,7 @@ def _services(
     paused: InMemoryPausedStore | None = None,
     channel: FakeChannel | None = None,
     store: InMemoryChannelStore | None = None,
+    cards: InMemoryCardStore | None = None,
     with_channel: bool = True,
 ) -> tuple[TeamsBotService, InMemoryChatOutbox, FakeChannel, InMemoryChannelStore]:
     outbox = InMemoryChatOutbox()
@@ -106,6 +115,7 @@ def _services(
         outbox=outbox,
         transport=ChannelTransport(client=client, store=channel_store),
         paused=paused or InMemoryPausedStore(),
+        cards=cards,
         poll_s=0.01,
     )
     return service, outbox, client, channel_store
@@ -396,3 +406,74 @@ async def test_un_raiz_publicado_sin_id_no_se_vuelve_a_publicar() -> None:
     assert (processed, deferred) == (1, False)
     assert len(client.sends) == 1
     assert len(outbox) == 0
+
+
+async def test_un_aviso_withdraw_borra_la_tarjeta() -> None:
+    paused = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=7, head_sha="abc")
+    paused.pause(request, _approval(request.review_key))
+    service, outbox, client, store = _services(paused=paused)
+    outbox.enqueue(_pause_notice(request.review_key))
+    await service.drain()
+    assert store.card(request.review_key) is not None
+
+    result = await service.dispatch(
+        ChatNotice(
+            kind="withdraw",
+            review_key=request.review_key,
+            repo=request.repo,
+            pr_id=request.pr_id,
+        )
+    )
+
+    assert result is DispatchResult.PUBLISHED
+    assert len(client.deletes) == 1
+    assert store.card(request.review_key) is None
+
+
+async def test_una_pausa_ya_sellada_no_vuelve_a_publicar_la_tarjeta() -> None:
+    """Quien respondio en la bandeja gano: el aviso de pausa llega tarde y se tira."""
+    paused = InMemoryPausedStore()
+    cards = InMemoryCardStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=7, head_sha="abc")
+    paused.pause(request, _approval(request.review_key))
+    stored = paused.get(request.review_key)
+    assert stored is not None
+    cards.close(request.review_key, actor="Ana", pause=stored.pause_id)
+    service, outbox, client, _ = _services(paused=paused, cards=cards)
+    outbox.enqueue(_pause_notice(request.review_key))
+
+    processed, deferred = await service.drain()
+
+    assert (processed, deferred) == (1, False)
+    assert client.sends == []
+    assert outbox.dead_letter_count == 1
+
+
+async def test_el_barrido_borra_la_tarjeta_cuando_la_pausa_ya_no_esta() -> None:
+    paused = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=7, head_sha="abc")
+    paused.pause(request, _approval(request.review_key))
+    service, outbox, client, store = _services(paused=paused)
+    outbox.enqueue(_pause_notice(request.review_key))
+    await service.drain()
+    paused.resume(request.review_key)
+
+    removed = await service.withdraw_settled()
+
+    assert removed == 1
+    assert len(client.deletes) == 1
+    assert store.card(request.review_key) is None
+
+
+async def test_el_barrido_no_borra_una_pregunta_aun_abierta() -> None:
+    paused = InMemoryPausedStore()
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=7, head_sha="abc")
+    paused.pause(request, _approval(request.review_key))
+    service, outbox, client, store = _services(paused=paused)
+    outbox.enqueue(_pause_notice(request.review_key))
+    await service.drain()
+
+    assert await service.withdraw_settled() == 0
+    assert store.card(request.review_key) is not None
+    assert client.deletes == []

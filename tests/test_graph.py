@@ -319,7 +319,14 @@ def test_sin_verificador_no_hay_llamadas_y_todo_queda_sin_veredicto() -> None:
         calls = 0
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
             del finding, repo, head_sha, diff, review_key
             type(self).calls += 1
@@ -354,9 +361,16 @@ def test_hallazgo_refutado_sigue_en_merged() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.REFUTED,
@@ -402,9 +416,16 @@ def test_confirmed_sin_escenario_queda_unverified() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -443,9 +464,16 @@ def test_cita_no_servida_nunca_es_verified_grounded() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -488,9 +516,16 @@ def test_confirmed_estampa_escenario_del_verificador() -> None:
         name = "verifier"
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             return VerificationResult(
                 finding_id=finding.id,
                 verdict=Verdict.CONFIRMED,
@@ -537,9 +572,16 @@ def test_filtro_umbral_grounded_y_tope_no_llaman_al_verificador() -> None:
         calls: list[str] = []
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls.append(finding.id)
             return VerificationResult(
                 finding_id=finding.id,
@@ -602,9 +644,16 @@ def test_reintento_de_verify_no_reverifica_lo_existente() -> None:
         calls = 0
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls += 1
             return VerificationResult(
                 finding_id=finding.id,
@@ -651,9 +700,16 @@ def test_umbral_sale_del_severity_gate_de_la_politica() -> None:
         calls: list[str] = []
 
         def verify(
-            self, finding, *, repo: str, head_sha: str, diff: str = "", review_key: str = ""
+            self,
+            finding,
+            *,
+            repo: str,
+            head_sha: str,
+            base_sha: str = "",
+            diff: str = "",
+            review_key: str = "",
         ):
-            del repo, head_sha, diff, review_key
+            del repo, head_sha, base_sha, diff, review_key
             type(self).calls.append(finding.id)
             return VerificationResult(
                 finding_id=finding.id,
@@ -1638,6 +1694,30 @@ def test_merge_conserva_el_veredicto_mas_fuerte() -> None:
     assert len(merged) == 1
     assert merged[0].verification is Verification.VERIFIED_GROUNDED
     assert merged[0].verification_evidence == ["tests/FooTest.php:3 prueba"]
+
+
+def test_merge_conserva_protected_subject_y_la_severidad_mas_grave() -> None:
+    from agent_review.domain.models import ProtectedSubject
+    from agent_review.graph.build import _merge_findings
+
+    largo = make_finding(title="mismo", severity=Severity.P2).model_copy(
+        update={"id": "largo", "evidence": ["a:1 uno", "a:2 dos"]}
+    )
+    protegido = make_finding(title="mismo", severity=Severity.P0).model_copy(
+        update={
+            "id": "protegido",
+            "evidence": ["b:1 uno"],
+            "protected_subject": ProtectedSubject.AUTHORIZATION_AUTHENTICATION,
+        }
+    )
+    merged, _ = _merge_findings(
+        [largo, protegido],
+        {"largo": "correctness", "protegido": "security"},
+    )
+    assert len(merged) == 1
+    assert merged[0].severity is Severity.P0
+    assert merged[0].protected_subject is ProtectedSubject.AUTHORIZATION_AUTHENTICATION
+    assert merged[0].evidence == ["a:1 uno", "a:2 dos"]
 
 
 def test_p1_unverified_se_publica_como_p3_degradado() -> None:

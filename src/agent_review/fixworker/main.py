@@ -214,10 +214,14 @@ def poll_once(
     handoff. Se registra con traza y se sigue con el siguiente.
     """
     try:
+        queue.reclaim_inflight()
         job = queue.dequeue(timeout_s=poll_s)
         if job is None:
             return
-        _consume(queue, review_queue, sandbox, job, max_attempts=max_attempts)
+        try:
+            _consume(queue, review_queue, sandbox, job, max_attempts=max_attempts)
+        finally:
+            queue.ack()
     except Exception:
         logger.exception("Fallo inesperado en el worker de fixes; se sigue con el siguiente job")
 

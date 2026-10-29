@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_review.adapters.context_cache import CacheKey, CacheStats, CachingReader
 from agent_review.adapters.diff_parser import (
     FileDiff,
     file_key,
@@ -17,7 +18,13 @@ from agent_review.adapters.diff_parser import (
     parse_unified_diff,
 )
 from agent_review.adapters.text_utils import guess_protected_subject, shorten_title, slug
-from agent_review.adapters.tool_loop import LoopResult, citation_path, run_tool_loop
+from agent_review.adapters.tool_loop import (
+    LoopResult,
+    ReviewToolsOptions,
+    citation_line,
+    citation_path,
+    run_tool_loop,
+)
 from agent_review.domain.contracts import ContractError, validate_finding
 from agent_review.domain.models import (
     ContextScope,
@@ -32,8 +39,19 @@ from agent_review.domain.models import (
 )
 from agent_review.errors import is_transient
 from agent_review.ports.budget import BudgetPort, release_tokens, reserve_tokens
-from agent_review.ports.context import ContextLimits, ContextReaderPort
-from agent_review.ports.llm import LlmError, LlmPort, LlmReply
+from agent_review.ports.context import (
+    ContextLimits,
+    ContextReaderPort,
+    ReadingRegistry,
+    ReadResult,
+)
+from agent_review.ports.llm import (
+    FingerprintMismatch,
+    LlmError,
+    LlmPort,
+    LlmReply,
+    LlmTransientError,
+)
 from agent_review.ports.reasoning import (
     ReasoningEvent,
     ReasoningKind,
@@ -41,7 +59,7 @@ from agent_review.ports.reasoning import (
     emit_safely,
 )
 from agent_review.scope import split_diff
-from agent_review.verification.l0 import L0Disposition, evaluate_l0
+from agent_review.verification.l0 import L0Disposition, cite_text, evaluate_l0
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +115,15 @@ DEFAULT_CONTEXT_MAX_CHARS = 40_000
 # espera base entre ellos (se dobla en cada intento).
 DEFAULT_BATCH_RETRIES = 2
 _RETRY_BASE_S = 5.0
+# Profundidad de particion de un lote que el modelo no cierra: 1 -> dos trozos, 2 ->
+# cuatro. Mas alla se acumulan llamadas sin cambiar lo que ve el modelo.
+_MAX_SPLIT_DEPTH = 2
+# Reintento de lote: ademas de espaciar, pide la respuesta ya. Un razonador que
+# agoto la salida en pensamiento tiende a repetir el fallo con el mismo prompt.
+_RETRY_HINT = (
+    "IMPORTANTE: no gastes la salida razonando. Responde ya con el objeto JSON "
+    'de hallazgos, aunque sea `{"findings": []}`.'
+)
 _SEVERITY_RANK = {Severity.P0: 0, Severity.P1: 1, Severity.P2: 2, Severity.P3: 3}
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 # Estimacion conservadora de tokens: ~4 caracteres por token en texto de codigo.
@@ -238,6 +265,7 @@ class LlmReviewer:
         sleep: Callable[[float], None] = time.sleep,
         reader_factory: ReviewerReaderFactory | None = None,
         tool_limits: ContextLimits | None = None,
+        tool_options: ReviewToolsOptions | None = None,
     ) -> None:
         self.name = name
         self._llm = llm
@@ -263,6 +291,9 @@ class LlmReviewer:
         # lote como en 008. Con fabrica, RH4 cablea `run_tool_loop` por lote.
         self._reader_factory = reader_factory
         self._tool_limits = tool_limits
+        # Comportamiento del bucle (023 F1): topes y forma de servir van separados.
+        # Con `None` rigen los defaults, que son los de hoy.
+        self._tool_options = tool_options or ReviewToolsOptions()
         # Tokens estimados de la ultima llamada: se expone para poder medir el
         # gasto real por review (C3) sin acoplar el puerto al proveedor. `last_usage`
         # lleva el gasto **real** que reporta el proveedor, que es la fuente de
@@ -281,12 +312,37 @@ class LlmReviewer:
         self._diff = ""
         # Ultimo bucle del lote (014): `served` y metricas para el ReviewerResult.
         self._last_loop: LoopResult | None = None
+        # Registro de lecturas de **la review** (023 S1): sobrevive a los lotes y
+        # se vacia al empezar cada una, porque el worker reutiliza la instancia.
+        self._readings = ReadingRegistry()
+        # Cache de E/S por review (023 C1): solo `read_file`, y solo si el flag
+        # esta encendido. Las estadisticas existen para poder medir el ahorro.
+        self._io_cache: dict[CacheKey, ReadResult | None] | None = None
+        self._io_stats = CacheStats()
+        # Peticiones servidas por herramienta y modo en esta review (023 M1):
+        # mide si el modelo usa la palanca (`outline`, `regex`), no si existe.
+        self._operations: dict[str, int] = {}
         # Rutas de L1 omitidas por tope en esta review (cobertura / diagnostico).
         self.context_omitted: list[str] = []
 
     # Revisa por lotes y declara lo que no lee (012): si la persona cae entera, el
     # nodo marca sus ficheros como `failed` en vez de callar.
     declares_coverage = True
+
+    @property
+    def io_cache_hits(self) -> int:
+        """Aciertos de la cache de E/S de esta review (023 C1)."""
+        return self._io_stats.hits
+
+    @property
+    def io_cache_misses(self) -> int:
+        """Lecturas que fueron al lector: E/S real de esta review (023 C1)."""
+        return self._io_stats.misses
+
+    @property
+    def operation_counts(self) -> dict[str, int]:
+        """Peticiones servidas por herramienta y modo en esta review (023 M1)."""
+        return dict(self._operations)
 
     def review(
         self,
@@ -313,6 +369,12 @@ class LlmReviewer:
         self.tokens_used = 0
         self.context_omitted = []
         self._last_loop = None
+        # Una review no valida citas de la anterior (S1): el registro es por review.
+        self._readings.clear()
+        # La cache de E/S tambien es por review (C1): el contador se reinicia.
+        self._io_cache = {} if self._tool_options.io_cache else None
+        self._io_stats = CacheStats()
+        self._operations = {}
         if not diff.strip():
             return ReviewerResult()
         # `tooling_status` se deja en None: esta persona no depende de un artefacto
@@ -326,41 +388,58 @@ class LlmReviewer:
         findings: list[Finding] = []
         tool_usage = ToolUsage() if self._reader_factory is not None else None
         total = len(batches)
-        for index, batch in enumerate(batches):
+        # Cola de lotes: un lote que el modelo no cierra se parte por la mitad y sus
+        # trozos vuelven a la cola en su sitio (ver `_puede_partirse`).
+        pending: list[tuple[list[tuple[str, str]], int]] = [(batch, 0) for batch in batches]
+        index = 0
+        while pending:
+            batch, depth = pending.pop(0)
+            index += 1
             paths = list(dict.fromkeys(path for path, _ in batch))
             if self.budget_exhausted:
                 for path in paths:
                     missing.setdefault(path, SkipReason.BUDGET)
                 continue
             text = "".join(block for _, block in batch)
-            event = functools.partial(self._event, review_key, index + 1, total)
+            event = functools.partial(self._event, review_key, index, max(total, index))
             reply = self._call_with_retries(text, review_key, paths, event)
-            if reply is None:
+            entries = None
+            if reply is not None:
+                entries = self._entries(reply.text)
+                event(
+                    "end",
+                    meta=_usage_meta(reply, findings=None if entries is None else len(entries)),
+                )
+            if entries is None:
+                if self._puede_partirse(batch, depth, reply):
+                    half = len(batch) // 2
+                    logger.warning(
+                        "correctness: el lote no se cerro (%s); se parte en dos",
+                        self._last_error or "cierre sin JSON",
+                    )
+                    event("error", text="lote partido en dos: el modelo no lo cerro")
+                    pending[0:0] = [(batch[:half], depth + 1), (batch[half:], depth + 1)]
+                    continue
                 reason = SkipReason.BUDGET if self.budget_exhausted else SkipReason.FAILED
-                note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
-                event("error", text=note)
+                if reply is None:
+                    note = "sin presupuesto" if reason is SkipReason.BUDGET else self._last_error
+                    event("error", text=note)
                 for path in paths:
                     missing.setdefault(path, reason)
                 continue
-            entries = self._entries(reply.text)
-            event(
-                "end", meta=_usage_meta(reply, findings=None if entries is None else len(entries))
-            )
-            if entries is None:
-                for path in paths:
-                    missing.setdefault(path, SkipReason.FAILED)
-                continue
             files = parse_unified_diff(text)
-            served = self._last_loop.served if self._last_loop is not None else None
+            served = self._last_loop.readings if self._last_loop is not None else None
             findings.extend(
-                f for f in (_to_finding(e, files, served=served) for e in entries) if f is not None
+                f
+                for f in (_to_finding(e, files, readings=served) for e in entries)
+                if f is not None
             )
             if tool_usage is not None and self._last_loop is not None:
                 tool_usage = _accumulate_usage(tool_usage, self._last_loop)
             logger.info(
                 "correctness: lote %d/%d revisado (%d ficheros)",
-                index + 1,
-                len(batches),
+                index,
+                max(total, index),
                 len(paths),
             )
         reviewed = [path for path in order if path not in missing]
@@ -392,14 +471,30 @@ class LlmReviewer:
         """
         for attempt in range(self._batch_retries + 1):
             event("start", meta={"files": paths})
+            # El reintento cambia el prompt a proposito: con razonamiento, una
+            # repeticion identica puede devolver el mismo contenido en blanco.
+            attempt_text = text if attempt == 0 else f"{text}\n\n{_RETRY_HINT}"
             try:
                 return self._call(
-                    text,
+                    attempt_text,
                     review_key,
                     paths=paths,
                     on_reasoning=self._listener(event),
                 )
+            except FingerprintMismatch:
+                # Una grabacion caducada no es un corte: reintentarla solo repite el
+                # aborto y acaba en «0 hallazgos» (D23).
+                raise
             except Exception as exc:
+                if not is_transient(exc):
+                    # Un error permanente no cambia por repetirlo (E0c), pero tampoco
+                    # tumba la review: el lote sale `failed` y la review queda parcial
+                    # (021 R14, 012 C7). Relanzarlo sube hasta el nodo `persona`, que
+                    # tambien lo relanza (`graph/build.py:787`), y se pierden los
+                    # hallazgos de los demas lotes.
+                    self._last_error = self._last_error or f"fallo permanente del lote: {exc}"
+                    logger.warning("correctness: %s; el lote sale failed", self._last_error)
+                    return None
                 if attempt < self._batch_retries:
                     retry = f"{attempt + 1}/{self._batch_retries}"
                     event(
@@ -469,11 +564,18 @@ class LlmReviewer:
         self._last_loop = None
         # El modelo ve el diff numerado (021 R13); el anclaje usa el original.
         # L1 (008 CX8): ficheros + docs bajo tope propio; el diff no se recorta.
+        # Con herramientas, `PRECACHE_CONTEXT=off` deja el CONTEXT fuera del prompt:
+        # el modelo lee lo que necesita (cuesta turnos) y el prompt base baja (C1).
         numbered = number_diff(diff)
-        l1, omitted = pack_l1_context(
-            paths=list(paths or ()),
-            context=self._context,
-            max_chars=self._context_max_chars,
+        precache = self._reader_factory is None or self._tool_options.precache_context
+        l1, omitted = (
+            pack_l1_context(
+                paths=list(paths or ()),
+                context=self._context,
+                max_chars=self._context_max_chars,
+            )
+            if precache
+            else ("", [])
         )
         if omitted:
             for path in omitted:
@@ -488,8 +590,48 @@ class LlmReviewer:
         if l1:
             prompt = f"{prompt}\n\nCONTEXT:{l1}"
         if self._reader_factory is not None:
-            return self._call_with_tools(prompt, review_key, on_reasoning=on_reasoning)
-        return self._call_once(prompt, review_key, on_reasoning=on_reasoning)
+            reply = self._call_with_tools(prompt, review_key, on_reasoning=on_reasoning)
+        else:
+            reply = self._call_once(prompt, review_key, on_reasoning=on_reasoning)
+        if reply is not None and not reply.text.strip():
+            # Un razonador que gasta la salida en pensamiento devuelve contenido en
+            # blanco con `finish_reason=stop`: el lote no se reviso, aunque el
+            # proveedor diga que si. Se trata como corte y se reintenta el lote; sin
+            # esto, los ficheros salen `failed` sin que nada lo explique y un replay
+            # de la grabacion aborta la medida (023 T0c).
+            raise LlmTransientError(
+                "el modelo devolvio una respuesta vacia (razonamiento sin contenido)"
+            )
+        # En el bucle el turno final se fuerza a JSON de hallazgos: prosa aqui no es
+        # una review sin hallazgos, es un lote sin revisar. Se reintenta con el aviso
+        # del reintento antes de dejar los ficheros en `failed`.
+        if (
+            reply is not None
+            and self._reader_factory is not None
+            and _findings_payload(reply.text) is None
+        ):
+            raise LlmTransientError("el modelo cerro el lote sin JSON de hallazgos")
+        return reply
+
+    def _puede_partirse(
+        self, batch: list[tuple[str, str]], depth: int, reply: LlmReply | None
+    ) -> bool:
+        """¿Se puede partir el lote en dos y reintentarlo?
+
+        Solo si el fallo es **del lote**: sin presupuesto agotado, con mas de un
+        bloque y sin agotar la profundidad. Un razonador que devuelve contenido en
+        blanco lo hace por el **contenido** del lote (los mismos ficheros fallan en
+        corridas distintas), asi que la unica palanca que cambia el resultado es
+        mandarle menos. Un lote de un solo bloque no se puede partir: esos ficheros
+        salen `failed` y la review queda parcial (T0c), nunca limpia.
+        """
+        if self._reader_factory is None:
+            # Sin herramientas la grabacion de 008 manda: partir un lote cambiaria el
+            # numero de llamadas de un caso ya congelado y su replay por fingerprint.
+            return False
+        if reply is None and self.budget_exhausted:
+            return False
+        return depth < _MAX_SPLIT_DEPTH and len(batch) > 1
 
     def _call_with_tools(
         self,
@@ -519,6 +661,8 @@ class LlmReviewer:
         # El presupuesto compartido lo reserva el bucle turno a turno (sin doble
         # reserva). Un `False` de `reserve` fuerza el turno final (016/017 B7).
         reader = factory(self._repo, self._head_sha, self._base_sha, self._diff)
+        if self._io_cache is not None:
+            reader = CachingReader(reader, cache=self._io_cache, stats=self._io_stats)
         try:
             loop = run_tool_loop(
                 self._llm,
@@ -526,30 +670,46 @@ class LlmReviewer:
                 prompt=prompt,
                 reader=reader,
                 limits=limits,
+                options=self._tool_options,
                 is_final=_is_findings,
                 budget=self._budget,
                 review_key=review_key,
                 max_tokens=self._max_tokens,
                 on_reasoning=on_reasoning,
+                readings=self._readings,
             )
+        except FingerprintMismatch:
+            # El replay no casa: es un fallo de medida, no una review limpia (D23).
+            raise
         except Exception as exc:
             if is_transient(exc):
                 raise
             self._last_error = f"el modelo fallo: {exc}"
             if isinstance(exc, LlmError):
-                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+                logger.warning("correctness: el modelo fallo (%s); lote no revisado", exc)
             else:
-                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+                logger.exception("correctness: error inesperado del modelo; lote no revisado")
             return None
         self._last_loop = loop
         self.tokens_used += loop.usage
+        for operation, count in loop.operations.items():
+            self._operations[operation] = self._operations.get(operation, 0) + count
         # Preferir el objeto final parseado: el texto crudo puede traer prosa alrededor.
         text = (
             json.dumps(loop.data, ensure_ascii=False)
             if loop.data is not None
             else (loop.text or "")
         )
-        reply = LlmReply(text=text, prompt_tokens=0, completion_tokens=loop.usage)
+        # El `LlmReply` del lote lleva los contadores **separados** (024 E9): antes
+        # ponia `prompt_tokens=0` y el total como *completion*, que es un gasto
+        # mal atribuido aunque nadie lo leyera todavia.
+        reply = LlmReply(
+            text=text,
+            prompt_tokens=loop.prompt_tokens,
+            completion_tokens=loop.completion_tokens,
+            reasoning_tokens=loop.reasoning_tokens,
+            cached_tokens=loop.cached_tokens,
+        )
         self.last_usage = reply
         return reply
 
@@ -603,21 +763,26 @@ class LlmReviewer:
                     json_mode="json_object",
                     on_reasoning=on_reasoning,
                 )
+        except FingerprintMismatch:
+            # El replay no casa: es un fallo de medida, no una review limpia (D23).
+            # La reserva no llego a gastarse.
+            release_tokens(self._budget, review_key, estimated)
+            raise
         except Exception as exc:
             # La reserva no llego a gastarse: se devuelve antes de subir o degradar,
             # para que el reintento del nodo no reserve dos veces (B8).
             release_tokens(self._budget, review_key, estimated)
             # Un fallo transitorio (red, timeout, 5xx, 429) sube para que la
             # `RetryPolicy` del nodo `persona` lo reintente; si se agotan los
-            # intentos, el nodo degrada a 0 hallazgos. Tragarlo aqui dejaba al
+            # intentos, el nodo cierra con `FAILED`. Tragarlo aqui dejaba al
             # nodo sin nada que reintentar.
             if is_transient(exc):
                 raise
             self._last_error = f"el modelo fallo: {exc}"
             if isinstance(exc, LlmError):
-                logger.warning("correctness: el modelo fallo (%s); 0 hallazgos", exc)
+                logger.warning("correctness: el modelo fallo (%s); lote no revisado", exc)
             else:
-                logger.exception("correctness: error inesperado del modelo; 0 hallazgos")
+                logger.exception("correctness: error inesperado del modelo; lote no revisado")
             return None
         # Ajuste con el gasto real: lo reservado de mas vuelve al contador comun.
         if self._budget is not None and review_key:
@@ -627,15 +792,21 @@ class LlmReviewer:
         return reply
 
     def _entries(self, raw: str) -> list[dict[str, Any]] | None:
-        data = _parse_json(raw)
-        if data is None:
-            logger.warning("correctness: salida no parseable; 0 hallazgos")
-            return None
-        entries = data.get("findings") if isinstance(data, dict) else data
-        if not isinstance(entries, list):
-            logger.warning("correctness: la salida no trae una lista 'findings'; 0 hallazgos")
-            return None
-        return [entry for entry in entries if isinstance(entry, dict)]
+        entries = _findings_payload(raw)
+        if entries is None:
+            logger.warning("correctness: salida sin JSON de hallazgos; 0 hallazgos")
+        return entries
+
+
+def _findings_payload(raw: str) -> list[dict[str, Any]] | None:
+    """Los hallazgos de una respuesta, o `None` si no hay JSON de hallazgos."""
+    data = _parse_json(raw)
+    if data is None:
+        return None
+    entries = data.get("findings") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return None
+    return [entry for entry in entries if isinstance(entry, dict)]
 
 
 def _parse_json(raw: str) -> Any:
@@ -663,21 +834,29 @@ def _is_findings(data: dict[str, Any]) -> bool:
 
 
 def _accumulate_usage(acc: ToolUsage, loop: LoopResult) -> ToolUsage:
-    """Suma metricas del bucle entre lotes (014 H8)."""
+    """Suma metricas del bucle entre lotes (014 H8).
+
+    `files_read` cuenta solo cuerpos (`full`/`range`): un `outline` o un `grep` no
+    es haber leido el fichero (023 S1).
+    """
     return ToolUsage(
         turns=acc.turns + loop.turns,
         tool_calls=acc.tool_calls + loop.tool_calls,
         bytes_served=acc.bytes_served + loop.bytes_served,
-        files_read=list(dict.fromkeys([*acc.files_read, *sorted(loop.served)])),
+        files_read=list(dict.fromkeys([*acc.files_read, *loop.readings.files_read()])),
     )
 
 
-def _filter_served_evidence(evidence: list[str], served: dict[str, str]) -> list[str]:
-    """Quita citas `path:line` a ficheros que el bucle no sirvio (014 H7)."""
+def _filter_served_evidence(evidence: list[str], readings: ReadingRegistry) -> list[str]:
+    """Quita citas `path:line` que el bucle no sirvio (014 H7, 023 S1).
+
+    Una lectura de cuerpo de la misma `ref` que cubre la linea; `outline`, `grep`
+    y las lecturas de `base` no prueban un hallazgo sobre `head`.
+    """
     kept: list[str] = []
     for item in evidence:
         path = citation_path(item)
-        if path and path not in served:
+        if path and not readings.serves(path, line=citation_line(item)):
             continue
         kept.append(item)
     return kept
@@ -687,7 +866,7 @@ def _to_finding(
     entry: dict[str, Any],
     files: dict[str, FileDiff],
     *,
-    served: dict[str, str] | None = None,
+    readings: ReadingRegistry | None = None,
 ) -> Finding | None:
     title = str(entry.get("title", "")).strip()
     why = str(entry.get("why_it_matters", "")).strip()
@@ -702,9 +881,9 @@ def _to_finding(
     evidence_in = [
         str(item).strip() for item in _as_list(entry.get("evidence")) if str(item).strip()
     ]
-    if served is not None:
-        evidence_in = _filter_served_evidence(evidence_in, served)
-    cite = _cite_text(evidence_in)
+    if readings is not None:
+        evidence_in = _filter_served_evidence(evidence_in, readings)
+    cite = cite_text(evidence_in)
     # 008 CX5 / D2 / D13: L0 manda; el `pre_existing` del modelo se ignora.
     l0 = evaluate_l0(file_diff, hint=hint, cite=cite)
     if l0.disposition is L0Disposition.DROP or l0.line is None:
@@ -744,19 +923,6 @@ def _to_finding(
     except (ContractError, ValidationError) as exc:
         logger.info("correctness: hallazgo descartado por el contrato (%s)", exc)
         return None
-
-
-def _cite_text(evidence: list[str]) -> str | None:
-    """Texto de evidencia para L0, sin el prefijo `file:line`."""
-    for item in evidence:
-        head, _, rest = item.partition(" ")
-        if rest and ":" in head:
-            return rest.strip()
-        if rest:
-            return rest.strip()
-        if item.strip():
-            return item.strip()
-    return None
 
 
 def _severity(value: object) -> str:

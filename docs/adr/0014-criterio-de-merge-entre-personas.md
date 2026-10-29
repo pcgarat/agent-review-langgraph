@@ -2,6 +2,7 @@
 
 - **Estado:** Aceptado
 - **Fecha:** 2026-10-11
+- **Matiz:** 2026-10-24 — el representante conserva también la severidad más grave del grupo y el primer `protected_subject` no vacío.
 
 ## Contexto
 
@@ -21,7 +22,9 @@ línea algo distinta.
   tercero.
 - La procedencia viaja en el estado (`finding_sources`), no en `Finding`.
 - De cada grupo se queda el hallazgo con más evidencia. El resultado no depende del
-  orden del fan-out.
+  orden del fan-out. Sobre esa copia se copian, si otra del grupo los trae, la
+  severidad más grave y el `protected_subject`: la evidencia más larga no puede
+  tapar un tema protegido ni un P0.
 - La identidad de publicación de un hallazgo es `_finding_id` (`id` o
   `fichero:línea:título`). Es la misma para la marca inline, la decisión de política
   y la decisión humana.

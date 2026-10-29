@@ -2,8 +2,11 @@
 
 # Personas deterministas de wiring y configuración
 
-> **Estado:** borrador
-
+> **Estado:** aprobada
+>
+> **Aprobada el 2026-10-17**: Q1–Q3 resueltas (§8, W13–W15). Fase 1 (motor +
+> `make wiring-check`) sin dependencias; fase 2 (persona) después.
+>
 > **Entrega objetivo:** un motor determinista (sin LLM) que contrasta los pares
 > que deben concordar —servicios de `docker-compose.yml`, campos de `Settings`,
 > plantilla `.env.example`, tabla de configuración de `operacion.md` §2 y registro
@@ -94,7 +97,7 @@ convierte en código, como `check_docs.py` ya hace con la estructura documental.
 | # | Decisión | Motivo |
 |---|---|---|
 | **W1** | Forma: un **`ReviewerPort` determinista** llamado `wiring`, no un gate de CI suelto | Reutiliza `merge`, `policy`, HITL, `publish` y el contrato de `Finding`: el hallazgo llega al PR con severidad, dedupe y evidencia. Un gate de CI que solo escribe en un log no da recall **en la review**. El gate (W6) es el mismo motor, no una copia. |
-| **W2** | El contrato de wiring es **datos**: bloque `wiring:` del perfil del repo | El checker no conoce rutas ni nombres de fichero en código (igual que el código no conoce nombres de modelo, [ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)). Otro repo lo declara y funciona; uno que no lo declare, no tiene la persona. |
+| **W2** | El contrato de wiring es **datos**: `config/wiring.yaml` en la fase 1; bloque `wiring:` del perfil del repo, en la fase 2 (W13) | El checker no conoce rutas ni nombres de fichero en código (igual que el código no conoce nombres de modelo, [ADR-0015](../../adr/0015-registro-declarativo-de-modelos.md)). Otro repo lo declara y funciona; uno que no lo declare, no tiene la persona. |
 | **W3** | Acceso a ficheros tras un puerto `FileSource` con dos adaptadores | El mismo motor corre en la review (lee a `head_sha` vía `VcsPort`) y en CI (lee el árbol de trabajo). Patrón *adapter*; el checker no sabe de dónde salen los bytes. |
 | **W4** | **Fail-closed**: un fichero declarado e ilegible ⇒ estado de fuente no limpio | Invariante §4: «"sin hallazgos" con una fuente sin cubrir se publica como **incompleta**, nunca como limpia». Se reutiliza el mecanismo de `tooling_status`. |
 | **W5** | `verification: verified_static` | Nace de un contraste determinista, no de una hipótesis: pasa el gate de `P0`/`P1` sin pagar L2. Igual que el `ToolingReviewer`. |
@@ -105,6 +108,9 @@ convierte en código, como `check_docs.py` ya hace con la estructura documental.
 | **W10** | El caso #3 (default de `MODELS_CONFIG` frente a la vía `LLM_*`) es un **test de regresión** en `tests/`, no una regla del motor | No es un par que deba concordar, sino un caso puntual; codificarlo como regla genérica la volvería frágil |
 | **W11** | Entrega en **dos fases**: primero el motor y el gate de CI (W6), después la persona (W1, W3, W7) | Las comprobaciones (a)–(c) dependen de convenciones de este repo (un `Settings` de Pydantic, la tabla de `operacion.md`); un repo Symfony no las tiene. El gate da valor inmediato; la persona se justifica cuando el agente revisa este repo con perfil o un segundo repo declara `wiring:` |
 | **W12** | `Settings` se lee con **AST**, no con `import` | En la persona, el fichero llega como texto a `head_sha` vía VCS; importarlo ejecutaría código del PR |
+| **W13** | El contrato de la fase 1 vive en **`config/wiring.yaml`** propio (`WIRING_CONFIG`), no en el perfil del repo revisado (Q1, 2026-10-17) | `repo_profile_config` es el perfil del repo **revisado** (PHP), no el del agente; el motor es una declaración versionada como `autonomy.yaml` (ADR-0003) y `models.yaml` (ADR-0015). Un solo esquema (`WiringConfig`) alimenta las dos fases: el gate lee el fichero y la persona leerá el bloque `wiring:` del perfil del repo revisado |
+| **W14** | La tabla de variables de `operacion.md` §2 **se genera** desde `Settings` en una región marcada; el gate **regenera y exige que no cambie** (Q2, 2026-10-17) | Parsear la tabla real (celdas de prosa, defaults con explicación) es frágil y fail-closed convierte cada edición editorial en un falso positivo. Al ser salida generada, la deriva «default documentado ≠ código» deja de ser posible. `.env.example` sí se parsea: son líneas `KEY=valor` |
+| **W15** | Mapa de severidad (Q3, 2026-10-17): **P1** arranque/aislamiento/`${VAR}` rota, **P2** `.env.example` sin un campo, **P3** clave sobrante en `.env.example` | El P1 rompe producción o el arranque *fail-closed*; el P2 deja al operador ciego a una variable; el P3 es plantilla obsoleta. Con W14, la deriva documental por default desaparece de la tabla |
 
 ## 5. Diseño o contrato
 
@@ -123,33 +129,37 @@ flowchart LR
 ```
 
 `WiringChecker` implementa `ReviewerPort` (`ports/reviewer.py`) con `name = "wiring"`
-y se construye **solo** si el perfil declara el bloque `wiring:` — igual que
+y se construye **solo** si el contrato lo declara — `config/wiring.yaml` en el gate de
+la fase 1, el bloque `wiring:` del perfil en la fase 2 (W13)— igual que
 `ToolingReviewer` solo se construye si `checks.typecheck` existe. Sin contrato no hay
-persona: no se sintetiza un «limpio» falso. Si el perfil lo declara y un fichero no
+persona: no se sintetiza un «limpio» falso. Si el contrato lo declara y un fichero no
 se puede leer, la persona devuelve 0 hallazgos con estado de fuente **no limpio**.
 
-### 5.2 Contrato declarado (bloque `wiring:` del perfil)
+### 5.2 Contrato declarado (`config/wiring.yaml`; el bloque `wiring:` del perfil, en la fase 2)
+
+Fase 1: el contrato vive en `config/wiring.yaml` (W13, `WIRING_CONFIG`), con el mismo
+esquema `WiringConfig` que consumirá la persona. El perfil del repo revisado (fase 2)
+llevará el mismo bloque bajo su clave `wiring:`.
 
 ```yaml
-wiring:
-  compose: docker-compose.yml
-  services:
-    required: [api, worker, fix-worker, sandbox-runner, postgres, redis]
-    isolated:                      # no heredan el entorno del despliegue
-      fix-worker:
-        forbidden_env_file: true
-        requires_env: [REDIS_URL, SANDBOX_RUNNER_URL, SANDBOX_RUNNER_TOKEN]
-        forbidden_env: [TWG_BBC_TOKEN, TWG_TOKEN, GITHUB_TOKEN,
-                        REVIEWS_DECISION_TOKEN, TOOLING_WEBHOOK_SECRET,
-                        LLM_API_KEY, SANDBOX_GIT_TOKEN, DATABASE_URL]
-  settings:
-    module: src/agent_review/settings.py
-    env_template: .env.example
-    config_doc: "docs/operacion.md#2"
-    external_keys: [POSTGRES_PASSWORD, REVIEWS_URL]   # no son campos de Settings
-    example_only: [MODELS_CONFIG]                     # la plantilla activa; el default no
-  models:
-    file: config/models.yaml
+compose: docker-compose.yml
+services:
+  required: [api, worker, fix-worker, sandbox-runner, postgres, redis]
+  isolated:                      # no heredan el entorno del despliegue
+    fix-worker:
+      forbidden_env_file: true
+      requires_env: [REDIS_URL, SANDBOX_RUNNER_URL, SANDBOX_RUNNER_TOKEN]
+      forbidden_env: [TWG_BBC_TOKEN, TWG_TOKEN, GITHUB_TOKEN,
+                      REVIEWS_DECISION_TOKEN, TOOLING_WEBHOOK_SECRET,
+                      LLM_API_KEY, SANDBOX_GIT_TOKEN, DATABASE_URL]
+settings:
+  module: src/agent_review/settings.py
+  env_template: .env.example
+  config_doc: "docs/operacion.md#2"
+  external_keys: [POSTGRES_PASSWORD, REVIEWS_URL]   # no son campos de Settings
+  example_only: [MODELS_CONFIG]                     # la plantilla activa; el default no
+models:
+  file: config/models.yaml
 ```
 
 ### 5.3 Las tres comprobaciones
@@ -157,12 +167,10 @@ wiring:
 | Comprobación | Regla determinista | Caso que caza |
 |---|---|---|
 | **(a) servicios** | Cada servicio de `required` existe; cada `depends_on` apunta a un servicio declarado; un servicio `isolated` no tiene `env_file` ni recibe ninguna `forbidden_env`; su `environment:` cubre todas las `requires_env` | **#1** (`env_file` filtrado) y **#2** (contrato de arranque sin cubrir) |
-| **(b) settings ↔ entorno ↔ doc** | Cada campo de `Settings` aparece como variable en `.env.example` y en la tabla de `operacion.md` §2, salvo los declarados internos; cada clave de `.env.example` es campo de `Settings` o `external_keys`; para los campos con default documentado, el default del código coincide (los `example_only` se eximen de la igualdad) | Toda deriva de la tabla de sincronización (incluido un default documentado distinto del código, como el de #3) |
+| **(b) settings ↔ entorno ↔ doc** | Cada campo de `Settings` aparece como variable en `.env.example`, salvo los declarados internos; cada clave de `.env.example` es campo de `Settings` o `external_keys`; y la región generada de `operacion.md` §2 es **idéntica** a la regenerada desde `Settings` | Toda deriva de la tabla de sincronización (incluido un default documentado distinto del código, como el de #3) |
 | **(c) models ↔ Settings** | Cada `${VAR}` de `config/models.yaml` nombra un campo de `Settings` | Una referencia rota en el registro |
 
-La comprobación (b) lee los campos y defaults de `Settings` por AST (W12) y parsea la
-tabla Markdown de `operacion.md` §2 por el mismo criterio que `check_docs.py` valida
-enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón de referencia de
+La comprobación (b) lee los campos y defaults de `Settings` por AST (W12) y **regenera la región marcada de `operacion.md` §2** desde esos campos (W14): el gate compara el texto generado con el versionado y falla si difieren. La (c) reutiliza el patrón de referencia de
 [`models_config.py`](../../../src/agent_review/models_config.py) (`${VAR}` contra
 `Settings`), hoy solo usado en *runtime*.
 
@@ -189,6 +197,9 @@ enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón 
 | **Falsos positivos al parsear la tabla de `operacion.md`** | Si la tabla no se puede parsear, fail-closed: revisión incompleta, no «limpio». Se prueba contra el documento real |
 | **Solapamiento con `tests/test_compose.py`** | `test_compose` conserva las aserciones de frontera; el checker las generaliza. El test deja de ser el único guardián del aislamiento |
 | **El `WiringChecker` necesita `VcsPort` y `build_reviewers` no lo recibe hoy** | Es un cambio de cableado en `worker/main.py`; la persona se inyecta con el mismo `VcsPort` de `build_runtime` |
+| **W14 toca `operacion.md` §2, un documento vivo** | Solo la región generada; el resto editorial. El gate (`--check`) impide la deriva y el cambio entra con la tarea que genera la tabla |
+| **Añadir `wiring` al perfil rompe `validate_profile`** | `profile._MAP_KEYS` y `tests/test_profile.py` deben incluir la clave; es parte de la fase 2, no un olvido |
+| **La fase 1 no debe ser código desechable** | El motor `WiringChecker` + `FileSource` se construye en la fase 1 y `scripts/wiring_check.py` es un envoltorio fino; la fase 2 solo añade adaptador y cableado |
 | **Un repo sin `wiring:` no gana recall** | Esperado: la persona es opt-in por contrato. Declarar el contrato del repo del agente es el primer caso (Q1) |
 | **Ruido en el resumen si un repo declara mucho wiring** | Los hallazgos son estables y deduplicables por `id`; `merge` ya deduplica entre personas |
 
@@ -218,15 +229,25 @@ enlaces: identificadores entre comillas invertidas. La (c) reutiliza el patrón 
 
 ## 8. Preguntas abiertas
 
-- **Q1.** Este repo no tiene perfil (solo existe `repo_profile.emotivoo-v2.yaml`,
-  que no aplica: es PHP sin `Settings`). Para la fase 1, ¿el contrato vive en un
-  fichero propio (`config/wiring.yaml`) o se crea ya el perfil del propio repo, que
-  la fase 2 necesitará?
-- **Q2.** La tabla de `operacion.md` §2: ¿se parsea como texto (simple y frágil) o se
-  **genera** desde `Settings` (fuente única, pero toca el documento vivo)?
-- **Q3.** Mapa de severidad: ¿`P1` fijo para arranque/aislamiento y `P3` para deriva
-  documental, o se ajusta con el *gold set* de la iniciativa de calidad?
+- **Q1.** *Resuelta (2026-10-17):* el contrato de la fase 1 vive en
+  **`config/wiring.yaml`** propio (`WIRING_CONFIG`), con un único esquema
+  (`WiringConfig`). `repo_profile.emotivoo-v2.yaml` es el perfil del repo **revisado**
+  (PHP), no el del agente; el patrón de declaración versionada es
+  `autonomy.yaml`/`models.yaml` (W13). La fase 2 leerá el mismo esquema desde el
+  bloque `wiring:` del perfil del repo revisado.
+- **Q2.** *Resuelta (2026-10-17):* la tabla de variables de `operacion.md` §2 **se
+  genera** desde `Settings` en una región marcada y el gate regenera y exige que no
+  cambie (W14). Parsear la tabla real —celdas de prosa con defaults explicados— es
+  frágil y fail-closed convertiría cada edición editorial en un falso positivo.
+  `.env.example` sí se parsea. Exige dar `description=` a los campos de `Settings`.
+- **Q3.** *Resuelta (2026-10-17):* mapa de severidad de W15 — **P1**
+  arranque/aislamiento y `${VAR}` de `models.yaml` que no nombra un campo de
+  `Settings`; **P2** `.env.example` sin una variable que sí es campo; **P3** clave
+  sobrante en `.env.example`. Se afina con el *gold set* si la medida lo pide, no
+  antes.
 - **Q4.** ¿El `wiring` también se expone como fuente estática ingerible (artefacto)
   además de persona y gate, o dos callers ya son suficientes?
-- **Q5.** ¿`verification: verified_static` es un enum cerrado de 007, o admite un
-  matiz de «qué comprobación» (`evidence` ya lo lleva)?
+- **Q5.** *Resuelta (2026-10-17):* `verified_static` ya es un valor del enum de 007
+  (`domain/models.py`) y es el nivel que declara todo emisor no-LLM, como
+  `ToolingReviewer` (007 D6). El «qué comprobación» vive en `evidence`
+  (`verification_evidence`, ≥1 por 007 D4); no hace falta matiz nuevo.

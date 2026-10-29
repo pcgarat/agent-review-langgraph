@@ -31,6 +31,7 @@ ALLOWED = [
     re.compile(rf"^docs/edu/(README|\d{{2}}-{SLUG})\.md$"),
     re.compile(rf"^\.agents/rules/{SLUG}\.md$"),
     re.compile(r"^\.agents/skills/.+\.md$"),
+    re.compile(r"^image/claude/skills/.+\.md$"),
     re.compile(rf"^\.cursor/rules/{SLUG}\.mdc$"),
     re.compile(rf"^\.claude/rules/{SLUG}\.md$"),
     re.compile(rf"^contracts/(README|{SLUG})\.md$"),
@@ -42,6 +43,11 @@ DATE_IN_NAME = re.compile(r"\d{8}|\d{4}-\d{2}-\d{2}")
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 FENCE = re.compile(r"^(```|~~~).*?^\1", re.M | re.S)
+
+
+def _vendor_skill(path: str) -> bool:
+    """La skill copiada en la imagen no es documentación del repo."""
+    return path.startswith(".agents/skills/") or path.startswith("image/claude/skills/")
 
 
 def tracked_markdown() -> list[str]:
@@ -65,7 +71,7 @@ def check_location(path: str, problems: list[str]) -> None:
     if path.startswith(FORBIDDEN_DIRS):
         problems.append(f"{path}: carpeta prohibida ({path.split('/')[0]}/)")
         return
-    if not path.startswith(".agents/skills/") and DATE_IN_NAME.search(Path(path).name):
+    if not _vendor_skill(path) and DATE_IN_NAME.search(Path(path).name):
         problems.append(f"{path}: el nombre no lleva fecha (va en la cabecera)")
     if not any(pattern.match(path) for pattern in ALLOWED):
         problems.append(f"{path}: ubicacion o nombre fuera de la estructura")
@@ -159,7 +165,7 @@ def main() -> int:
             check_adr(path, text, problems)
         if path.endswith("/spec.md"):
             check_spec(path, text, problems)
-        if not path.startswith(".agents/skills/"):
+        if not _vendor_skill(path):
             check_links(path, text, problems)
     check_initiatives(problems)
     check_adr_numbers(problems)

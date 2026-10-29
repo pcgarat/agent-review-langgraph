@@ -199,6 +199,27 @@ def test_post_task_es_noop() -> None:
     assert adapter.post_task("", 417, "tarea") is None
 
 
+def test_get_file_rechaza_una_ruta_que_sale_del_repo() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(request.url)
+
+    with pytest.raises(GithubError, match="no permitida"):
+        _adapter(handler).get_file("", "../../other/priv/contents/x", ref="abc")
+
+
+def test_get_file_codifica_el_segmento() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        body = base64.b64encode(b"ok").decode()
+        return httpx.Response(200, json={"content": body, "encoding": "base64"})
+
+    assert _adapter(handler).get_file("", "src/a b.php", ref="abc") == "ok"
+    assert "src/a%20b.php" in seen[0]
+    assert "/contents/../../" not in seen[0]
+
+
 def test_5xx_es_transitorio() -> None:
     adapter = _adapter(lambda r: httpx.Response(503, json={"message": "unavailable"}))
     with pytest.raises(GithubUnavailable):
