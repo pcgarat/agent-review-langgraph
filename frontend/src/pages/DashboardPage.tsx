@@ -24,6 +24,7 @@ import {
   QueueSection,
 } from './dashboard/Sections'
 import { ParkedSection } from './dashboard/ParkedSection'
+import { SECTION_ID } from './dashboard/sections'
 import './dashboard/dashboard.scss'
 
 export function DashboardPage() {
@@ -70,6 +71,7 @@ export function DashboardPage() {
       <ActiveSection items={data.active} budget={data.budget} isOperador={isOperador} />
       <PausedSection
         title="Pausas humanas"
+        id={SECTION_ID.human}
         hint="Ninguna review espera una decisión."
         items={data.paused.human}
         isOperador={isOperador}

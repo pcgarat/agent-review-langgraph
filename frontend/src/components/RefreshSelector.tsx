@@ -71,7 +71,7 @@ export function RefreshSelector() {
     <CDropdown variant="nav-item" alignment="end">
       <CDropdownToggle
         caret={false}
-        className="refresh-selector-toggle"
+        className="d-flex align-items-center"
         title="Auto-actualización"
       >
         <CIcon icon={cilReload} size="lg" className={preset !== 0 ? 'text-success' : ''} />
