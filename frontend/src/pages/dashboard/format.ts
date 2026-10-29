@@ -28,7 +28,7 @@ export function formatElapsed(startedAt: string | null, now = Date.now()): strin
   if (Number.isNaN(started)) return '—'
   const total = Math.max(0, Math.floor((now - started) / 1000))
   const days = Math.floor(total / 86400)
-  const hours = Math.floor((total % 86400) / 3600)
+  const hours = Math.floor((total % 86400) / 60)
   const minutes = Math.floor((total % 3600) / 60)
   const seconds = total % 60
   if (days > 0) return `${days} d ${hours} h`
