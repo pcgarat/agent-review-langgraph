@@ -4,6 +4,10 @@ import { api, reviewPath } from '@/api/client'
 import { queryKeys } from '@/api/queryKeys'
 import type { ReviewDetail } from '@/api/types/review'
 
+interface ReviewDetailOptions {
+  refetchInterval?: number | false
+}
+
 /**
  * La ficha entera en una petición (`GET /api/reviews/{review_key}`, 029 P8).
  *
@@ -11,17 +15,24 @@ import type { ReviewDetail } from '@/api/types/review'
  * no pregunta por canales que el servidor no tiene, y no abre ningún SSE antes de
  * saber si el canal existe.
  */
-export function useReviewDetail(reviewKey: string) {
+export function useReviewDetail(reviewKey: string, options?: ReviewDetailOptions) {
+  const globalInterval = options?.refetchInterval
+
   return useQuery({
     queryKey: queryKeys.review(reviewKey),
     queryFn: () => api.get<ReviewDetail>(reviewPath(reviewKey)),
-    // Una review en vuelo cambia mientras se mira: al volver a la ventana se
-    // relee, igual que el estado del panel. Mientras no ha terminado, el
-    // diagrama de pasos se actualiza solo.
     refetchOnWindowFocus: true,
     refetchInterval: (query) => {
       const state = query.state.data?.trace?.state
-      return state === 'in_progress' || state === 'paused' ? 2000 : false
+      const inProgressInterval = state === 'in_progress' || state === 'paused' ? 2000 : false
+
+      if (globalInterval === false || globalInterval === undefined) {
+        return inProgressInterval
+      }
+      if (inProgressInterval === false) {
+        return globalInterval
+      }
+      return Math.min(globalInterval, inProgressInterval)
     },
   })
 }

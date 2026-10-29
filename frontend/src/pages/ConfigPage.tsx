@@ -2,6 +2,7 @@ import { CAlert, CButton, CCard, CCardBody, CCardHeader, CCol, CRow } from '@cor
 import { useCallback, useMemo, useState } from 'react'
 
 import { ApiError } from '@/api/client'
+import { useRefetchInterval } from '@/components/AutoRefreshContext'
 import { useSession } from '@/session/session'
 
 import { explainError } from '@/pages/dashboard/errors'
@@ -29,7 +30,8 @@ interface EditedForm {
 }
 
 export function ConfigPage() {
-  const { data, isPending, isError, error, refetch, isFetching } = useConfigQuery()
+  const refetchInterval = useRefetchInterval()
+  const { data, isPending, isError, error, refetch, isFetching } = useConfigQuery({ refetchInterval })
   const { isOperador } = useSession()
   const save = useSaveConfig()
   const [edited, setEdited] = useState<EditedForm | null>(null)
@@ -113,22 +115,9 @@ export function ConfigPage() {
 
   return (
     <>
-      <div className="d-flex flex-wrap align-items-baseline gap-2 mb-3">
-        <p className="eyebrow mb-0">
-          Cada control vuelve a su valor inicial con Restaurar. Guardar publica la revisión.
-        </p>
-        <CButton
-          type="button"
-          color="secondary"
-          variant="ghost"
-          size="sm"
-          className="ms-auto"
-          disabled={isFetching || save.isPending}
-          onClick={() => void refetch()}
-        >
-          {isFetching ? 'Actualizando…' : 'Actualizar'}
-        </CButton>
-      </div>
+      <p className="eyebrow mb-3">
+        Cada control vuelve a su valor inicial con Restaurar. Guardar publica la revisión.
+      </p>
 
       <ConfigStatus document={document} />
 

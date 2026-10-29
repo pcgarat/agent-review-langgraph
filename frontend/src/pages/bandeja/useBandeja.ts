@@ -7,11 +7,16 @@ import { useToast } from '@/components/ToastProvider'
 
 import { decisionPath, describeDecisionError, type DecisionOutcome, type PublishBatch } from './decisions'
 
+interface BandejaQueryOptions {
+  refetchInterval?: number | false
+}
+
 /** Las pausas abiertas, con la misma clave que invalida cualquier comando. */
-export function useBandejaQuery() {
+export function useBandejaQuery(options?: BandejaQueryOptions) {
   return useQuery({
     queryKey: queryKeys.bandeja,
     queryFn: () => api.get<BandejaView>('/api/bandeja'),
+    refetchInterval: options?.refetchInterval,
   })
 }
 

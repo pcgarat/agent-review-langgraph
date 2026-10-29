@@ -12,12 +12,15 @@ import {
   CSidebarToggler,
 } from '@coreui/react'
 import CIcon from '@coreui/icons-react'
-import { cilMenu, cilMoon } from '@coreui/icons'
+import { cilMenu } from '@coreui/icons'
 
 import { useSession } from '@/session/session'
+import { RefreshSelector } from './RefreshSelector'
 import { SidebarNav } from './SidebarNav'
 import { UserMenu } from './UserMenu'
 import { useSidebar } from './useSidebar'
+import { ThemeSwitcher } from './ThemeSwitcher'
+import { useColorMode } from './useColorMode'
 
 interface AppLayoutProps {
   title: string
@@ -28,12 +31,13 @@ interface AppLayoutProps {
 export function AppLayout({ title, children }: AppLayoutProps) {
   const { sidebarVisible, setSidebarVisible, unfoldable, toggleUnfoldable } = useSidebar()
   const { session } = useSession()
+  const { resolvedMode } = useColorMode()
 
   return (
     <>
       <CSidebar
         className="border-end"
-        colorScheme="dark"
+        colorScheme={resolvedMode}
         position="fixed"
         unfoldable={unfoldable}
         visible={sidebarVisible}
@@ -58,10 +62,18 @@ export function AppLayout({ title, children }: AppLayoutProps) {
             </CHeaderToggler>
             <span className="header-title text-truncate">{title}</span>
             <CHeaderNav className="ms-auto align-items-center">
+              <RefreshSelector />
+              <li className="nav-item py-1">
+                <div className="vr h-100 mx-2 text-body text-opacity-75" />
+              </li>
               <CNavItem className="text-body-secondary small d-none d-sm-block">
                 {session.user?.user ?? '—'}
                 {session.user ? <span className="ms-1 opacity-75">({session.user.role})</span> : null}
               </CNavItem>
+              <li className="nav-item py-1">
+                <div className="vr h-100 mx-2 text-body text-opacity-75" />
+              </li>
+              <ThemeSwitcher />
               <li className="nav-item py-1">
                 <div className="vr h-100 mx-2 text-body text-opacity-75" />
               </li>
@@ -73,7 +85,6 @@ export function AppLayout({ title, children }: AppLayoutProps) {
           <CContainer fluid>{children}</CContainer>
         </div>
         <footer className="footer border-top px-4 py-2 small text-body-secondary">
-          <CIcon icon={cilMoon} className="me-1" />
           Panel de operación · solo lectura salvo donde diga el botón
         </footer>
       </div>
