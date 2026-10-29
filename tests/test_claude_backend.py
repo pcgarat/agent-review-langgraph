@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from agent_review.adapters.claude_cli import claude_argv
 from agent_review.claude_backend import (
     child_gateway_env,
     gateway_domain,
@@ -15,11 +17,13 @@ from agent_review.claude_backend import (
     resolve_backend,
     write_choice,
 )
+from agent_review.claude_runner import main as runner_main
 from agent_review.claude_runner.main import (
     build_app,
     runner_sandbox_settings,
     write_runner_settings,
 )
+from agent_review.claude_session import CHILD_TOKEN_ENV, write_session
 from agent_review.queue import InMemoryReviewQueue
 from agent_review.settings import Settings
 from agent_review.web.main import ClaudeLogin, app
@@ -160,6 +164,97 @@ def test_volver_a_claude_pide_sesion(tmp_path: Path) -> None:
     finally:
         del app.state.claude_backend_path
         del app.state.claude_login
+
+
+class _Captura:
+    """Sustituye al subproceso y se queda con el argv y el entorno de esa pasada."""
+
+    kwargs: dict[str, object] = {}
+
+    def __init__(self, **kwargs: object) -> None:
+        _Captura.kwargs = kwargs
+
+    def run(self, **kwargs: object) -> str:
+        _Captura.kwargs = {**_Captura.kwargs, "run": kwargs}
+        return "[]"
+
+
+def _settings_de_pasada(tmp_path: Path, **extra: object) -> Settings:
+    return Settings(
+        _env_file=None,
+        claude_session_path=str(tmp_path / "session" / "session.json"),
+        claude_workspace_root=str(tmp_path / "ws"),
+        claude_bin="claude",
+        claude_runner_token="",
+        **extra,
+    )
+
+
+def _post_run(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    monkeypatch.setattr(runner_main, "prepare_checkout", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner_main, "ensure_bundled_skill", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner_main, "SubprocessClaudeRunner", _Captura)
+    _Captura.kwargs = {}
+    with TestClient(build_app(settings)) as client:
+        response = client.post(
+            "/run",
+            json={"repo": "acme/app", "pr_id": 1, "head_sha": "abc", "base_sha": "def"},
+        )
+    assert response.status_code == 200, response.text
+    return _Captura.kwargs
+
+
+def test_anthropic_conserva_el_argv_y_el_entorno_del_hijo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin elección, el argv y el entorno son los de hoy: OAuth y un solo dominio."""
+    write_session(tmp_path / "session" / "session.json", "oauth-token-anthropic-1234", ttl_s=3600)
+    visto = _post_run(_settings_de_pasada(tmp_path, claude_upstream="anthropic"), monkeypatch)
+    assert visto["argv_prefix"] == ["claude"]
+    assert visto["quota_is_crash"] is False
+    run = visto["run"]
+    assert isinstance(run, dict)
+    argv = claude_argv(visto["argv_prefix"], max_turns=visto["max_turns"], base_sha=run["base_sha"])
+    assert "--model" not in argv
+    assert "ANTHROPIC" not in " ".join(str(item) for item in argv)
+    extra = visto["extra_env"]
+    assert isinstance(extra, dict)
+    assert set(extra) == {
+        CHILD_TOKEN_ENV,
+        "CLAUDE_CONFIG_DIR",
+        "HOME",
+        "TMPDIR",
+        "DISABLE_UPDATES",
+    }
+    assert extra[CHILD_TOKEN_ENV] == "oauth-token-anthropic-1234"
+    assert "ANTHROPIC_BASE_URL" not in extra
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in extra
+    jaula = json.loads((tmp_path / "claude-config" / "settings.json").read_text(encoding="utf-8"))
+    assert jaula["sandbox"]["network"]["allowedDomains"] == ["api.anthropic.com"]
+
+
+def test_el_cluster_pasa_el_gateway_y_un_429_no_es_cupo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_session(tmp_path / "session" / "session.json", "oauth-token-anthropic-1234", ttl_s=3600)
+    write_choice(tmp_path / "session" / "backend.json", "glm5.3-flash")
+    settings = _settings_de_pasada(
+        tmp_path,
+        claude_upstream="anthropic",
+        claude_gateway_url="http://nan-gateway:4000",
+        claude_gateway_token="sk-gateway-local-1234",
+    )
+    visto = _post_run(settings, monkeypatch)
+    assert visto["argv_prefix"] == ["claude"]
+    assert visto["quota_is_crash"] is True
+    extra = visto["extra_env"]
+    assert isinstance(extra, dict)
+    assert extra["ANTHROPIC_BASE_URL"] == "http://nan-gateway:4000"
+    assert extra["ANTHROPIC_MODEL"] == "glm5.3-flash"
+    assert extra["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert CHILD_TOKEN_ENV not in extra
+    jaula = json.loads((tmp_path / "claude-config" / "settings.json").read_text(encoding="utf-8"))
+    assert jaula["sandbox"]["network"]["allowedDomains"] == ["nan-gateway"]
 
 
 def test_el_runner_sin_fichero_sigue_en_anthropic(tmp_path: Path) -> None:

@@ -1,12 +1,12 @@
 # ADR-0037 — La skill corre contra un backend que no es Anthropic
 
-- **Estado:** Propuesto
+- **Estado:** Aceptado
 - **Fecha:** 2026-10-29
 
 Amplía [ADR-0033](0033-skill-fuera-del-nucleo.md): la jaula deja de ser de un
 solo dominio cuando el destino del CLI es el gateway. El valor por defecto
 (`api.anthropic.com`) no cambia. Spec:
-[032](../iniciativas/032-skill-con-modelo-de-la-cluster/spec.md).
+[032](../iniciativas/archivo/032-skill-con-modelo-de-la-cluster/spec.md).
 
 ## Contexto
 
@@ -30,7 +30,7 @@ No es el sitio donde se juzga si la skill aguanta otro modelo.
    anticorrupción.** El núcleo no conoce el clúster ni LiteLLM. Solo
    `claude-runner` cambia a quién le pide, con variables que vacías dejan el
    comportamiento de hoy. No es una pieza de evaluación que se retire al
-   medir: si el spike de [032](../iniciativas/032-skill-con-modelo-de-la-cluster/spec.md)
+   medir: si el spike de [032](../iniciativas/archivo/032-skill-con-modelo-de-la-cluster/spec.md)
    sale, el servicio se queda.
 3. **La jaula declara su dominio permitido.** `allowedDomains` deja de ser
    una constante y pasa a parámetro de `runner_sandbox_settings`. Con

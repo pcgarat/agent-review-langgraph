@@ -308,6 +308,39 @@ def test_un_desenlace_estructurado_manda_sobre_la_prosa_del_cupo(tmp_path: Path)
         ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
 
 
+def _sale_por_rate_limit(tmp_path: Path) -> Path:
+    script = tmp_path / "limite.py"
+    script.write_text(
+        "import sys\nprint('429 rate limit', file=sys.stderr)\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_un_rate_limit_del_cluster_no_es_cupo(tmp_path: Path) -> None:
+    """Agotados los reintentos del gateway, el 429 se reencola. No parkea."""
+    script = _sale_por_rate_limit(tmp_path)
+    with pytest.raises(ClaudeProcessCrashed, match="cluster"):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+            quota_is_crash=True,
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
+def test_un_rate_limit_de_anthropic_sigue_siendo_cupo(tmp_path: Path) -> None:
+    script = _sale_por_rate_limit(tmp_path)
+    with pytest.raises(ClaudeQuotaExceeded):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
 def test_mientras_corre_el_cli_la_review_esta_en_vuelo(tmp_path: Path) -> None:
     class _Progress:
         def __init__(self) -> None:

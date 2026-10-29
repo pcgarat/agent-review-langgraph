@@ -108,7 +108,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         credential = clone_token(current)
         secrets = [credential, current.claude_runner_token, token or ""]
         try:
-            upstream_env, domains, upstream_secrets = _upstream(current, token)
+            upstream_env, domains, upstream_secrets, quota_is_crash = _upstream(current, token)
             secrets = [credential, current.claude_runner_token, *upstream_secrets]
             directory = checkout_directory(
                 _workspace_root(current), repo=body.repo, head_sha=body.head_sha
@@ -175,6 +175,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                         cwd=directory,
                         redact=secrets,
                         user=CHILD_USER,
+                        quota_is_crash=quota_is_crash,
                     ).run(
                         repo=body.repo,
                         pr_id=body.pr_id,
@@ -226,16 +227,19 @@ def _session_ready(settings: Settings) -> bool:
     return session_active(_session_path(settings))
 
 
-def _upstream(settings: Settings, token: str | None) -> tuple[dict[str, str], list[str], list[str]]:
-    """Entorno de auth, dominio de la jaula y secretos a redactar.
+def _upstream(
+    settings: Settings, token: str | None
+) -> tuple[dict[str, str], list[str], list[str], bool]:
+    """Entorno de auth, dominio de la jaula, secretos y si un 429 se reencola.
 
     Con el clúster el hijo no recibe el token OAuth aunque el fichero exista.
+    El bool es ese 429: no es el cupo de Anthropic.
     """
     choice = read_choice(backend_path(_session_path(settings)))
     backend = resolve_backend(choice, settings)
     if backend.kind == "anthropic":
         extra = {CHILD_TOKEN_ENV: token} if token else {}
-        return extra, ["api.anthropic.com"], [token or ""]
+        return extra, ["api.anthropic.com"], [token or ""], False
     url = settings.claude_gateway_url.strip()
     gateway_token = load_gateway_token(settings)
     if not url or not gateway_token:
@@ -245,7 +249,7 @@ def _upstream(settings: Settings, token: str | None) -> tuple[dict[str, str], li
     except ValueError as exc:
         raise ClaudeProcessCrashed("CLAUDE_GATEWAY_URL no tiene host") from exc
     extra = child_gateway_env(url=url, token=gateway_token, model=backend.model)
-    return extra, [domain], [gateway_token]
+    return extra, [domain], [gateway_token], True
 
 
 def _verify_token(settings: Settings, authorization: str | None) -> None:

@@ -16,18 +16,19 @@ Checklist accionable. El diseño está en [`spec.md`](spec.md); el orden, en
 
 ## Bloque G — Gateway y destino (checkpoint G-K)
 
-- [ ] **G1** Servicio `nan-gateway` en el perfil `claude`, LiteLLM pineado, egress solo a `api.nan.builders`
-  - 2026-10-29: el servicio está en el perfil `claude`, imagen `v1.106.6`, con `deepseek-v4-flash` y `glm5.3-flash`. Falta cerrar el egress.
+- [x] **G1** Servicio `nan-gateway` en el perfil `claude`, LiteLLM pineado, egress solo a `api.nan.builders`
+  - 2026-10-29: imagen `v1.106.6`, modelos `deepseek-v4-flash` y `glm5.3-flash`. El egress lo cierra `nan-gateway-egress` (NET_ADMIN en el sidecar, no en LiteLLM): OUTPUT solo a `api.nan.builders:443`.
 - [x] **G2** `CLAUDE_GATEWAY_URL`, `CLAUDE_GATEWAY_TOKEN` y `CLAUDE_GATEWAY_MODEL` en `Settings`. `NAN_API_KEY` solo en el entorno de `nan-gateway`
 - [x] **G3** `claude-runner` lee el destino en cada `POST /run` y arma `extra_env` y `allowedDomains`. Sin elección, el hijo queda como hoy
-- [ ] **G4** Test de paridad del argv y del entorno cuando el destino es Anthropic
-- [ ] **G5** `docs/operacion.md` §2 y §3: variables, quién ve el diff, y la clave del clúster que no sale del gateway
+- [x] **G4** Test de paridad del argv y del entorno cuando el destino es Anthropic
+- [x] **G5** `docs/operacion.md` §2 y §3: variables, quién ve el diff, y la clave del clúster que no sale del gateway
 
 ## Bloque Q — 429 (checkpoint Q-K)
 
-- [ ] **Q1** El gateway reintenta un 429 unas pocas veces dentro de la llamada
-- [ ] **Q2** Si sigue, el worker reencola el job y no lo parkea como `quota`
-- [ ] **Q3** El desenlace de cupo de Claude Code, con destino Anthropic, sigue parkeando
+- [x] **Q1** El gateway reintenta un 429 unas pocas veces dentro de la llamada
+  - 2026-10-29: `RateLimitErrorRetries: 3`. El resto de errores del router queda en cero.
+- [x] **Q2** Si sigue, el worker reencola el job y no lo parkea como `quota`
+- [x] **Q3** El desenlace de cupo de Claude Code, con destino Anthropic, sigue parkeando
 
 ## Bloque P — Página del destino (checkpoint P-K)
 

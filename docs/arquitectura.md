@@ -502,11 +502,13 @@ tarjeta de lote, `claude-runner` y sesión en el panel.
 [028](iniciativas/archivo/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
 fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
 ([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
-[032](iniciativas/032-skill-con-modelo-de-la-cluster/spec.md) está en curso:
+[032](iniciativas/archivo/032-skill-con-modelo-de-la-cluster/spec.md) está implementada:
 `/claude` elige `claude`, `deepseek-v4-flash` o `glm5.3-flash`, y
 `claude-runner` lo aplica en cada `POST /run`. El gateway del perfil
-`claude` traduce los dos modelos del clúster
-([ADR-0037](adr/0037-la-skill-con-un-backend-ajeno.md), propuesto). El *gold
+`claude` traduce los dos modelos del clúster; su egress solo llega a
+`api.nan.builders` y un 429, agotados tres reintentos, se reencola en vez de
+parquearse como cupo
+([ADR-0037](adr/0037-la-skill-con-un-backend-ajeno.md)). El *gold
 set* no entra: sigue midiendo solo el motor `llm`.
 
 ---

@@ -2,7 +2,7 @@
 
 # 032 — La skill con el modelo del clúster
 
-> **Estado:** aprobada
+> **Estado:** implementada
 
 ## Objetivo
 
@@ -17,7 +17,7 @@ del mismo CLI.
 - Un motor nuevo (`cursor`, `opencode`…): un tercer `REVIEW_ENGINE` no entra
   aquí.
 - Sustituir la vía `llm` ni tocar su *gold set*. El arnés
-  ([ADR-0017](../../adr/0017-replay-determinista-con-fingerprint.md)) mide
+  ([ADR-0017](../../../adr/0017-replay-determinista-con-fingerprint.md)) mide
   solo el motor `llm`. Esta iniciativa no añade corridas, baselines ni
   comparaciones al *gold set*.
 - Meter el gateway en el worker: el worker publica en el PR y no traduce
@@ -41,7 +41,7 @@ del mismo CLI.
    clúster vive solo ahí y no entra en `claude-runner` ni en el worker.
 4. **La jaula se declara por Settings, no por YAML.** `allowedDomains` pasa
    de constante a parámetro de `runner_sandbox_settings`. La jaula sigue
-   siendo código ([ADR-0033](../../adr/0033-skill-fuera-del-nucleo.md)); lo
+   siendo código ([ADR-0033](../../../adr/0033-skill-fuera-del-nucleo.md)); lo
    que cambia es a qué dominio apunta cuando el destino es el gateway.
 5. **Sin sesión OAuth no hay parking por `session`.** Con `gateway`,
    `active()` responde por el health del gateway.
@@ -116,7 +116,7 @@ hablar con dominios que la jaula no permite.
   dial no existe por modelo: si hace falta, se baja en el gateway.
 - **Privacidad.** El diff deja de ir a Anthropic y va al clúster. Es un
   cambio de quién ve el código. Va en `docs/operacion.md` §3 cuando se
-  implemente, y en el [ADR-0037](../../adr/0037-la-skill-con-un-backend-ajeno.md).
+  implemente, y en el [ADR-0037](../../../adr/0037-la-skill-con-un-backend-ajeno.md).
 - **Telemetría.** Sin `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, el CLI
   intenta salir de la lista estricta y cada `Bash` muere.
 

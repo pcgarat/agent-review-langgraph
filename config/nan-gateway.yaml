@@ -17,6 +17,22 @@ litellm_settings:
   success_callback: []
   failure_callback: []
 
+# Solo el 429 se repite dentro de la llamada. El resto falla y el worker
+# reencola el job. Tres reintentos: agotados, deja de ser un fallo de esta
+# petición y no se parkea como cupo de Anthropic.
+router_settings:
+  num_retries: 0
+  retry_policy:
+    RateLimitErrorRetries: 3
+    DefaultRetries: 0
+    BadRequestErrorRetries: 0
+    AuthenticationErrorRetries: 0
+    TimeoutErrorRetries: 0
+    ContentPolicyViolationErrorRetries: 0
+    InternalServerErrorRetries: 0
+    ServiceUnavailableErrorRetries: 0
+    NotFoundErrorRetries: 0
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   disable_spend_logs: true

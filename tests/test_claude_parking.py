@@ -341,6 +341,25 @@ def test_una_caida_sigue_reintentandose(tmp_path: Path) -> None:
     assert queue.parked() == []
 
 
+def test_un_429_del_cluster_se_reencola_y_no_parkea(tmp_path: Path) -> None:
+    store = ClaudeArtifactStore(root=tmp_path)
+    runner = _Runner(error=ClaudeProcessCrashed("el cluster limito la llamada"))
+    queue = InMemoryReviewQueue()
+    _consume(
+        queue,
+        _Graph(),
+        _request("limite"),
+        max_attempts=3,
+        claude_runner=runner,
+        claude_store=store,
+    )
+    retried = queue.dequeue()
+    assert retried is not None
+    assert retried.head_sha == "limite"
+    assert queue.parked() == []
+    assert queue.dead_letters() == []
+
+
 def test_get_session_es_un_booleano(tmp_path: Path) -> None:
     path = tmp_path / "session.json"
     write_session(path, _TOKEN, ttl_s=3600)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -198,3 +199,45 @@ def test_el_panel_monta_config_y_recibe_los_diales_que_pinta() -> None:
         assert key in web_env, f"el panel tiene que resolver el mismo {key} que el worker"
     # El worker los toma del `.env` completo; el panel los interpola del host.
     assert "env_file" in worker_env
+
+
+def test_el_gateway_esta_pineado_y_el_429_solo_se_reintenta_ahi() -> None:
+    """032 Q1: tres reintentos del 429 dentro de la llamada; el resto, cero."""
+    gateway = _compose()["services"]["nan-gateway"]
+    assert gateway["image"] == "ghcr.io/berriai/litellm:v1.106.6"
+    assert gateway.get("profiles") == ["claude"]
+    assert "ports" not in gateway
+    assert "env_file" not in gateway
+    assert "NET_ADMIN" not in str(gateway.get("cap_add", []))
+    config = yaml.safe_load((_ROOT / "config" / "nan-gateway.yaml").read_text(encoding="utf-8"))
+    policy = config["router_settings"]["retry_policy"]
+    assert policy["RateLimitErrorRetries"] == 3
+    assert config["router_settings"]["num_retries"] == 0
+    for key, value in policy.items():
+        if key != "RateLimitErrorRetries":
+            assert value == 0, key
+
+
+def test_el_egress_del_gateway_no_lo_puede_abrir_litellm() -> None:
+    """032 G1: NET_ADMIN está en el sidecar, y la salida solo nombra al clúster."""
+    services = _compose()["services"]
+    egress = services["nan-gateway-egress"]
+    assert egress.get("profiles") == ["claude"]
+    assert egress["network_mode"] == "service:nan-gateway"
+    assert egress["cap_drop"] == ["ALL"]
+    assert egress["cap_add"] == ["NET_ADMIN"]
+    assert "ports" not in egress
+    assert "NAN_API_KEY" not in egress.get("environment", {})
+    assert egress["build"]["target"] == "nan-egress"
+    script_path = _ROOT / "scripts" / "nan-gateway-egress.sh"
+    script = script_path.read_text(encoding="utf-8")
+    subprocess.run(["sh", "-n", str(script_path)], check=True)
+    assert "api.nan.builders" in script
+    assert "-P OUTPUT DROP" in script
+    assert "/etc/resolv.conf" in script
+    entry = (_ROOT / "scripts" / "nan-gateway-entrypoint.sh").read_text(encoding="utf-8")
+    assert "/run/egress/ready" in entry
+    for name in ("api", "worker", "sandbox-runner", "claude-runner"):
+        env = services[name].get("environment", {})
+        assert env.get("NAN_API_KEY", "") == "", name
+    assert "NAN_API_KEY" in services["nan-gateway"]["environment"]
