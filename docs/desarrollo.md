@@ -162,7 +162,8 @@ cupo y un proceso caído son excepciones distintas. Un JSON que no es la lista
 de hallazgos lo rechaza el worker (`ClaudeInvalidOutput`); el CLI no lo
 convierte en «cero hallazgos». El objeto `mode:agent` lo traduce
 `adapters/agent_mode.py`: un `evidence` que llega como texto se envuelve en
-lista y, si falta, se usa `first_evidence`. Un hallazgo que no cumple el
+lista, y `first_evidence` (la cita literal) va delante si la primera evidencia
+no la contiene: L0 solo busca en el diff la primera cita. Un hallazgo que no cumple el
 contrato se descarta, y el log del worker dice cuál y por qué (`#1: evidence:
 …`). Si se descartan todos, la salida es inválida. El techo de turnos y el cupo se clasifican por
 el **desenlace estructurado** del CLI (`type: result` y su `subtype`), nunca por

@@ -140,16 +140,21 @@ def _label(item: object) -> str:
 def _evidence(item: dict[str, Any]) -> object:
     """La skill promete una lista, pero en `lite` a veces la emite como texto.
 
-    Un texto se envuelve en una lista y, si falta, `first_evidence` (la cita
-    de la línea) sirve de evidencia. Cualquier otra forma pasa tal cual y la
-    rechaza el contrato.
+    Un texto se envuelve en una lista. `first_evidence` (la cita literal de la
+    línea) va delante si el primer elemento no la contiene: L0 busca en el
+    diff solo la primera cita, y en `lite` esa suele ser prosa. Cualquier otra
+    forma pasa tal cual y la rechaza el contrato.
     """
     value = item.get("evidence")
     if isinstance(value, str):
         value = [value.strip()] if value.strip() else []
-    if value in (None, []):
-        quote = _text(item.get("first_evidence"))
-        return [quote] if quote else value
+    quote = _text(item.get("first_evidence"))
+    if not quote:
+        return value
+    if value is None:
+        return [quote]
+    if isinstance(value, list) and not (value and isinstance(value[0], str) and quote in value[0]):
+        return [quote, *value]
     return value
 
 

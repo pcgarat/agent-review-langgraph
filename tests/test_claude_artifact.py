@@ -193,6 +193,32 @@ def test_sin_evidence_usa_first_evidence() -> None:
     assert review.findings[0].evidence == ["throw new InsufficientBalance();"]
 
 
+def test_first_evidence_va_delante_de_una_evidence_en_prosa() -> None:
+    # Caso real (PR 27, ruta lite): la cita literal venía solo en first_evidence
+    # y L0, que busca la primera cita en el diff, tiraba el hallazgo.
+    cuerpo = _agente(
+        evidence="Transfer.php:14. Con saldo 0 la retirada deja el estado a medias.",
+        first_evidence="throw new InsufficientBalance('no funds');",
+    )
+
+    review = adapt_agent_mode(cuerpo)
+
+    assert review.findings[0].evidence == [
+        "throw new InsufficientBalance('no funds');",
+        "Transfer.php:14. Con saldo 0 la retirada deja el estado a medias.",
+    ]
+
+
+def test_first_evidence_ya_citada_no_se_duplica() -> None:
+    cuerpo = _agente(first_evidence="throw new InsufficientBalance('no funds');")
+
+    review = adapt_agent_mode(cuerpo)
+
+    assert review.findings[0].evidence == [
+        "src/Transfer.php:14 throw new InsufficientBalance('no funds');"
+    ]
+
+
 def test_sin_evidence_ni_first_evidence_no_entra() -> None:
     cuerpo = _agente(evidence="  ")
 
