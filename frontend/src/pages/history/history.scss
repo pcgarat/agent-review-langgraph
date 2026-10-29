@@ -1,14 +1,5 @@
-// Solo lo que CoreUI no da. La tabla densa y `.num` son del tema (`panel.scss`).
-
-// La cabecera de la tabla se lee como una etiqueta, no como texto: con ocho
-// columnas de cifras, sin esta separación la vista se convierte en una rejilla.
-.history-table thead th {
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--cui-secondary-color);
-  white-space: nowrap;
-}
+// Solo lo que CoreUI no da. La cabecera de la tabla (`.panel-table`) y `.num` son
+// del tema (`panel.scss`).
 
 .history-filters {
   max-width: 38rem;

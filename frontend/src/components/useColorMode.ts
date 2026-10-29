@@ -28,7 +28,7 @@ function applyTheme(mode: ColorMode) {
 }
 
 let listeners: (() => void)[] = []
-let currentMode: ColorMode = getStoredMode() ?? 'dark'
+let currentMode: ColorMode = getStoredMode() ?? 'light'
 
 function subscribe(listener: () => void) {
   listeners = [...listeners, listener]
@@ -59,7 +59,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function useColorMode() {
-  const colorMode = useSyncExternalStore(subscribe, getSnapshot, () => 'dark' as ColorMode)
+  const colorMode = useSyncExternalStore(subscribe, getSnapshot, () => 'light' as ColorMode)
 
   const setColorMode = useCallback((mode: ColorMode) => {
     setMode(mode)

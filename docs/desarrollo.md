@@ -453,6 +453,13 @@ sobre el armazón de CoreUI) y es la **única**: el HTML servido en el servidor
 8. **`web/spa.py` resuelve el build en cada petición**: `web/static` (imagen)
    primero y `frontend/dist` (checkout) después. Sin build, las rutas del panel
    responden `503` con el motivo; el resto de la API sigue igual.
+9. **El aspecto es el de la demo de CoreUI**: el armazón (`AppLayout`,
+   `AppSidebar`, `AppHeader`, `AppBreadcrumb`) y `styles/panel.scss` reproducen
+   `DefaultLayout` y `style.scss` de la plantilla. Una pantalla nueva se compone
+   con tarjetas (`CCard`, o `PanelSection` si es una tabla con recuento), tablas
+   con la clase `panel-table` e iconos de `@coreui/icons`; el título va en el
+   `title` de la ruta, que pintan las migas, no en un `h1`. Los colores salen de
+   las variables `--cui-*` para que los dos temas funcionen sin CSS por tema.
 
 ### Un lector de contexto nuevo
 El `ContextReaderPort` (`ports/context.py`) da el repo a un modelo que razona: tres
