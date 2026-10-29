@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-24
+Última modificación: 2026-10-29 | Creado: 2026-10-24
 
 # 13 — La jaula: bwrap, el sandbox del CLI y el runner
 
@@ -407,18 +407,27 @@ hermética de lo que es.
 - **Las herramientas `Read`, `Grep` y `Glob` corren en el proceso `claude`,
   no dentro de `bwrap`.** Un `denyWrite` no les afecta: ya están denegadas
   las herramientas de edición por el argv. Un `denyRead` del sandbox tampoco
-  las pararía; nuestra config ni siquiera declara `denyRead`.
+  las pararía; el `settings.json` lo declara para `/proc/1/environ`, pero solo
+  alcanza a lo que corre dentro de la jaula. Lo que de verdad cierra ese
+  fichero es que el proceso no sea root.
 - **La conversación con el modelo sale del proceso `claude`, fuera de la
   jaula.** El contenedor sí tiene red hacia `api.anthropic.com`. La lista de
   dominios obliga a los comandos de `Bash`, que es de donde vendría un
   `curl` inventado por el modelo.
 - **Leer, dentro de la jaula, está muy abierto.** El `--ro-bind / /` deja
   ver casi todo el contenedor, ficheros de credenciales incluidos, salvo lo
-  que se tape con un `denyRead`. Este runner no tapa lecturas. El token de
+  que se tape con un `denyRead`. Este runner no tapa el checkout. El token de
   Git no está en un fichero del checkout: se usó y se borró el remoto. El
   token de sesión sí está en el entorno de `claude`, y un `Bash` puede
   heredarlo. Lo que la jaula impide es *enviarlo* a otro sitio: no hay ruta
   más que el proxy, y el proxy solo habla con Anthropic.
+- **El proceso `claude` no es root.** Corre como `nobody`
+  ([ADR-0035](../adr/0035-el-hijo-del-runner-no-es-root.md)), y por eso el
+  kernel le niega `/proc/1/environ`, donde viven los tokens del runner aunque
+  se borren del entorno en memoria. Es la defensa que no depende del modelo:
+  `Read` corre fuera de la jaula, así que ni el argv ni un `denyRead` del
+  sandbox lo pararían. El `settings.json` sí declara `denyRead` para
+  `/proc/1/environ`: cubre las herramientas que van dentro de `bwrap`.
 - **El filtro seccomp de sockets Unix es opcional** en el sandbox del CLI.
   Bloquea `socket(AF_UNIX)`, que es otro camino (un socket de fichero no lo
   corta `--unshare-net`). La documentación del CLI dice que, si falta, se

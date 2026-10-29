@@ -43,6 +43,7 @@ descartadas. Un ADR no se reescribe cuando cambia la decisión: se marca como
 | [0032](0032-clonado-claude-con-el-token-de-vcs.md) | El checkout de Claude reutiliza el token de VCS; `CLAUDE_GIT_TOKEN` queda como override | Aceptado |
 | [0033](0033-skill-fuera-del-nucleo.md) | La skill revisa fuera del núcleo; el sandbox cierra `Bash` y el techo no se reintenta | Aceptado |
 | [0034](0034-olvidar-una-ejecucion.md) | Olvidar una ejecución borra el estado local; los comentarios del PR se quedan | Aceptado |
+| [0035](0035-el-hijo-del-runner-no-es-root.md) | El subproceso `claude` corre con un uid sin privilegios; `/proc/1/environ` deja de ser un camino a los tokens | Aceptado |
 
 Las especificaciones de fase ([`diseno-agente-code-review`](../iniciativas/archivo/001-diseno-base/spec.md),
 [`fase2-hitl`](../iniciativas/archivo/002-fase2-hitl/spec.md), [`fase3-fix-verificacion`](../iniciativas/archivo/003-fase3-fix-verificacion/spec.md))

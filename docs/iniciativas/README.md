@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-11
+Última modificación: 2026-10-29 | Creado: 2026-10-11
 
 
 # Iniciativas
@@ -22,12 +22,13 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 028 | [Claude revisa con la skill](028-claude-revisa-con-la-skill/spec.md) | implementada | 🟢 La skill revisa fuera del núcleo; el sandbox cierra `Bash`; el techo no se reintenta · [ADR-0033](../adr/0033-skill-fuera-del-nucleo.md) | 025 |
 | 029 | [Panel en React](029-panel-en-react/spec.md) | implementada | 🟢 La interfaz es una SPA React con login, base CoreUI y la API como único contrato; el SSR de `ui.py` está retirado · [plan](029-panel-en-react/plan.md) · [todo](029-panel-en-react/todo.md) | 019 · 027 · E1–R10 hechas; Q3 (e2e) y Q5 (paginación en servidor) fuera de la entrega |
 | 030 | [El panel enseña los aparcados](030-panel-ensena-los-aparcados/spec.md) | implementada | 🟢 Los jobs en `reviews:claude:parked` aparecen en el cuadro de mando con su motivo y su acción · [plan](030-panel-ensena-los-aparcados/plan.md) · [todo](030-panel-ensena-los-aparcados/todo.md) | 029 · L1–P4 hechas |
+| 031 | [Progreso en vivo del panel](031-progreso-en-vivo-del-panel/spec.md) | borrador | 🟠 Panel que se refresca solo, diagrama de pasos en la ficha, panel en vivo maximizable y tiempo en «En vuelo» | 029 · 030 · 3 preguntas abiertas |
 
 ## Pendientes humanos o externos
 
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **031**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **032**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

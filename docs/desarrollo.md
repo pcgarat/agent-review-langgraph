@@ -188,7 +188,13 @@ procesos del contenedor.
 El entorno del hijo es la lista `CHILD_ENV_ALLOW`: no se construye tachando
 secretos. El token de sesión, si el fichero sigue vigente, se inyecta aparte
 (`CLAUDE_CODE_OAUTH_TOKEN`); no se hereda del padre. `CLAUDE_CONFIG_DIR` apunta
-fuera del checkout. El checkout (`claude_runner/checkout.py`) deja `review` en
+fuera del checkout. **El hijo no corre como root**: se baja a `nobody` entre
+`fork` y `exec`, porque si no el kernel le deja leer `/proc/1/environ`, donde
+siguen los tokens del runner por mucho que se borren del entorno en memoria
+([ADR-0035](adr/0035-el-hijo-del-runner-no-es-root.md)). Por eso la config se cede
+a ese usuario y el hijo recibe `HOME` y `TMPDIR` propios dentro de ella; el
+checkout lo sigue escribiendo `git` como root. Si el proceso es root y el usuario
+no existe, el runner no arranca. El checkout (`claude_runner/checkout.py`) deja `review` en
 el `head_sha` y `base` en el `base_sha`, quita los remotos y no arranca el CLI
 sin base o si el fetch de la base falla. Un reintento sobre el mismo árbol
 suelta HEAD antes del fetch: Git no actualiza la rama que está checked out.

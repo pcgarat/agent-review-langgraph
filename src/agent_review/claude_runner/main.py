@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import os
+import pwd
 import shutil
 import threading
 from pathlib import Path
@@ -19,7 +20,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from agent_review.adapters.claude_cli import SubprocessClaudeRunner, redact_text
+from agent_review.adapters.claude_cli import CHILD_USER, SubprocessClaudeRunner, redact_text
 from agent_review.claude_activity import ClaudeActivity
 from agent_review.claude_runner.checkout import CheckoutError, checkout_directory, prepare_checkout
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
@@ -38,8 +39,10 @@ from agent_review.settings import (
 
 logger = logging.getLogger(__name__)
 
-# Tras cargar Settings, el proceso no conserva estos valores en el entorno:
-# un `Read` de `/proc/1/environ` no debe verlos.
+# Tras cargar Settings, el proceso no conserva estos valores en su copia del
+# entorno. **No basta**: el kernel guarda el entorno de arranque en
+# `/proc/1/environ`, que sigue siendo legible por root. La defensa real es que el
+# hijo no sea root (ver `CHILD_USER` en `adapters/claude_cli.py`).
 _SECRET_ENV = (
     "CLAUDE_GIT_TOKEN",
     "CLAUDE_RUNNER_TOKEN",
@@ -114,7 +117,25 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                 config_dir = _config_dir(current)
                 write_runner_settings(config_dir, workspace_root=_workspace_root(current))
                 ensure_bundled_skill(config_dir)
+                # El hijo no es root: necesita poder leer la config (la skill) y
+                # escribir su estado de sesión. El checkout lo sigue escribiendo
+                # git como root; el hijo solo lo lee.
+                _grant_child(config_dir)
                 extra["CLAUDE_CONFIG_DIR"] = str(config_dir)
+                # El CLI escribe su estado en `HOME`, y el proceso corre como
+                # root: un `HOME` dentro de la config ya cedida evita dejar al
+                # hijo sin sitio donde escribir.
+                home = config_dir / "home"
+                home.mkdir(parents=True, exist_ok=True)
+                _grant_child(home)
+                extra["HOME"] = str(home)
+                # `/tmp` del contenedor es de root (`1777` lo deja escribir, pero
+                # el sandbox lo vuelve a montar). Un TMPDIR propio evita depender
+                # de los permisos del `/tmp` compartido.
+                tmp = config_dir / "tmp"
+                tmp.mkdir(parents=True, exist_ok=True)
+                _grant_child(tmp)
+                extra["TMPDIR"] = str(tmp)
                 # La imagen trae el binario. Una review no debe sustituirlo.
                 extra["DISABLE_UPDATES"] = "1"
                 activity = ClaudeActivity(
@@ -136,6 +157,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                         extra_env=extra,
                         cwd=directory,
                         redact=secrets,
+                        user=CHILD_USER,
                     ).run(
                         repo=body.repo,
                         pr_id=body.pr_id,
@@ -221,6 +243,26 @@ def _drop_secret_env() -> None:
         os.environ.pop(key, None)
 
 
+def _grant_child(path: Path) -> None:
+    """Deja `path` al alcance del usuario sin privilegios del hijo.
+
+    Recorre lo que hay dentro (la config ya trae la skill copiada) porque un
+    directorio `0700` de root no se puede atravesar. No toca el checkout: lo lee
+    el sandbox, que ve el mundo con `--ro-bind / /`.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        entry = pwd.getpwnam(CHILD_USER)
+    except KeyError:  # pragma: no cover - lo valida `require_child_user`
+        return
+    for target in (path, *path.rglob("*")):
+        try:
+            os.chown(target, entry.pw_uid, entry.pw_gid)
+        except OSError:
+            logger.warning("no se pudo ceder %s al hijo (%s)", target, CHILD_USER)
+
+
 def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
     """Sandbox obligatorio: solo Anthropic, sin salir, checkout no escribible."""
     return {
@@ -236,6 +278,10 @@ def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
                 # antepasado tapa el árbol aunque el sandbox permita el cwd.
                 "denyWrite": [str(workspace_root.resolve())],
                 "allowWrite": ["/tmp"],
+                # El entorno de arranque del runner queda en /proc/1/environ. La
+                # defensa principal es que el hijo no sea root; esto lo tapa
+                # también para las herramientas que corren dentro de la jaula.
+                "denyRead": ["/proc/1/environ", "/proc/1/cmdline"],
             },
             "network": {
                 "allowedDomains": ["api.anthropic.com"],
@@ -273,6 +319,25 @@ def require_sandbox_binaries() -> None:
         raise RuntimeError(f"el sandbox de claude no puede arrancar sin {joined} en el PATH")
 
 
+def require_child_user() -> None:
+    """Como root, el hijo debe poder bajar a un uid sin privilegios.
+
+    Sin ese usuario no se arranca: correr el CLI como root deja `/proc/1/environ`
+    (los tokens del runner) al alcance de un `Read` pedido por el modelo.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        entry = pwd.getpwnam(CHILD_USER)
+    except KeyError as exc:
+        raise RuntimeError(
+            f"el usuario {CHILD_USER!r} no existe y el proceso es root: "
+            "el CLI correria sin bajar privilegios"
+        ) from exc
+    if entry.pw_uid == 0:
+        raise RuntimeError(f"{CHILD_USER!r} tiene uid 0: no baja privilegios")
+
+
 def require_claude_binary(binary: str) -> None:
     """El proceso no sirve si el ejecutable no esta en el PATH de la imagen."""
     if shutil.which(binary) is None:
@@ -288,6 +353,7 @@ def main() -> None:
     require_claude_runner_secrets(settings)
     require_claude_binary(settings.claude_bin)
     require_sandbox_binaries()
+    require_child_user()
     config_dir = _config_dir(settings)
     write_runner_settings(config_dir, workspace_root=_workspace_root(settings))
     ensure_bundled_skill(config_dir)

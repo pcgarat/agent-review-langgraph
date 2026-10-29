@@ -47,6 +47,11 @@ CHILD_ENV_ALLOW = frozenset(
 _READ_TOOLS = "Read,Grep,Glob,Bash"
 _DENIED_TOOLS = "Edit,Write,NotebookEdit,WebFetch,WebSearch"
 
+# El hijo no corre como root. Un proceso sin privilegios no puede abrir
+# `/proc/1/environ` (es `400 root`), asi que los tokens del runner no dependen de
+# que el CLI respete una regla de lectura.
+CHILD_USER = "nobody"
+
 _QUOTA_MARKERS = (
     "quota",
     "rate limit",
@@ -113,6 +118,34 @@ def claude_argv(prefix: Sequence[str], *, max_turns: int, base_sha: str) -> list
     ]
 
 
+def _demote() -> Callable[[], None] | None:
+    """Baja a un uid sin privilegios justo antes de `execve`, o `None` si no
+    procede. En un test o en un portátil no se puede (y no hace falta): solo se
+    baja cuando el proceso es root, que es donde el kernel expone
+    `/proc/<pid>/environ` de los demás."""
+    if os.geteuid() != 0:
+        return None
+    try:
+        import pwd
+    except ImportError:  # pragma: no cover - no ocurre en las imágenes
+        return None
+    try:
+        entry = pwd.getpwnam(CHILD_USER)
+    except KeyError as exc:  # pragma: no cover - la imagen declara el usuario
+        raise ClaudeProcessCrashed(
+            f"el usuario {CHILD_USER!r} no existe: el hijo correria como root"
+        ) from exc
+
+    def demote() -> None:
+        # El orden importa: los grupos se sueltan antes de cambiar el uid, porque
+        # después ya no se tienen los privilegios para `setgroups`.
+        os.setgroups([entry.pw_gid])
+        os.setgid(entry.pw_gid)
+        os.setuid(entry.pw_uid)
+
+    return demote
+
+
 class SubprocessClaudeRunner:
     """Lanza el ejecutable y devuelve stdout. No valida el esquema."""
 
@@ -126,6 +159,7 @@ class SubprocessClaudeRunner:
         extra_env: Mapping[str, str] | None = None,
         cwd: str | Path | None = None,
         redact: Sequence[str] = (),
+        user: str | None = None,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("el tiempo de pared tiene que ser positivo")
@@ -139,6 +173,7 @@ class SubprocessClaudeRunner:
             self._environ.update(extra_env)
         self._cwd = None if cwd is None else str(cwd)
         self._redact = tuple(redact)
+        self._user = user
 
     def run(
         self,
@@ -159,6 +194,9 @@ class SubprocessClaudeRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # `preexec_fn` corre en el hijo entre `fork` y `exec`: es el único
+                # punto donde soltar el uid no afecta a este proceso.
+                preexec_fn=_demote() if self._user else None,
             )
         except FileNotFoundError as exc:
             raise ClaudeProcessCrashed("no se encontro el ejecutable de claude") from exc

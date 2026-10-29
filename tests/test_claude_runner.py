@@ -987,6 +987,50 @@ def test_el_settings_del_runner_exige_el_sandbox(tmp_path: Path) -> None:
     assert "github.com" not in sandbox["network"]["allowedDomains"]
     assert "/tmp" in sandbox["filesystem"]["allowWrite"]
     assert str(workspace.resolve()) in sandbox["filesystem"]["denyWrite"]
+    # El entorno de arranque del runner es un secreto: la jaula no lo lee.
+    assert "/proc/1/environ" in sandbox["filesystem"]["denyRead"]
+
+
+def test_el_hijo_no_corre_como_root(tmp_path: Path) -> None:
+    """El vector del P0: siendo root, `/proc/1/environ` deja los tokens.
+
+    Un `Read` del modelo no basta con denegarlo por el argv: el CLI tiene que
+    ejecutarse con un uid que el kernel no deje leer ese fichero.
+    """
+    argv = tmp_path / "quien.py"
+    argv.write_text("import os\nprint('uid=' + str(os.getuid()))\n", encoding="utf-8")
+    if os.geteuid() != 0:
+        pytest.skip("solo tiene sentido como root: sin privilegios ya no aplica")
+    stdout = SubprocessClaudeRunner(
+        argv_prefix=[sys.executable, str(argv)],
+        max_turns=1,
+        timeout_s=10,
+        environ={"PATH": "/usr/bin"},
+        user="nobody",
+    ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+    assert "uid=0" not in stdout, "el hijo corrio como root"
+
+
+def test_sin_root_el_hijo_no_baja_privilegios(monkeypatch: pytest.MonkeyPatch) -> None:
+    """En un portátil o en un test no hay a quién bajar: no se inventa el drop."""
+    from agent_review.adapters import claude_cli
+
+    monkeypatch.setattr(claude_cli.os, "geteuid", lambda: 1000)
+    assert claude_cli._demote() is None
+
+
+def test_sin_usuario_el_runner_no_arranca(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fallar al arrancar, no en la primera review con el CLI ya como root."""
+    from agent_review.claude_runner import main as runner_main
+
+    monkeypatch.setattr(runner_main.os, "geteuid", lambda: 0)
+
+    def sin_usuario(name: str) -> object:
+        raise KeyError(name)
+
+    monkeypatch.setattr(runner_main.pwd, "getpwnam", sin_usuario)
+    with pytest.raises(RuntimeError, match="no existe"):
+        runner_main.require_child_user()
 
 
 def test_sin_bwrap_el_proceso_no_arranca(monkeypatch: pytest.MonkeyPatch) -> None:
