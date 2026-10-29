@@ -22,6 +22,8 @@ from agent_review.ports.reasoning import InMemoryReasoningSink
 from agent_review.settings import get_settings
 from agent_review.web.main import app
 from agent_review.web.read_model import (
+    ActiveNode,
+    ActiveReview,
     DeadLetterItem,
     PanelState,
     PausedGroups,
@@ -197,6 +199,7 @@ def test_la_ficha_con_todo_poblado_incluye_canales_y_claude(
         "console_available",
         "reasoning_available",
         "claude",
+        "running",
     }
     assert body["paused"]["kind"] == "fix"
     assert body["console_available"] is True
@@ -333,6 +336,28 @@ def test_la_ficha_exige_sesion(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_la_ficha_no_cambia_el_404_de_una_ruta_inexistente() -> None:
     assert client.get("/api/inexistente").status_code == 404
+
+
+def test_la_ficha_informa_el_nodo_en_curso(model: FakeReadModel) -> None:
+    model.traces[_REVIEW_KEY] = _trace()
+    model.panel_state.active = [
+        ActiveReview(
+            review_key=_REVIEW_KEY,
+            nodes=[ActiveNode(node="persona", started_at=_MOMENT, branches=2)],
+        )
+    ]
+
+    body = client.get(f"/api/reviews/{_REVIEW_KEY}").json()
+
+    assert body["running"][0]["node"] == "persona"
+    assert body["running"][0]["branches"] == 2
+    assert str(body["running"][0]["started_at"]).startswith("2026-10-16T10:00:00")
+
+
+def test_una_review_sin_nodo_en_curso_trae_running_vacio(model: FakeReadModel) -> None:
+    model.traces[_REVIEW_KEY] = _trace()
+
+    assert client.get(f"/api/reviews/{_REVIEW_KEY}").json()["running"] == []
 
 
 # --- A3: revisiones fijadas en la configuración ----------------------------------

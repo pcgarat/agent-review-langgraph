@@ -1,6 +1,6 @@
 /** Ficha de una review: traza y recurso agregado de la spec 029, P8. */
 
-import type { PausedItem } from './state'
+import type { ActiveNode, PausedItem } from './state'
 
 export interface TraceNode {
   name: string
@@ -29,6 +29,8 @@ export interface ReviewDetail {
   console_available: boolean
   reasoning_available: boolean
   claude: ClaudeAvailability | null
+  /** Nodos que el worker está ejecutando ahora. Vacío si la review no corre. */
+  running: ActiveNode[]
 }
 
 /** Lo que el CLI de Claude tiene de una review (`REVIEW_ENGINE=claude`). */

@@ -1,4 +1,5 @@
 import { CAlert, CButton, CCard, CCardBody } from '@coreui/react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
 import { reviewPath } from '@/api/client'
@@ -14,6 +15,7 @@ import { DiscardPanel } from './review/DiscardPanel'
 import { LogPanel } from './review/LogPanel'
 import { ReasoningPanel } from './review/ReasoningPanel'
 import { ReviewCommands } from './review/ReviewCommands'
+import { StepsPanel } from './review/StepsPanel'
 import { TracePanel } from './review/TracePanel'
 import { useReviewDetail } from './review/useReviewDetail'
 import './review/review.scss'
@@ -21,10 +23,10 @@ import './review/review.scss'
 /**
  * Ficha de una review (029, bloque F; spec §5.4).
  *
- * Dos columnas: el recorrido a la izquierda —o los pasos del CLI cuando el motor
- * es `claude`— y a la derecha el log, los comandos y los canales en vivo. En móvil
- * queda una sola columna y el recorrido va primero, porque es lo que responde
- * «¿dónde está esta review?».
+ * Dos columnas: a la izquierda el diagrama de pasos del grafo —o los pasos del
+ * CLI cuando el motor es `claude`— y a la derecha el recorrido, el log, los
+ * comandos y los canales en vivo. Ese panel de la derecha se puede maximizar.
+ * En móvil queda una sola columna y los pasos van primero.
  *
  * Todo lo que se pinta viene del recurso agregado (`GET /api/reviews/{key}`,
  * P8): el contrato ya dice qué canales existen y la ficha no abre un `EventSource`
@@ -126,7 +128,9 @@ function ReviewBody({ detail, isOperador }: { detail: ReviewDetail; isOperador: 
 
       <div className="review-grid">
         <div className="review-main">
-          {trace !== null ? (
+          {trace !== null && !claudeSteps ? (
+            <StepsPanel trace={trace} running={detail.running} />
+          ) : trace !== null ? (
             <TracePanel trace={trace} claudeSteps={claudeSteps} />
           ) : discard ? (
             <DiscardPanel reviewKey={reviewKey} isOperador={isOperador} />
@@ -143,7 +147,8 @@ function ReviewBody({ detail, isOperador }: { detail: ReviewDetail; isOperador: 
           )}
         </div>
 
-        <div className="review-side">
+        <ReviewSide>
+          {trace !== null && !claudeSteps ? <TracePanel trace={trace} claudeSteps={false} /> : null}
           <LogPanel notes={detail.notes} journal={detail.journal} />
 
           {/* La ficha sin traza ni pausa (F8) lleva sus propios comandos en la
@@ -184,8 +189,38 @@ function ReviewBody({ detail, isOperador }: { detail: ReviewDetail; isOperador: 
               downloadEndpoint={`${base}/claude/download`}
             />
           ) : null}
-        </div>
+        </ReviewSide>
       </div>
     </>
+  )
+}
+
+/** El panel de la derecha ocupa la ventana. Escape lo devuelve a su sitio. */
+function ReviewSide({ children }: { children: ReactNode }) {
+  const [maximized, setMaximized] = useState(false)
+  useEffect(() => {
+    if (!maximized) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMaximized(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [maximized])
+  return (
+    <div className={maximized ? 'review-side is-max' : 'review-side'}>
+      <div className="d-flex justify-content-end">
+        <CButton
+          type="button"
+          color="secondary"
+          variant="ghost"
+          size="sm"
+          aria-pressed={maximized}
+          onClick={() => setMaximized((value) => !value)}
+        >
+          {maximized ? 'Restaurar' : 'Maximizar'}
+        </CButton>
+      </div>
+      {children}
+    </div>
   )
 }

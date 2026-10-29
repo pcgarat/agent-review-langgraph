@@ -113,6 +113,14 @@ describe('cuadro de mando', () => {
     expect(links[0]).toHaveAttribute('href', '/review/cqm/emotivoo-v2:41:aaa111:ci')
   })
 
+  it('en vuelo muestra cuánto lleva el nodo, no la fecha de inicio', async () => {
+    renderDashboard(OPERADOR)
+
+    expect(await screen.findByText(/\d+ d \d+ h/)).toBeInTheDocument()
+    expect(screen.getByText(/3 ramas/)).toBeInTheDocument()
+    expect(screen.queryByText(/desde/)).not.toBeInTheDocument()
+  })
+
   it('el nodo del CLI de Claude se nombra sin inventarse el del grafo', async () => {
     const claude = {
       ...PANEL_STATE,

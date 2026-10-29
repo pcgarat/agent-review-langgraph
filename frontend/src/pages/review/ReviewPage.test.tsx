@@ -115,6 +115,24 @@ describe('ficha de review', () => {
     vi.unstubAllGlobals()
   })
 
+  it('el diagrama marca la pausa y el panel de la derecha se maximiza', async () => {
+    stubFetch(REVIEW)
+    renderReview()
+
+    expect(await screen.findByRole('heading', { name: 'Pasos' })).toBeInTheDocument()
+    expect(screen.getByText('Diff filtrado y contexto preparado')).toBeInTheDocument()
+    expect(screen.getByText('Esperando una decisión humana')).toBeInTheDocument()
+    expect(document.querySelector('[data-step="hitl"]')).toHaveClass('paused')
+    expect(document.querySelector('.step-spinner')).not.toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Maximizar' }))
+    expect(screen.getByRole('button', { name: 'Restaurar' })).toHaveAttribute('aria-pressed', 'true')
+    expect(document.querySelector('.review-side')).toHaveClass('is-max')
+    await user.click(screen.getByRole('button', { name: 'Restaurar' }))
+    expect(document.querySelector('.review-side')).not.toHaveClass('is-max')
+  })
+
   it('pinta el recorrido con la duración derivada de cada nodo', async () => {
     stubFetch(REVIEW)
     renderReview()

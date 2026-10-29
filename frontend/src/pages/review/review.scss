@@ -24,6 +24,15 @@
   margin-bottom: 0;
 }
 
+.review-side.is-max {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  overflow: auto;
+  background: var(--cui-body-bg);
+  padding: 1rem 1.25rem 2rem;
+}
+
 .review-card {
   margin-bottom: 1rem;
 }
@@ -86,6 +95,127 @@
 .trace-duration {
   font-size: 0.85rem;
   white-space: nowrap;
+}
+
+// --- Diagrama de pasos ---------------------------------------------------------
+
+.step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.step-row {
+  display: grid;
+  grid-template-columns: 1.15rem 6.6rem minmax(0, 1fr);
+  column-gap: 0.55rem;
+  align-items: start;
+  position: relative;
+  padding-bottom: 0.85rem;
+
+  &:last-child {
+    padding-bottom: 0;
+  }
+
+  &:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: calc(0.575rem - 1px);
+    top: 1.15rem;
+    bottom: 0;
+    width: 2px;
+    background: var(--cui-border-color);
+  }
+
+  &.skipped {
+    opacity: 0.55;
+  }
+}
+
+.step-mark {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 0.12rem;
+  border-radius: 50%;
+  border: 2px solid var(--cui-border-color);
+  display: grid;
+  place-items: center;
+  background: var(--cui-body-bg);
+  font-size: 0.72rem;
+  line-height: 1;
+  z-index: 1;
+}
+
+.step-row.done .step-mark {
+  background: var(--cui-success);
+  border-color: var(--cui-success);
+  color: #fff;
+}
+
+.step-row.running .step-mark {
+  border-color: var(--cui-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-primary) 28%, transparent);
+}
+
+.step-row.paused .step-mark {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  border-color: var(--cui-warning);
+  color: var(--cui-warning);
+}
+
+.pause-bar {
+  width: 2px;
+  height: 0.5rem;
+  background: currentColor;
+  display: block;
+}
+
+.step-name {
+  font-weight: 600;
+}
+
+.step-caption {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.step-row.running .step-caption {
+  color: var(--cui-primary);
+}
+
+.step-row.paused .step-caption {
+  color: var(--cui-warning-text-emphasis, var(--cui-warning));
+}
+
+.step-spinner {
+  flex: none;
+  margin-top: 0.15rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  box-sizing: border-box;
+  border: 2px solid var(--cui-primary);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: step-spin 0.75s linear infinite;
+}
+
+@keyframes step-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-spinner {
+    animation: none;
+  }
 }
 
 // --- Bloques de texto ----------------------------------------------------------

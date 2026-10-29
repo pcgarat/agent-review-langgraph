@@ -16,7 +16,12 @@ export function useReviewDetail(reviewKey: string) {
     queryKey: queryKeys.review(reviewKey),
     queryFn: () => api.get<ReviewDetail>(reviewPath(reviewKey)),
     // Una review en vuelo cambia mientras se mira: al volver a la ventana se
-    // relee, igual que el estado del panel.
+    // relee, igual que el estado del panel. Mientras no ha terminado, el
+    // diagrama de pasos se actualiza solo.
     refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      const state = query.state.data?.trace?.state
+      return state === 'in_progress' || state === 'paused' ? 2000 : false
+    },
   })
 }

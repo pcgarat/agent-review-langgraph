@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_review.claude_activity import activity_paths, review_target
 from agent_review.domain.trace import ReviewTrace
@@ -26,6 +26,7 @@ from agent_review.settings import Settings, get_settings
 from agent_review.web.auth import Session, require_session
 from agent_review.web.deps import get_console, get_read_model, get_reasoning
 from agent_review.web.read_model import (
+    ActiveNode,
     DeadLetterItem,
     PanelReadModel,
     PanelState,
@@ -68,10 +69,13 @@ class ReviewDetail(BaseModel):
     console_available: bool
     reasoning_available: bool
     claude: ClaudeAvailability | None = None
+    # Nodos que el worker está ejecutando ahora. Vacío en una pausa: el progreso
+    # se limpia al interrumpir, y el diagrama no debe pintar un spinner.
+    running: list[ActiveNode] = Field(default_factory=list)
 
 
-# Las dependencias de inyección viven en `web.deps`, compartidas con `ui.py` y
-# `config_api.py`: `main` incluye este router y el import de vuelta sería circular.
+# Las dependencias de inyección viven en `web.deps`: `main` incluye este router
+# y el import de vuelta sería circular.
 
 
 @router.get("/api/reviews/{review_key:path}")
@@ -106,6 +110,7 @@ def review_detail(
         console_available=console.available() and _run_key_of(state, review_key) is not None,
         reasoning_available=reasoning is not None and reasoning.exists(review_key),
         claude=_claude_availability(review_key, get_settings()),
+        running=_running(state, review_key),
     )
 
 
@@ -120,6 +125,13 @@ def _dead_item(state: PanelState, review_key: str) -> DeadLetterItem | None:
         if item.review_key == review_key:
             return item
     return None
+
+
+def _running(state: PanelState, review_key: str) -> list[ActiveNode]:
+    for review in state.active:
+        if review.review_key == review_key:
+            return review.nodes
+    return []
 
 
 def _paused_item(state: PanelState, review_key: str) -> PausedItem | None:

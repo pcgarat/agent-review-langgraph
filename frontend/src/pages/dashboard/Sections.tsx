@@ -8,6 +8,7 @@ import {
   CTableHeaderCell,
   CTableRow,
 } from '@coreui/react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { reviewHref } from '@/api/client'
@@ -22,7 +23,7 @@ import type {
 import { CancelButton, ForgetButton, RetryButton } from './CommandButtons'
 import { EmptyRow } from './EmptyRow'
 import { budgetByReview, spentTokens } from './figures'
-import { formatDateTime, formatNumber, plural } from './format'
+import { formatDateTime, formatElapsed, formatNumber, plural } from './format'
 import { PanelSection } from './PanelSection'
 
 /** Nombre legible del nodo en curso; el resto se pinta tal cual lo da el worker. */
@@ -138,7 +139,7 @@ export function ActiveSection({
                           <li key={node.node}>
                             <strong>{NODE_LABEL[node.node] ?? node.node}</strong>
                             <span className="text-body-secondary small ms-2">
-                              desde {formatDateTime(node.started_at)}
+                              <ElapsedSince startedAt={node.started_at} />
                               {node.branches > 1 ? ` · ${node.branches} ramas` : ''}
                             </span>
                           </li>
@@ -380,5 +381,20 @@ export function BudgetSection({ items }: { items: BudgetItem[] }) {
         </CTableBody>
       </CTable>
     </PanelSection>
+  )
+}
+
+/** Duración en vivo del nodo. El `title` conserva el inicio para diagnosticar. */
+function ElapsedSince({ startedAt }: { startedAt: string | null }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (startedAt === null || startedAt === '') return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [startedAt])
+  return (
+    <span title={startedAt ? `Inicio ${formatDateTime(startedAt)}` : undefined}>
+      {formatElapsed(startedAt, now)}
+    </span>
   )
 }

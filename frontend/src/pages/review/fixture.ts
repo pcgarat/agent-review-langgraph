@@ -77,6 +77,7 @@ export const REVIEW: ReviewDetail = {
   console_available: false,
   reasoning_available: false,
   claude: null,
+  running: [],
 }
 
 /** Descarte sin recorrido (F8): ni traza ni pausa, pero con log. */
@@ -89,6 +90,7 @@ export const DISCARD: ReviewDetail = {
   console_available: false,
   reasoning_available: false,
   claude: null,
+  running: [],
 }
 
 /** Ficha del motor `claude` con los dos canales disponibles (F2/F7). */
