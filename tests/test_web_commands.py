@@ -583,3 +583,96 @@ def test_el_lector_no_decide(client: TestClient) -> None:
             json={"items": [{"finding_id": "f1", "outcome": "approved"}]},
         )
     assert response.status_code == 403
+
+
+# --- Olvidar por HTTP (ADR-0034): lo que solo cubre la ruta -----------------------
+
+
+def test_olvidar_por_http_retira_la_transcripcion_del_volumen(tmp_path, monkeypatch) -> None:
+    """El servicio encola el borrado; la transcripcion la retira el panel.
+
+    Es lo unico del endpoint que el `CommandService` no puede hacer: el fichero
+    vive en el volumen que monta el `web`, y el worker no lo ve.
+    """
+    from agent_review.claude_activity import ClaudeActivity, activity_paths
+    from agent_review.settings import Settings
+
+    session = tmp_path / "session.json"
+    activity = ClaudeActivity(session, repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc")
+    activity.start()
+    activity.append('{"linea": 1}')
+    status_path, log_path = activity_paths(
+        session, repo="cqm/emotivoo-v2", pr_id=42, head_sha="abc"
+    )
+    assert log_path.is_file()
+
+    monkeypatch.setattr(
+        web_main, "_settings", lambda: Settings(_env_file=None, claude_session_path=str(session))
+    )
+    service, queue, _paused, _marker = _service()
+    client = TestClient(web_main.app)
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["effect"] == "forgotten"
+    assert not log_path.exists(), "la transcripcion tiene que desaparecer del panel"
+    assert not status_path.exists()
+    # Y el worker tiene el job para borrar hilo y artefacto.
+    job = queue.dequeue()
+    assert job is not None
+    assert job.forget is True
+
+
+def test_olvidar_por_http_no_rompe_si_no_hay_transcripcion(tmp_path, monkeypatch) -> None:
+    """Olvidar una review sin conversacion sigue devolviendo `200`."""
+    from agent_review.settings import Settings
+
+    monkeypatch.setattr(
+        web_main,
+        "_settings",
+        lambda: Settings(_env_file=None, claude_session_path=str(tmp_path / "session.json")),
+    )
+    service, queue, _paused, _marker = _service()
+    client = TestClient(web_main.app)
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 200
+    assert queue.dequeue() is not None
+
+
+def test_el_lector_no_olvida(client: TestClient) -> None:
+    """Olvidar borra estado: no es cosa de un `lector`."""
+    service, queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            f"/api/reviews/{_REVIEW_KEY}/forget",
+            headers={"X-Panel-Session": "ana:lector"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 403
+    assert queue.dequeue() is None
+
+
+def test_olvidar_una_clave_sin_commit_da_409(client: TestClient) -> None:
+    service, queue, _paused, _marker = _service()
+    with client as c:
+        web_main.app.state.commands = service
+        response = c.post(
+            "/api/reviews/sin-commit/forget",
+            headers={"X-Panel-Session": "ana:operador"},
+            json={"actor": "ana"},
+        )
+    assert response.status_code == 409
+    assert queue.dequeue() is None

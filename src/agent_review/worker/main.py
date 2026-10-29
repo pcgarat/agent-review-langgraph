@@ -256,6 +256,7 @@ def build_reviewers(
     registry: ModelRegistry | None = None,
     budget: BudgetPort | None = None,
     vcs: VcsPort | None = None,
+    degraded: bool = False,
 ) -> list[ReviewerPort]:
     """Personas a partir del perfil del repo y de la configuracion.
 
@@ -280,7 +281,11 @@ def build_reviewers(
         source = tooling_source or FileToolingOutputSource(
             template=settings.tooling_output_template
         )
-        reviewers.append(ToolingReviewer(source=source))
+        # La pasada degradada se encola **porque** el artefacto no llegó: que la
+        # persona estatica no encuentre nada ahí es una fuente sin cubrir, no una
+        # review limpia. Sin esto, `complete` da `True` y el PR se publica como si
+        # PHPStan hubiera pasado.
+        reviewers.append(ToolingReviewer(source=source, required=degraded))
 
     registry = registry if registry is not None else build_registry(settings)
     roles = llm_roles(settings, registry)
@@ -566,6 +571,7 @@ def build_runtime(
     cancellation: Any = _MISSING,
     budget_client: Any = None,
     probe_models: bool = True,
+    degraded: bool = False,
 ) -> Any:
     if settings.review_engine == "claude":
         return _build_claude_runtime(
@@ -586,7 +592,9 @@ def build_runtime(
     # puerto durante el `replay`. L2 (009) comparte el mismo contador.
     review_budget = build_budget(settings, client=budget_client)
     if reviewers is None:
-        reviewers = build_reviewers(settings, registry=registry, budget=review_budget, vcs=vcs)
+        reviewers = build_reviewers(
+            settings, registry=registry, budget=review_budget, vcs=vcs, degraded=degraded
+        )
     if probe_models:
         validate_models(registry)
     policy = policy or PolicyEngine.from_file(
@@ -2299,6 +2307,7 @@ def _review_runtime(
         cancellation=cancellation,
         budget_client=budget_client,
         probe_models=False,
+        degraded=request.degraded,
     )
     # El grafo de claude no fija la foto: no monta personas ni política. Los techos
     # del CLI sí salen de esa foto y el worker los manda en la llamada.

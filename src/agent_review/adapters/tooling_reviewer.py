@@ -47,8 +47,13 @@ class ToolingReviewer:
         phpstan_json: str | Sequence[str] = (),
         allowed_tools: Sequence[str] = ("phpstan", "php-cs-fixer"),
         name: str = "standards",
+        required: bool = False,
     ) -> None:
         self.name = name
+        # `required`: el artefacto es la razon de ser de esta pasada. Si falta, se
+        # declara `MISSING` y la review sale incompleta. Sin el, faltar solo
+        # significa que la persona no participa (empezar una review no lo exige).
+        self._required = required
         if source is not None:
             self._source: ToolingOutputSource | None = source
         elif phpstan_json:
@@ -84,10 +89,12 @@ class ToolingReviewer:
         # Sin artefacto la persona no participa: empezar la review no lo exige.
         # Un fichero presente pero ilegible sí se declara: eso no es "no llegó".
         if self._source is None or "phpstan" not in self._allowed:
-            return [], None
+            return [], ToolingSourceStatus.MISSING if self._required else None
         status, raw = self._source.read("phpstan", repo=repo, pr_id=pr_id, head_sha=head_sha)
         if status is ToolingSourceStatus.MISSING:
-            return [], None
+            # En la pasada degradada el artefacto ausente es el hallazgo: se
+            # declara para que la review salga incompleta y no como un PR limpio.
+            return [], ToolingSourceStatus.MISSING if self._required else None
         if status is not ToolingSourceStatus.PRESENT:
             return [], status
         # Un artefacto presente pero vacio no es un JSON valido: no equivale a limpio.

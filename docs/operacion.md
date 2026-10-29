@@ -648,7 +648,7 @@ firma inválida o ausente da `401`.
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
 | El POST del CI devuelve `202 pendiente` y no pasa nada más | Faltan herramientas esperadas | Tras el TTL, `GET /pending` lista la clave en `expired`; el worker la degrada y la encola. Revisar `expected_tools` del perfil |
-| La review se publica como «incompleta» | El artefacto no llegó a tiempo o no se pudo leer | Revisar el `POST` del CI y la plantilla `TOOLING_OUTPUT_TEMPLATE` |
+| La review se publica como «incompleta» | El artefacto no llegó a tiempo o no se pudo leer | Revisar el `POST` del CI y la plantilla `TOOLING_OUTPUT_TEMPLATE`. Es lo esperado en una pasada degradada: se encola justo porque el artefacto no llegó, así que declara `phpstan=missing` a propósito. Si sale **completa** con un artefacto que falta, es un bug: la persona estática tiene que declarar `MISSING` |
 | «0 hallazgos» sospechoso | La review está incompleta o es parcial (código o configuración sin leer por presupuesto, tamaño o fallo del modelo) | El resumen lleva la cabecera «Review parcial» con cada fichero y su motivo; en los logs, `Review INCOMPLETA` o `review parcial`. Si el motivo es `too_large`, subir `LLM_BATCH_MAX_CHARS`; si es `budget`, `LLM_BUDGET_TOKENS_PER_PR` |
 | `200 duplicado` en un reintento legítimo | La clave se reclamó en un intento anterior que terminó bien | Usar un `pipeline_id` nuevo; las claves caducan a los 7 días |
 | Job en la DLQ | Se agotaron los `MAX_REVIEW_ATTEMPTS` | En el panel, el enlace de la review abre el log de los intentos (`error` de la entrada). A mano: `redis-cli LRANGE reviews:jobs:dead 0 -1`. Corregir la causa y reinyectar `request` con `RPUSH reviews:jobs`, o «Reintentar» |

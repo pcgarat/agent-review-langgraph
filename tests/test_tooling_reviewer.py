@@ -115,6 +115,47 @@ def test_persona_no_lee_herramientas_no_permitidas() -> None:
     assert result.tooling_status is None
 
 
+class _MissingSource:
+    """El artefacto del CI nunca llego."""
+
+    def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str):
+        del tool, repo, pr_id, head_sha
+        return ToolingSourceStatus.MISSING, ""
+
+
+def test_sin_artefacto_la_persona_no_participa_pero_lo_dice_si_es_requerida() -> None:
+    """El #7: en la pasada degradada el artefacto ausente **es** el motivo.
+
+    La pasada degradada se encola justo porque el artefacto no llego. Si la
+    persona estatica se calla, `unavailable_sources` queda vacio, la review se da
+    por completa y el PR se publica como si PHPStan hubiera pasado.
+    """
+    normal = ToolingReviewer(source=_MissingSource())
+    assert normal.review(repo="r", pr_id=1, diff=DIFF).tooling_status is None
+
+    requerida = ToolingReviewer(source=_MissingSource(), required=True)
+    result = requerida.review(repo="r", pr_id=1, diff=DIFF)
+    assert result.findings == []
+    assert result.tooling_status is ToolingSourceStatus.MISSING
+
+
+def test_sin_source_ni_herramienta_tampoco_es_limpio_si_es_requerida() -> None:
+    """Una pasada degradada sin fuente configurada sigue sin poder decir «limpio»."""
+    sin_nada = ToolingReviewer(required=True)
+    resultado = sin_nada.review(repo="r", pr_id=1, diff=DIFF)
+    assert resultado.tooling_status is ToolingSourceStatus.MISSING
+
+    otra_tool = ToolingReviewer(required=True, allowed_tools=("php-cs-fixer",))
+    assert (
+        otra_tool.review(repo="r", pr_id=1, diff=DIFF).tooling_status is ToolingSourceStatus.MISSING
+    )
+
+
+def test_la_pasada_normal_no_hereda_la_exigencia() -> None:
+    """`required` es de la pasada, no del adaptador: por defecto sigue siendo opcional."""
+    assert ToolingReviewer(source=_MissingSource())._required is False
+
+
 _SCOPE_DIFF = """\
 diff --git a/src/A.php b/src/A.php
 --- a/src/A.php

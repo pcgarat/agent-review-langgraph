@@ -162,6 +162,42 @@ def test_worker_procesa_cola_y_publica_inline() -> None:
     assert vcs.comments
 
 
+def test_una_pasada_degradada_sin_artefacto_no_sale_completa() -> None:
+    """El #7 de punta a punta: el artefacto ausente tiene que verse en el resultado.
+
+    `build_runtime` recibe `degraded=True` y con eso el `ToolingReviewer` declara
+    `MISSING`. Sin eso, `unavailable_sources` queda vacio y `complete` da `True`:
+    el PR se publicaria como revisado entero sin que PHPStan hubiera corrido.
+    """
+    from agent_review.adapters.tooling_reviewer import ToolingReviewer
+    from agent_review.domain.models import ToolingSourceStatus
+
+    class _Missing:
+        def read(self, tool: str, *, repo: str, pr_id: int, head_sha: str):
+            del tool, repo, pr_id, head_sha
+            return ToolingSourceStatus.MISSING, ""
+
+    vcs = FakeVcs()
+    policy = PolicyEngine.from_file("config/autonomy.yaml")
+    degradada = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing(), required=True)], policy=policy
+    ).compile()
+    normal = build_graph(
+        vcs=vcs, reviewers=[ToolingReviewer(source=_Missing())], policy=policy
+    ).compile()
+
+    request = ReviewRequest(repo="cqm/emotivoo-v2", pr_id=9, head_sha="deadbeef")
+    outcome = process_request(degradada, request.model_copy(update={"degraded": True}))
+    assert outcome.unavailable_sources["standards"] is ToolingSourceStatus.MISSING
+    assert outcome.complete is False
+
+    # La misma ausencia en una review normal no la marca incompleta: ahi la
+    # persona simplemente no participa y empezar no exige el artefacto.
+    limpia = process_request(normal, request.model_copy(update={"head_sha": "cafe"}))
+    assert limpia.unavailable_sources == {}
+    assert limpia.complete is True
+
+
 def test_build_vcs_eligio_github_segun_el_proveedor() -> None:
     from agent_review.adapters.github_vcs import GithubVcsAdapter
     from agent_review.worker.main import build_vcs

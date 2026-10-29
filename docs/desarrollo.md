@@ -587,6 +587,13 @@ El worker solo conoce `ChatPort` (`ports/chat.py`): **encola** un `ChatNotice` v
   estática no participa y la review puede empezar y terminar sin él. Una salida
   presente pero ilegible sí deja la review incompleta. Volver a lanzar una review
   incompleta borra su hilo y la ejecuta otra vez; una completa reutiliza el hilo.
+  **La excepción es la pasada degradada**: se encola porque el artefacto no llegó,
+  así que ahí su ausencia *sí* es una fuente sin cubrir. `build_runtime` recibe
+  `degraded` y monta el `ToolingReviewer` con `required=True`, que declara
+  `MISSING`. Sin eso, la pasada que existe para avisar de la falta de artefacto
+  terminaba publicándose como si PHPStan hubiera pasado. Cuando la pasada
+  degradada no llega a montar personas (motor `claude`), la marca `:partial` del
+  publicador sigue diciéndolo.
 - **Un hallazgo no se autopromueve.** Un `P0`–`P2` `unverified` lleva
   `failure_scenario`; un `verification` distinto de `unverified` lleva
   `verification_evidence`; ningún emisor declara más que su nivel (`LlmReviewer` →
