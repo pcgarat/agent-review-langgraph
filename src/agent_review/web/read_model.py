@@ -22,7 +22,7 @@ from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import redis
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from agent_review.checkpointer import build_reader_checkpointer
 from agent_review.domain.models import PendingDecision, ReviewRequest
@@ -37,6 +37,7 @@ from agent_review.queue import (
     parse_parked,
 )
 from agent_review.redis_utils import build_redis_client
+from agent_review.review_meta_store import RedisReviewMetaStore
 from agent_review.settings import Settings
 from agent_review.trace import read_review_notes, read_trace
 
@@ -63,6 +64,16 @@ class QueueItem(BaseModel):
     pipeline_id: str = ""
     attempts: int = 0
     launch: bool = False
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        return f"#{self.pr_id}"
 
 
 class ActiveNode(BaseModel):
@@ -78,6 +89,19 @@ class ActiveReview(BaseModel):
 
     review_key: str
     nodes: list[ActiveNode] = Field(default_factory=list)
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class DeadLetterItem(BaseModel):
@@ -88,6 +112,19 @@ class DeadLetterItem(BaseModel):
     reason: str = ""
     discarded_at: datetime | None = None
     error: str = ""
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class BudgetItem(BaseModel):
@@ -111,6 +148,19 @@ class PausedItem(BaseModel):
     command_hint: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
     publication: bool = False
+    pr_id: int = 0
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class PausedGroups(BaseModel):
@@ -137,6 +187,18 @@ class ParkedItem(BaseModel):
     pipeline_id: str = ""
     reason: ParkReason
     launch: bool = False
+    pr_title: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def display_label(self) -> str:
+        """Etiqueta legible: `#ID - título` o solo `#ID` si no hay título."""
+        title = self.pr_title.strip()
+        if title:
+            return f"#{self.pr_id} - {title}"
+        if self.pr_id:
+            return f"#{self.pr_id}"
+        return self.review_key
 
 
 class PanelState(BaseModel):
@@ -199,6 +261,7 @@ class RedisPanelReadModel:
         self._progress_key = progress_key
         self._budget_key = budget_key
         self._budget_total = max(0, budget_total)
+        self._meta_store = RedisReviewMetaStore(url=url, client=self._client)
 
     def journal(self, review_key: str) -> list[str]:
         try:
@@ -209,7 +272,7 @@ class RedisPanelReadModel:
         return [text for item in raw if (text := _as_text(item).strip())]
 
     def state(self) -> PanelState:
-        return PanelState(
+        panel_state = PanelState(
             generated_at=datetime.now(UTC),
             queue=self._guard("cola", self._read_queue, []),
             active=self._guard("en vuelo", self._read_active, []),
@@ -218,6 +281,44 @@ class RedisPanelReadModel:
             dead=self._guard("descartes", self._read_dead, []),
             budget=self._guard("presupuesto", self._read_budget, []),
         )
+        return self._enrich_with_meta(panel_state)
+
+    def _enrich_with_meta(self, state: PanelState) -> PanelState:
+        """Añade el título del PR a los items del estado."""
+        review_keys = [q.review_key for q in state.queue]
+        review_keys.extend(a.review_key for a in state.active)
+        review_keys.extend(p.review_key for p in state.paused.human)
+        review_keys.extend(p.review_key for p in state.paused.fix)
+        review_keys.extend(pk.review_key for pk in state.parked)
+        review_keys.extend(d.review_key for d in state.dead)
+        if not review_keys:
+            return state
+        metas = self._meta_store.get_many(review_keys)
+        if not metas:
+            return state
+        for queue_item in state.queue:
+            if (meta := metas.get(queue_item.review_key)) is not None:
+                queue_item.pr_title = meta.pr_title
+        for active_item in state.active:
+            if (meta := metas.get(active_item.review_key)) is not None:
+                active_item.pr_id = meta.pr_id
+                active_item.pr_title = meta.pr_title
+        for human_item in state.paused.human:
+            if (meta := metas.get(human_item.review_key)) is not None:
+                human_item.pr_id = meta.pr_id
+                human_item.pr_title = meta.pr_title
+        for fix_item in state.paused.fix:
+            if (meta := metas.get(fix_item.review_key)) is not None:
+                fix_item.pr_id = meta.pr_id
+                fix_item.pr_title = meta.pr_title
+        for parked_item in state.parked:
+            if (meta := metas.get(parked_item.review_key)) is not None:
+                parked_item.pr_title = meta.pr_title
+        for dead_item in state.dead:
+            if (meta := metas.get(dead_item.review_key)) is not None:
+                dead_item.pr_id = meta.pr_id
+                dead_item.pr_title = meta.pr_title
+        return state
 
     def _guard(self, label: str, operation: Callable[[], _T], fallback: _T) -> _T:
         try:
