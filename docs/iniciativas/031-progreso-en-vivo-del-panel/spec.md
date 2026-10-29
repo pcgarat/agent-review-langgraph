@@ -13,7 +13,7 @@
 
 ## 1. Objetivo
 
-Hoy el panel ([029](../029-panel-en-react/spec.md)) responde «¿qué pasa ahora?»
+Hoy el panel ([029](../archivo/029-panel-en-react/spec.md)) responde «¿qué pasa ahora?»
 solo en el momento de cargar la página:
 
 - **Nada se refresca solo.** `main.tsx` decidió no tener `refetchInterval`: el

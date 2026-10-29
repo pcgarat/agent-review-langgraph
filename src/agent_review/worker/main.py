@@ -76,6 +76,7 @@ from agent_review.ports.budget import BudgetPort
 from agent_review.ports.chat import ChatPort
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeInvalidOutput,
     ClaudeQuotaExceeded,
     ClaudeRunner,
@@ -1582,6 +1583,10 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
 # Tras un cupo, los jobs siguientes no vuelven a llamar al CLI hasta que pase.
 _QUOTA_COOLDOWN_S = 900.0
 
+# Tras un 429 del clúster que el gateway no pudo absorber, lo mismo pero más
+# corto: el clúster no tiene una ventana de cupo, solo picos (ADR-0038).
+_CLUSTER_COOLDOWN_S = 300.0
+
 # Caducidad del aviso de parqueo. `session` se suelta al iniciar sesion y `quota`
 # enfria los siguientes; `ceiling` no se desbloquea solo, asi que sin fecha el
 # aviso de Teams no volveria a salir nunca aunque el operador suba el techo.
@@ -1596,6 +1601,15 @@ _PARK_NOTICES: dict[str, tuple[str, str]] = {
     "quota": (
         "Cupo de Claude agotado",
         "La review no se ha publicado. El cupo no se reintenta.",
+    ),
+    "gateway": (
+        "Gateway del cluster caido",
+        "Las reviews con el modelo del cluster esperan fuera de la cola. Vuelven solas "
+        "cuando nan-gateway responde.",
+    ),
+    "cluster-wait": (
+        "El cluster limita las llamadas",
+        "Las reviews esperan unos minutos y vuelven solas a la cola. No se ha publicado.",
     ),
     "ceiling": (
         "Claude llego al techo",
@@ -1614,26 +1628,41 @@ def panel_claude_link(settings: Settings) -> str | None:
     return f"{base}/claude"
 
 
-def claude_session_ready(queue: ReviewQueue, probe: Callable[[], bool] | None) -> bool:
-    """True si este worker puede correr el CLI.
+def claude_blocker(queue: ReviewQueue, probe: Callable[[], str | None] | None) -> str | None:
+    """`None` si este worker puede correr el CLI; si no, el motivo para aparcar.
 
-    Con sesión, suelta lo parqueado por falta de ella. El cupo y el techo se
-    quedan: soltarlos volvería a gastar la misma pasada. Sin sonda (motor
-    `llm`) no mira el parking.
+    La sonda es `GET /session` del runner: `session` (falta el token de
+    Anthropic) o `gateway` (el gateway del clúster no responde). Listo, suelta
+    lo aparcado por cualquiera de los dos y borra el aviso del gateway, para que
+    la siguiente caída avise otra vez. El cupo y el techo se quedan: soltarlos
+    volvería a gastar la misma pasada. Sin sonda (motor `llm`) no mira el parking.
     """
     if probe is None:
-        return True
+        return None
     try:
-        active = probe()
+        blocker = probe()
     except Exception:
         logger.warning("No se pudo consultar la sesion de Claude; el job se parkea")
-        return False
-    if active:
+        return "session"
+    if blocker is None:
         try:
             queue.release_parked(reason="session")
+            queue.release_parked(reason="gateway")
+            queue.clear_notice("gateway")
         except Exception:
             logger.exception("No se pudo soltar el parking de Claude")
-    return active
+    return blocker
+
+
+def release_cluster_wait(queue: ReviewQueue) -> list[ReviewRequest]:
+    """Suelta `cluster-wait` cuando caduca el enfriamiento del clúster."""
+    try:
+        if queue.notice_held("cluster-wait"):
+            return []
+        return queue.release_parked(reason="cluster-wait")
+    except Exception:
+        logger.exception("No se pudo soltar la espera del cluster")
+        return []
 
 
 def release_quota_wait(queue: ReviewQueue) -> list[ReviewRequest]:
@@ -1664,7 +1693,9 @@ def park_claude_job(
     notice = _PARK_NOTICES.get(reason)
     if notice is None:
         return
-    ttl = _QUOTA_COOLDOWN_S if reason == "quota" else _PARK_NOTICE_TTL_S
+    ttl = {"quota": _QUOTA_COOLDOWN_S, "cluster-wait": _CLUSTER_COOLDOWN_S}.get(
+        reason, _PARK_NOTICE_TTL_S
+    )
     if not queue.claim_notice(reason, ttl_s=ttl) or chat is None:
         return
     title, body = notice
@@ -1696,7 +1727,7 @@ def dispatch_job(
     reasoning: bool = False,
     claude_runner: ClaudeRunner | None = None,
     claude_store: ClaudeArtifactStore | None = None,
-    claude_session: Callable[[], bool] | None = None,
+    claude_session: Callable[[], str | None] | None = None,
     park_link: str | None = None,
     expected_repo: str = "",
     dial_snapshot: Mapping[str, object] | None = None,
@@ -1709,13 +1740,14 @@ def dispatch_job(
     por la sesión dejaría la decisión detrás de un login que no hace falta.
     """
     release_quota_wait(queue)
-    ready = claude_session_ready(queue, claude_session)
+    release_cluster_wait(queue)
+    blocker = claude_blocker(queue, claude_session)
     needs_cli = request.decision is None and request.fix_resolution is None
-    if needs_cli and not ready:
+    if needs_cli and blocker is not None:
         try:
-            park_claude_job(queue, request, reason="session", chat=chat, link=park_link)
+            park_claude_job(queue, request, reason=blocker, chat=chat, link=park_link)
         except Exception:
-            logger.exception("No se pudo parquear %s por falta de sesion", request.review_key)
+            logger.exception("No se pudo parquear %s (%s)", request.review_key, blocker)
         return
     _consume(
         queue,
@@ -1820,13 +1852,14 @@ def _consume(
         if cancel is not None and cancel.is_cancelled(request.review_key):
             _on_cancelled(graph, request, paused=paused)
             return
-        if _quota_on_cooldown(
+        waiting = _cooldown_wait(
             queue, request, claude_runner=claude_runner, claude_store=claude_store
-        ):
+        )
+        if waiting is not None:
             try:
-                park_claude_job(queue, request, reason="quota-wait", chat=chat, link=park_link)
+                park_claude_job(queue, request, reason=waiting, chat=chat, link=park_link)
             except Exception:
-                logger.exception("No se pudo parquear la espera de cupo de %s", request.review_key)
+                logger.exception("No se pudo parquear %s (%s)", request.review_key, waiting)
             return
         request = _with_base_sha(request, vcs)
         _save_pr_meta(request, vcs, meta_store)
@@ -1888,6 +1921,14 @@ def _consume(
             park_claude_job(queue, request, reason="quota", chat=chat, link=park_link)
         except Exception:
             logger.exception("No se pudo parquear el cupo de %s", request.review_key)
+    except ClaudeClusterLimited:
+        # No gasta un intento: el job no ha fallado, el clúster está saturado.
+        # Espera el enfriamiento y vuelve solo (ADR-0038).
+        logger.warning("El cluster limito %s; espera el enfriamiento", request.review_key)
+        try:
+            park_claude_job(queue, request, reason="cluster-wait", chat=chat, link=park_link)
+        except Exception:
+            logger.exception("No se pudo parquear la espera del cluster de %s", request.review_key)
     except ClaudeCeiling:
         logger.error("Claude llego al techo en %s; se parkea", request.review_key)
         try:
@@ -1921,32 +1962,41 @@ def _consume(
                 _forget_failure(queue, request.review_key)
 
 
-def _quota_on_cooldown(
+# Enfriamiento vigente → motivo con el que esperan los jobs siguientes.
+_COOLDOWNS = (("quota", "quota-wait"), ("cluster-wait", "cluster-wait"))
+
+
+def _cooldown_wait(
     queue: ReviewQueue,
     request: ReviewRequest,
     *,
     claude_runner: ClaudeRunner | None,
     claude_store: ClaudeArtifactStore | None,
-) -> bool:
-    """Un cupo reciente no debe relanzar el CLI en el job siguiente."""
+) -> str | None:
+    """Un cupo o un 429 del clúster recientes no deben relanzar el CLI en el job siguiente.
+
+    Devuelve el motivo de espera (`quota-wait` o `cluster-wait`), o `None`.
+    """
     if claude_runner is None or claude_store is None:
-        return False
+        return None
     if request.decision is not None or request.fix_resolution is not None:
-        return False
+        return None
     try:
         if (
             claude_store.load(repo=request.repo, pr_id=request.pr_id, head_sha=request.head_sha)
             is not None
         ):
-            return False
+            return None
     except Exception:
         logger.exception("No se pudo leer el artefacto de Claude durante el enfriamiento")
-        return False
-    try:
-        return queue.notice_held("quota")
-    except Exception:
-        logger.exception("No se pudo leer el enfriamiento del cupo de Claude")
-        return False
+        return None
+    for notice, waiting in _COOLDOWNS:
+        try:
+            if queue.notice_held(notice):
+                return waiting
+        except Exception:
+            logger.exception("No se pudo leer el enfriamiento %s de Claude", notice)
+    return None
 
 
 def _forget_review(
@@ -2443,12 +2493,12 @@ def run_forever(
     meta_store = build_meta_store(settings)
     claude_runner: ClaudeRunner | None = None
     claude_store: ClaudeArtifactStore | None = None
-    claude_session: Callable[[], bool] | None = None
+    claude_session: Callable[[], str | None] | None = None
     if settings.review_engine == "claude":
         claude_store = ClaudeArtifactStore(root=settings.claude_artifact_root)
         runner = build_claude_runner(settings)
         claude_runner = runner
-        claude_session = runner.active
+        claude_session = runner.blocker
     park_link = panel_claude_link(settings)
     saver = saver if saver is not None else getattr(graph, "checkpointer", None)
     logger.info("Worker de reviews arrancado (Fase 2)")
@@ -2513,8 +2563,9 @@ def run_forever(
         now = time.monotonic()
         if now - last_sweep >= sweep_s:
             if claude_session is not None:
-                claude_session_ready(queue, claude_session)
+                claude_blocker(queue, claude_session)
             release_quota_wait(queue)
+            release_cluster_wait(queue)
             sweep_pending(settings, queue, pending=pending_store)
             sweep_expired(paused_store, queue)
             sweep_fix_expired(paused_store, queue)

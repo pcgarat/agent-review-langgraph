@@ -19,9 +19,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 | 023 | [Eficacia del bucle de lectura](023-eficacia-del-bucle-de-lectura/spec.md) | aprobada | 🟠 Que `grep`, `read_file` y `list_dir` de 014 sirvan de verdad: dialecto portable único, contrato de lectura con metadatos, `forwarding` a las cuatro superficies, corte con tamaño real, `outline`, estado y `Reading` por review · [plan](023-eficacia-del-bucle-de-lectura/plan.md) · [todo](023-eficacia-del-bucle-de-lectura/todo.md) | 014 (medida) · 024 (S y colocación del bloque) · K1 y K2 cerrados (G1, R1, L1, P1, S1 y C1 hechas); K0 pendiente de T2/C0c (regrabación *live*) y K3 de M1 (informe por configuración) |
 | 024 | [Contexto conversacional del bucle](024-contexto-conversacional-del-bucle/spec.md) | aprobada | 🟠 El bucle pasa a mensajes y se mide `cached_tokens` antes de decidir si la review se parte en fases (`plan`/`read`/`review`) · [plan](024-contexto-conversacional-del-bucle/plan.md) · [todo](024-contexto-conversacional-del-bucle/todo.md) | 023 (K0 y K3) · S1–S5 (medida) van antes de las corridas *live* de 023 · A tras K3 · B solo con número · S–D pendientes |
 | 027 | [Configuración desde el panel](027-configuracion-desde-el-panel/spec.md) | aprobada | 🟠 El operador publica diales; cada control restaura su valor inicial; la review fija esa foto al empezar · [plan](027-configuracion-desde-el-panel/plan.md) · [todo](027-configuracion-desde-el-panel/todo.md) | 019 · C1–D1 hechas · [ADR-0031](../adr/0031-configuracion-desde-el-panel.md) |
-| 028 | [Claude revisa con la skill](028-claude-revisa-con-la-skill/spec.md) | implementada | 🟢 La skill revisa fuera del núcleo; el sandbox cierra `Bash`; el techo no se reintenta · [ADR-0033](../adr/0033-skill-fuera-del-nucleo.md) | 025 |
-| 029 | [Panel en React](029-panel-en-react/spec.md) | implementada | 🟢 La interfaz es una SPA React con login, base CoreUI y la API como único contrato; el SSR de `ui.py` está retirado · [plan](029-panel-en-react/plan.md) · [todo](029-panel-en-react/todo.md) | 019 · 027 · E1–R10 hechas; Q3 (e2e) y Q5 (paginación en servidor) fuera de la entrega |
-| 030 | [El panel enseña los aparcados](030-panel-ensena-los-aparcados/spec.md) | implementada | 🟢 Los jobs en `reviews:claude:parked` aparecen en el cuadro de mando con su motivo y su acción · [plan](030-panel-ensena-los-aparcados/plan.md) · [todo](030-panel-ensena-los-aparcados/todo.md) | 029 · L1–P4 hechas |
 | 031 | [Progreso en vivo del panel](031-progreso-en-vivo-del-panel/spec.md) | borrador | 🟠 Panel que se refresca solo, diagrama de pasos en la ficha, panel en vivo maximizable y tiempo en «En vuelo» | 029 · 030 · 3 preguntas abiertas |
 
 ## Pendientes humanos o externos
@@ -29,6 +26,6 @@ Las cerradas sin pendientes se mueven a `archivo/`.
 Viven en un solo sitio: [015 §3.1](015-puesta-en-marcha-real/spec.md). El más urgente
 es **P7**: rotar la API key de `nan.builders` que quedó expuesta en el chat de diseño.
 
-Siguiente número libre: **032**. La Fase 4 (autonomía por política, Jira, memoria,
+Siguiente número libre: **033**. La Fase 4 (autonomía por política, Jira, memoria,
 métricas) está esbozada en la [spec de 001 §13](archivo/001-diseno-base/spec.md) y
 aún no tiene iniciativa.

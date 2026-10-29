@@ -80,6 +80,15 @@ RUN apt-get update \
 COPY image/claude/skills/ce-code-review /opt/claude-skills/ce-code-review
 RUN test -f /opt/claude-skills/ce-code-review/SKILL.md
 
+# Cierra el egress de nan-gateway. No es la etapa por defecto: el servicio la
+# pide con target nan-egress. iptables va en la imagen para no instalarlo
+# cuando la red ya está cerrada.
+FROM alpine:3.20 AS nan-egress
+RUN apk add --no-cache iptables
+COPY scripts/nan-gateway-egress.sh /usr/local/bin/nan-gateway-egress.sh
+RUN chmod 755 /usr/local/bin/nan-gateway-egress.sh
+ENTRYPOINT ["/usr/local/bin/nan-gateway-egress.sh"]
+
 # `docker build` sin --target construye la ultima etapa. Tiene que ser la de
 # la aplicacion, sin el CLI.
 FROM app

@@ -49,7 +49,7 @@ export function SidebarNav() {
           <CNavItem>
             <CNavLink to="/claude" as={NavLink}>
               <CIcon icon={cilSettings} className="nav-icon" />
-              Token del CLI
+              Modelo
             </CNavLink>
           </CNavItem>
         </>

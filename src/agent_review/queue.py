@@ -38,9 +38,11 @@ PARKED_KEY = "reviews:claude:parked"
 NOTICE_KEY_PREFIX = "reviews:claude:notice:"
 # `quota` es el job que agotó el cupo: no vuelve solo. `quota-wait` son los
 # siguientes, y salen cuando caduca `reviews:claude:notice:quota`.
+# Con el clúster (ADR-0038): `gateway` espera a que el gateway responda y
+# `cluster-wait`, a que caduque el enfriamiento de un 429 del clúster.
 # `ParkReason` es el tipo y `PARK_REASONS` la lista de validación: una fuente
 # única para el worker y para el panel, que lo publica en la API (030).
-ParkReason = Literal["session", "quota", "quota-wait", "ceiling"]
+ParkReason = Literal["session", "quota", "quota-wait", "ceiling", "gateway", "cluster-wait"]
 PARK_REASONS = frozenset(get_args(ParkReason))
 
 # Cola de fixes (Fase 3-E7): la wave que el worker de reviews despacha y resuelve

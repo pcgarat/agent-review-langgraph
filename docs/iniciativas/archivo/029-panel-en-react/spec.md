@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-24
+Última modificación: 2026-10-29 | Creado: 2026-10-24
 
 # Panel en React
 
@@ -26,7 +26,7 @@
 
 ## 1. Objetivo
 
-El panel ([019](../archivo/019-panel-de-operacion/spec.md), [ADR-0020](../../adr/0020-panel-como-servicio-aparte.md))
+El panel ([019](../019-panel-de-operacion/spec.md), [ADR-0020](../../../adr/0020-panel-como-servicio-aparte.md))
 funciona y tiene contrato probado, pero su interfaz es HTML embebido en
 `src/agent_review/web/ui.py`: 1 883 líneas de f-strings con CSS y JavaScript
 dentro de un módulo Python. Cada cambio visual es un cambio de servidor, no hay
@@ -58,10 +58,10 @@ Se quiere:
   es otra iniciativa y necesita persistencia de identidades.
 - **Cambiar la semántica del panel.** Sigue siendo CQRS-lite: lee Redis y el
   checkpointer, y encola comandos. La SPA **no** gana escrituras nuevas sobre el
-  estado del grafo ([ADR-0020](../../adr/0020-panel-como-servicio-aparte.md)).
+  estado del grafo ([ADR-0020](../../../adr/0020-panel-como-servicio-aparte.md)).
 - **Servir por CDN ni llamar a servicios de terceros.** El panel enseña diffs,
   logs y transcripciones de PRs ajenos; todo asset sale del propio origen
-  ([018 §3.5](../018-trazas-de-la-review/spec.md)). Sin Google Fonts, sin
+  ([018 §3.5](../../018-trazas-de-la-review/spec.md)). Sin Google Fonts, sin
   `<script src="https://…">`, sin telemetría.
 - **Reescribir el read model.** `PanelReadModel` (`read_model.py`) no cambia: la
   SPA pinta lo que ya hay. Solo se añaden las lecturas que hoy se hacen dentro del

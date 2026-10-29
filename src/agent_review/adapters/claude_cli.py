@@ -17,6 +17,7 @@ from pathlib import Path
 
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
 )
@@ -95,14 +96,17 @@ def review_prompt(base_sha: str) -> str:
 
 
 def claude_argv(prefix: Sequence[str], *, max_turns: int, base_sha: str) -> list[str]:
-    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos."""
-    if max_turns < 1:
-        raise ValueError("el tope de turnos tiene que ser al menos 1")
+    """Argv del CLI. `prefix` es el ejecutable inyectable, con sus argumentos.
+
+    `max_turns` 0 no manda `--max-turns`: el único tope es el tiempo de pared.
+    """
+    if max_turns < 0:
+        raise ValueError("el tope de turnos no puede ser negativo")
+    turns = ["--max-turns", str(max_turns)] if max_turns else []
     return [
         *prefix,
         "-p",
-        "--max-turns",
-        str(max_turns),
+        *turns,
         "--allowedTools",
         _READ_TOOLS,
         "--disallowedTools",
@@ -160,6 +164,7 @@ class SubprocessClaudeRunner:
         cwd: str | Path | None = None,
         redact: Sequence[str] = (),
         user: str | None = None,
+        quota_is_cluster: bool = False,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("el tiempo de pared tiene que ser positivo")
@@ -174,6 +179,8 @@ class SubprocessClaudeRunner:
         self._cwd = None if cwd is None else str(cwd)
         self._redact = tuple(redact)
         self._user = user
+        # Con el clúster un 429 no es el cupo de la suscripción: se espera.
+        self._quota_is_cluster = quota_is_cluster
 
     def run(
         self,
@@ -227,6 +234,8 @@ class SubprocessClaudeRunner:
             # Con desenlace estructurado se cree al CLI; sin él (caída antes del
             # evento `result`) queda el texto de stderr para reconocer el cupo.
             if not captured.outcome and _is_quota(detail):
+                if self._quota_is_cluster:
+                    raise ClaudeClusterLimited("el cluster limito la llamada")
                 raise ClaudeQuotaExceeded("cupo de claude agotado")
             raise ClaudeProcessCrashed(detail[-500:] or f"claude salio con {code}")
         return out

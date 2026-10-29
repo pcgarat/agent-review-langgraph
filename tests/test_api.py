@@ -311,6 +311,8 @@ def test_env_example_declara_todas_las_variables_y_ningun_secreto_vacio() -> Non
         "REVIEW_TOOLS_ROLES",  # 014: vacio = opt-in desactivado (una llamada por lote)
         "PANEL_CONFIG_LOCK",  # 027: vacio = sin candado, el operador publica el catalogo
         "CLAUDE_GIT_TOKEN",  # ADR-0032: vacio = el runner clona con el token de VCS
+        "CLAUDE_GATEWAY_TOKEN",  # 032: vacio = el master key del volumen
+        "CLAUDE_GATEWAY_TOKEN_FILE",  # 032: Compose lo fija; fuera, sin fichero
     }
     empty = sorted(name for name, value in declared if not value.strip())
     assert empty, "el filtro de vacios no deberia ser vacuo: `.env.example` deja variables vacias"

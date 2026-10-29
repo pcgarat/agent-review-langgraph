@@ -14,6 +14,7 @@ import os
 import pwd
 import shutil
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 import uvicorn
@@ -22,9 +23,21 @@ from pydantic import BaseModel, Field
 
 from agent_review.adapters.claude_cli import CHILD_USER, SubprocessClaudeRunner, redact_text
 from agent_review.claude_activity import ClaudeActivity
+from agent_review.claude_backend import (
+    child_gateway_env,
+    current_backend,
+    gateway_domain,
+    gateway_healthy,
+    load_gateway_token,
+)
 from agent_review.claude_runner.checkout import CheckoutError, checkout_directory, prepare_checkout
 from agent_review.claude_session import CHILD_TOKEN_ENV, load_token, session_active
-from agent_review.ports.claude import ClaudeCeiling, ClaudeProcessCrashed, ClaudeQuotaExceeded
+from agent_review.ports.claude import (
+    ClaudeCeiling,
+    ClaudeClusterLimited,
+    ClaudeProcessCrashed,
+    ClaudeQuotaExceeded,
+)
 from agent_review.settings import (
     CLAUDE_PANEL_TIMEOUT_MAX_S,
     CLAUDE_PANEL_TIMEOUT_MIN_S,
@@ -45,6 +58,7 @@ logger = logging.getLogger(__name__)
 # hijo no sea root (ver `CHILD_USER` en `adapters/claude_cli.py`).
 _SECRET_ENV = (
     "CLAUDE_GIT_TOKEN",
+    "CLAUDE_GATEWAY_TOKEN",
     "CLAUDE_RUNNER_TOKEN",
     "TWG_BBC_TOKEN",
     "GITHUB_TOKEN",
@@ -84,10 +98,15 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/session")
-    def session(authorization: str | None = Header(default=None)) -> dict[str, bool]:
-        """Sí o no. Si el fichero caducó, lo retira. No devuelve el token."""
+    def session(authorization: str | None = Header(default=None)) -> dict[str, object]:
+        """Sí o no, y por qué no. Si el fichero caducó, lo retira. No devuelve el token.
+
+        `reason` es `session` (falta el token de Anthropic) o `gateway` (el
+        gateway del clúster no responde). El worker aparca con ese motivo.
+        """
         _verify_token(current, authorization)
-        return {"active": session_active(_session_path(current))}
+        blocker = _session_blocker(current)
+        return {"active": blocker is None, "reason": blocker}
 
     @app.post("/run", response_model=RunResponse)
     def run(body: RunBody, authorization: str | None = Header(default=None)) -> RunResponse:
@@ -97,6 +116,8 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         credential = clone_token(current)
         secrets = [credential, current.claude_runner_token, token or ""]
         try:
+            upstream_env, domains, upstream_secrets, quota_is_cluster = _upstream(current, token)
+            secrets = [credential, current.claude_runner_token, *upstream_secrets]
             directory = checkout_directory(
                 _workspace_root(current), repo=body.repo, head_sha=body.head_sha
             )
@@ -113,9 +134,14 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                     provider=current.vcs_provider,
                     timeout_s=timeout_s,
                 )
-                extra = {CHILD_TOKEN_ENV: token} if token else {}
+                extra = dict(upstream_env)
                 config_dir = _config_dir(current)
-                write_runner_settings(config_dir, workspace_root=_workspace_root(current))
+                write_runner_settings(
+                    config_dir,
+                    workspace_root=_workspace_root(current),
+                    allowed_domains=domains,
+                    secret_files=_secret_files(current),
+                )
                 ensure_bundled_skill(config_dir)
                 # El hijo no es root: necesita poder leer la config (la skill) y
                 # escribir su estado de sesión. El checkout lo sigue escribiendo
@@ -158,6 +184,7 @@ def build_app(settings: Settings | None = None) -> FastAPI:
                         cwd=directory,
                         redact=secrets,
                         user=CHILD_USER,
+                        quota_is_cluster=quota_is_cluster,
                     ).run(
                         repo=body.repo,
                         pr_id=body.pr_id,
@@ -174,6 +201,11 @@ def build_app(settings: Settings | None = None) -> FastAPI:
         except ClaudeQuotaExceeded as exc:
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS, _safe(str(exc), secrets)
+            ) from exc
+        except ClaudeClusterLimited as exc:
+            # No es el 429 del cupo de Anthropic: el worker lo espera un rato.
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, _safe(str(exc), secrets)
             ) from exc
         except ClaudeProcessCrashed as exc:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, _safe(str(exc), secrets)) from exc
@@ -198,6 +230,39 @@ def _workspace_root(settings: Settings) -> Path:
 
 def _session_path(settings: Settings) -> Path:
     return Path(settings.claude_session_path)
+
+
+def _session_blocker(settings: Settings) -> str | None:
+    """Anthropic mira el token. El clúster mira el health del gateway."""
+    if current_backend(settings).kind == "gateway":
+        return None if gateway_healthy(settings.claude_gateway_url) else "gateway"
+    return None if session_active(_session_path(settings)) else "session"
+
+
+def _upstream(
+    settings: Settings, token: str | None
+) -> tuple[dict[str, str], list[str], list[str], bool]:
+    """Entorno de auth, dominio de la jaula, secretos y si un 429 se reencola.
+
+    Con el clúster el hijo no recibe el token OAuth aunque el fichero exista.
+    El bool es ese 429: no es el cupo de Anthropic.
+    """
+    backend = current_backend(settings)
+    gateway_token = load_gateway_token(settings)
+    if backend.kind == "anthropic":
+        # El master key no entra en el hijo, pero el volumen está montado: se
+        # redacta igual por si aparece en la salida.
+        extra = {CHILD_TOKEN_ENV: token} if token else {}
+        return extra, ["api.anthropic.com"], [token or "", gateway_token], False
+    url = settings.claude_gateway_url.strip()
+    if not url or not gateway_token:
+        raise ClaudeProcessCrashed("el destino del cluster no tiene URL o token")
+    try:
+        domain = gateway_domain(url)
+    except ValueError as exc:
+        raise ClaudeProcessCrashed("CLAUDE_GATEWAY_URL no tiene host") from exc
+    extra = child_gateway_env(url=url, token=gateway_token, model=backend.model)
+    return extra, [domain], [gateway_token], True
 
 
 def _verify_token(settings: Settings, authorization: str | None) -> None:
@@ -263,8 +328,19 @@ def _grant_child(path: Path) -> None:
             logger.warning("no se pudo ceder %s al hijo (%s)", target, CHILD_USER)
 
 
-def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
-    """Sandbox obligatorio: solo Anthropic, sin salir, checkout no escribible."""
+def _secret_files(settings: Settings) -> list[str]:
+    """Ficheros con secretos que la jaula no lee. El hijo recibe lo suyo por entorno."""
+    path = settings.claude_gateway_token_file.strip()
+    return [path] if path else []
+
+
+def runner_sandbox_settings(
+    *,
+    workspace_root: Path,
+    allowed_domains: Sequence[str] = ("api.anthropic.com",),
+    secret_files: Sequence[str] = (),
+) -> dict[str, object]:
+    """Sandbox obligatorio: un dominio, sin salir, checkout no escribible."""
     return {
         "sandbox": {
             "enabled": True,
@@ -281,20 +357,35 @@ def runner_sandbox_settings(*, workspace_root: Path) -> dict[str, object]:
                 # El entorno de arranque del runner queda en /proc/1/environ. La
                 # defensa principal es que el hijo no sea root; esto lo tapa
                 # también para las herramientas que corren dentro de la jaula.
-                "denyRead": ["/proc/1/environ", "/proc/1/cmdline"],
+                # El master key del gateway llega montado; el hijo que lo
+                # necesita ya lo tiene en el entorno.
+                "denyRead": ["/proc/1/environ", "/proc/1/cmdline", *secret_files],
             },
             "network": {
-                "allowedDomains": ["api.anthropic.com"],
+                "allowedDomains": list(allowed_domains),
                 "strictAllowlist": True,
             },
         }
     }
 
 
-def write_runner_settings(config_dir: Path, *, workspace_root: Path) -> Path:
+def write_runner_settings(
+    config_dir: Path,
+    *,
+    workspace_root: Path,
+    allowed_domains: Sequence[str] = ("api.anthropic.com",),
+    secret_files: Sequence[str] = (),
+) -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     path = config_dir / "settings.json"
-    payload = json.dumps(runner_sandbox_settings(workspace_root=workspace_root), indent=2)
+    payload = json.dumps(
+        runner_sandbox_settings(
+            workspace_root=workspace_root,
+            allowed_domains=allowed_domains,
+            secret_files=secret_files,
+        ),
+        indent=2,
+    )
     path.write_text(payload + "\n", encoding="utf-8")
     return path
 

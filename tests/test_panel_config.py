@@ -116,9 +116,17 @@ def test_el_techo_de_claude_se_publica_dentro_del_rango() -> None:
     applied = apply_document(settings, document)
     assert applied.claude_max_turns == 400
     assert applied.claude_timeout_s == 7200.0
-    with pytest.raises(ConfigError) as turns:
-        document_for(settings, _form(settings, claude_max_turns=0), autonomy_ceiling="report")
-    assert turns.value.field == "claude_max_turns"
+    # Desde un tope encendido: si 0 no se aceptara, esto lanzaría ConfigError.
+    con_tope = _settings(claude_max_turns=200)
+    apagado = document_for(con_tope, _form(con_tope, claude_max_turns=0), autonomy_ceiling="report")
+    assert apagado == {"claude_max_turns": 0}
+    with pytest.raises(ConfigError) as negativo:
+        document_for(con_tope, _form(con_tope, claude_max_turns=-1), autonomy_ceiling="report")
+    assert negativo.value.field == "claude_max_turns"
+    encendido = document_for(
+        settings, _form(settings, claude_max_turns=50), autonomy_ceiling="report"
+    )
+    assert encendido == {"claude_max_turns": 50}
     with pytest.raises(ConfigError) as timeout:
         document_for(settings, _form(settings, claude_timeout_s=90000), autonomy_ceiling="report")
     assert timeout.value.field == "claude_timeout_s"

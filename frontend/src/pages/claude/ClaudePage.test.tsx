@@ -41,14 +41,31 @@ function renderPage(session: SessionContextValue = OPERADOR) {
 }
 
 function stubSave(response: () => Promise<Response>) {
-  const fetchMock = vi.fn(() => response())
+  const fetchMock = vi.fn((url: string) => {
+    if (String(url).includes('/api/claude/backend')) {
+      return Promise.resolve(
+        jsonResponse({ choice: 'claude', effective: 'claude', needs_session: true }),
+      )
+    }
+    return response()
+  })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
 
+function sessionPost(fetchMock: ReturnType<typeof vi.fn>): [string, RequestInit] {
+  const call = fetchMock.mock.calls.find((item) => {
+    const [url, init] = item as [string, RequestInit?]
+    return url === '/api/claude/session' && init?.method === 'POST'
+  })
+  if (!call) throw new Error('no hubo POST /api/claude/session')
+  return call as [string, RequestInit]
+}
+
 async function saveToken(token = 'sk-ant-oauth') {
   const user = userEvent.setup()
-  await user.type(screen.getByLabelText('Token'), token)
+  // El formulario sale cuando `/api/claude/backend` dice que hace falta sesión.
+  await user.type(await screen.findByLabelText('Token'), token)
   await user.click(screen.getByRole('button', { name: 'Guardar' }))
   return user
 }
@@ -62,8 +79,9 @@ describe('sesión de Claude', () => {
     vi.unstubAllGlobals()
   })
 
-  it('tiene un solo campo y el botón está deshabilitado mientras está vacío', () => {
+  it('tiene un solo campo y el botón está deshabilitado mientras está vacío', async () => {
     renderPage()
+    await screen.findByLabelText('Token')
 
     // `type="password"` no expone el rol `textbox`, así que el único campo se
     // busca por etiqueta y se comprueba que no hay un segundo `input` en la tarjeta.
@@ -79,8 +97,8 @@ describe('sesión de Claude', () => {
 
     await saveToken('sk-ant-oauth')
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    await waitFor(() => expect(sessionPost(fetchMock)).toBeTruthy())
+    const [url, init] = sessionPost(fetchMock)
     expect(url).toBe('/api/claude/session')
     expect(init.method).toBe('POST')
     // El comando por cookie exige JSON del mismo origen (`require_command_session`).
@@ -149,6 +167,39 @@ describe('sesión de Claude', () => {
     await saveToken()
 
     expect(await screen.findByText('No se pudo guardar la sesion')).toBeInTheDocument()
+  })
+
+  it('elegir GLM guarda ese modelo y quita el token', async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const body = typeof init?.body === 'string' ? init.body : ''
+      if (body.includes('glm5.3-flash')) {
+        return Promise.resolve(
+          jsonResponse({
+            choice: 'glm5.3-flash',
+            effective: 'glm5.3-flash',
+            needs_session: false,
+          }),
+        )
+      }
+      if (String(url).includes('/api/claude/backend')) {
+        return Promise.resolve(
+          jsonResponse({ choice: 'claude', effective: 'claude', needs_session: true }),
+        )
+      }
+      return Promise.resolve(jsonResponse({ released: 0 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await screen.findByRole('radio', { name: /GLM 5.3 Flash/ }))
+
+    await waitFor(() => expect(screen.queryByLabelText('Token')).not.toBeInTheDocument())
+    const post = fetchMock.mock.calls.find((item) => {
+      const [url, init] = item as [string, RequestInit?]
+      return url === '/api/claude/backend' && init?.method === 'POST'
+    }) as [string, RequestInit] | undefined
+    expect(post?.[1].body).toBe(JSON.stringify({ choice: 'glm5.3-flash' }))
   })
 
   it('un lector no ve el formulario', () => {

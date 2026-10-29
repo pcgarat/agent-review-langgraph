@@ -16,7 +16,7 @@ export function PendingPane({ block }: { block: string }) {
         <p className="text-body-secondary small mb-2">
           La sesión, las rutas y el armazón ya funcionan. El contenido llega en el bloque{' '}
           {block} del{' '}
-          <a href="https://github.com/pcgarat/agent-review-langgraph/blob/main/docs/iniciativas/029-panel-en-react/plan.md">
+          <a href="https://github.com/pcgarat/agent-review-langgraph/blob/main/docs/iniciativas/archivo/029-panel-en-react/plan.md">
             plan de la iniciativa 029
           </a>
           .

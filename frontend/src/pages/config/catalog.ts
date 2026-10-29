@@ -37,22 +37,27 @@ export interface DialSpec {
   options?: readonly string[]
   /** Cotas de `_RANGES` en `panel_config.py`: solo los techos del CLI las tienen. */
   bounds?: DialBounds
+  /** `0` apaga el dial. El número solo se edita mientras el interruptor está activo. */
+  canDisable?: boolean
 }
 
 export const DIALS: Readonly<Record<string, DialSpec>> = {
   claude_timeout_s: {
     section: 'Claude',
     help:
-      'Segundos de pared del CLI y del checkout. Entre 1 y 21600. Si se agotan, el job ' +
-      'se parkea (ceiling) y no se reintenta.',
+      'Segundos de pared del CLI y del checkout. Entre 1 y 21600. Es el límite que ' +
+      'siempre está, con Anthropic y con el clúster. Si se agota, el job se parkea ' +
+      '(ceiling) y no se reintenta.',
     bounds: { min: 1, max: 21600, step: 'any' },
   },
   claude_max_turns: {
     section: 'Claude',
     help:
-      'Turnos del CLI (--max-turns). Entre 1 y 2000. Si se agotan, el job se parkea ' +
-      '(ceiling) y no se reintenta.',
-    bounds: { min: 1, max: 2000, step: 1 },
+      'Turnos del CLI (--max-turns). Apagado, no hay tope de turnos y solo corta el ' +
+      'tiempo. Encendido, entre 1 y 2000; si se agotan, el job se parkea (ceiling) y ' +
+      'no se reintenta.',
+    bounds: { min: 0, max: 2000, step: 1 },
+    canDisable: true,
   },
   max_autonomy_override: {
     section: 'Política',
