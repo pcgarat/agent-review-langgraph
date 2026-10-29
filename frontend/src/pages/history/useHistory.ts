@@ -27,9 +27,14 @@ export function historyPath({ repo, pr_id }: HistoryFilters): string {
   return `/api/history?${params.toString()}`
 }
 
-export function useHistoryQuery(filters: HistoryFilters) {
+interface HistoryQueryOptions {
+  refetchInterval?: number | false
+}
+
+export function useHistoryQuery(filters: HistoryFilters, options?: HistoryQueryOptions) {
   return useQuery({
     queryKey: queryKeys.history(filters),
     queryFn: () => api.get<HistoryItem[]>(historyPath(filters)),
+    refetchInterval: options?.refetchInterval,
   })
 }

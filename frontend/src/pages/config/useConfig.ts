@@ -7,16 +7,21 @@ import { useToast } from '@/components/ToastProvider'
 
 import { describeSaveFailure, type SavePayload } from './draft'
 
+interface ConfigQueryOptions {
+  refetchInterval?: number | false
+}
+
 /**
  * Documento vigente de los diales (`GET /api/config`, 029 P9).
  *
  * Trae `pins` solo si el checkpointer respondió: la ausencia es un dato, no un
  * valor por defecto, y quien lo pinta no puede tratarla como lista vacía.
  */
-export function useConfigQuery() {
+export function useConfigQuery(options?: ConfigQueryOptions) {
   return useQuery({
     queryKey: queryKeys.config,
     queryFn: () => api.get<ConfigDocument>('/api/config'),
+    refetchInterval: options?.refetchInterval,
   })
 }
 
