@@ -136,9 +136,7 @@ class InMemoryReviewMetaStore:
         self._items: dict[str, ReviewMeta] = {}
 
     def save(self, review_key: str, *, pr_id: int, pr_title: str) -> None:
-        self._items[review_key] = ReviewMeta(
-            review_key=review_key, pr_id=pr_id, pr_title=pr_title
-        )
+        self._items[review_key] = ReviewMeta(review_key=review_key, pr_id=pr_id, pr_title=pr_title)
 
     def get(self, review_key: str) -> ReviewMeta | None:
         return self._items.get(review_key)
