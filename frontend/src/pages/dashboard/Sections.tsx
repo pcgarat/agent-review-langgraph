@@ -46,6 +46,7 @@ export function QueueSection({ items, isOperador }: SectionProps & { items: Queu
   return (
     <PanelSection
       title="Cola"
+      tone="info"
       hint={items.length === 0 ? null : plural(items.length, 'review esperando', 'reviews esperando')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">
@@ -106,6 +107,7 @@ export function ActiveSection({
   return (
     <PanelSection
       title="En vuelo"
+      tone="primary"
       hint={items.length === 0 ? null : plural(items.length, 'review corriendo', 'reviews corriendo')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">
@@ -217,6 +219,7 @@ export function PausedSection({
   return (
     <PanelSection
       title={title}
+      tone="warning"
       hint={items.length === 0 ? null : plural(items.length, 'pausa', 'pausas')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">
@@ -264,6 +267,7 @@ export function DeadSection({ items, isOperador }: SectionProps & { items: DeadL
   return (
     <PanelSection
       title="Descartes"
+      tone="danger"
       hint={items.length === 0 ? null : plural(items.length, 'review descartada', 'reviews descartadas')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">
@@ -327,6 +331,7 @@ export function BudgetSection({ items }: { items: BudgetItem[] }) {
   return (
     <PanelSection
       title="Presupuesto"
+      tone="success"
       hint={items.length === 0 ? null : plural(items.length, 'review con gasto', 'reviews con gasto')}
     >
       <CTable small responsive hover align="middle" className="dashboard-table mb-0">

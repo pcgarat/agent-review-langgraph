@@ -22,7 +22,7 @@ export function ConfigStatus({ document }: ConfigStatusProps) {
   const pins = document.pins === undefined ? null : groupPins(document.pins)
 
   return (
-    <CCard className="mb-4">
+    <CCard className="config-status-card mb-4">
       <CCardHeader className="d-flex flex-wrap align-items-baseline gap-2">
         <span className="eyebrow mb-0">Revisión publicada</span>
         <strong className="num fs-5">{document.revision}</strong>

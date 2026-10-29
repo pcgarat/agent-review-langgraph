@@ -50,7 +50,7 @@ export function LaunchSection() {
   }
 
   return (
-    <CCard className="mb-4">
+    <CCard className="launch-card mb-4">
       <CCardBody>
         <p className="eyebrow mb-2">Lanzar review</p>
         <p className="text-body-secondary small">

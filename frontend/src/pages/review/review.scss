@@ -29,12 +29,16 @@
   inset: 0;
   z-index: 1050;
   overflow: auto;
-  background: var(--cui-body-bg);
+  background: var(--panel-canvas-bg);
   padding: 1rem 1.25rem 2rem;
 }
 
 .review-card {
   margin-bottom: 1rem;
+
+  > .card-header {
+    border-left: 3px solid var(--cui-primary);
+  }
 }
 
 // --- Recorrido -----------------------------------------------------------------
@@ -66,8 +70,8 @@
     left: 0.95rem;
     top: 1.6rem;
     bottom: 0;
-    width: 1px;
-    background: var(--cui-border-color);
+    width: 2px;
+    background: color-mix(in srgb, var(--cui-primary) 38%, var(--panel-border-color));
   }
 }
 
@@ -77,11 +81,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--cui-border-color);
+  border: 1px solid color-mix(in srgb, var(--cui-primary) 45%, var(--panel-border-color));
   border-radius: 50%;
   font-size: 0.8rem;
-  color: var(--cui-secondary-color);
-  background: var(--cui-card-bg);
+  font-weight: 600;
+  color: var(--cui-primary);
+  background: color-mix(in srgb, var(--cui-primary) 12%, var(--panel-surface-bg));
   position: relative;
   z-index: 1;
 }
@@ -93,8 +98,14 @@
 }
 
 .trace-duration {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
   white-space: nowrap;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  color: var(--cui-info);
+  background-color: color-mix(in srgb, var(--cui-info) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cui-info) 25%, transparent);
 }
 
 // --- Diagrama de pasos ---------------------------------------------------------
@@ -124,7 +135,11 @@
     top: 1.15rem;
     bottom: 0;
     width: 2px;
-    background: var(--cui-border-color);
+    background: var(--panel-border-color);
+  }
+
+  &.done:not(:last-child)::before {
+    background: color-mix(in srgb, var(--cui-success) 55%, var(--panel-border-color));
   }
 
   &.skipped {
@@ -137,10 +152,10 @@
   height: 1.15rem;
   margin-top: 0.12rem;
   border-radius: 50%;
-  border: 2px solid var(--cui-border-color);
+  border: 2px solid var(--panel-border-color);
   display: grid;
   place-items: center;
-  background: var(--cui-body-bg);
+  background: var(--panel-surface-sunken-bg);
   font-size: 0.72rem;
   line-height: 1;
   z-index: 1;
@@ -150,10 +165,12 @@
   background: var(--cui-success);
   border-color: var(--cui-success);
   color: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-success) 20%, transparent);
 }
 
 .step-row.running .step-mark {
   border-color: var(--cui-primary);
+  background: color-mix(in srgb, var(--cui-primary) 18%, var(--panel-surface-bg));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-primary) 28%, transparent);
 }
 
@@ -163,7 +180,9 @@
   align-items: center;
   justify-content: center;
   border-color: var(--cui-warning);
+  background: color-mix(in srgb, var(--cui-warning) 16%, var(--panel-surface-bg));
   color: var(--cui-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cui-warning) 22%, transparent);
 }
 
 .pause-bar {
@@ -175,6 +194,7 @@
 
 .step-name {
   font-weight: 600;
+  color: var(--cui-emphasis-color);
 }
 
 .step-caption {
@@ -188,10 +208,12 @@
 
 .step-row.running .step-caption {
   color: var(--cui-primary);
+  font-weight: 500;
 }
 
 .step-row.paused .step-caption {
-  color: var(--cui-warning-text-emphasis, var(--cui-warning));
+  color: var(--cui-warning);
+  font-weight: 500;
 }
 
 .step-spinner {
@@ -225,21 +247,22 @@
 .review-log,
 .review-console,
 .review-reasoning {
-  background: var(--cui-tertiary-bg);
-  border: 1px solid var(--cui-border-color);
-  border-radius: 0.25rem;
+  background: var(--panel-surface-sunken-bg);
+  border: 1px solid var(--panel-border-color);
+  border-radius: 0.375rem;
   color: var(--cui-body-color);
   font-size: 0.8rem;
   line-height: 1.45;
   max-height: 22rem;
   overflow: auto;
-  padding: 0.6rem 0.75rem;
+  padding: 0.65rem 0.8rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .review-console {
   min-height: 4rem;
+  border-left: 3px solid var(--cui-info);
 }
 
 .review-reasoning {
@@ -263,7 +286,7 @@
 // Un lote fallido se marca con el borde, no con color de fondo: el texto sigue
 // siendo legible y el aviso está en su pie.
 .reasoning {
-  border-left: 2px solid var(--cui-border-color);
+  border-left: 3px solid var(--cui-primary);
   padding-left: 0.75rem;
 
   &.failed {
