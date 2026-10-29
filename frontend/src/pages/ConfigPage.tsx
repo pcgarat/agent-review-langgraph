@@ -157,7 +157,7 @@ export function ConfigPage() {
       ) : null}
 
       {groups.map((group) => (
-        <CCard key={group.section} className="mb-4">
+        <CCard key={group.section} className="config-group-card mb-4">
           <CCardHeader>
             <h2 className="h6 mb-0">{group.section}</h2>
           </CCardHeader>

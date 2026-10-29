@@ -79,7 +79,7 @@ flowchart LR
 | `fix-worker` (`fixworker/main.py`) | `python -m agent_review.fixworker.main` | Consume `reviews:fixes`, verifica cada `VerifyJob` contra el `sandbox-runner` y encola la reanudación con la `FixResolutions`. Nunca publica ni invoca el grafo. Aislado: sin socket, `TWG_*`, Postgres ni token de decisión. |
 | `sandbox-runner` (`sandbox_runner/`) | `python -m agent_review.sandbox_runner.main` | Verifica un parche con la imagen del CI por digest y sirve **workspaces de lectura** (`/workspaces`): clon *bare* que un lector de contexto lee con `git show`/`git grep`/`git ls-tree` ([016](iniciativas/archivo/016-lector-de-contexto/spec.md), [ADR-0018](adr/0018-workspace-de-lectura-en-el-runner.md)). Habla con su propio demonio Docker rootless. |
 | `teams-bot` (`teams_bot/`) | `python -m agent_review.teams_bot.main` | Canal de Teams: consume la outbox, publica/edita el hilo por PR, borra la tarjeta al responderse (`withdraw` o barrido) y recibe `POST /api/messages` (acciones de la tarjeta → `build_decision` → encola). **No** conoce el grafo. |
-| `web` (`web/main.py`) | `python -m agent_review.web.main` | Panel de operación. Sirve la **SPA** (`frontend/dist`, en la imagen `web/static`) y la API JSON: lee el estado de Redis y el recorrido del checkpointer con un pool de solo lectura, y **encola** comandos, decisiones y lanzamientos. No escribe el estado del grafo ni habla con el VCS (`launch` lo resuelve el worker). El *fallback* de `index.html` no captura `/api/*` ni `/healthz` ([029](iniciativas/029-panel-en-react/spec.md), P5). Opt-in por el perfil `panel`. |
+| `web` (`web/main.py`) | `python -m agent_review.web.main` | Panel de operación. Sirve la **SPA** (`frontend/dist`, en la imagen `web/static`) y la API JSON: lee el estado de Redis y el recorrido del checkpointer con un pool de solo lectura, y **encola** comandos, decisiones y lanzamientos. No escribe el estado del grafo ni habla con el VCS (`launch` lo resuelve el worker). El *fallback* de `index.html` no captura `/api/*` ni `/healthz` ([029](iniciativas/archivo/029-panel-en-react/spec.md), P5). Opt-in por el perfil `panel`. |
 | CLI (`cli.py`) | `agent_review list` / `agent_review decide` | Lista las pausas y encola decisiones. No toca el grafo ni el PR. El **panel** ([022](iniciativas/archivo/022-decision-humana-en-el-panel/spec.md)) decide por su propio endpoint, con la misma `build_decision`. La **bandeja** ([026](iniciativas/archivo/026-bandeja-de-decisiones/spec.md)) es la lista de esas preguntas y comparte el sello con Teams y con el detalle. |
 
 ---
@@ -244,7 +244,12 @@ los jobs siguientes salen a la misma lista con `reason` `quota-wait` y vuelven
 a la cola cuando el aviso caduca; un artefacto ya válido de ese `head_sha` no
 espera. El login del operador suelta solo lo parqueado por la sesión. El
 barrido de cola vacía vuelve a mirar la sesión y suelta `quota-wait` si el
-aviso ya no está.
+aviso ya no está. Con un modelo del clúster
+([ADR-0038](adr/0038-el-cluster-se-espera.md)), `GET /session` dice también
+el motivo: con el gateway caído el job sale con `reason` `gateway` y vuelve en
+cuanto el gateway responde. Un 429 que el gateway no absorbe llega como `503`
+(`ClaudeClusterLimited`): ese job y los siguientes esperan como
+`cluster-wait` 300 s, sin gastar intentos ni ir a la DLQ.
 
 **Envoltura de nodo (019 D2).** Todos los nodos se registran a través de un único
 *seam* (`graph/wrapper.node_wrapper`, `src/agent_review/graph/wrapper.py`). Con un
@@ -421,7 +426,7 @@ vencimiento vive en `sweep_fix_expired`
 | Redis | `reviews:failure:<review_key>` | Log de intentos aún no descartados. Al ir a la DLQ se copia en `error` y se borra; si el job termina, también | 7 días |
 | Redis | `reviews:journal:<review_key>` | Log de la ficha: intentos, fallos y cómo terminó. No se borra al cerrar la review. El panel lo muestra en el detalle junto al motivo leído del estado | 10 días |
 | Redis | `reviews:meta:<review_key>` | **Metadatos del PR**: `pr_id` y `pr_title`. El worker los guarda al iniciar cada review; el panel los lee para mostrar `#ID - título` en lugar de la `review_key` técnica | 30 días |
-| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait` o `ceiling` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` vuelve al caducar el aviso de cupo; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/030-panel-ensena-los-aparcados/spec.md)) | — |
+| Redis | `reviews:claude:parked` | Jobs del motor `claude` en espera (`reason` `session`, `quota`, `quota-wait`, `ceiling`, `gateway` o `cluster-wait` + `ReviewRequest`). Fuera del `BLPOP`. `quota-wait` y `cluster-wait` vuelven al caducar su aviso; `gateway`, cuando el gateway responde; `quota` y `ceiling` no. El panel lo lee y lo pinta en el cuadro de mando con su motivo ([030](iniciativas/archivo/030-panel-ensena-los-aparcados/spec.md)) | — |
 | Redis | `reviews:claude:notice:session` | Aviso único de falta de sesión. La borra el login; no lleva el token | — |
 | Redis | `reviews:claude:notice:quota` | Aviso único de cupo, y enfriamiento para no relanzar el CLI | 900 s |
 | Redis | `reviews:claude:notice:session`, `reviews:claude:notice:ceiling` | Aviso único de cada motivo. `session` además se borra al iniciar sesión. El de `ceiling` no se desbloquea solo: su fecha es lo que permite volver a avisar al chocar de nuevo el techo | 86400 s |
@@ -500,9 +505,18 @@ El estado vivo de cada iniciativa y sus tareas están en
 [`iniciativas/README.md`](iniciativas/README.md). El motor `claude` de
 [025](iniciativas/archivo/025-revisor-claude-cli/spec.md) está implementado: grafo,
 tarjeta de lote, `claude-runner` y sesión en el panel.
-[028](iniciativas/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
+[028](iniciativas/archivo/028-claude-revisa-con-la-skill/spec.md) también: la skill revisa
 fuera del núcleo, el sandbox cierra `Bash` y el techo no se reintenta
 ([ADR-0033](adr/0033-skill-fuera-del-nucleo.md)).
+[032](iniciativas/archivo/032-skill-con-modelo-de-la-cluster/spec.md) está implementada:
+`/claude` elige `claude`, `deepseek-v4-flash` o `glm5.3-flash`, y
+`claude-runner` lo aplica en cada `POST /run`. El gateway del perfil
+`claude` traduce los dos modelos del clúster; su egress solo llega a
+`api.nan.builders` y un 429, agotados tres reintentos, espera como
+`cluster-wait` en vez de parquearse como cupo
+([ADR-0038](adr/0038-el-cluster-se-espera.md))
+([ADR-0037](adr/0037-la-skill-con-un-backend-ajeno.md)). El *gold
+set* no entra: sigue midiendo solo el motor `llm`.
 
 ---
 

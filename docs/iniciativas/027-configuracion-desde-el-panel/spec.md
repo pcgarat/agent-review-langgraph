@@ -1,4 +1,4 @@
-Última modificación: 2026-10-24 | Creado: 2026-10-23
+Última modificación: 2026-10-29 | Creado: 2026-10-23
 
 # Configuración desde el panel
 
@@ -204,7 +204,7 @@ make ci
 Los tests viven en `tests/test_panel_config.py` (resolución, restauración, candado,
 conflicto de revisión y foto en el estado) y en `tests/test_web_config_api.py` (el
 contrato HTTP de `GET /api/config` y `POST /config`). El formulario HTML que cubría
-`tests/test_web_ui.py` se retiró en el bloque R de la [029](../029-panel-en-react/spec.md);
+`tests/test_web_ui.py` se retiró en el bloque R de la [029](../archivo/029-panel-en-react/spec.md);
 su cobertura vive ahora en la API y en `ConfigPage.test.tsx`.
 
 ## 6. Riesgos

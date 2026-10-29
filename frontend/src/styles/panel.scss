@@ -5,8 +5,39 @@
   $enable-deprecation-messages: false
 );
 
+// Superficies con nombre que usan las hojas de cada pantalla (bandeja, config,
+// review…). Apuntan a las variables de CoreUI para que los colores sean los de la
+// plantilla y cambien solos con el tema; un color nuevo se decide aquí, no en la
+// hoja de la pantalla.
+:root,
+[data-coreui-theme='light'],
+[data-coreui-theme='dark'] {
+  --panel-canvas-bg: var(--cui-tertiary-bg);
+  --panel-surface-bg: var(--cui-body-bg);
+  --panel-surface-header-bg: var(--cui-tertiary-bg);
+  --panel-surface-sunken-bg: var(--cui-tertiary-bg);
+  --panel-surface-elevated-bg: var(--cui-secondary-bg);
+  --panel-header-bg: var(--cui-body-bg);
+  --panel-border-color: var(--cui-border-color);
+  --panel-border-strong: var(--cui-border-color);
+  --panel-border-subtle: var(--cui-border-color-translucent);
+  --panel-card-shadow: none;
+  --panel-card-hover-shadow: var(--cui-box-shadow-sm);
+  --panel-code-bg: transparent;
+  --panel-code-color: var(--cui-code-color);
+  --panel-code-border: transparent;
+  --panel-table-head-bg: var(--cui-tertiary-bg);
+  --panel-table-stripe-bg: transparent;
+  --panel-table-hover-bg: rgba(var(--cui-emphasis-color-rgb), 0.075);
+  --panel-rail: 1px solid var(--cui-border-color);
+}
+
+@include color-mode(dark) {
+  --panel-canvas-bg: var(--cui-dark-bg-subtle);
+}
+
 body {
-  background-color: var(--cui-tertiary-bg);
+  background-color: var(--panel-canvas-bg);
 }
 
 // CoreUI define `--cui-sidebar-occupy-start` en el hermano del sidebar, pero no
@@ -44,10 +75,6 @@ body {
 }
 
 @include color-mode(dark) {
-  body {
-    background-color: var(--cui-dark-bg-subtle);
-  }
-
   .footer {
     --cui-footer-bg: var(--cui-body-bg);
   }

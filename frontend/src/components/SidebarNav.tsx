@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { CBadge, CNavItem, CNavLink, CNavTitle, CSidebarNav } from '@coreui/react'
 import CIcon from '@coreui/icons-react'
-import { cilHistory, cilInbox, cilLockLocked, cilSettings, cilSpeedometer } from '@coreui/icons'
+import { cilHistory, cilInbox, cilMemory, cilSettings, cilSpeedometer } from '@coreui/icons'
 
 import { useStateQuery } from '@/api/queries/useStateQuery'
 import { useSession } from '@/session/session'
@@ -48,8 +48,8 @@ export function SidebarNav() {
           <CNavTitle>Sesión de Claude</CNavTitle>
           <CNavItem>
             <CNavLink to="/claude" as={NavLink}>
-              <CIcon icon={cilLockLocked} className="nav-icon" />
-              Token del CLI
+              <CIcon icon={cilMemory} className="nav-icon" />
+              Modelo
             </CNavLink>
           </CNavItem>
         </>

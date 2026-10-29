@@ -3,6 +3,8 @@
 
 // Un solo campo no necesita el ancho de la pantalla: a 700 px la etiqueta queda
 // lejos del botón y en un monitor ancho se lee como un formulario a medias.
-.claude-card {
+.claude-card,
+.claude-backend {
   max-width: 44rem;
+  border-top: 3px solid var(--cui-primary);
 }

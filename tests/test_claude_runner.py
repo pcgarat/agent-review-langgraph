@@ -44,6 +44,7 @@ from agent_review.domain.models import ReviewRequest
 from agent_review.errors import PermanentError, TransientError
 from agent_review.ports.claude import (
     ClaudeCeiling,
+    ClaudeClusterLimited,
     ClaudeInvalidOutput,
     ClaudeProcessCrashed,
     ClaudeQuotaExceeded,
@@ -154,6 +155,8 @@ def test_el_argv_pide_la_skill_y_no_abre_un_shell_libre() -> None:
     assert "Revisa el árbol de trabajo" not in " ".join(argv)
     with pytest.raises(ValueError, match="base_sha"):
         claude_argv([sys.executable, "claude"], max_turns=7, base_sha=" ")
+    sin_turnos = claude_argv([sys.executable, "claude"], max_turns=0, base_sha="abc123")
+    assert "--max-turns" not in sin_turnos
 
 
 def test_el_subproceso_no_hereda_credenciales(tmp_path: Path) -> None:
@@ -298,6 +301,39 @@ def test_un_desenlace_estructurado_manda_sobre_la_prosa_del_cupo(tmp_path: Path)
         encoding="utf-8",
     )
     with pytest.raises(ClaudeProcessCrashed):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
+def _sale_por_rate_limit(tmp_path: Path) -> Path:
+    script = tmp_path / "limite.py"
+    script.write_text(
+        "import sys\nprint('429 rate limit', file=sys.stderr)\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_un_rate_limit_del_cluster_no_es_cupo(tmp_path: Path) -> None:
+    """Agotados los reintentos del gateway, el 429 espera el enfriamiento (ADR-0038)."""
+    script = _sale_por_rate_limit(tmp_path)
+    with pytest.raises(ClaudeClusterLimited, match="cluster"):
+        SubprocessClaudeRunner(
+            argv_prefix=[sys.executable, str(script)],
+            max_turns=1,
+            timeout_s=5,
+            environ={"PATH": "/usr/bin"},
+            quota_is_cluster=True,
+        ).run(repo="r", pr_id=1, head_sha="abc", base_sha="base")
+
+
+def test_un_rate_limit_de_anthropic_sigue_siendo_cupo(tmp_path: Path) -> None:
+    script = _sale_por_rate_limit(tmp_path)
+    with pytest.raises(ClaudeQuotaExceeded):
         SubprocessClaudeRunner(
             argv_prefix=[sys.executable, str(script)],
             max_turns=1,
@@ -934,10 +970,10 @@ def test_solo_la_imagen_del_runner_instala_el_cli() -> None:
 
 
 def test_los_techos_por_defecto_cubren_el_fan_out() -> None:
-    assert Settings.model_fields["claude_max_turns"].default == 200
+    assert Settings.model_fields["claude_max_turns"].default == 0
     assert Settings.model_fields["claude_timeout_s"].default == 3600.0
     compose = _COMPOSE.read_text(encoding="utf-8")
-    assert "CLAUDE_MAX_TURNS:-200" in compose
+    assert "CLAUDE_MAX_TURNS:-0" in compose
     assert "CLAUDE_TIMEOUT_S:-3600" in compose
 
 

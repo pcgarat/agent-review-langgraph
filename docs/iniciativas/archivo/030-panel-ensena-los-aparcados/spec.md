@@ -21,7 +21,7 @@
 
 ## 1. Objetivo
 
-El parking del motor `claude` ([028](../archivo/025-revisor-claude-cli/spec.md),
+El parking del motor `claude` ([025](../025-revisor-claude-cli/spec.md),
 `reviews:claude:parked`) guarda los jobs que no pueden ejecutarse: falta de sesión
 (`session`), cupo agotado (`quota`), los siguientes en espera del cupo
 (`quota-wait`) y el techo de turnos o de tiempo (`ceiling`).

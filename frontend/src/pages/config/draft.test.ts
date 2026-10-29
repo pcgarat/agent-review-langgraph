@@ -55,7 +55,9 @@ describe('catálogo de diales', () => {
       'Política',
     ])
     expect(SECTIONS[0]).toBe('Claude')
-    expect(DIALS['claude_max_turns']?.bounds).toEqual({ min: 1, max: 2000, step: 1 })
+    expect(DIALS['claude_max_turns']?.bounds).toEqual({ min: 0, max: 2000, step: 1 })
+    expect(DIALS['claude_max_turns']?.canDisable).toBe(true)
+    expect(DIALS['claude_timeout_s']?.canDisable).toBeUndefined()
   })
 })
 

@@ -215,6 +215,10 @@ La config que escribe este runner es corta. Vive en
 }
 ```
 
+Ese dominio es el de Anthropic, el destino por defecto. Si la pasada va al
+clúster, la lista es solo el nombre del gateway
+([ADR-0037](../adr/0037-la-skill-con-un-backend-ajeno.md)).
+
 Traducida a montajes, la idea queda así. El sandbox del CLI parte de «todo
 el disco en solo lectura» y luego abre agujeros de escritura. Por defecto
 uno de esos agujeros es el directorio de trabajo, o sea el checkout. Nosotros

@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react'
 import { CButton, CFormInput, CFormSelect, CFormSwitch } from '@coreui/react'
 
 import { dialKind, dialSpec } from './catalog'
@@ -30,12 +31,24 @@ export function DialControl({
   const kind = dialKind(name, initial)
   const spec = dialSpec(name)
   const bounds = spec?.bounds
+  const canDisable = spec?.canDisable === true && kind === 'number'
+  // Mientras se escribe, un «0» no apaga el tope: desmontaría el campo con el
+  // foco dentro. Al salir del campo, 0 sí significa apagado.
+  const [editing, setEditing] = useState(false)
+  const off = canDisable && value === '0' && !editing
+  const remembered = useRef(positiveSeed(off ? initial : value))
   const pristine = isPristine(kind, value, initial)
   const controlId = `dial-${name}`
   const helpId = `dial-${name}-help`
 
+  const stateClass = locked
+    ? 'config-dial config-dial--locked'
+    : !pristine
+      ? 'config-dial config-dial--modified'
+      : 'config-dial'
+
   return (
-    <div className="config-dial" data-testid={`dial-${name}`}>
+    <div className={stateClass} data-testid={`dial-${name}`}>
       <div className="config-dial-head">
         <label className="config-dial-name" htmlFor={controlId}>
           {name}
@@ -76,19 +89,45 @@ export function DialControl({
             onChange={(event) => onChange(event.target.value)}
           />
         ) : (
-          <CFormInput
-            id={controlId}
-            type={kind === 'number' ? 'number' : 'text'}
-            inputMode={kind === 'number' ? 'decimal' : undefined}
-            min={bounds?.min}
-            max={bounds?.max}
-            step={bounds?.step}
-            autoComplete="off"
-            value={typeof value === 'string' ? value : ''}
-            disabled={locked || disabled}
-            aria-describedby={helpId}
-            onChange={(event) => onChange(event.target.value)}
-          />
+          <div className="d-flex flex-column gap-2">
+            {canDisable ? (
+              <CFormSwitch
+                id={`${controlId}-enabled`}
+                label="Limitar turnos"
+                checked={!off}
+                disabled={locked || disabled}
+                aria-describedby={helpId}
+                onChange={(event) => {
+                  if (event.target.checked) {
+                    onChange(remembered.current)
+                    return
+                  }
+                  const current = Number(value)
+                  if (Number.isFinite(current) && current >= 1) {
+                    remembered.current = String(current)
+                  }
+                  onChange('0')
+                }}
+              />
+            ) : null}
+            {off ? null : (
+              <CFormInput
+                id={controlId}
+                type={kind === 'number' ? 'number' : 'text'}
+                inputMode={kind === 'number' ? 'decimal' : undefined}
+                min={canDisable ? 1 : bounds?.min}
+                max={bounds?.max}
+                step={bounds?.step}
+                autoComplete="off"
+                value={typeof value === 'string' ? value : ''}
+                disabled={locked || disabled}
+                aria-describedby={helpId}
+                onFocus={() => setEditing(true)}
+                onBlur={() => setEditing(false)}
+                onChange={(event) => onChange(event.target.value)}
+              />
+            )}
+          </div>
         )}
       </div>
 
@@ -101,6 +140,11 @@ export function DialControl({
 }
 
 /** El inicial tal como se lee en el paso de la página HTML: sin comillas raras. */
+function positiveSeed(initial: unknown): string {
+  const parsed = Number(initial)
+  return Number.isFinite(parsed) && parsed >= 1 ? String(parsed) : '200'
+}
+
 function formatInitial(initial: unknown): string {
   if (typeof initial === 'boolean') return initial ? 'sí' : 'no'
   if (initial === '') return '(vacío)'

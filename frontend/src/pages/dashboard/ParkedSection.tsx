@@ -30,6 +30,16 @@ const REASON: Record<ParkReason, { label: string; help: string; to?: string; act
     label: 'Esperando cupo',
     help: 'Sale solo cuando caduca el aviso de cupo; no hay nada que hacer.',
   },
+  gateway: {
+    label: 'Gateway del clúster caído',
+    help: 'Salen solos cuando nan-gateway vuelve a responder. Elegir Claude en /claude también los suelta.',
+    to: '/claude',
+    action: 'Cambiar de modelo',
+  },
+  'cluster-wait': {
+    label: 'El clúster limita las llamadas',
+    help: 'Salen solos cuando pasan unos minutos de enfriamiento; no gastan intentos.',
+  },
   ceiling: {
     label: 'Techo de turnos o de tiempo',
     help: 'El CLI llegó al techo. Subirlo no suelta este job: hay que eliminarlo y relanzarlo.',
