@@ -1545,6 +1545,12 @@ def _thread_snapshot(graph: ReviewGraph, config: RunnableConfig) -> Any | None:
 # Tras un cupo, los jobs siguientes no vuelven a llamar al CLI hasta que pase.
 _QUOTA_COOLDOWN_S = 900.0
 
+# Caducidad del aviso de parqueo. `session` se suelta al iniciar sesion y `quota`
+# enfria los siguientes; `ceiling` no se desbloquea solo, asi que sin fecha el
+# aviso de Teams no volveria a salir nunca aunque el operador suba el techo.
+# Es generosa: pasada, un techo sigue parkeando el job, pero avisa otra vez.
+_PARK_NOTICE_TTL_S = 86400.0
+
 _PARK_NOTICES: dict[str, tuple[str, str]] = {
     "session": (
         "Claude sin sesion",
@@ -1621,7 +1627,7 @@ def park_claude_job(
     notice = _PARK_NOTICES.get(reason)
     if notice is None:
         return
-    ttl = _QUOTA_COOLDOWN_S if reason == "quota" else None
+    ttl = _QUOTA_COOLDOWN_S if reason == "quota" else _PARK_NOTICE_TTL_S
     if not queue.claim_notice(reason, ttl_s=ttl) or chat is None:
         return
     title, body = notice

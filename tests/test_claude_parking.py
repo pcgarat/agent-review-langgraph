@@ -453,3 +453,49 @@ def test_una_decision_sin_sesion_no_se_parkea() -> None:
     dispatch_job(queue, graph, request, max_attempts=3, claude_session=lambda: False)
     assert graph.calls == 1
     assert queue.parked() == []
+
+
+def test_el_aviso_de_parqueo_caduca_para_volver_a_avisar() -> None:
+    """El #11: el aviso de `ceiling` se reclamaba sin fecha y no se limpiaba.
+
+    `ceiling` no se desbloquea solo, así que sin caducidad el aviso de Teams no
+    volvería a salir nunca, ni siquiera tras subir el techo y volver a chocar.
+    """
+    from agent_review.worker.main import park_claude_job
+
+    queue = InMemoryReviewQueue()
+    outbox = InMemoryChatOutbox()
+    chat = OutboxChatAdapter(outbox=outbox)
+    request = _request("ceiling-aviso")
+
+    park_claude_job(queue, request, reason="ceiling", chat=chat, link=_LINK)
+    assert len(_notices(outbox)) == 1
+    # El aviso queda retenido, pero **con** fecha: no es eterno.
+    assert queue.notice_held("ceiling") is True
+    assert queue.notice_ttl_s("ceiling") is not None
+
+    # Un segundo parqueo no repite el aviso mientras siga vigente.
+    park_claude_job(queue, request, reason="ceiling", chat=chat, link=_LINK)
+    assert _notices(outbox) == []
+
+
+def test_el_aviso_de_sesion_tambien_caduca() -> None:
+    """`session` se suelta al entrar, pero si nadie entra el aviso no es eterno."""
+    from agent_review.worker.main import park_claude_job
+
+    queue = InMemoryReviewQueue()
+    chat = OutboxChatAdapter(outbox=InMemoryChatOutbox())
+    park_claude_job(queue, _request("sesion-aviso"), reason="session", chat=chat, link=_LINK)
+    assert queue.notice_ttl_s("session") is not None
+
+
+def test_el_enfriamiento_del_cupo_sigue_siendo_el_corto() -> None:
+    """El cupo sí caduca a los 900 s: no debe heredar el plazo largo del aviso."""
+    from agent_review.worker.main import _QUOTA_COOLDOWN_S, park_claude_job
+
+    queue = InMemoryReviewQueue()
+    chat = OutboxChatAdapter(outbox=InMemoryChatOutbox())
+    park_claude_job(queue, _request("cupo"), reason="quota", chat=chat, link=_LINK)
+    ttl = queue.notice_ttl_s("quota")
+    assert ttl is not None
+    assert ttl <= _QUOTA_COOLDOWN_S + 1

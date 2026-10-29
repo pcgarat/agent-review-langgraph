@@ -21,7 +21,12 @@ import yaml
 from agent_review.adapters.claude_artifact import ClaudeArtifactStore
 from agent_review.adapters.claude_cli import SubprocessClaudeRunner, claude_argv, redact_text
 from agent_review.adapters.claude_client import HttpClaudeRunner
-from agent_review.claude_activity import ClaudeActivity, read_activity, transcript_events
+from agent_review.claude_activity import (
+    ClaudeActivity,
+    activity_paths,
+    read_activity,
+    transcript_events,
+)
 from agent_review.claude_runner.checkout import (
     CheckoutError,
     _auth_url,
@@ -1109,6 +1114,111 @@ def test_el_sse_recibe_una_linea_antes_de_cerrar(tmp_path: Path) -> None:
     frames = list(transcript_events(session, repo="acme/app", pr_id=3, head_sha=sha, sleep=dormir))
     assert any("linea-a-mitad" in frame and "y" * 700 in frame for frame in frames)
     assert frames[-1].startswith("event: end")
+
+
+def test_un_commit_sin_actividad_cierra_el_stream_en_vez_de_colgarse(tmp_path: Path) -> None:
+    """El #8: un `finished_at` que nunca llega dejaba un hilo del threadpool.
+
+    Ningún fichero de este commit existe, así que no hay nada que esperar: el
+    stream tiene que cerrarse ya. Antes se quedaba en `while True` para siempre y
+    unas pocas peticiones dejaban el panel sin servir.
+    """
+    session = tmp_path / "session.json"
+    frames = list(
+        transcript_events(
+            session,
+            repo="no/existe",
+            pr_id=99,
+            head_sha="d" * 40,
+            sleep=lambda _s: (_ for _ in ()).throw(AssertionError("no debe dormir")),
+        )
+    )
+    assert frames == ["event: end\ndata: {}\n\n"]
+
+
+def test_un_estado_sin_finished_at_cierra_por_inactividad(tmp_path: Path) -> None:
+    """El runner murió a mitad: hay líneas y un `started_at` congelado."""
+    session = tmp_path / "session.json"
+    sha = "e" * 40
+    activity = ClaudeActivity(session, repo="acme/app", pr_id=4, head_sha=sha)
+    activity.start()
+    activity.append('{"a": 1}')
+    # Sin `finish()`: nadie va a escribir el `finished_at`.
+    status_path, _log = activity_paths(session, repo="acme/app", pr_id=4, head_sha=sha)
+
+    reloj = {"t": 0.0}
+
+    def dormir(_s: float) -> None:
+        reloj["t"] += 1.0
+        if reloj["t"] > 400:
+            raise AssertionError("el stream no cerro por inactividad")
+
+    frames = list(
+        transcript_events(
+            session,
+            repo="acme/app",
+            pr_id=4,
+            head_sha=sha,
+            sleep=dormir,
+            idle_s=180.0,
+            clock=lambda: reloj["t"],
+        )
+    )
+    assert any('a\\": 1' in frame for frame in frames)
+    assert frames[-1].startswith("event: end")
+
+
+def test_un_estado_vivo_sigue_abierto_y_cierra_al_terminar(tmp_path: Path) -> None:
+    """La red de inactividad no puede cortar una review que avanza."""
+    session = tmp_path / "session.json"
+    sha = "f" * 40
+    activity = ClaudeActivity(session, repo="acme/app", pr_id=5, head_sha=sha)
+    activity.start()
+    reloj = {"t": 0.0}
+    pasos = {"n": 0}
+
+    def dormir(_s: float) -> None:
+        pasos["n"] += 1
+        # Una review viva escribe: en cada espera aparece una línea nueva, así
+        # que en la vuelta siguiente hay algo que leer y el reloj de inactividad
+        # se reinicia. Solo se deja de escribir antes de `finish()`.
+        if pasos["n"] <= 12:
+            activity.append(f'{{"paso": {pasos["n"]}}}')
+        if pasos["n"] == 12:
+            activity.finish()
+        if pasos["n"] > 40:
+            raise AssertionError("el stream no cerro al terminar")
+
+    frames = list(
+        transcript_events(
+            session,
+            repo="acme/app",
+            pr_id=5,
+            head_sha=sha,
+            sleep=dormir,
+            idle_s=3.0,
+            clock=lambda: reloj["t"],
+        )
+    )
+    assert any('paso\\": 12' in frame for frame in frames)
+    assert frames[-1].startswith("event: end")
+    assert pasos["n"] <= 13, "no debe seguir sondeando despues de cerrar"
+
+
+def test_la_ficha_no_abre_el_sse_sin_transcripcion(tmp_path: Path) -> None:
+    """Con solo el fichero de estado no hay nada que emitir: sin `events_available`."""
+    session = tmp_path / "session.json"
+    sha = "a" * 40
+    activity = ClaudeActivity(session, repo="acme/app", pr_id=6, head_sha=sha)
+    activity.start()  # estado, log vacio, sin `finish`
+
+    settings = Settings(_env_file=None, review_engine="claude", claude_session_path=str(session))
+    from agent_review.web.review_detail import has_transcript
+
+    assert has_transcript(f"acme/app:6:{sha}:panel", settings) is False
+
+    activity.append('{"ya": "hay linea"}')
+    assert has_transcript(f"acme/app:6:{sha}:panel", settings) is True
 
 
 def test_el_evento_stream_json_llega_entero(tmp_path: Path) -> None:

@@ -201,6 +201,11 @@ suelta HEAD antes del fetch: Git no actualiza la rama que está checked out.
 `core.symlinks` queda en falso. Git
 corre con un entorno sin los tokens del proceso. La transcripción es el fichero
 entero en `claude_session`; el panel la sigue por SSE y la descarga con sesión.
+El SSE **siempre termina**: sin transcripción, `404` antes de abrir el stream
+(mismo criterio que la consola); con ella, cierra al llegar `finished_at` o, si
+el runner murió a mitad, tras `IDLE_S` (180 s) sin una línea nueva. Antes, un
+`finished_at` que nunca llegaba dejaba el bucle girando: cada petición se comía un
+hilo del threadpool y unas pocas dejaban el panel sin servir.
 
 Sin sesión, `dispatch_job` mueve el job a `reviews:claude:parked` y no llama a
 `invoke`, salvo que el job ya traiga `decision` o `fix_resolution`. El aviso
@@ -211,6 +216,11 @@ que agota turnos o tiempo de pared parkea con `ceiling`; el login no lo suelta.
 Mientras `reviews:claude:notice:quota` sigue, el job siguiente parkea como
 `quota-wait` (no gasta otra llamada) y vuelve cuando el aviso caduca. Un
 artefacto ya válido no espera.
+
+El aviso de parqueo que se manda a Teams **caduca siempre**: 900 s para `quota`
+(el enfriamiento) y 24 h para `session` y `ceiling`. `ceiling` no se desbloquea
+solo, así que sin fecha el aviso no volvería a salir nunca, ni tras subir el
+techo y volver a chocarlo. Caducado, el siguiente parqueo vuelve a avisar.
 
 ### Una persona nueva
 

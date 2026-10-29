@@ -158,6 +158,33 @@ def _claude_availability(review_key: str, settings: Settings) -> ClaudeAvailabil
     )
     return ClaudeAvailability(
         available=True,
-        events_available=status_path.is_file() or log_path.is_file(),
+        # El SSE existe si hay **contenido** que seguir. El runner crea el log
+        # vacío antes de la primera línea; un stream sobre él no emitiría nada y
+        # la ficha abriría una conexión que no hace nada.
+        events_available=_has_content(log_path),
         download_available=log_path.is_file(),
     )
+
+
+def has_transcript(review_key: str, settings: Settings) -> bool:
+    """Si este commit tiene una transcripción que el SSE pueda recorrer.
+
+    No basta con que el fichero exista: el runner lo crea vacío antes de la
+    primera línea. Un stream sobre él no emitiría nada.
+    """
+    target = review_target(review_key)
+    if target is None:
+        return False
+    repo, pr_id, head_sha = target
+    _status, log_path = activity_paths(
+        Path(settings.claude_session_path), repo=repo, pr_id=pr_id, head_sha=head_sha
+    )
+    return _has_content(log_path)
+
+
+def _has_content(log_path: Path) -> bool:
+    """Un log con algo escrito. `is_file()` miente: `start()` lo deja vacío."""
+    try:
+        return log_path.is_file() and log_path.stat().st_size > 0
+    except OSError:
+        return False

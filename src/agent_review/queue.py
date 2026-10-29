@@ -152,6 +152,10 @@ class ReviewQueue(Protocol):
         """True si ese aviso sigue vigente."""
         ...
 
+    def notice_ttl_s(self, kind: str) -> float | None:
+        """Segundos que le quedan al aviso, o `None` si no caduca o no existe."""
+        ...
+
     def clear_notice(self, kind: str) -> None:
         """Borra la clave del aviso. Una caducidad posterior puede avisar otra vez."""
         ...
@@ -439,6 +443,12 @@ class RedisReviewQueue:
         _check_park_reason(kind)
         return bool(self._client.exists(_notice_key(kind)))
 
+    def notice_ttl_s(self, kind: str) -> float | None:
+        """Segundos que le quedan. `None` si no existe o no caduca (`TTL` -1)."""
+        _check_park_reason(kind)
+        ttl = self._client.ttl(_notice_key(kind))
+        return float(ttl) if isinstance(ttl, int) and ttl >= 0 else None
+
     def clear_notice(self, kind: str) -> None:
         _check_park_reason(kind)
         self._client.delete(_notice_key(kind))
@@ -582,6 +592,14 @@ class InMemoryReviewQueue:
             del self._notices[kind]
             return False
         return True
+
+    def notice_ttl_s(self, kind: str) -> float | None:
+        """Segundos que le quedan. `None` si no existe o no caduca."""
+        _check_park_reason(kind)
+        expires = self._notices.get(kind)
+        if kind not in self._notices or expires is None:
+            return None
+        return max(0.0, expires - time.time())
 
     def clear_notice(self, kind: str) -> None:
         _check_park_reason(kind)

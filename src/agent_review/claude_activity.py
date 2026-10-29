@@ -19,6 +19,12 @@ def activity_dir(session_file: Path) -> Path:
     return session_file.parent / "activity"
 
 
+# Sin líneas nuevas ni estado "en marcha" durante este tiempo, el stream cierra.
+# Es la red que evita dejar un hilo del threadpool esperando un `finished_at` que
+# nunca llega (runner muerto a mitad, fichero de estado ajeno).
+IDLE_S = 180.0
+
+
 def activity_stem(repo: str, pr_id: int, head_sha: str) -> str:
     """`repo + pr_id + head_sha` entero. Dos repos no comparten el fichero."""
     name = safe_segment(repo, default="sin-repo")
@@ -119,6 +125,8 @@ def transcript_events(
     poll_s: float = 0.2,
     sleep: Callable[[float], None] = time.sleep,
     start_offset: int = 0,
+    idle_s: float = IDLE_S,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Iterator[str]:
     """SSE: lo ya escrito y después cada línea nueva, hasta `finished_at`.
 
@@ -127,10 +135,24 @@ def transcript_events(
     Cada evento lleva `id:` con el byte del fichero donde empieza su línea, y
     `start_offset` reanuda desde ahí. Sin eso, el navegador reconecta solo y el
     panel recibe el transcript entero otra vez, duplicando lo ya pintado.
+
+    El bucle **tiene que acabar siempre**. Si no llegó nunca un `finished_at` (el
+    runner murió a mitad, o el fichero de estado no es de este commit), antes se
+    esperaba para siempre: cada petición se quedaba con un hilo del threadpool y
+    unas pocas dejaban el panel sin servir. Por eso hay dos salidas más: sin
+    transcripción que seguir, `end` de inmediato; con ella pero sin avance,
+    `end` tras `idle_s` sin una línea nueva.
     """
     status_path, log_path = activity_paths(session_file, repo=repo, pr_id=pr_id, head_sha=head_sha)
+    if not status_path.is_file() and not log_path.is_file():
+        # Nada que contar: se cierra ya. Un `200` que no emite nada hace que el
+        # navegador reintente sin fin; `end` le dice al panel que no hay más.
+        yield _sse("end", {})
+        return
     offset = max(0, start_offset)
     pending = ""
+    started = clock()
+    last_activity = started
     while True:
         if log_path.is_file():
             with log_path.open("r", encoding="utf-8") as handle:
@@ -138,6 +160,7 @@ def transcript_events(
                 chunk = handle.read()
                 end = handle.tell()
             if chunk:
+                last_activity = clock()
                 # El evento se identifica por el byte donde *empieza*, no por
                 # donde acaba: reanudar ahí repite esa línea una vez como mucho
                 # si el corte cayó justo en medio.
@@ -153,6 +176,15 @@ def transcript_events(
         if _is_finished(status_path) and not pending:
             yield _sse("end", {})
             return
+        # Sin líneas nuevas, dos razones para cerrar: el estado no dice "en
+        # marcha" (nadie escribirá el `finished_at`), o dice estar vivo pero lleva
+        # tanto tiempo sin una línea nueva que quien debía cerrarlo ya no está.
+        # Se mide desde que **este** stream empezó: la antigüedad del fichero no
+        # sirve, porque el runner lo escribió al arrancar y no lo toca después.
+        sin_avance = clock() - last_activity
+        if sin_avance >= idle_s and (not _is_running(status_path) or clock() - started >= idle_s):
+            yield _sse("end", {})
+            return
         sleep(poll_s)
 
 
@@ -166,6 +198,23 @@ def _is_finished(status_path: Path) -> bool:
     if not isinstance(raw, dict):
         return False
     return isinstance(raw.get("finished_at"), str)
+
+
+def _is_running(status_path: Path) -> bool:
+    """El estado dice que el CLI sigue vivo (`started_at` sin `finished_at`).
+
+    Un fichero ilegible o ausente cuenta como "no en marcha": nadie va a escribir
+    el `finished_at` que falta.
+    """
+    if not status_path.is_file():
+        return False
+    try:
+        raw = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return isinstance(raw.get("started_at"), str) and not isinstance(raw.get("finished_at"), str)
 
 
 def _sse(name: str, payload: object, *, event_id: int | None = None) -> str:

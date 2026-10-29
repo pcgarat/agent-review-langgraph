@@ -182,6 +182,9 @@ def test_la_ficha_con_todo_poblado_incluye_canales_y_claude(
     monkeypatch.setattr(app.state, "reasoning", sink, raising=False)
     activity = ClaudeActivity(session, repo="acme/app", pr_id=9, head_sha=sha)
     activity.start()
+    # El runner crea el log vacío antes de la primera línea: sin contenido no hay
+    # nada que seguir por SSE (`events_available` es `False`, ADR-0036).
+    activity.append('{"evento": "primera linea"}')
 
     body = client.get(f"/api/reviews/{key}").json()
 

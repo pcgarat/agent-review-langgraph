@@ -62,6 +62,7 @@ from agent_review.web.deps import (
 from agent_review.web.launch import LaunchError, LaunchService
 from agent_review.web.read_model import PanelReadModel, build_panel_read_model
 from agent_review.web.reasoning import reasoning_stream
+from agent_review.web.review_detail import has_transcript
 from agent_review.web.review_detail import router as review_detail_router
 from agent_review.web.runner_client import RunnerConsoleClient, build_runner_client
 from agent_review.web.spa import mount_spa
@@ -484,6 +485,13 @@ def claude_transcript(
     del session
     target = _claude_target(review_key)
     repo, pr_id, head_sha = target
+    # `404` antes de abrir el stream cuando no hay transcripción. Un `200` sin
+    # eventos hace que `EventSource` reintente sin fin; un `404` lo rinde y deja
+    # el hilo del servidor libre (mismo criterio que la consola del sandbox).
+    if not has_transcript(review_key, _settings()):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Sin transcripcion de Claude para {review_key}"
+        )
     return StreamingResponse(
         transcript_events(
             Path(_settings().claude_session_path),
